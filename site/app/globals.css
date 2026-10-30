@@ -98,6 +98,7 @@ h1 {
   -webkit-background-clip: text; background-clip: text; color: transparent;
 }
 .lede { margin: 22px 0 0; max-width: 540px; font-size: clamp(17px, 2vw, 19px); line-height: 1.55; color: var(--fg-2); }
+.hero-status { margin: 14px 0 0; max-width: 540px; font-size: 14px; line-height: 1.6; color: var(--fg-3); text-wrap: pretty; }
 .command {
   margin-top: 36px; display: inline-flex; align-items: center; gap: 14px; max-width: 100%;
   height: 46px; padding: 0 8px 0 16px; border: 1px solid var(--line-2); border-radius: 10px; background: var(--bg-1);
