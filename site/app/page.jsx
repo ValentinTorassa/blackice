@@ -46,27 +46,27 @@ const NOUNS = [
     name: 'Scope',
     Icon: IconNested,
     Art: IsoScope,
-    text: 'Where a policy applies: a task and every process it starts, an app on the machine, or the host.',
+    text: 'What a policy applies to: one command and everything it starts, an app on the machine, or the whole host.',
   },
   {
     name: 'Policy',
     Icon: IconPolicy,
     Art: IsoPolicy,
-    text: 'Deny by default, with allow lists for names, subnets and ports. Every resolved address is checked again.',
+    text: 'A JSON file. Everything is denied unless it allows it by name, subnet or port, and every address a name resolves to is checked too.',
   },
   {
     name: 'Receipt',
     Icon: IconReceipt,
     Art: IsoReceipt,
-    text: 'One flat JSON line per decision: the scope, the policy and its generation, where it was enforced, and why.',
+    text: 'One JSON line per decision: which scope, which version of the policy, where it was enforced, and why.',
   },
 ];
 
 const PRINCIPLES = [
-  { name: 'Born inside', Icon: IconArrowInto, text: 'The policy attaches before exec, like chroot. The first connection already runs inside it.' },
-  { name: 'Only narrows', Icon: IconNarrow, text: 'Anything can tighten a scope. Widening comes from the owner, outside the task, for a set time.' },
-  { name: 'Wraps any command', Icon: IconWrap, text: 'Goes in front of a command, like nice or timeout. Wrapping fx needs no changes to it.' },
-  { name: 'Plain text out', Icon: IconLines, text: 'Receipts are JSON lines, so tail, grep and jq just work.' },
+  { name: 'Set before exec', Icon: IconArrowInto, text: 'Like chroot, the policy is in place before the command starts, so even its first connection is checked.' },
+  { name: 'Only gets stricter', Icon: IconNarrow, text: 'Anything inside can tighten a scope. Only the owner, from outside, can widen it, and only for a set time.' },
+  { name: 'Goes in front of a command', Icon: IconWrap, text: 'Like nice or timeout. fx runs inside it with no changes.' },
+  { name: 'Plain text receipts', Icon: IconLines, text: 'One JSON line per decision, so tail, grep and jq work on them.' },
 ];
 
 const SESSION = [
@@ -101,8 +101,8 @@ export default function Home() {
               for apps and tasks.
             </h1>
             <p className="lede">
-              A native, headless policy that attaches before a task starts. Every child process inherits it. A process
-              inside can&apos;t grant itself more access.
+              blackice decides which hosts a command can reach, along with every process it starts. The rules are in
+              place before the command runs, and nothing inside can loosen them.
             </p>
             <CopyCommand command={SITE.command} />
             <div className="actions">
@@ -181,8 +181,8 @@ export default function Home() {
 
         <section className="container section">
           <p className="eyebrow">Model</p>
-          <h2 className="h2">Three nouns.</h2>
-          <p className="sub">The same model covers a command an agent runs and an app already on the machine.</p>
+          <h2 className="h2">Scopes, policies and receipts</h2>
+          <p className="sub">The same three pieces cover a command an agent runs and an app already on the machine.</p>
           <Spotlight className="nouns" tilt>
             {NOUNS.map(({ name, Icon, Art, text }, i) => (
               <article className="noun spot" key={name}>
@@ -206,30 +206,29 @@ export default function Home() {
           <div className="head-row">
             <div>
               <p className="eyebrow">Design</p>
-              <h2 className="h2">Where a connection is decided.</h2>
+              <h2 className="h2">What a connection goes through</h2>
             </div>
-            <span className="badge">Proposed for v0 · not verified</span>
           </div>
           <p className="sub">
-            Every connection passes the same layers. The first one that refuses it is where it stops, and the decision
-            leaves a receipt.
+            Each connection passes these layers in order and stops at the first one that refuses it. Every decision
+            leaves a receipt. The status section below shows which parts have recorded runs.
           </p>
           <Layers />
         </section>
 
         <section className="container section">
           <p className="eyebrow">Session</p>
-          <h2 className="h2">One command in front of anything.</h2>
+          <h2 className="h2">A shell inside a scope</h2>
           <p className="sub">
-            A shell, a test run or fx. Everything started inside stays in the scope. Wider access comes from outside,
-            from the owner, and ends on its own.
+            Put blackice in front of a shell, a test run or fx. Everything started inside stays in the scope. Only the
+            owner, from another terminal, can allow more, and that access expires on its own.
           </p>
-          <TypedTerminal lines={SESSION} title="~/project" badge="Illustrative · CLI not frozen" />
+          <TypedTerminal lines={SESSION} title="~/project" badge="Example · the CLI may change" />
         </section>
 
         <section className="container section">
           <p className="eyebrow">Principles</p>
-          <h2 className="h2">Old Unix rules, applied to the network.</h2>
+          <h2 className="h2">Built like a Unix tool</h2>
           <Spotlight className="grid4">
             {PRINCIPLES.map(({ name, Icon, text }) => (
               <div className="cell spot" key={name}>
@@ -248,13 +247,14 @@ export default function Home() {
           <div className="head-row">
             <div>
               <p className="eyebrow">Status</p>
-              <h2 className="h2">Nothing counts as working without a recorded run.</h2>
+              <h2 className="h2">What works today</h2>
             </div>
             <Link className="link" href="/docs/status/">
               Status page
               <IconArrowRight size={14} />
             </Link>
           </div>
+          <p className="sub">A part is marked Verified only when a recorded run in the repository backs it.</p>
           <div className="progress">
             <p className="progress-top">
               <span className="progress-count">
@@ -284,10 +284,10 @@ export default function Home() {
         <section className="container section">
           <div className="cta">
             <CubeMark />
-            <h2 className="h2">Follow the proof.</h2>
+            <h2 className="h2">Read the code and the evidence</h2>
             <p className="sub">
-              The design, its limits and every checkpoint are public. Evidence lands in the repository as each run is
-              recorded.
+              The design, its limits and every recorded run are in the repository. New evidence is added as each run
+              is recorded.
             </p>
             <div className="actions">
               <Link className="btn btn-primary" href="/docs/">
