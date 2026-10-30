@@ -14,7 +14,9 @@
 //!   new path, or let a new directory take the old one's place. Files can still be created inside those
 //!   ancestors. Protected files and ancestors are LITERAL_<n> parameters;
 //! - refuses launchd job creation, LaunchServices opens and Apple Events: a process started by launchd, by
-//!   LaunchServices (`open`) or by another app (osascript) would run outside this profile.
+//!   LaunchServices (`open`) or by another app (osascript) would run outside this profile;
+//! - refuses the pasteboard: a command could otherwise read what the owner copied (a key pasted elsewhere), or
+//!   leave a crafted command line on the clipboard for the owner to paste outside any scope.
 //!
 //! Every deny rule carries `(with message "blackice <scope id>")`, so the kernel's refusals come back as
 //! receipts (kernel_log.zig).
@@ -25,7 +27,8 @@
 //! truncation, deletion, renames, hard links and symlinked writes into the state root refused, hard links
 //! made outside to a protected file or a receipts file refused (Seatbelt's own forbidden-link-priv rule: a
 //! link to a file the profile forbids writing counts as a write), `launchctl submit` refused, the control
-//! socket unreachable from inside, and git, swift and fx still run.
+//! socket unreachable from inside, the pasteboard refused both ways (pbcopy and pbpaste exit 1, the owner's
+//! clipboard unchanged), and git, swift and fx still run.
 //! The lsopen and appleevent-send rules are not exercised yet (those tests open windows).
 //!
 //! Seatbelt cannot name remote hosts or IPs ("host must be * or localhost"), so names are decided by the
@@ -37,6 +40,10 @@ const backend = @import("../core/backend.zig");
 const kernel_log = @import("kernel_log.zig");
 
 pub const sandbox_exec = "/usr/bin/sandbox-exec";
+
+/// The pasteboard's Mach services (com.apple.pboard's launchd plist, macOS 27.0.1): the clipboard and the
+/// Handoff (Universal Clipboard) client.
+pub const pasteboard_services = [_][]const u8{ "com.apple.pasteboard.1", "com.apple.coreservices.uauseractivitypasteboardclient.xpc" };
 
 /// At most this many protected literals (files plus distinct ancestors).
 pub const max_literals = 64;
@@ -63,8 +70,9 @@ pub fn profile(gpa: std.mem.Allocator, ports: []const u16, literal_count: usize,
         \\(deny job-creation{s})
         \\(deny lsopen{s})
         \\(deny appleevent-send{s})
+        \\(deny mach-lookup (global-name "{s}") (global-name "{s}"){s})
         \\
-    , .{ m, m, m, m, m, m });
+    , .{ m, m, m, m, m, m, pasteboard_services[0], pasteboard_services[1], m });
     for (0..literal_count) |i| {
         try p.print(gpa, "(deny file-write* (literal (param \"LITERAL_{d}\")){s})\n", .{ i, m });
     }
@@ -199,6 +207,7 @@ test profile {
         \\(deny job-creation (with message "blackice s-0a1b2c3d"))
         \\(deny lsopen (with message "blackice s-0a1b2c3d"))
         \\(deny appleevent-send (with message "blackice s-0a1b2c3d"))
+        \\(deny mach-lookup (global-name "com.apple.pasteboard.1") (global-name "com.apple.coreservices.uauseractivitypasteboardclient.xpc") (with message "blackice s-0a1b2c3d"))
         \\(deny file-write* (literal (param "LITERAL_0")) (with message "blackice s-0a1b2c3d"))
         \\(deny file-write* (literal (param "LITERAL_1")) (with message "blackice s-0a1b2c3d"))
         \\

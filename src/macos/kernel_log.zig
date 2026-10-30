@@ -95,6 +95,7 @@ pub const Refusal = struct {
         if (std.mem.startsWith(u8, r.op, "forbidden-link-priv")) return "protected_path";
         if (std.mem.eql(u8, r.op, "job-creation") or std.mem.eql(u8, r.op, "lsopen") or std.mem.eql(u8, r.op, "appleevent-send"))
             return "launch_outside_scope";
+        if (std.mem.eql(u8, r.op, "mach-lookup") and std.mem.find(u8, r.target, "pasteboard") != null) return "clipboard_outside_scope";
         return "seatbelt_refused";
     }
 };
@@ -468,6 +469,13 @@ test parse {
     try testing.expectEqualStrings("protected_path", parse("Sandbox: touch(5372) deny(1) file-write-create /x/state/scopes/f").?.reason());
 
     // A hard link to a write-protected file, as macOS 27.0.1 logs it: the op names the rule it borrows.
+    // The pasteboard, as macOS 27.0.1 logs it.
+    const paste = parse("Sandbox: pbpaste(14476) deny(1) mach-lookup com.apple.pasteboard.1").?;
+    try testing.expectEqualStrings("mach-lookup", paste.op);
+    try testing.expectEqualStrings("com.apple.pasteboard.1", paste.target);
+    try testing.expectEqualStrings("clipboard_outside_scope", paste.reason());
+    try testing.expectEqualStrings("seatbelt_refused", parse("Sandbox: x(1) deny(1) mach-lookup com.apple.other").?.reason());
+
     const link = parse("Sandbox: ln(11705) deny(1) forbidden-link-priv<file-write*> /t/bin/blackice /t/work/h").?;
     try testing.expectEqualStrings("forbidden-link-priv<file-write*>", link.op);
     try testing.expectEqualStrings("/t/bin/blackice /t/work/h", link.target);
