@@ -155,13 +155,13 @@ export const DOCS = [
     slug: '',
     group: 'Overview',
     title: 'Introduction',
-    description: `${SITE.name} gives apps and agent tasks network permissions on macOS and Linux. It is native, headless and driven by a policy file.`,
+    description: `${SITE.name} gives apps and tasks network permissions on macOS and Linux. It is native, headless and driven by a policy file.`,
     body: ({ recorded }) => (
       <>
         <Note>
           <strong>v0.</strong> A part counts as verified only when a recorded run in{' '}
           <code>evidence/</code> backs it. {recorded} of {CHECKPOINTS.length} checkpoints have recorded evidence; see{' '}
-          <Link href="/docs/status/">Status</Link>. Parts that are not built yet are written in the future tense.
+          <Link href="/docs/status/">Status</Link>.
         </Note>
         <p>
           A coding agent runs commands on your machine: tests, installs, scripts. Each of those commands can connect
@@ -200,14 +200,12 @@ $ tail -f ~/.local/state/${SITE.name}/scopes/${SCOPE}/receipts.jsonl`}</Code>
     slug: 'status',
     group: 'Overview',
     title: 'Status',
-    description: 'What exists, what is being tested, and how a claim earns the word "verified".',
+    description: 'What works today and what is still in progress.',
     body: ({ recordedSet }) => (
       <>
         <p>
-          The first usable release needs app control and task control on both macOS and Linux. Each of the four cells
-          has its own evidence gate: a shared command does not mean equal coverage. States are computed when this site
-          is built. <strong>Verified</strong> needs a recorded run in <code>evidence/</code>; <strong>Built</strong>{' '}
-          means the code is in the repository.
+          States are computed when this site is built. <strong>Verified</strong> needs a recorded run in{' '}
+          <code>evidence/</code>; <strong>Built</strong> means the code is in the repository.
         </p>
         <StatusCards />
         <H2>v0 checkpoints</H2>
@@ -221,7 +219,7 @@ $ tail -f ~/.local/state/${SITE.name}/scopes/${SCOPE}/receipts.jsonl`}</Code>
               <span>{name}</span>
               <span className={`state state-${recordedSet.has(id) ? 'verified' : 'pending'}`}>
                 <span className="state-dot" aria-hidden="true" />
-                {recordedSet.has(id) ? 'Recorded' : 'Not run'}
+                {recordedSet.has(id) ? 'Recorded' : 'No entry yet'}
               </span>
             </li>
           ))}
@@ -642,7 +640,7 @@ ${SITE.name} run --policy policy.json -- npm ci`}</Code>
     slug: 'limits',
     group: 'Project',
     title: 'Limits',
-    description: `What ${SITE.name} does not do. These limits are declared, not hidden.`,
+    description: `What ${SITE.name} does not do.`,
     body: () => (
       <>
         <ul className="limits">
@@ -690,7 +688,7 @@ ${SITE.name} run --policy policy.json -- npm ci`}</Code>
           </li>
           <li>
             <strong>Failure behavior.</strong> What happens when a broker, proxy or extension fails is stated per fault
-            and backend. There is no blanket fail-closed claim.
+            and backend.
           </li>
         </ul>
       </>
