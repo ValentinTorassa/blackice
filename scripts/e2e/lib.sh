@@ -50,9 +50,13 @@ e2e_workdir() {
         mkdir -p "$E2E_DIR" || die "cannot create $E2E_DIR"
         W=$(cd "$E2E_DIR" && pwd -P)
     else
-        W=$(mktemp -d "${TMPDIR:-/tmp}/blackice-e2e.XXXXXX") || die "mktemp failed"
+        # Under /tmp, not $TMPDIR: the control socket path must stay short (see below).
+        W=$(mktemp -d /tmp/bi-e2e.XXXXXX) || die "mktemp failed"
         W=$(cd "$W" && pwd -P)
     fi
+    # A Unix socket path has at most 103 bytes on macOS (107 on Linux); each scope's control.sock lives here.
+    local sock="$W/state/blackice/scopes/s-00000000/control.sock"
+    [ "${#sock}" -le 103 ] || die "work dir $W is too long for the scopes' control socket (${#sock} > 103 bytes); set E2E_DIR to a short new path"
     export XDG_STATE_HOME="$W/state"
     mkdir -p "$XDG_STATE_HOME" "$W/out"
     chmod 700 "$W" "$XDG_STATE_HOME"

@@ -84,6 +84,28 @@ scoped forge -- /bin/sh -c 'own="$XDG_STATE_HOME/blackice/scopes/$BLACKICE_SCOPE
 check "forged receipts: no write reported from inside" sh -c "! grep -q '^WROTE' '$OUT'"
 check "forged receipts: no forged line in any receipts file" sh -c "! grep -l forged-by-scope '$XDG_STATE_HOME'/blackice/scopes/*/receipts.jsonl"
 
+# 6b. Protected files: blackice's own executable, the policy and a file named with --protect cannot be changed
+#     or renamed from inside. On copies, so a failure here cannot damage the real build.
+mkdir -p "$W/protect"
+cp "$B" "$W/protect/blackice" && chmod 700 "$W/protect/blackice"
+cp "$POLICY" "$W/protect/agent.json"
+echo "owner notes, synthetic" > "$W/protect/notes.txt"
+sums_before=$(cd "$W/protect" && sha256sum blackice agent.json notes.txt)
+echo
+echo "\$ protect/blackice run --policy protect/agent.json --protect protect/notes.txt -- sh -c 'append and rename each'"
+"$W/protect/blackice" run --policy "$W/protect/agent.json" --protect "$W/protect/notes.txt" -- /bin/sh -c '
+    for f in "$@"; do
+        if (echo tampered >> "$f") 2> /dev/null; then echo "WROTE $f"; else echo "write refused: $f"; fi
+        if mv "$f" "$f.moved" 2> /dev/null; then echo "RENAMED $f"; else echo "rename refused: $f"; fi
+    done' sh "$W/protect/blackice" "$W/protect/agent.json" "$W/protect/notes.txt" > "$W/out/protect.out" 2> "$W/out/protect.err" < /dev/null
+PROTECT_RC=$?
+sed 's/^/  | /' "$W/out/protect.out"
+grep -v '^blackice: ' "$W/out/protect.err" | sed 's/^/  ! /'
+echo "  [exit $PROTECT_RC]"
+sums_after=$(cd "$W/protect" && sha256sum blackice agent.json notes.txt 2>&1)
+check "protected files: no write or rename reported from inside" sh -c "! grep -Eq '^(WROTE|RENAMED)' '$W/out/protect.out'"
+check "protected files: blackice, the policy and notes.txt are byte-identical afterwards" test "$sums_before" = "$sums_after"
+
 # 7. Linux only: an unconnected UDP sendto, to a local receiver outside the scope and to a public resolver.
 python3 -I - "$W/udp-port" "$W/udp-count" 20 > /dev/null 2>&1 <<'PY' &
 import os, socket, sys, time
