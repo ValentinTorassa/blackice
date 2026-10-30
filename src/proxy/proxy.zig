@@ -65,6 +65,7 @@ const policy = @import("../core/policy.zig");
 const receipt = @import("../core/receipt.zig");
 const grants_mod = @import("grants.zig");
 pub const Grants = grants_mod.Grants;
+pub const live_policy = @import("live_policy.zig");
 const builtin = @import("builtin");
 
 pub const Mode = enum { explicit, transparent_http, transparent_tls };
@@ -113,6 +114,8 @@ pub const Config = struct {
     resolver: ?Resolver = null,
     /// Grants consulted when the policy refuses a name. Owned by the caller.
     grants: ?*Grants = null,
+    /// App scopes capture one immutable policy per connection; task scopes leave this null.
+    live: ?live_policy.Source = null,
 };
 
 /// Resolves `host` (normalized, not an IP literal) into `out`, returning how many addresses were written.
@@ -177,6 +180,15 @@ pub const Proxy = struct {
         p.gpa.destroy(p);
     }
 
+    fn writeEntry(p: *Proxy, entry: receipt.Entry) void {
+        var e = entry;
+        if (p.config.live) |source| if (source.current()) |view| {
+            e.decision = view.decision;
+            e.executable = view.executable;
+        };
+        p.receipts.write(e);
+    }
+
     fn acceptLoop(p: *Proxy) Io.Cancelable!void {
         const io = p.io;
         while (true) {
@@ -185,7 +197,7 @@ pub const Proxy = struct {
                 error.ConnectionAborted, error.WouldBlock => continue,
                 error.SocketNotListening => return,
                 else => {
-                    p.receipts.write(.{ .event = "warning", .point = p.config.receipt_point, .reason = "accept_failed", .detail = @errorName(err) });
+                    p.writeEntry(.{ .event = "warning", .point = p.config.receipt_point, .reason = "accept_failed", .detail = @errorName(err) });
                     try io.sleep(.fromMilliseconds(100), .awake);
                     continue;
                 },
@@ -193,7 +205,7 @@ pub const Proxy = struct {
             if (!p.acquire()) {
                 if (p.config.header_timeout != null) {
                     // Never block accept on an overload response to a client which does not read.
-                    p.receipts.write(.{ .event = "connection_limit", .point = p.config.receipt_point, .verdict = .deny, .reason = "app_connection_limit" });
+                    p.writeEntry(.{ .event = "connection_limit", .point = p.config.receipt_point, .verdict = .deny, .reason = "app_connection_limit" });
                     stream.close(io);
                     continue;
                 }
@@ -227,9 +239,15 @@ pub const Proxy = struct {
         }
         var conn: Connection = undefined;
         conn.init(p, stream);
+        if (p.config.live) |source| {
+            if (source.paused.load(.acquire) or conn.view == null or !conn.view.?.serve) {
+                conn.writeEntry(.{ .event = "connect", .point = p.config.receipt_point, .verdict = .deny, .reason = if (conn.view != null and !conn.view.?.serve) "retired_app_after_restart" else "policy_change_in_progress" });
+                return;
+            }
+        }
         var guard: ?Io.Future(Io.Cancelable!void) = if (p.config.header_timeout) |duration|
             p.io.concurrent(headerDeadline, .{ &conn, duration }) catch {
-                p.receipts.write(.{ .event = "header_timeout", .point = p.config.receipt_point, .verdict = .deny, .reason = "header_watchdog_failed" });
+                conn.writeEntry(.{ .event = "header_timeout", .point = p.config.receipt_point, .verdict = .deny, .reason = "header_watchdog_failed" });
                 return;
             }
         else
@@ -243,7 +261,7 @@ pub const Proxy = struct {
         try c.io.sleep(duration, .awake);
         if (c.header.expire()) {
             shutdownProtected(c.io, c.client, .both);
-            c.p.receipts.write(.{ .event = "header_timeout", .point = c.p.config.receipt_point, .verdict = .deny, .reason = "header_timeout" });
+            c.writeEntry(.{ .event = "header_timeout", .point = c.p.config.receipt_point, .verdict = .deny, .reason = "header_timeout" });
         }
     }
 };
@@ -258,6 +276,7 @@ const Connection = struct {
     reader: net.Stream.Reader,
     writer: net.Stream.Writer,
     header: HeaderState,
+    view: ?live_policy.Binding,
 
     fn init(c: *Connection, p: *Proxy, stream: net.Stream) void {
         c.p = p;
@@ -266,6 +285,16 @@ const Connection = struct {
         c.reader = stream.reader(p.io, &c.in_buf);
         c.writer = stream.writer(p.io, &c.out_buf);
         c.header = .{};
+        c.view = if (p.config.live) |source| source.current() else null;
+    }
+
+    fn writeEntry(c: *Connection, entry: receipt.Entry) void {
+        var e = entry;
+        if (c.view) |view| {
+            e.decision = view.decision;
+            e.executable = view.executable;
+        }
+        c.p.receipts.write(e);
     }
 
     fn serve(c: *Connection) Io.Cancelable!void {
@@ -292,7 +321,7 @@ const Connection = struct {
     }
 
     fn badRequest(c: *Connection, status: []const u8, detail: []const u8, event: ?[]const u8) Io.Cancelable!void {
-        c.p.receipts.write(.{
+        c.writeEntry(.{
             .event = event orelse "http",
             .point = c.p.config.receipt_point,
             .verdict = .deny,
@@ -422,6 +451,8 @@ const Connection = struct {
         const upstream = (try c.dial(&d, addrs, t0)) orelse return c.refuse(&d);
         defer upstream.close(c.io);
         d.detail = "transparent_sni";
+        var watchdog = c.armWatchdog(&d, upstream) catch return c.refuse(&d);
+        defer if (watchdog) |*f| f.cancel(c.io) catch {};
         c.writeReceipt(&d);
         var down_buf: [16 * 1024]u8 = undefined;
         var down_reader = upstream.reader(c.io, &down_buf);
@@ -485,6 +516,14 @@ const Connection = struct {
     /// For a connection allowed by a grant, starts the task that closes it when the grant expires or is
     /// revoked. Fails (filling `d` as a refusal) when that task cannot start, so a grant is never unbounded.
     fn armWatchdog(c: *Connection, d: *Decision, upstream: net.Stream) error{WatchdogFailed}!?Io.Future(Io.Cancelable!void) {
+        if (c.p.config.live != null) {
+            std.debug.assert(c.p.config.grants == null);
+            if (c.io.concurrent(watchPolicy, .{ c.p, c.client, upstream, d.host, d.ip_buf[0..d.ip_len], d.port })) |f| return f else |_| {}
+            d.allowed = false;
+            d.reason = "policy_watchdog_failed";
+            d.status = "503 Service Unavailable";
+            return error.WatchdogFailed;
+        }
         const g = d.grant orelse return null;
         const fail = builtin.is_test and test_fail_watchdog;
         if (!fail) {
@@ -508,7 +547,7 @@ const Connection = struct {
 
     /// Fills `d` with the policy decision and returns the addresses that may be dialed.
     fn decide(c: *Connection, d: *Decision, host_raw: []const u8, port: u16, buf: *[max_dial]net.IpAddress) Io.Cancelable![]net.IpAddress {
-        const pol = c.p.policy;
+        const pol = if (c.view) |view| view.policy else c.p.policy;
         const pv = pol.checkPort(port);
         if (!pv.allowed) {
             d.host = policy.normalizeHost(&d.host_buf, host_raw) catch host_raw;
@@ -694,7 +733,7 @@ const Connection = struct {
         // a swallowed cancelation would leave the connection waiting on its pumps while the proxy stops.
         const old = c.io.swapCancelProtection(.blocked);
         defer _ = c.io.swapCancelProtection(old);
-        c.p.receipts.write(.{
+        c.writeEntry(.{
             .event = d.event,
             .point = c.p.config.receipt_point,
             .verdict = if (d.allowed) .allow else .deny,
@@ -899,6 +938,38 @@ pub fn interleaveFamilies(out: []net.IpAddress, addrs: []const net.IpAddress) []
 
 fn sleepFor(io: Io, d: Io.Duration) Io.Cancelable!void {
     return io.sleep(d, .awake);
+}
+
+/// Reuse the grant watchdog's bounded polling and reset semantics. A widening never
+/// interrupts an allowed transfer. Retired slots keep their old immutable view.
+fn watchPolicy(p: *Proxy, client: net.Stream, upstream: net.Stream, host: []const u8, ip: []const u8, port: u16) Io.Cancelable!void {
+    const source = p.config.live.?;
+    const resolved = if (ip.len > 0) policy.parseIpLiteral(ip) else null;
+    while (true) {
+        const view = source.current();
+        if (view == null or !live_policy.permits(view.?, host, port, resolved)) {
+            p.receipts.write(.{
+                .event = "policy_changed",
+                .point = p.config.receipt_point,
+                .verdict = .deny,
+                .reason = "policy_narrowed",
+                .host = host,
+                .ip = if (ip.len > 0) ip else null,
+                .port = port,
+                .detail = "connection_reset watchdog_ms=200",
+                .decision = if (view) |v| v.decision else null,
+                .executable = if (view) |v| v.executable else null,
+            });
+            // As with watchGrant, no receipt I/O follows shutdown: the pumps
+            // wake and their close drops queued bytes with SO_LINGER=0.
+            abortOnClose(upstream);
+            abortOnClose(client);
+            shutdownProtected(p.io, upstream, .both);
+            shutdownProtected(p.io, client, .both);
+            return;
+        }
+        try p.io.sleep(.fromMilliseconds(200), .awake);
+    }
 }
 
 /// Closes a connection opened under a grant once the grant expires or is revoked, with a receipt. Follows

@@ -1,5 +1,4 @@
-//! Inert live-reload building block: immutable whole-generation policy snapshots.
-//! NOT connected to the loader, BPF maps, proxy or CLI yet. The caller must retain
+//! Immutable whole-generation policy snapshots. The caller must retain
 //! every input policy/path and published snapshot until all workers have stopped.
 const std = @import("std");
 const abi = @import("types.zig");
@@ -80,7 +79,7 @@ pub const Cell = struct {
     pub fn capture(c: *const Cell, app_id: u32) !Capture {
         return c.current.load(.acquire).capture(app_id);
     }
-    /// Only the future coordinator may call this, while admission is fenced and
+    /// Only the coordinator may call this, while admission is fenced and
     /// after durable intent/kernel reconciliation. This is NOT a commit protocol.
     pub fn publish(c: *Cell, next: *const Snapshot) void {
         c.current.store(next, .release);

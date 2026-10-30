@@ -7,18 +7,20 @@ const abi = @import("types.zig");
 const programs = @import("programs.zig");
 const pin = @import("kernel_pin.zig");
 const a = @import("assembler.zig");
+const epoch = @import("reload_kernel_types.zig");
 pub const pin_root = "/run/blackice-appfilter/bpf";
 pub const cgroup_path = "/sys/fs/cgroup/user.slice";
 pub const root_cgroup_path = "/sys/fs/cgroup";
 const Map = struct { name: [:0]const u8, kind: bpf.MapType, key: u32, value: u32, count: u32 };
 const maps = [_]Map{
-    .{ .name = "state", .kind = .array, .key = 4, .value = @sizeOf(abi.State), .count = 1 },
+    .{ .name = "state", .kind = .hash, .key = 4, .value = @sizeOf(epoch.State), .count = 1 },
     .{ .name = "files", .kind = .hash, .key = @sizeOf(abi.FileKey), .value = 4, .count = 4096 },
     .{ .name = "tags", .kind = .array, .key = 4, .value = 4, .count = abi.pid_slots },
-    .{ .name = "ports", .kind = .array, .key = 4, .value = @sizeOf(abi.Ports), .count = abi.max_apps + 1 },
+    .{ .name = "ports", .kind = .hash, .key = @sizeOf(epoch.PortKey), .value = @sizeOf(epoch.PortValue), .count = epoch.max_rows },
     .{ .name = "ring", .kind = .ringbuf, .key = 0, .value = 0, .count = abi.ring_bytes },
     .{ .name = "lost", .kind = .array, .key = 4, .value = 8, .count = 1 },
-    .{ .name = "existing", .kind = .array, .key = 4, .value = 4, .count = 1 },
+    .{ .name = "existing", .kind = .array, .key = 4, .value = 4, .count = abi.max_apps + 1 },
+    .{ .name = "checks", .kind = .hash, .key = @sizeOf(abi.FileKey), .value = 4, .count = abi.max_apps },
 };
 const trace_events = [_]programs.trace_events{ .exit, .fork, .exec };
 const trace_ids = [_]u32{ pin.sched_process_exit_btf_id, pin.sched_process_fork_btf_id, pin.sched_process_exec_btf_id };
@@ -26,24 +28,63 @@ const trace_names = [_][:0]const u8{ "exit", "fork", "exec" };
 const socket_names = [_][:0]const u8{ "conn4", "conn6", "send4", "send6", "create", "peer4", "peer6" };
 const socket_hooks = programs.hooks ++ programs.hooks[0..2].*;
 fn socketProgram(index: usize, fds: programs.Fds) a.Program {
-    return if (index < programs.hooks.len) programs.admission(socket_hooks[index], fds) else programs.listenerGuard(socket_hooks[index], fds);
+    return if (index < programs.hooks.len) programs.admissionLayout(socket_hooks[index], fds, .generations) else programs.listenerGuardLayout(socket_hooks[index], fds, .generations);
 }
 fn socketKind(index: usize) bpf.ProgType {
     return if (index == 4) .cgroup_sock else .cgroup_sock_addr;
 }
 const zero: u32 = 0;
 
+fn clearMap(fd: l.fd_t, comptime Key: type) !void {
+    // Sole writer; delete the first key until empty. No iteration over live values.
+    while (true) {
+        var next: Key = undefined;
+        var attr: bpf.Attr = .{ .map_elem = std.mem.zeroes(bpf.MapElemAttr) };
+        attr.map_elem.map_fd = fd;
+        attr.map_elem.result.next_key = @intFromPtr(&next);
+        const rc = l.bpf(.map_get_next_key, &attr, @sizeOf(bpf.MapElemAttr));
+        if (l.errno(rc) == .NOENT) return;
+        _ = try sys.check(rc);
+        try bpf.map_delete_elem(fd, std.mem.asBytes(&next));
+    }
+}
+fn discardFuture(fd: l.fd_t, comptime Key: type, generation: u32) !void {
+    var previous: Key = undefined;
+    var have_previous = false;
+    while (true) {
+        var next: Key = undefined;
+        var attr: bpf.Attr = .{ .map_elem = std.mem.zeroes(bpf.MapElemAttr) };
+        attr.map_elem.map_fd = fd;
+        attr.map_elem.key = if (have_previous) @intFromPtr(&previous) else 0;
+        attr.map_elem.result.next_key = @intFromPtr(&next);
+        const rc = l.bpf(.map_get_next_key, &attr, @sizeOf(bpf.MapElemAttr));
+        if (l.errno(rc) == .NOENT) return;
+        _ = try sys.check(rc);
+        if (next.generation > generation) {
+            try bpf.map_delete_elem(fd, std.mem.asBytes(&next));
+            // Keep the previous live key; a deleted cursor would restart iteration.
+        } else {
+            previous = next;
+            have_previous = true;
+        }
+    }
+}
+
 pub const Loaded = struct {
     maps: programs.Fds = .{ .files = -1, .tags = -1, .ports = -1, .state = -1, .ring = -1, .lost = -1, .existing = -1 },
     traces: [3]l.fd_t = @splat(-1),
     trace_links: [3]l.fd_t = @splat(-1),
     sockets: [socket_names.len]l.fd_t = @splat(-1),
+    iterator_prog: l.fd_t = -1,
+    iterator_link: l.fd_t = -1,
 
     pub fn create(state: abi.State) !Loaded {
         var f: Loaded = .{};
         errdefer f.close();
         inline for (maps) |m| @field(f.maps, m.name) = try bpf.map_create(m.kind, m.key, m.value, m.count);
-        try f.setState(state);
+        var initial = state;
+        initial.version = 2;
+        try f.setEpoch(.{ .base = initial, .generation = 1, .fenced = 1 });
         // State is the first pin, before any persistent attachment can exist.
         inline for (maps) |m| try pinFd(@field(f.maps, m.name), m.name);
         return f;
@@ -65,7 +106,7 @@ pub const Loaded = struct {
             if (f.traces[i] < 0 or f.trace_links[i] < 0) {
                 if (!partial) return error.IncompletePins;
             } else {
-                try verifyProgram(f.traces[i], &programs.tracing(trace_events[i], f.maps), .tracing, trace_ids[i]);
+                try verifyProgram(f.traces[i], &programs.tracingLayout(trace_events[i], f.maps, .generations), .tracing, trace_ids[i]);
                 var info: LinkInfo = undefined;
                 try getInfo(f.trace_links[i], &info);
                 const prog = try programInfo(f.traces[i]);
@@ -79,18 +120,72 @@ pub const Loaded = struct {
                 if (!partial) return error.IncompletePins;
             } else try verifyProgram(f.sockets[i], &socketProgram(i, f.maps), socketKind(i), 0);
         }
+        f.iterator_prog = (try getPin("prog_iter")) orelse -1;
+        f.iterator_link = (try getPin("link_iter")) orelse -1;
+        if (f.iterator_prog < 0 or f.iterator_link < 0) {
+            if (!partial) return error.IncompletePins;
+        } else {
+            try verifyProgram(f.iterator_prog, &programs.tracingLayout(.iterator, f.maps, .generations), .tracing, pin.iter_task_btf_id);
+            var info: LinkInfo = undefined;
+            try getInfo(f.iterator_link, &info);
+            if (info.kind != 4 or info.prog_id != (try programInfo(f.iterator_prog)).id) return error.WrongIteratorLink;
+        }
         return f;
     }
     pub fn getState(f: *const Loaded) !abi.State {
-        var state: abi.State = undefined;
+        return (try f.getEpoch()).base;
+    }
+    pub fn getEpoch(f: *const Loaded) !epoch.State {
+        var state: epoch.State = undefined;
         try bpf.map_lookup_elem(f.maps.state, std.mem.asBytes(&zero), std.mem.asBytes(&state));
         // Decode the enum only after validating its raw discriminant.
         const phase = std.mem.readInt(u32, std.mem.asBytes(&state)[0..4], .little);
-        if (phase < 1 or phase > @backingInt(abi.Phase.stopping) or state.version != 1 or state.app_count == 0 or state.app_count > abi.max_apps or state.owner_uid == 0) return error.InvalidPinnedState;
+        if (phase < 1 or phase > @backingInt(abi.Phase.stopping) or state.base.version != 2 or state.base.app_count == 0 or state.base.app_count > abi.max_apps or state.base.owner_uid == 0 or state.generation == 0 or state.generation > epoch.max_generations or state.fenced > 1) return error.InvalidPinnedState;
         return state;
     }
     pub fn setState(f: *Loaded, state: abi.State) !void {
+        var current = try f.getEpoch();
+        current.base = state;
+        current.base.version = 2;
+        try f.setEpoch(current);
+    }
+    pub fn setEpoch(f: *Loaded, state: epoch.State) !void {
         try bpf.map_update_elem(f.maps.state, std.mem.asBytes(&zero), std.mem.asBytes(&state), 0);
+    }
+    pub fn generationMaps(f: *Loaded) @import("reload_kernel.zig").Maps {
+        return .{ .state = f.maps.state, .files = f.maps.files, .ports = f.maps.ports };
+    }
+    pub fn reconcile(f: *Loaded, image: @import("reload_kernel.zig").Image) !void {
+        const before = try f.getEpoch();
+        // This coordinator persists intent BEFORE publishing the new kernel
+        // generation. A kernel ahead of intent is an unknown writer, not recovery.
+        if (before.generation > image.state.generation) return error.KernelAheadOfIntent;
+        var fenced = before;
+        fenced.fenced = 1;
+        try f.setEpoch(fenced);
+        for (image.ports) |row| if (row) |p| {
+            var old: epoch.PortValue = undefined;
+            if (bpf.map_lookup_elem(f.maps.ports, std.mem.asBytes(&p.key), std.mem.asBytes(&old))) |_| {
+                if (!std.mem.eql(u8, std.mem.asBytes(&old), std.mem.asBytes(&p.value))) return error.PinnedPolicyMismatch;
+            } else |err| {
+                if (err != error.NotFound) return err;
+                try bpf.map_update_elem(f.maps.ports, std.mem.asBytes(&p.key), std.mem.asBytes(&p.value), 1);
+            }
+        };
+        for (image.files) |row| if (row) |file| {
+            var old: u32 = undefined;
+            if (bpf.map_lookup_elem(f.maps.files, std.mem.asBytes(&file.key), std.mem.asBytes(&old))) |_| {
+                if (old != file.app_id) return error.DuplicateExecutableIdentity;
+            } else |err| {
+                if (err != error.NotFound) return err;
+                try bpf.map_update_elem(f.maps.files, std.mem.asBytes(&file.key), std.mem.asBytes(&file.app_id), 1);
+            }
+        };
+        try f.setEpoch(image.state);
+        // Only unpublished staging rows can be ahead of authoritative intent.
+        // Tags and every formerly active generation remain untouched.
+        try discardFuture(f.maps.files, epoch.FileKey, image.state.generation);
+        try discardFuture(f.maps.ports, epoch.PortKey, image.state.generation);
     }
     pub fn tag(f: *const Loaded, tgid: u32) !u32 {
         if (tgid == 0 or tgid >= abi.pid_slots) return error.InvalidProcess;
@@ -99,21 +194,26 @@ pub const Loaded = struct {
         return app;
     }
     pub fn addFile(f: *Loaded, key: abi.FileKey, app_id: u32) !void {
+        const qualified: epoch.FileKey = .{ .device = key.device, .inode = key.inode, .generation = (try f.getEpoch()).generation };
         var old: u32 = 0;
-        if (bpf.map_lookup_elem(f.maps.files, std.mem.asBytes(&key), std.mem.asBytes(&old))) |_| {
+        if (bpf.map_lookup_elem(f.maps.files, std.mem.asBytes(&qualified), std.mem.asBytes(&old))) |_| {
             if (old != app_id) return error.DuplicateExecutableIdentity;
+            return;
         } else |err| if (err != error.NotFound) return err;
-        try bpf.map_update_elem(f.maps.files, std.mem.asBytes(&key), std.mem.asBytes(&app_id), 0);
+        try bpf.map_update_elem(f.maps.files, std.mem.asBytes(&qualified), std.mem.asBytes(&app_id), 1);
     }
     pub fn setPorts(f: *Loaded, app_id: u32) !void {
         var ports = abi.ports(app_id);
         inline for (@typeInfo(abi.Ports).@"struct".field_names) |name| @field(ports, name) = std.mem.nativeToBig(u16, @field(ports, name));
-        try bpf.map_update_elem(f.maps.ports, std.mem.asBytes(&app_id), std.mem.asBytes(&ports), 0);
+        const gen = (try f.getEpoch()).generation;
+        const key: epoch.PortKey = .{ .app_id = app_id, .generation = gen };
+        const value: epoch.PortValue = .{ .ports = ports, .decision_generation = gen };
+        try bpf.map_update_elem(f.maps.ports, std.mem.asBytes(&key), std.mem.asBytes(&value), 0);
     }
     pub fn track(f: *Loaded, verifier: []u8) !void {
         // Exit first, fork second, exec LAST. Pin each dependency before attaching the next.
         inline for (trace_events, 0..) |event, i| {
-            const code = programs.tracing(event, f.maps);
+            const code = programs.tracingLayout(event, f.maps, .generations);
             f.traces[i] = try load(&code, .tracing, .trace_raw_tp, trace_ids[i], "bi_af_" ++ trace_names[i], verifier);
             try pinFd(f.traces[i], "prog_" ++ trace_names[i]);
             var attr: bpf.Attr = .{ .raw_tracepoint = .{ .name = 0, .prog_fd = f.traces[i] } };
@@ -122,23 +222,39 @@ pub const Loaded = struct {
         }
     }
     pub fn classifyExisting(f: *Loaded, verifier: []u8) !void {
-        try bpf.map_update_elem(f.maps.existing, std.mem.asBytes(&zero), std.mem.asBytes(&zero), 0);
-        const code = programs.tracing(.iterator, f.maps);
-        const prog = try load(&code, .tracing, .trace_iter, pin.iter_task_btf_id, "bi_af_iter", verifier);
-        defer sys.close(prog);
+        const code = programs.tracingLayout(.iterator, f.maps, .generations);
+        f.iterator_prog = try load(&code, .tracing, .trace_iter, pin.iter_task_btf_id, "bi_af_iter", verifier);
+        try pinFd(f.iterator_prog, "prog_iter");
         var link_attr: bpf.Attr = .{ .link_create = std.mem.zeroes(bpf.LinkCreateAttr) };
-        link_attr.link_create.prog_fd = prog;
+        link_attr.link_create.prog_fd = f.iterator_prog;
         link_attr.link_create.attach_type = @backingInt(bpf.AttachType.trace_iter);
-        const link = try sys.fd(l.bpf(.link_create, &link_attr, @sizeOf(bpf.LinkCreateAttr)));
-        defer sys.close(link);
-        var iter_attr: bpf.Attr = .{ .iter_create = .{ .link_fd = link, .flags = 0 } };
+        f.iterator_link = try sys.fd(l.bpf(.link_create, &link_attr, @sizeOf(bpf.LinkCreateAttr)));
+        try pinFd(f.iterator_link, "link_iter");
+        const results = try f.scanExisting();
+        for (results) |tgid| if (tgid != 0) return error.CloseListedAppsFirst;
+    }
+    pub fn scanExisting(f: *Loaded) ![abi.max_apps]u32 {
+        for (1..abi.max_apps + 1) |id| {
+            const key: u32 = @intCast(id);
+            try bpf.map_update_elem(f.maps.existing, std.mem.asBytes(&key), std.mem.asBytes(&zero), 0);
+        }
+        var iter_attr: bpf.Attr = .{ .iter_create = .{ .link_fd = f.iterator_link, .flags = 0 } };
         const iter = try sys.fd(l.bpf(.iter_create, &iter_attr, @sizeOf(bpf.IterCreateAttr)));
         defer sys.close(iter);
         var buf: [256]u8 = undefined;
         while (try sys.read(iter, &buf) != 0) {}
-        var app: u32 = 0;
-        try bpf.map_lookup_elem(f.maps.existing, std.mem.asBytes(&zero), std.mem.asBytes(&app));
-        if (app != 0) return error.CloseListedAppsFirst;
+        var results: [abi.max_apps]u32 = undefined;
+        for (&results, 1..) |*result, id| {
+            const key: u32 = @intCast(id);
+            try bpf.map_lookup_elem(f.maps.existing, std.mem.asBytes(&key), std.mem.asBytes(result));
+        }
+        return results;
+    }
+    pub fn checkFile(f: *Loaded, key: abi.FileKey, app_id: u32) !void {
+        try bpf.map_update_elem(f.maps.checks, std.mem.asBytes(&key), std.mem.asBytes(&app_id), 0);
+    }
+    pub fn clearChecks(f: *Loaded) !void {
+        try clearMap(f.maps.checks, abi.FileKey);
     }
     pub fn attach(f: *Loaded, cgroup: l.fd_t, root_cgroup: l.fd_t, verifier: []u8) !void {
         // Without CAP_SYS_ADMIN an unknown ID cannot be opened to check its name. Refuse conservatively.
@@ -188,6 +304,8 @@ pub const Loaded = struct {
     }
     /// Closing process FDs never detaches or unpins. Armed classification and denial survive death.
     pub fn close(f: *Loaded) void {
+        if (f.iterator_link >= 0) sys.close(f.iterator_link);
+        if (f.iterator_prog >= 0) sys.close(f.iterator_prog);
         for (f.trace_links) |fd| if (fd >= 0) sys.close(fd);
         for (f.traces) |fd| if (fd >= 0) sys.close(fd);
         for (f.sockets) |fd| if (fd >= 0) sys.close(fd);
@@ -339,6 +457,8 @@ fn getPin(name: []const u8) !?l.fd_t {
     return try sys.fd(rc);
 }
 pub fn unpinAll() !void {
+    try unpin("link_iter");
+    try unpin("prog_iter");
     inline for (trace_names) |name| {
         try unpin("link_" ++ name);
         try unpin("prog_" ++ name);

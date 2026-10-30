@@ -1,4 +1,4 @@
-//! Candidate kernel ABI. Separate from the active v1 loader/pins until reviewed.
+//! Explicit generation ABI 2; incompatible v1 pins are refused by the loader.
 const std = @import("std");
 const abi = @import("types.zig");
 pub const max_generations = @import("config.zig").max_generations;

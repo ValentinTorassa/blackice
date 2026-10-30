@@ -1,4 +1,4 @@
-//! Proposed bounded loader/worker protocol. No FDs or transport are enabled yet.
+//! Bounded loader/worker protocol, transported over the two pre-fork pipes.
 //! The only worker-to-loader record is exactly 41 bytes; no JSON is accepted.
 const std = @import("std");
 const snapshot = @import("reload_snapshot.zig");

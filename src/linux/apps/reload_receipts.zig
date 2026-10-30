@@ -1,5 +1,4 @@
-//! Reload records use the existing flat receipt writer. No activation is emitted
-//! by the current service: only a future completed transaction may call activated.
+//! Reload records use the existing flat receipt writer and captured contexts.
 const std = @import("std");
 const receipt = @import("../../core/receipt.zig");
 

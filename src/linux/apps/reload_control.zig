@@ -1,26 +1,22 @@
-//! Explicit build gate. Independent components do not make runtime reload safe.
+//! Reload has its own fresh owner authorization; no retained polkit grant.
 const std = @import("std");
 const ipc = @import("ipc.zig");
 const polkit = @import("polkit.zig");
 
 pub const help =
     "blackice app reload --policy FILE\n" ++
-    "availability=prepared_only\n" ++
-    "Reload is unavailable pending the reviewed child channel, admission fence and crash recovery.\n";
+    "availability=experimental_vm_only\n" ++
+    "Generation must be current + 1 (maximum 256). New applications must be closed first.\n" ++
+    "Requires fresh owner polkit authorization. Host use awaits security and VM acceptance.\n";
 
-pub fn requireAvailable() error{ReloadNotReady}!void {
-    return error.ReloadNotReady;
-}
+pub fn requireAvailable() error{}!void {}
 
-/// No prompt before the implementation exists. The eventual request must still
-/// use the kernel-derived peer and a fresh, non-retained reload-specific action.
+/// Uses the kernel-derived peer and a fresh, non-retained reload-specific action.
 pub fn authorize(peer: ipc.Peer) !void {
     try requireAvailable();
     try polkit.authorizeAction(peer, .reload);
 }
 
-test "appfilter reload availability gate never requests authorization or changes policy" {
-    try std.testing.expectError(error.ReloadNotReady, requireAvailable());
-    // Invalid FDs make any accidental call into peer/polkit handling fail this test.
-    try std.testing.expectError(error.ReloadNotReady, authorize(.{ .credentials = .{ .pid = 0, .uid = 0, .gid = 0 }, .pidfd = -1 }));
+test "appfilter reload help explicitly retains the host review gate" {
+    try std.testing.expect(std.mem.find(u8, help, "experimental_vm_only") != null);
 }

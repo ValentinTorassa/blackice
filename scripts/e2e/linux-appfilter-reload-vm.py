@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Prepared VM-only acceptance driver. Current branch exits 77 BEFORE arming.
+"""VM-only acceptance driver for three real policy reloads.
 
 Run inside VM3 as its unprivileged owner in a tty. Requires four policy fixtures
 with generation 1..4, a reviewed installed CLI/service, bpftool read access via
@@ -52,7 +52,7 @@ def command(args, timeout=20):
 
 
 def decode_bytes(value):
-    require(isinstance(value, list) and all(isinstance(x, str) and re.fullmatch('[a-fA-F0-9]{2}', x) for x in value),
+    require(isinstance(value, list) and all(isinstance(x, str) and re.fullmatch('(?:0x)?[a-fA-F0-9]{2}', x) for x in value),
             'unexpected bpftool byte format')
     return bytes(int(x, 16) for x in value)
 
@@ -78,7 +78,18 @@ def snapshot(output, generation, pid):
     ports = json.loads(command(['sudo', '-n', 'bpftool', '-j', 'map', 'dump', 'pinned', PIN + '/ports']))
     programs = json.loads(command(['sudo', '-n', 'bpftool', '-j', 'cgroup', 'show', '/sys/fs/cgroup/user.slice']))
     root_programs = json.loads(command(['sudo', '-n', 'bpftool', '-j', 'cgroup', 'show', '/sys/fs/cgroup']))
-    data = {'gen': generation, 'state': state, 'files': files, 'ports': ports,
+    raw = decode_bytes(state['value'])
+    require(len(raw) == 56 and int.from_bytes(raw[12:16], 'little') == 2, 'generation ABI 2 required')
+    require(int.from_bytes(raw[48:52], 'little') == generation and int.from_bytes(raw[52:56], 'little') == 0,
+            'kernel generation mismatch or admission still fenced')
+    stable_ports = {}
+    for row in ports:
+        key, value = decode_bytes(row['key']), decode_bytes(row['value'])
+        require(len(key) == 8 and len(value) == 12, 'unexpected ports map ABI')
+        if int.from_bytes(key[4:8], 'little') == generation:
+            stable_ports[str(int.from_bytes(key[:4], 'little'))] = value[:8].hex()
+    require(stable_ports, 'no port bindings for active generation')
+    data = {'gen': generation, 'state': state, 'files': files, 'ports': ports, 'stable_ports': stable_ports,
             'tag': tag(pid), 'programs': programs, 'root_programs': root_programs}
     (output / f'maps-gen-{generation}.json').write_text(json.dumps(data, indent=2) + '\n')
     return data
@@ -145,11 +156,11 @@ def main():
     require(re.fullmatch('[0-9a-f]{64}', args.cli_sha256) is not None, 'invalid expected CLI hash')
     require(hashlib.sha256(args.cli.read_bytes()).hexdigest() == args.cli_sha256, 'CLI hash mismatch')
     help_result = subprocess.run([str(args.cli), 'app', 'reload', '--help'], capture_output=True, text=True)
-    if help_result.returncode != 0 or 'availability=ready' not in help_result.stdout.splitlines():
-        print('NOT RUN: candidate CLI does not advertise ready reload support; no arm/reload/off attempted.')
+    if help_result.returncode != 0 or 'availability=experimental_vm_only' not in help_result.stdout.splitlines():
+        print('NOT RUN: candidate CLI does not advertise experimental VM reload support; no arm/reload/off attempted.')
         return 77
     require(os.isatty(0), 'owner tty needed for real polkit authentication; no auth bypass is installed')
-    require(shutil.which('bpftool') is not None, 'bpftool required')
+    require(shutil.which('bpftool') is not None or Path('/usr/sbin/bpftool').is_file(), 'bpftool required')
     require(len(args.policy) == 4, 'provide generations 1, 2, 3 and 4')
     receiver = ipaddress.IPv4Address(args.receiver)
     require(not receiver.is_loopback and not receiver.is_unspecified and not receiver.is_multicast, 'off-VM unicast receiver required')
@@ -198,7 +209,7 @@ def main():
                 require(probe.poll() is None, 'listed process was restarted or died')
                 current = snapshot(args.output, generation, probe.pid)
                 require(current['tag'] == first['tag'], 'reload changed the process tag')
-                require(current['ports'] == first['ports'], 'stable app listener ports changed')
+                require(current['stable_ports'] == first['stable_ports'], 'stable app listener ports changed')
                 require(current['programs'] == first['programs'] and current['root_programs'] == first['root_programs'], 'BPF attachments changed')
                 require(state_hash(current['state']) == hashes[generation - 1], 'kernel state does not name the committed policy')
             windows.append((4, window_start, time.monotonic_ns()))

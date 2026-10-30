@@ -17,6 +17,10 @@ const receipt = @import("../../core/receipt.zig");
 const Ring = @import("ring.zig").Ring;
 const pinning = @import("pinning.zig");
 const pin = @import("kernel_pin.zig");
+const reload_history = @import("reload_history.zig");
+const reload_maps = @import("reload_kernel.zig");
+const channel = @import("reload_channel.zig");
+const wire = @import("reload_protocol.zig");
 const port_count = abi.last_port - abi.first_port + 1;
 
 pub fn main(init: std.process.Init) u8 {
@@ -71,7 +75,7 @@ fn run(init: std.process.Init) !void {
     const btf = try Io.Dir.cwd().readFileAlloc(init.io, "/sys/kernel/btf/vmlinux", init.gpa, .limited(16 * 1024 * 1024));
     defer init.gpa.free(btf);
     try pinning.verify(release, btf);
-    var runtime: Runtime = .{ .gpa = init.gpa, .io = init.io, .install = install, .cg = cg, .root_cg = root_cg };
+    var runtime: Runtime = .{ .gpa = init.gpa, .io = init.io, .install = install, .cg = cg, .root_cg = root_cg, .history = .{ .allocator = init.gpa } };
     defer runtime.deinit();
     runtime.service_log = try newLog(init.gpa, init.io, "service", "appfilter");
     if (try kernel.Loaded.openExisting(true)) |got| {
@@ -89,13 +93,17 @@ fn run(init: std.process.Init) !void {
             runtime.loaded.?.close();
             runtime.loaded = (try kernel.Loaded.openExisting(false)) orelse return error.IncompletePins;
             try runtime.loaded.?.verifyAttachments(cg, root_cg);
-            const hex = std.fmt.bytesToHex(state.policy_sha256, .lower);
-            const path = try std.fmt.allocPrint(init.gpa, host.state_root ++ "/policy-{s}.json", .{hex});
-            defer init.gpa.free(path);
-            const bytes = try Io.Dir.cwd().readFileAlloc(init.io, path, init.gpa, .limited(config.max_bytes));
-            defer init.gpa.free(bytes);
-            runtime.cfg = try config.Config.parse(init.gpa, bytes);
-            if (!std.mem.eql(u8, &runtime.cfg.?.digest, &hex) or runtime.cfg.?.apps.len != state.app_count) return error.PinnedPolicyMismatch;
+            // Fence first. Persisted intent, not the last volatile state write,
+            // determines the generation restored after a killed loader/worker.
+            var fenced = try runtime.loaded.?.getEpoch();
+            fenced.fenced = 1;
+            try runtime.loaded.?.setEpoch(fenced);
+            const saved = (try intent.read(init.gpa, init.io)) orelse return error.MissingArmedIntent;
+            if (!saved.armed or !std.mem.eql(u8, &saved.boot, &try intent.bootId())) return error.InvalidArmedIntent;
+            try runtime.restoreHistory(saved);
+            const image = try reload_maps.Image.fromSnapshot(install.owner_uid, &runtime.history.head.load(.acquire).?.snapshot);
+            try runtime.loaded.?.reconcile(image);
+            try runtime.configureChecks();
             try runtime.refreshWatchedFiles();
             try runtime.openLogs();
             try runtime.bindListeners();
@@ -103,10 +111,14 @@ fn run(init: std.process.Init) !void {
             try kernel.dropLoadCapabilities();
             try runtime.startProxyWorker();
             runtime.armed = true;
-            try intent.write(init.gpa, init.io, true, &runtime.cfg.?.digest);
+            var active = try runtime.loaded.?.getEpoch();
+            active.fenced = 0;
+            try runtime.loaded.?.setEpoch(active);
             runtime.service_log.?.policy_id = &runtime.cfg.?.digest;
+            runtime.service_log.?.generation = runtime.cfg.?.generation;
             try runtime.drain();
             runtime.service_log.?.write(.{ .event = "app_filter_restart", .point = .app_filter, .detail = "reopened verified pins; receipts drained; file identities refreshed; downtime=unknown" });
+            try runtime.recoveryReceipt();
         }
     } else {
         try kernel.requireVacant(cg);
@@ -131,7 +143,7 @@ fn run(init: std.process.Init) !void {
         if (fds[0].revents == 0) continue;
         const accepted = l.accept4(3, null, null, l.SOCK.CLOEXEC);
         switch (l.errno(accepted)) {
-            .MFILE, .NFILE => {
+            .MFILE, .NFILE, .AGAIN => {
                 _ = try sys.poll(&.{}, 100);
                 continue;
             },
@@ -163,6 +175,8 @@ fn activatedSocket(init: std.process.Init) !void {
     _ = try sys.check(l.getsockname(3, @ptrCast(&address), &n));
     if (address.family != l.AF.UNIX or n != @offsetOf(l.sockaddr.un, "path") + ipc.socket_path.len + 1 or !std.mem.eql(u8, address.path[0..ipc.socket_path.len], ipc.socket_path)) return error.WrongControlSocket;
     _ = try sys.check(l.fcntl(3, l.F.SETFD, @as(u32, l.FD_CLOEXEC)));
+    const flags = try sys.check(l.fcntl(3, l.F.GETFL, 0));
+    _ = try sys.check(l.fcntl(3, l.F.SETFL, flags | @as(u32, @bitCast(l.O{ .NONBLOCK = true }))));
 }
 fn newLog(gpa: std.mem.Allocator, io: Io, scope: []const u8, policy: []const u8) !receipt.Log {
     const name = try std.fmt.allocPrint(gpa, "receipt-{d}-{d}-{s}.jsonl", .{ Io.Clock.real.now(io).nanoseconds, l.getpid(), scope });
@@ -181,7 +195,8 @@ const Runtime = struct {
     install: host.Install,
     cg: l.fd_t,
     root_cg: l.fd_t,
-    cfg: ?config.Config = null,
+    cfg: ?*config.Config = null,
+    history: reload_history.History,
     loaded: ?kernel.Loaded = null,
     ring: ?Ring = null,
     service_log: ?receipt.Log = null,
@@ -195,6 +210,12 @@ const Runtime = struct {
     proxy_stats: ?*worker.Stats = null,
     worker_fd: l.fd_t = -1,
     worker_pid: l.pid_t = 0,
+    policy_write: l.fd_t = -1,
+    policy_read: l.fd_t = -1,
+    added_running: [abi.max_apps]u32 = @splat(0),
+    added_pidfds: [abi.max_apps]l.fd_t = @splat(-1),
+    changing: bool = false,
+    refuse_stop: std.atomic.Value(bool) = .init(false),
     watch_fd: l.fd_t = -1,
     armed: bool = false,
     stopping: bool = false,
@@ -206,6 +227,14 @@ const Runtime = struct {
     verifier: [65536]u8 = @splat(0),
 
     fn closeListeners(r: *Runtime) void {
+        if (r.policy_write >= 0) {
+            sys.close(r.policy_write);
+            r.policy_write = -1;
+        }
+        if (r.policy_read >= 0) {
+            sys.close(r.policy_read);
+            r.policy_read = -1;
+        }
         if (r.worker_fd >= 0) {
             _ = l.pidfd_send_signal(r.worker_fd, .KILL, null, 0);
             _ = sys.wait(r.worker_pid) catch 0;
@@ -226,6 +255,7 @@ const Runtime = struct {
         r.closeListeners();
         r.flushUdp();
         if (r.watch_fd >= 0) sys.close(r.watch_fd);
+        for (r.added_pidfds) |fd| if (fd >= 0) sys.close(fd);
         if (r.ring) |*ring| ring.close();
         if (r.loaded) |*loaded| loaded.close(); // pins survive all unplanned termination
         for (&r.logs) |*log| if (log.*) |*value| value.close();
@@ -234,24 +264,25 @@ const Runtime = struct {
         for (r.proxy_scopes) |scope| if (scope) |value| r.gpa.free(value);
         if (r.proxy_stats) |stats| stats.close();
         if (r.service_log) |*log| log.close();
-        if (r.cfg) |*cfg| cfg.deinit();
+        r.history.deinit();
     }
     fn openLogs(r: *Runtime) !void {
         r.proxy_stats = try worker.Stats.create();
-        for (r.cfg.?.apps, 0..) |*app, i| {
+        for (0..abi.max_apps) |i| {
             r.scopes[i] = try std.fmt.allocPrint(r.gpa, "app-{d}", .{i + 1});
-            r.logs[i] = try newLog(r.gpa, r.io, r.scopes[i].?, &app.network.digest_hex);
+            r.logs[i] = try newLog(r.gpa, r.io, r.scopes[i].?, "unassigned");
             r.logs[i].?.app_id = @intCast(i + 1);
-            r.logs[i].?.executable = app.executable;
             r.proxy_scopes[i] = try std.fmt.allocPrint(r.gpa, "app-{d}-proxy", .{i + 1});
-            r.proxy_logs[i] = try newLog(r.gpa, r.io, r.proxy_scopes[i].?, &app.network.digest_hex);
+            r.proxy_logs[i] = try newLog(r.gpa, r.io, r.proxy_scopes[i].?, "unassigned");
             r.proxy_logs[i].?.app_id = @intCast(i + 1);
-            r.proxy_logs[i].?.executable = app.executable;
             r.proxy_logs[i].?.shared_failures = &r.proxy_stats.?.failures[i];
         }
     }
     fn refreshFiles(r: *Runtime) !void {
-        for (r.cfg.?.apps, 0..) |app, i| try r.loaded.?.addFile(try r.identity(app.executable), @intCast(i + 1));
+        const current = r.history.head.load(.acquire).?;
+        for (current.snapshot.slots, 0..) |slot, i| if (slot) |b| {
+            if (b.active) try r.loaded.?.addFile(try r.identity(b.executable), @intCast(i + 1));
+        };
     }
     fn refreshWatchedFiles(r: *Runtime) !void {
         r.watch_fd = try host.refreshWatch(r.gpa, r.cfg.?.apps, r.watch_fd, r, Runtime.refreshFiles);
@@ -282,10 +313,10 @@ const Runtime = struct {
     fn serveListeners(r: *Runtime) !void {
         // Only the capability-free child calls this. Its log files have no second writer in the parent.
         errdefer r.closeListeners();
-        for (r.cfg.?.apps, 0..) |*app, i| for (0..4) |j| {
+        for (0..abi.max_apps) |i| for (0..4) |j| {
             const slot = i * 4 + j;
-            const cfg: proxy.Config = .{ .mode = if (j < 2) .transparent_tls else .transparent_http, .receipt_point = .app_filter, .connection_budget = &r.budgets[i], .header_timeout = .fromSeconds(5) };
-            r.proxies[slot] = try proxy.Proxy.startListening(r.gpa, r.io, &app.network, &r.proxy_logs[i].?, cfg, r.servers[slot].?);
+            const cfg: proxy.Config = .{ .mode = if (j < 2) .transparent_tls else .transparent_http, .receipt_point = .app_filter, .connection_budget = &r.budgets[i], .header_timeout = .fromSeconds(5), .live = r.history.source(i) };
+            r.proxies[slot] = try proxy.Proxy.startListening(r.gpa, r.io, &r.cfg.?.apps[0].network, &r.proxy_logs[i].?, cfg, r.servers[slot].?);
             r.servers[slot] = null;
         };
     }
@@ -293,13 +324,23 @@ const Runtime = struct {
         // dropLoadCapabilities has just verified the loader has exactly one thread.
         const ready = try sys.pipe();
         defer sys.close(ready[0]);
+        var ready_write_owned = true;
+        errdefer if (ready_write_owned) sys.close(ready[1]);
+        const requests = try channel.pipe();
+        var pipes_owned = true;
+        errdefer if (pipes_owned) {
+            sys.close(requests[0]);
+            sys.close(requests[1]);
+        };
+        const answers = try channel.pipe();
+        errdefer if (pipes_owned) {
+            sys.close(answers[0]);
+            sys.close(answers[1]);
+        };
         const parent = l.getpid();
-        const child: l.pid_t = @intCast(sys.check(l.fork()) catch |err| {
-            sys.close(ready[1]);
-            return err;
-        });
+        const child: l.pid_t = @intCast(try sys.check(l.fork()));
         if (child == 0) {
-            r.proxyChild(ready[1], parent) catch |err| {
+            r.proxyChild(ready[1], parent, requests[0], answers[1]) catch |err| {
                 sys.writeAll(2, "blackice proxy worker: ") catch {};
                 sys.writeAll(2, @errorName(err)) catch {};
                 sys.writeAll(2, "\n") catch {};
@@ -307,6 +348,13 @@ const Runtime = struct {
             l.exit_group(125);
         }
         sys.close(ready[1]);
+        ready_write_owned = false;
+        sys.close(requests[0]);
+        sys.close(answers[1]);
+        r.policy_write = requests[1];
+        r.policy_read = answers[0];
+        pipes_owned = false;
+        errdefer r.closeListeners();
         const pidfd = sys.fd(l.pidfd_open(child, 0)) catch |err| {
             _ = l.kill(child, .KILL); // unreaped child; its PID cannot be reused
             _ = sys.wait(child) catch 0;
@@ -314,7 +362,6 @@ const Runtime = struct {
         };
         r.worker_fd = pidfd;
         r.worker_pid = child;
-        errdefer r.closeListeners();
         var mark: [1]u8 = undefined;
         try ipc.readExact(ready[0], &mark, 5000);
         if (mark[0] != 'P') return error.ProxyNotReady;
@@ -328,13 +375,15 @@ const Runtime = struct {
             log.* = null;
         };
     }
-    fn proxyChild(r: *Runtime, ready: l.fd_t, parent: l.pid_t) !void {
+    fn proxyChild(r: *Runtime, ready: l.fd_t, parent: l.pid_t, requests: l.fd_t, answers: l.fd_t) !void {
         // The only inherited shared BPF mapping is the ring. Unmap it before processing any traffic.
         if (r.ring) |*ring| ring.close();
         r.ring = null;
         var keep: [64]l.fd_t = undefined;
-        var n: usize = 1;
+        var n: usize = 3;
         keep[0] = ready;
+        keep[1] = requests;
+        keep[2] = answers;
         for (r.servers) |server| if (server) |s| {
             keep[n] = s.socket.handle;
             n += 1;
@@ -344,10 +393,40 @@ const Runtime = struct {
             n += 1;
         };
         try worker.sandbox(keep[0..n], parent);
+        r.history.workerIdentities();
         try r.serveListeners();
+        for (0..abi.max_apps) |i| r.slotAssigned(i);
         try sys.writeAll(ready, "P");
         sys.close(ready);
-        while (true) _ = try sys.poll(&.{}, 1000);
+        try r.childPolicies(requests, answers);
+    }
+    fn slotAssigned(r: *Runtime, i: usize) void {
+        if (r.history.source(i).current()) |b| r.proxy_logs[i].?.write(.{ .event = "slot_assigned", .point = .app_filter, .decision = b.decision, .executable = b.executable });
+    }
+    fn childPolicies(r: *Runtime, requests: l.fd_t, answers: l.fd_t) !void {
+        var machine: @import("reload_worker.zig").Machine = .{ .policies = &r.history };
+        while (true) {
+            var fds = [_]l.pollfd{.{ .fd = requests, .events = l.POLL.IN, .revents = 0 }};
+            if (try sys.poll(&fds, 1000) == 0) continue;
+            const deadline = try channel.Deadline.start();
+            var raw: [wire.header_bytes]u8 = undefined;
+            try deadline.read(requests, &raw);
+            const h = try wire.decodeHeader(&raw);
+            const bytes = try r.gpa.alloc(u8, h.length);
+            defer r.gpa.free(bytes);
+            try deadline.read(requests, bytes);
+            const old = r.history.head.load(.acquire).?;
+            const status = try machine.handle(h, bytes);
+            if (status == .activated) {
+                const current = r.history.head.load(.acquire).?;
+                for (current.snapshot.slots, 0..) |slot, i| if (slot) |binding| {
+                    if (old.snapshot.slots[i] == null) r.slotAssigned(i);
+                    r.proxy_logs[i].?.write(.{ .event = "policy_changed", .point = .app_filter, .reason = if (binding.active) "policy_updated" else "app_retired", .executable = binding.executable, .old_policy = if (old.snapshot.slots[i]) |before| &before.network.digest_hex else null, .new_policy = &binding.network.digest_hex, .decision = .{ .policy = &binding.network.digest_hex, .generation = current.cfg.generation } });
+                };
+            }
+            const ack = try wire.encodeAck(.{ .stamp = h.stamp, .status = status });
+            try deadline.write(answers, &ack);
+        }
     }
     fn rollback(r: *Runtime) !void {
         r.closeListeners();
@@ -360,17 +439,24 @@ const Runtime = struct {
         }
     }
     fn start(r: *Runtime, bytes: []const u8, peer: ipc.Peer) !void {
-        r.cfg = try config.Config.parse(r.gpa, bytes);
-        errdefer if (!r.failed_start) {
-            r.cfg.?.deinit();
+        const initial = try r.history.prepare(bytes, null);
+        var published = false;
+        errdefer if (!published) {
+            r.history.discard(initial);
             r.cfg = null;
         };
+        r.cfg = &initial.cfg;
         if (r.cfg.?.generation != 1) return error.InitialGenerationMustBeOne;
         if (try intent.read(r.gpa, r.io)) |saved| {
             if (saved.armed and !std.mem.eql(u8, &saved.policy, &r.cfg.?.digest)) return error.PolicyChangeRequiresAuthorizedOff;
         }
         // Validate every executable and its ancestors before creating kernel objects.
-        for (r.cfg.?.apps) |app| _ = try r.identity(app.executable);
+        for (&initial.snapshot.slots) |*slot| if (slot.*) |*b| {
+            b.identity = try r.identity(b.executable);
+        };
+        r.history.publish(initial);
+        published = true;
+        r.failed_start = true;
         try host.writePolicy(r.gpa, r.io, &r.cfg.?.digest, bytes);
         var hash: [32]u8 = undefined;
         _ = try std.fmt.hexToBytes(&hash, &r.cfg.?.digest);
@@ -386,6 +472,7 @@ const Runtime = struct {
         }
         r.loaded = try kernel.Loaded.create(state);
         try r.refreshWatchedFiles();
+        for (initial.snapshot.slots, 0..) |slot, i| if (slot) |b| try r.loaded.?.checkFile(b.identity, @intCast(i + 1));
         for (r.cfg.?.apps, 0..) |_, i| try r.loaded.?.setPorts(@intCast(i + 1));
         try r.loaded.?.attach(r.cg, r.root_cg, &r.verifier);
         state.phase = .cgroup;
@@ -401,16 +488,56 @@ const Runtime = struct {
         r.ring = try Ring.open(r.loaded.?.maps.ring);
         try peer.live();
         if (try r.loaded.?.tag(@intCast(peer.credentials.pid)) != 0) return error.TaggedCaller;
+        try intent.writeHistory(r.gpa, r.io, &r.history, null);
         state.phase = .armed;
         try r.loaded.?.setState(state);
         try kernel.dropLoadCapabilities();
         try r.startProxyWorker();
         r.armed = true;
-        try intent.write(r.gpa, r.io, true, &r.cfg.?.digest);
+        var active = try r.loaded.?.getEpoch();
+        active.fenced = 0;
+        try r.loaded.?.setEpoch(active);
         r.failed_start = false;
         r.service_log.?.policy_id = &r.cfg.?.digest;
         var detail: [160]u8 = undefined;
         r.service_log.?.write(.{ .event = "app_filter_on", .point = .app_filter, .detail = try std.fmt.bufPrint(&detail, "caller_uid={d} caller_tgid={d}; pinned tracing; legacy user.slice attachments verified", .{ peer.credentials.uid, peer.credentials.pid }) });
+    }
+    fn restoreHistory(r: *Runtime, saved: intent.Intent) !void {
+        for (saved.history[0..saved.generation], 1..) |hash, gen| {
+            const path = try std.fmt.allocPrint(r.gpa, host.state_root ++ "/policy-{s}.json", .{hash});
+            defer r.gpa.free(path);
+            const bytes = try Io.Dir.cwd().readFileAlloc(r.io, path, r.gpa, .limited(config.max_bytes));
+            defer r.gpa.free(bytes);
+            const g = try r.history.prepare(bytes, null);
+            if (!std.mem.eql(u8, &hash, &g.cfg.digest) or g.cfg.generation != gen) {
+                r.history.discard(g);
+                return error.StoredPolicyMismatch;
+            }
+            r.history.publish(g);
+        }
+        const current = r.history.generations[r.history.count - 1].?;
+        var retired: u8 = 0;
+        for (&current.snapshot.slots, 0..) |*slot, i| if (slot.*) |*b| {
+            if (b.active) {
+                b.identity = try r.identity(b.executable);
+            } else {
+                retired |= @as(u8, 1) << @as(u3, @intCast(i));
+                const saved_identity = saved.identities[i] orelse return error.MissingRetiredIdentity;
+                b.identity = .{ .device = saved_identity.device, .inode = saved_identity.inode };
+            }
+        };
+        if (retired != saved.retired_slots) return error.RetiredSlotMismatch;
+        r.cfg = &current.cfg;
+        r.history.blocked_retired = retired; // Only slots already retired at this restart.
+    }
+    fn recoveryReceipt(r: *Runtime) !void {
+        if (try intent.pendingRead(r.gpa, r.io)) |pending| {
+            const completed = std.mem.eql(u8, &pending.new_policy, &r.cfg.?.digest) and pending.generation == r.cfg.?.generation;
+            const aborted = std.mem.eql(u8, &pending.old_policy, &r.cfg.?.digest) and pending.generation == r.cfg.?.generation + 1;
+            if (!completed and !aborted) return error.InvalidPendingReload;
+            r.service_log.?.write(.{ .event = if (completed) "policy_change_completed_after_restart" else "policy_change_failed", .point = .app_filter, .reason = if (completed) "completed_after_restart" else "interrupted", .old_policy = &pending.old_policy, .new_policy = &pending.new_policy, .detail = "persisted_intent_authoritative; retired_slots_not_served" });
+            try intent.pendingClear(r.io);
+        }
     }
     fn request(r: *Runtime, client: l.fd_t) !bool {
         const peer = try ipc.Peer.open(client, r.install.owner_uid);
@@ -424,8 +551,12 @@ const Runtime = struct {
                 const saved = if (!r.armed and !r.stopping) try intent.read(r.gpa, r.io) else null;
                 const boot = try intent.bootId();
                 const label = if (r.stopping) "stopping_partial" else if (r.armed) "armed" else intent.absentPinsStatus(saved, &boot);
-                var response: [256]u8 = undefined;
-                try sys.writeAll(client, try std.fmt.bufPrint(&response, "OK {s} ring_dropped={d} write_dropped={d} receipt_file_limit=8388608 reload=prepared_only\n", .{ label, r.reported_loss, r.writeLoss() }));
+                var response: [320]u8 = undefined;
+                var untagged: u8 = 0;
+                for (r.added_running, 0..) |tgid, i| if (tgid != 0) {
+                    untagged |= @as(u8, 1) << @as(u3, @intCast(i));
+                };
+                try sys.writeAll(client, try std.fmt.bufPrint(&response, "OK {s} gen={d} ring_dropped={d} write_dropped={d} receipt_file_limit=8388608 reload=experimental_vm_only added_app_running_untagged={d}\n", .{ label, if (r.cfg) |cfg| cfg.generation else @as(u32, 0), r.reported_loss, r.writeLoss(), untagged }));
                 return r.armed or r.stopping;
             },
             .off => {
@@ -473,7 +604,7 @@ const Runtime = struct {
             },
             .reload => {
                 return r.reloadRequest(client, peer, header.length) catch |err| {
-                    @import("reload_receipts.zig").refused(&r.service_log.?, if (r.cfg) |*cfg| .{ .policy = &cfg.digest, .generation = cfg.generation } else null, @errorName(err));
+                    @import("reload_receipts.zig").refused(&r.service_log.?, if (r.cfg) |cfg| .{ .policy = &cfg.digest, .generation = cfg.generation } else null, @errorName(err));
                     return err;
                 };
             },
@@ -482,6 +613,21 @@ const Runtime = struct {
     fn reloadRequest(r: *Runtime, client: l.fd_t, peer: ipc.Peer, length: u32) !bool {
         if (r.stopping) return error.Stopping;
         if (!r.armed) return error.NotArmed;
+        if (r.changing) return error.ChangeInProgress;
+        r.changing = true;
+        r.refuse_stop.store(false, .release);
+        const refuser = std.Thread.spawn(.{}, refuseChanges, .{r}) catch |err| {
+            r.changing = false;
+            return err;
+        };
+        var refuser_joined = false;
+        defer {
+            if (!refuser_joined) {
+                r.refuse_stop.store(true, .release);
+                refuser.join();
+            }
+            r.changing = false;
+        }
         const bytes = try r.gpa.alloc(u8, length);
         defer r.gpa.free(bytes);
         try ipc.readExact(client, bytes, 5000);
@@ -491,26 +637,145 @@ const Runtime = struct {
         if (r.cfg.?.generation >= config.max_generations) return error.GenerationLimit;
         if (candidate.generation != r.cfg.?.generation + 1) return error.ExpectedNextGeneration;
         if (try r.loaded.?.tag(@intCast(peer.credentials.pid)) != 0) return error.TaggedCaller;
-        // This gate returns before any prompt, persisted intent, map write or
-        // child message. Never turn an authorized but unimplemented change into OK.
         try @import("reload_control.zig").authorize(peer);
-        return error.ReloadNotReady;
+        try peer.live();
+        if (try r.loaded.?.tag(@intCast(peer.credentials.pid)) != 0) return error.TaggedCaller;
+        var identities: [abi.max_apps]abi.FileKey = undefined;
+        for (candidate.apps, 0..) |app, i| identities[i] = try r.identity(app.executable);
+        const next = try r.history.prepare(bytes, identities[0..candidate.apps.len]);
+        var published = false;
+        defer if (!published) {
+            r.history.discard(next);
+            r.configureChecks() catch {
+                r.failed_start = true;
+            };
+        };
+        const previous = r.history.head.load(.acquire).?;
+        try r.loaded.?.clearChecks();
+        for (next.snapshot.slots, 0..) |slot, i| if (slot) |b| {
+            if (b.active) try r.loaded.?.checkFile(b.identity, @intCast(i + 1));
+        };
+        const running = try r.loaded.?.scanExisting();
+        for (running, 0..) |tgid, i| if (tgid != 0 and previous.snapshot.slots[i] == null) return error.CloseAddedAppsFirst;
+        try host.writePolicy(r.gpa, r.io, &next.cfg.digest, bytes);
+        try intent.pendingWrite(r.gpa, r.io, .{ .generation = next.cfg.generation, .old_policy = previous.cfg.digest, .new_policy = next.cfg.digest });
+        // From this point any failed stage/ACK/disk write terminates the service.
+        // Pins/tags survive; startup reconciles to durable intent with admission fenced.
+        var stop_on_error = true;
+        errdefer if (stop_on_error) {
+            r.failed_start = true;
+            r.closeListeners();
+        };
+        const deadline = try channel.Deadline.start();
+        const stamp = next.snapshot.stamp;
+        channel.exchange(r.policy_write, r.policy_read, deadline, .{ .command = .prepare, .stamp = stamp, .length = @intCast(bytes.len) }, bytes, .prepared) catch |err| {
+            if (err == error.ProxyRefused) {
+                try intent.pendingClear(r.io);
+                stop_on_error = false;
+                r.service_log.?.write(.{ .event = "policy_change_failed", .point = .app_filter, .reason = "proxy_refused", .old_policy = &previous.cfg.digest, .new_policy = &next.cfg.digest });
+            }
+            return err;
+        };
+        var maps = r.loaded.?.generationMaps();
+        const image = try reload_maps.Image.fromSnapshot(r.install.owner_uid, &next.snapshot);
+        const staged = try reload_maps.stage(&maps, &image);
+        var active = try r.loaded.?.getEpoch();
+        active.fenced = 1;
+        try r.loaded.?.setEpoch(active);
+        try channel.exchange(r.policy_write, r.policy_read, deadline, .{ .command = .quiesce, .stamp = stamp, .length = 0 }, "", .quiesced);
+        try intent.writeHistory(r.gpa, r.io, &r.history, next);
+        try reload_maps.publishFenced(&maps, staged);
+        try channel.exchange(r.policy_write, r.policy_read, deadline, .{ .command = .activate, .stamp = stamp, .length = 0 }, "", .activated);
+        r.history.publish(next);
+        published = true;
+        r.cfg = &next.cfg;
+        r.service_log.?.policy_id = &next.cfg.digest;
+        r.service_log.?.generation = next.cfg.generation;
+        try @import("reload_receipts.zig").activated(&r.service_log.?, .{ .policy = &previous.cfg.digest, .generation = previous.cfg.generation }, .{ .policy = &next.cfg.digest, .generation = next.cfg.generation }, "tags_retained; newly_refused_connections_reset_within_200ms");
+        try channel.exchange(r.policy_write, r.policy_read, deadline, .{ .command = .resume_admission, .stamp = stamp, .length = 0 }, "", .resumed);
+        active = try r.loaded.?.getEpoch();
+        active.fenced = 0;
+        try r.loaded.?.setEpoch(active);
+        try r.refreshWatchedFiles();
+        try r.scanWarnings();
+        try intent.pendingClear(r.io);
+        // A request sent immediately after OK must see a finished transaction.
+        r.refuse_stop.store(true, .release);
+        refuser.join();
+        refuser_joined = true;
+        var response: [160]u8 = undefined;
+        sys.writeAll(client, try std.fmt.bufPrint(&response, "OK reloaded gen={d} policy={s}\n", .{ next.cfg.generation, next.cfg.digest })) catch {};
+        return true;
+    }
+    fn configureChecks(r: *Runtime) !void {
+        try r.loaded.?.clearChecks();
+        for (r.history.head.load(.acquire).?.snapshot.slots, 0..) |slot, i| if (slot) |b| {
+            if (b.active) try r.loaded.?.checkFile(try r.identity(b.executable), @intCast(i + 1));
+        };
+    }
+    fn scanWarnings(r: *Runtime) !void {
+        const running = try r.loaded.?.scanExisting();
+        for (running, 0..) |tgid, i| {
+            if (r.added_pidfds[i] >= 0) {
+                var fds = [_]l.pollfd{.{ .fd = r.added_pidfds[i], .events = l.POLL.IN, .revents = 0 }};
+                if (try sys.poll(&fds, 0) == 0) continue; // remains flagged even after exec-away
+                sys.close(r.added_pidfds[i]);
+                r.added_pidfds[i] = -1;
+                r.added_running[i] = 0;
+            }
+            if (tgid == 0) continue;
+            const fd = sys.fd(l.pidfd_open(@intCast(tgid), 0)) catch continue; // it may have exited
+            const again = try r.loaded.?.scanExisting();
+            if (again[i] != tgid) {
+                sys.close(fd);
+                continue;
+            }
+            r.added_pidfds[i] = fd;
+            r.added_running[i] = tgid;
+            const b = r.history.head.load(.acquire).?.snapshot.slots[i] orelse continue;
+            var detail: [128]u8 = undefined;
+            r.service_log.?.write(.{ .event = "policy_change_warning", .point = .app_filter, .reason = "added_app_running_untagged", .executable = b.executable, .app_id = @intCast(i + 1), .detail = try std.fmt.bufPrint(&detail, "tgid={d}; close this process; descendants may be untagged", .{tgid}) });
+        }
+    }
+    fn refuseChanges(r: *Runtime) void {
+        // Dedicated acceptor only while the sole state writer is in a reload.
+        // It never parses policy, calls polkit, changes a map or changes state.
+        while (!r.refuse_stop.load(.acquire)) {
+            var fds = [_]l.pollfd{.{ .fd = 3, .events = l.POLL.IN, .revents = 0 }};
+            if ((sys.poll(&fds, 25) catch return) == 0) continue;
+            const client = sys.fd(l.accept4(3, null, null, l.SOCK.CLOEXEC | l.SOCK.NONBLOCK)) catch continue;
+            defer sys.close(client);
+            const peer = ipc.Peer.open(client, r.install.owner_uid) catch continue;
+            defer peer.close();
+            const tagged = if (r.loaded) |*loaded| (loaded.tag(@intCast(peer.credentials.pid)) catch 1) != 0 else false;
+            sys.writeAll(client, if (tagged) "ERROR TaggedCaller\n" else "ERROR ChangeInProgress\n") catch {};
+            const current = r.history.head.load(.acquire).?;
+            r.service_log.?.write(.{ .event = "policy_change_refused", .point = .app_filter, .verdict = .deny, .reason = if (tagged) "TaggedCaller" else "ChangeInProgress", .decision = .{ .policy = &current.cfg.digest, .generation = current.cfg.generation } });
+        }
     }
     fn drain(r: *Runtime) !void {
         if (r.ring) |*ring| {
             // Bound each batch so a flood cannot starve owner control.
             for (0..1024) |_| {
                 const event = try ring.next() orelse break;
+                const generation = event.reserved[0];
+                if (generation == 0 or generation > r.history.count) return error.InvalidEventGeneration;
                 if (event.reason == .udp_connect and event.app_id <= abi.max_apps) {
-                    r.udp_connect[event.app_id].add(event);
+                    r.udp_connect[event.app_id].addGeneration(event, generation) catch |err| {
+                        if (err != error.GenerationBoundary) return err;
+                        r.flushUdp();
+                        try r.udp_connect[event.app_id].addGeneration(event, generation);
+                    };
                     continue;
                 }
-                const log = if (event.app_id > 0 and event.app_id <= r.cfg.?.apps.len) &r.logs[event.app_id - 1].? else &r.service_log.?;
+                const binding = r.history.decision(generation, event.app_id);
+                const log = if (event.app_id > 0 and event.app_id <= abi.max_apps) &r.logs[event.app_id - 1].? else &r.service_log.?;
+                const decision: receipt.Decision = if (binding) |b| b.decision else .{ .policy = &r.history.generations[generation - 1].?.cfg.digest, .generation = generation };
                 var ipbuf: [64]u8 = undefined;
                 const ipv4 = event.family == 2 or event.hook == @backingInt(l.BPF.AttachType.cgroup_udp4_sendmsg);
                 const ip = if (ipv4) proxy.formatIp(&ipbuf, .{ .ip4 = .{ .bytes = event.ip[0..4].*, .port = 0 } }) else proxy.formatIp(&ipbuf, .{ .ip6 = .{ .bytes = event.ip, .port = 0, .interface = .none } });
                 var detail: [160]u8 = undefined;
-                log.write(.{ .event = "kernel_drop", .point = .app_filter, .verdict = .deny, .reason = @tagName(event.reason), .app_id = event.app_id, .ip = if (event.port != 0) ip else null, .port = if (event.port != 0) std.mem.bigToNative(u16, @truncate(event.port)) else null, .detail = try std.fmt.bufPrint(&detail, "tgid={d} family={d} protocol={d} hook={d} kernel_monotonic_ns={d}", .{ event.tgid, event.family, event.protocol, event.hook, event.timestamp_ns }) });
+                log.write(.{ .event = "kernel_drop", .point = .app_filter, .verdict = .deny, .reason = @tagName(event.reason), .decision = decision, .executable = if (binding) |b| b.executable else null, .app_id = event.app_id, .ip = if (event.port != 0) ip else null, .port = if (event.port != 0) std.mem.bigToNative(u16, @truncate(event.port)) else null, .detail = try std.fmt.bufPrint(&detail, "tgid={d} family={d} protocol={d} hook={d} kernel_monotonic_ns={d}", .{ event.tgid, event.family, event.protocol, event.hook, event.timestamp_ns }) });
             }
             const loss = try r.loaded.?.loss();
             if (loss != r.reported_loss) {
@@ -521,6 +786,7 @@ const Runtime = struct {
         }
         const now = Io.Clock.awake.now(r.io).nanoseconds;
         if (now - r.udp_flushed_ns >= std.time.ns_per_s) {
+            if (r.armed) try r.scanWarnings();
             r.flushUdp();
             r.udp_flushed_ns = now;
         }
@@ -536,7 +802,9 @@ const Runtime = struct {
             if (batch.empty()) continue;
             const log = if (id != 0 and r.logs[id - 1] != null) &r.logs[id - 1].? else if (r.service_log != null) &r.service_log.? else continue;
             var detail: [192]u8 = undefined;
-            log.write(.{ .event = "kernel_drop", .point = .app_filter, .verdict = .deny, .reason = "udp_connect", .app_id = @intCast(id), .detail = std.fmt.bufPrint(&detail, "aggregate; ipv4={d} ipv6={d} first_kernel_ns={d} last_kernel_ns={d}", .{ batch.ipv4, batch.ipv6, batch.first_ns, batch.last_ns }) catch unreachable });
+            const binding = r.history.decision(batch.generation, @intCast(id));
+            const decision: ?receipt.Decision = if (binding) |b| b.decision else if (batch.generation > 0 and batch.generation <= r.history.count) .{ .policy = &r.history.generations[batch.generation - 1].?.cfg.digest, .generation = batch.generation } else null;
+            log.write(.{ .event = "kernel_drop", .point = .app_filter, .verdict = .deny, .reason = "udp_connect", .decision = decision, .executable = if (binding) |b| b.executable else null, .app_id = @intCast(id), .detail = std.fmt.bufPrint(&detail, "aggregate; ipv4={d} ipv6={d} first_kernel_ns={d} last_kernel_ns={d}", .{ batch.ipv4, batch.ipv6, batch.first_ns, batch.last_ns }) catch unreachable });
             batch.* = .{};
         }
     }

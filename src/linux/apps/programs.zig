@@ -7,7 +7,7 @@ const abi = @import("types.zig");
 const pin = @import("kernel_pin.zig");
 const epoch = @import("reload_kernel_types.zig");
 pub const Layout = enum { legacy, generations };
-pub const Fds = struct { files: i32, tags: i32, ports: i32, state: i32, ring: i32, lost: i32, existing: i32 };
+pub const Fds = struct { files: i32, tags: i32, ports: i32, state: i32, ring: i32, lost: i32, existing: i32, checks: i32 = -1 };
 pub const trace_events = enum { exec, fork, exit, iterator };
 pub const hooks = [_]bpf.AttachType{ .cgroup_inet4_connect, .cgroup_inet6_connect, .cgroup_udp4_sendmsg, .cgroup_udp6_sendmsg, .cgroup_inet_sock_create };
 const Fixups = struct {
@@ -118,12 +118,15 @@ pub fn tracingLayout(event: trace_events, fds: Fds, comptime layout: Layout) a.P
             p.emit(I.ldx(.double_word, .r1, .r7, pin.task_struct_mm));
             done.add(&p, I.jeq(.r1, 0, 0));
             p.emit(I.ldx(.double_word, .r1, .r1, pin.mm_struct_exe_file));
-            fileKey(&p, &done, layout);
-            p.lookup(fds.files, -48);
+            // Reload checks a separate candidate map, never the active exec map.
+            fileKey(&p, &done, .legacy);
+            p.lookup(if (layout == .generations) fds.checks else fds.files, -48);
             done.add(&p, I.jeq(.r0, 0, 0));
             p.emit(I.ldx(.word, .r9, .r0, 0));
+            if (layout == .generations) p.emit(I.stx(.word, .r10, -52, .r9));
             p.lookup(fds.existing, -52);
             done.add(&p, I.jeq(.r0, 0, 0));
+            if (layout == .generations) p.emit(I.ldx(.word, .r9, .r10, -16));
             p.emit(I.stx(.word, .r0, 0, .r9)); // reports an app that must be closed first
         },
     }
@@ -455,7 +458,7 @@ fn captureReceiptGeneration(p: *a.Program, fds: Fds) void {
     done.patch(p, end);
 }
 
-pub const fixture_fds: Fds = .{ .files = 10, .tags = 11, .ports = 12, .state = 13, .ring = 14, .lost = 15, .existing = 16 };
+pub const fixture_fds: Fds = .{ .files = 10, .tags = 11, .ports = 12, .state = 13, .ring = 14, .lost = 15, .existing = 16, .checks = 17 };
 test "appfilter every emitted trace, iterator and admission instruction is reachable" {
     for (std.meta.tags(trace_events)) |event| try a.validate(&tracing(event, fixture_fds));
     for (hooks) |hook| try a.validate(&admission(hook, fixture_fds));

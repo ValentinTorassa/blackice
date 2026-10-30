@@ -47,7 +47,7 @@ pub const Entry = struct {
 
 /// Bytes kept per field after cleaning.
 pub const limits = struct {
-    pub const event = 32;
+    pub const event = 64; // Includes policy_change_completed_after_restart without truncation.
     pub const reason = 64;
     pub const rule = 256;
     pub const host = 256;

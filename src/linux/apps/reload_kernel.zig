@@ -1,6 +1,6 @@
-//! Candidate BPF map writer, NOT called by the service. Never loads/attaches code.
+//! Generation map writer used by the reload coordinator. Never loads/attaches code.
 //! All maps are created at arming, before dropping capabilities. Later operations
-//! use those FDs only. This is the kernel half, not a proxy/disk transaction.
+//! use those FDs only. The service coordinates these writes with the child and intent.
 const std = @import("std");
 const sys = @import("../sys.zig");
 const bpf = sys.l.BPF;

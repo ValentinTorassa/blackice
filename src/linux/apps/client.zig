@@ -37,7 +37,7 @@ fn request(gpa: std.mem.Allocator, io: std.Io, args: []const []const u8, out: *s
         defer cfg.deinit();
         if (op == .on and cfg.generation != 1) return error.InitialGenerationMustBeOne;
     }
-    if (op == .reload) try reload.requireAvailable(); // no socket, agent or prompt while gated
+    if (op == .reload) try reload.requireAvailable();
     // Start before connecting: registration cannot consume the daemon's control-header timeout.
     var agent = if (op == .off or op == .reload) try @import("tty_agent.zig").start(io) else null;
     defer if (agent) |*a| a.stop(io);
