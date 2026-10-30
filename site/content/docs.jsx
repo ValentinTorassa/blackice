@@ -203,7 +203,7 @@ $ tail -f ~/.local/state/${SITE.name}/scopes/${SCOPE}/receipts.jsonl`}</Code>
     group: 'Overview',
     title: 'Status',
     description: 'What works today and what is still in progress.',
-    body: ({ recordedSet }) => (
+    body: ({ recordedSet, entries }) => (
       <>
         <p>
           States are computed when this site is built. <strong>Verified</strong> needs a recorded run in{' '}
@@ -215,7 +215,18 @@ $ tail -f ~/.local/state/${SITE.name}/scopes/${SCOPE}/receipts.jsonl`}</Code>
           {CHECKPOINTS.map(([id, name]) => (
             <li key={id}>
               <span className="mono faint">{id}</span>
-              <span>{name}</span>
+              <span>
+                {name}
+                {entries.has(id) && (
+                  <span className="entries">
+                    {entries.get(id).map((e) => (
+                      <a key={e.file} href={`${SITE.repo}/blob/main/evidence/${e.file}`}>
+                        {e.label}
+                      </a>
+                    ))}
+                  </span>
+                )}
+              </span>
               <span className={`state state-${recordedSet.has(id) ? 'verified' : 'pending'}`}>
                 <span className="state-dot" aria-hidden="true" />
                 {recordedSet.has(id) ? 'Recorded' : 'No entry yet'}

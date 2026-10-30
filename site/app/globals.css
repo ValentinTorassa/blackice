@@ -565,6 +565,9 @@ td p { margin: 8px 0 0; color: var(--fg-2); font-size: 14px; line-height: 1.55; 
 .checklist li { display: grid; grid-template-columns: 64px 1fr auto; gap: 12px; align-items: center; padding: 12px 0; border-bottom: 1px solid var(--line); color: var(--fg); }
 .invariants li { display: grid; grid-template-columns: 52px 1fr; gap: 12px; padding: 12px 0; border-bottom: 1px solid var(--line); }
 .checklist .mono, .invariants .mono { font-size: 12px; padding-top: 2px; }
+.checklist .entries { display: flex; flex-wrap: wrap; gap: 2px 14px; margin-top: 4px; font-size: 13px; }
+.checklist .entries a { color: var(--fg-3); text-decoration: underline; text-underline-offset: 3px; text-decoration-color: var(--line); transition: color 0.15s; }
+.checklist .entries a:hover { color: var(--fg); }
 .limits { list-style: none; padding: 0 !important; margin: 0; border-top: 1px solid var(--line); }
 .limits li { padding: 16px 0; border-bottom: 1px solid var(--line); }
 .doc-source { display: inline-flex; align-items: center; gap: 8px; margin-top: 56px; font-size: 13px; color: var(--fg-3); transition: color 0.15s; }
