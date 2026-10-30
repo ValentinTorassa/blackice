@@ -17,14 +17,18 @@ fn request(gpa: std.mem.Allocator, io: std.Io, args: []const []const u8, out: *s
         var cfg = try @import("config.zig").Config.parse(gpa, bytes);
         cfg.deinit();
     }
+    // Start before connecting: registration cannot consume the daemon's control-header timeout.
+    var agent = if (op == .off) try @import("tty_agent.zig").start(io) else null;
+    defer if (agent) |*a| a.stop(io);
     const fd = try ipc.unixConnect(ipc.socket_path);
     defer sys.close(fd);
     const h = ipc.encodeHeader(op, @intCast(bytes.len));
     try sys.writeAll(fd, &h);
     try sys.writeAll(fd, bytes);
     var reply: [512]u8 = undefined;
+    const deadline = try ipc.Deadline.after(120000);
     for (0..reply.len) |i| {
-        try ipc.readExact(fd, reply[i..][0..1], 120000);
+        try deadline.read(fd, reply[i..][0..1]);
         if (reply[i] == '\n') {
             try out.writeAll(reply[0 .. i + 1]);
             if (!std.mem.startsWith(u8, reply[0 .. i + 1], "OK ")) return error.AppFilterRefused;

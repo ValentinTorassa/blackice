@@ -2,6 +2,8 @@
 Description=blackice application network filter
 Requires=blackice-appfilter-bpffs.service blackice-appfilter.socket
 After=blackice-appfilter-bpffs.service blackice-appfilter.socket
+StartLimitIntervalSec=600
+StartLimitBurst=5
 
 [Service]
 Type=simple

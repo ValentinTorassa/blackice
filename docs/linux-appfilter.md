@@ -115,6 +115,17 @@ requests cannot supply a PID, UID, cgroup, program, map FD or BTF. Tagged caller
 Off uses the peer pidfd over D-Bus/SCM_RIGHTS with an `auth_admin` action, without retained authorization or a
 PID-number fallback. A dead peer or failed/ambiguous response refuses the operation.
 
+For `app off` with a terminal on stdin, the unprivileged CLI starts `/usr/bin/pkttyagent` with its own PID
+and process start time, waits for registration, and uses `--fallback` so an existing agent is not replaced.
+The agent owns any password prompt; passwords never enter blackice's control messages or receipts. It is
+terminated and reaped when the request ends, and the terminal mode is restored. Without a tty, the CLI does
+not start an agent; authorization still requires an existing session agent. Registration failure, denial,
+cancel or the daemon's 15-second authorization timeout leave the filter armed. This follows the
+[pkttyagent contract](https://www.freedesktop.org/software/polkit/docs/latest/pkttyagent.1.html); real approve,
+wrong-password, Ctrl-C and timeout cases remain VM tests. Answer the prompt promptly; on timeout,
+run `app off` again. The service permits at most five starts in ten minutes to bound repeated crash
+recovery and receipt-file creation. Its pinned programs remain attached when that limit is reached.
+
 This first candidate changes an active policy through an authorized `off`, then a fresh `on`; it refuses a
 different policy while armed. It does not silently reassign IDs held by existing descendants. In-place policy
 updates are a follow-up.
