@@ -15,10 +15,7 @@ def assets(version):
     return [
         f"blackice-{version}-{target}"
         for target in ("aarch64-macos", "x86_64-macos", "aarch64-linux", "x86_64-linux")
-    ] + [
-        f"blackice-linux-helper-{version}-{arch}-linux"
-        for arch in ("aarch64", "x86_64")
-    ] + ["linux-setup.sh", "linux-teardown.sh"]
+    ] + [f"blackice-linux-helper-{version}-x86_64-linux", "linux-setup.sh", "linux-teardown.sh"]
 
 
 def manifest(version="1.2.3"):
@@ -76,10 +73,30 @@ class RendererTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertNotIn("/LICENSE", result.stdout)
 
-    def test_prerelease(self):
-        result = self.render(version="1.2.3-rc.1")
+    def test_prereleases_are_rejected(self):
+        for version in ["1.2.3-rc.1", "1.2.3-alpha", "1.2.3-0"]:
+            with self.subTest(version=version):
+                self.rejected(manifest(version), "version must be X.Y.Z", version)
+
+    def test_arm64_helper_is_never_selected(self):
+        extra = b"a" * 64 + b"  blackice-linux-helper-1.2.3-aarch64-linux\n"
+        for data in [manifest(), manifest() + extra]:
+            result = self.render(data)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertNotIn("/blackice-linux-helper-1.2.3-aarch64-linux", result.stdout)
+
+    def test_caveats_require_provenance_without_a_privileged_command(self):
+        result = self.render()
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn('/v1.2.3-rc.1/blackice-1.2.3-rc.1-aarch64-macos"', result.stdout)
+        self.assertNotRegex(result.stdout, r"\bsudo\b")
+        commands = [line.strip() for line in result.stdout.splitlines()
+                    if line.strip().startswith("gh attestation verify ")]
+        self.assertEqual(len(commands), 3)
+        for command in commands:
+            self.assertTrue(command.endswith(
+                " --repo ValentinTorassa/blackice"
+                " --signer-workflow ValentinTorassa/blackice/.github/workflows/release.yml"
+            ))
 
     def test_missing_each_required_asset(self):
         rows = manifest().splitlines(keepends=True)
@@ -98,7 +115,7 @@ class RendererTests(unittest.TestCase):
             '1.2.3"; system("id")', "1.2.3/../../main", "1.2.3\nnext", "1.2.3-$(id)",
         ]:
             with self.subTest(version=version):
-                self.rejected(manifest(), "version" if version != "1.2.3-01" else "prerelease", version)
+                self.rejected(manifest(), "version", version)
 
     def test_malformed_or_unsafe_manifest_fails_closed(self):
         for line in [

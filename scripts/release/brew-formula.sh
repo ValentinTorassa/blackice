@@ -4,7 +4,7 @@ set -euo pipefail
 
 if [[ $# -eq 1 && ( $1 == --help || $1 == -h ) ]]; then
     printf '%s\n' 'Usage: brew-formula.sh VERSION SHA256SUMS' \
-        'VERSION has no leading v. Write stdout to the future tap Formula/blackice.rb.'
+        'VERSION is X.Y.Z with no leading v. Write stdout to the future tap Formula/blackice.rb.'
     exit 0
 fi
 if [[ $# -ne 2 ]]; then
@@ -28,14 +28,10 @@ def fail(message):
 version, sums_path, template_path = sys.argv[1:]
 number = r"(?:0|[1-9][0-9]*)"
 if len(version) > 100 or not re.fullmatch(
-    rf"{number}\.{number}\.{number}(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?",
+    rf"{number}\.{number}\.{number}",
     version,
 ):
-    fail("version must be X.Y.Z, optionally with a SemVer prerelease; omit the leading v")
-if "-" in version:
-    for part in version.split("-", 1)[1].split("."):
-        if part.isdigit() and len(part) > 1 and part.startswith("0"):
-            fail("numeric prerelease identifiers must not have leading zeros")
+    fail("version must be X.Y.Z; no prerelease, build metadata or leading v")
 
 try:
     with open(sums_path, "rb") as source:
@@ -68,7 +64,6 @@ assets = {
     "MAC_INTEL_SHA": f"blackice-{version}-x86_64-macos",
     "LINUX_ARM_SHA": f"blackice-{version}-aarch64-linux",
     "LINUX_INTEL_SHA": f"blackice-{version}-x86_64-linux",
-    "HELPER_ARM_SHA": f"blackice-linux-helper-{version}-aarch64-linux",
     "HELPER_INTEL_SHA": f"blackice-linux-helper-{version}-x86_64-linux",
     "SETUP_SHA": "linux-setup.sh",
     "TEARDOWN_SHA": "linux-teardown.sh",

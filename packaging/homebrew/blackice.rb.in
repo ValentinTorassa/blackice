@@ -23,12 +23,6 @@ class Blackice < Formula
       url "https://github.com/ValentinTorassa/blackice/releases/download/v@@VERSION@@/blackice-@@VERSION@@-aarch64-linux",
           using: :nounzip
       sha256 "@@LINUX_ARM_SHA@@"
-
-      resource "linux-helper" do
-        url "https://github.com/ValentinTorassa/blackice/releases/download/v@@VERSION@@/blackice-linux-helper-@@VERSION@@-aarch64-linux",
-            using: :nounzip
-        sha256 "@@HELPER_ARM_SHA@@"
-      end
     end
     on_intel do
       url "https://github.com/ValentinTorassa/blackice/releases/download/v@@VERSION@@/blackice-@@VERSION@@-x86_64-linux",
@@ -40,19 +34,19 @@ class Blackice < Formula
             using: :nounzip
         sha256 "@@HELPER_INTEL_SHA@@"
       end
-    end
 
-    resource "linux-setup" do
-      url "https://github.com/ValentinTorassa/blackice/releases/download/v@@VERSION@@/linux-setup.sh", using: :nounzip
-      sha256 "@@SETUP_SHA@@"
-    end
-    resource "linux-teardown" do
-      url "https://github.com/ValentinTorassa/blackice/releases/download/v@@VERSION@@/linux-teardown.sh", using: :nounzip
-      sha256 "@@TEARDOWN_SHA@@"
-    end
-    resource "checksums" do
-      url "https://github.com/ValentinTorassa/blackice/releases/download/v@@VERSION@@/SHA256SUMS", using: :nounzip
-      sha256 "@@MANIFEST_SHA@@"
+      resource "linux-setup" do
+        url "https://github.com/ValentinTorassa/blackice/releases/download/v@@VERSION@@/linux-setup.sh", using: :nounzip
+        sha256 "@@SETUP_SHA@@"
+      end
+      resource "linux-teardown" do
+        url "https://github.com/ValentinTorassa/blackice/releases/download/v@@VERSION@@/linux-teardown.sh", using: :nounzip
+        sha256 "@@TEARDOWN_SHA@@"
+      end
+      resource "checksums" do
+        url "https://github.com/ValentinTorassa/blackice/releases/download/v@@VERSION@@/SHA256SUMS", using: :nounzip
+        sha256 "@@MANIFEST_SHA@@"
+      end
     end
   end
 
@@ -64,7 +58,7 @@ class Blackice < Formula
     os = OS.mac? ? "macos" : "linux"
     bin.install "blackice-@@VERSION@@-#{arch}-#{os}" => "blackice"
     (bin/"blackice").chmod 0755
-    return unless OS.linux?
+    return unless OS.linux? && Hardware::CPU.intel?
 
     setup = share/"blackice/linux-setup"
     resource("linux-helper").stage do
@@ -79,14 +73,28 @@ class Blackice < Formula
   def caveats
     return unless OS.linux?
 
+    if Hardware::CPU.arm?
+      return <<~EOS
+        Linux arm64 currently ships only the CLI; task scopes are not supported yet.
+        The privileged helper is pending a verified arm64 Linux run.
+        See docs/linux.md:
+          https://github.com/ValentinTorassa/blackice/blob/v@@VERSION@@/docs/linux.md
+      EOS
+    end
+
     helper = resource("linux-helper")
     setup = opt_share/"blackice/linux-setup"
     <<~EOS
-      Linux task scopes require a separate root setup. After reviewing the release, run:
-        sudo bash "#{setup}/linux-setup.sh" "$USER" #{helper.checksum} "#{setup}/#{File.basename(helper.url)}"
+      The privileged Linux helper is a separate setup step, documented in docs/linux.md:
+        https://github.com/ValentinTorassa/blackice/blob/v@@VERSION@@/docs/linux.md
 
-      Homebrew only copied the setup files; it did not grant capabilities or run setup.
-      Repeat the manual setup after reboot.
+      Before using the helper or either script, verify their release workflow attestations:
+        gh attestation verify "#{setup}/#{File.basename(helper.url)}" --repo ValentinTorassa/blackice --signer-workflow ValentinTorassa/blackice/.github/workflows/release.yml
+        gh attestation verify "#{setup}/linux-setup.sh" --repo ValentinTorassa/blackice --signer-workflow ValentinTorassa/blackice/.github/workflows/release.yml
+        gh attestation verify "#{setup}/linux-teardown.sh" --repo ValentinTorassa/blackice --signer-workflow ValentinTorassa/blackice/.github/workflows/release.yml
+
+      Homebrew only copied the setup files as data; it did not configure the helper.
+      No setup command is provided until the helper-path interface is reviewed and pinned.
     EOS
   end
 

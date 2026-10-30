@@ -18,8 +18,8 @@ owner creates. The intended install command after publication is:
 brew install valentintorassa/blackice/blackice
 ~~~
 
-The version has no leading v. X.Y.Z and SemVer prereleases such as 1.2.3-rc.1
-are accepted; build metadata is not. URLs use the tag vVERSION in
+The version must be X.Y.Z with no leading v, prerelease or build metadata,
+matching the release workflow's vX.Y.Z tags. URLs use the tag vVERSION in
 ValentinTorassa/blackice. The renderer reads local files and writes only stdout;
 it never downloads, builds, installs, tags, pushes or publishes.
 
@@ -32,7 +32,6 @@ blackice-VERSION-aarch64-macos
 blackice-VERSION-x86_64-macos
 blackice-VERSION-aarch64-linux
 blackice-VERSION-x86_64-linux
-blackice-linux-helper-VERSION-aarch64-linux
 blackice-linux-helper-VERSION-x86_64-linux
 linux-setup.sh
 linux-teardown.sh
@@ -52,26 +51,33 @@ unreviewed download to make a release formula render.
 
 ## Linux setup contract
 
-The formula copies the architecture's versioned helper, linux-setup.sh,
+On Linux x86_64, the formula copies the versioned helper, linux-setup.sh,
 linux-teardown.sh and the unchanged SHA256SUMS into
 share/blackice/linux-setup/, all mode 0644. It preserves filenames so the bundle
 still matches the manifest. Only the launcher goes into bin/ as blackice, with
 mode 0755 explicitly set because its Homebrew cleanup is disabled.
 
-The caveats print the actual installed setup path, the helper's manifest hash
-and its explicit path:
+Linux arm64 ships only the CLI until an arm64 Linux run verifies task scopes.
+It downloads and installs no helper, setup scripts or manifest bundle. An arm64
+helper checksum is not required, and even if present in SHA256SUMS it is not
+used to select or distribute a helper.
 
-~~~text
-sudo bash "<setup-directory>/linux-setup.sh" "$USER" <reviewed-helper-sha256> "<setup-directory>/blackice-linux-helper-VERSION-TARGET"
+The x86_64 caveats identify the privileged helper as a separate setup step and
+link to docs/linux.md at the release tag. They print these verification commands
+with the actual installed paths before any privileged operation is considered:
+
+~~~sh
+gh attestation verify "<setup-directory>/blackice-linux-helper-VERSION-x86_64-linux" --repo ValentinTorassa/blackice --signer-workflow ValentinTorassa/blackice/.github/workflows/release.yml
+gh attestation verify "<setup-directory>/linux-setup.sh" --repo ValentinTorassa/blackice --signer-workflow ValentinTorassa/blackice/.github/workflows/release.yml
+gh attestation verify "<setup-directory>/linux-teardown.sh" --repo ValentinTorassa/blackice --signer-workflow ValentinTorassa/blackice/.github/workflows/release.yml
 ~~~
 
-Release integration gate: linux-setup.sh must accept
-USER EXPECTED_SHA256 [HELPER_PATH], with the optional third argument selecting
-this file while preserving root-owned staging and hash verification before
-capabilities. The current two-argument checkout-only script is not compatible
-with this bundle. Its owner must implement and security-review that change
-before a release formula is used. Packaging does not change the privileged
-script or bypass its checks.
+There is no sudo command in the caveats. The reviewed linux-setup.sh accepts
+exactly two arguments and reads the helper from ../zig-out/bin; it cannot use
+this bundle directly. A future helper-path interface must be implemented,
+security-reviewed and pinned before a setup command can be added. If that
+command is added later, these three attestation checks must remain before it.
+Packaging does not change the privileged script or bypass its checks.
 
 There is no postinstall, service or package-manager sudo/setcap call. An upgrade
 only replaces the unprivileged files; the owner reviews and repeats setup to
