@@ -1,5 +1,9 @@
 const std = @import("std");
 
+/// The targets of `zig build release`. Linux binaries are static (std only, no libc); macOS binaries link only
+/// libSystem.
+const release_targets = [_][]const u8{ "x86_64-linux", "aarch64-linux", "aarch64-macos", "x86_64-macos" };
+
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
@@ -26,4 +30,39 @@ pub fn build(b: *std.Build) void {
     const run_tests = b.addRunArtifact(tests);
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_tests.step);
+
+    addRelease(b);
+}
+
+/// `zig build release`: every release target, ReleaseSafe and stripped, as zig-out/release/blackice-<target>.
+/// Stripping drops the debug info, which holds absolute build paths, so the same commit built with the same Zig
+/// gives the same bytes in any directory. Cross targets never use the build host's CPU features.
+/// -Dmacos-min sets the oldest macOS the binaries start on; without it Zig would write its own default (15.0).
+/// It also decides which system interfaces the standard library may use, so test with the same minimum.
+fn addRelease(b: *std.Build) void {
+    const macos_min = b.option([]const u8, "macos-min", "Oldest macOS the release binaries run on (default 13.0)") orelse "13.0";
+    const release_step = b.step("release", "Build stripped, reproducible binaries for every release target");
+    for (release_targets) |name| {
+        const triple = if (std.mem.endsWith(u8, name, "-macos")) b.fmt("{s}.{s}", .{ name, macos_min }) else name;
+        const query = std.Target.Query.parse(.{ .arch_os_abi = triple }) catch |err| {
+            // Only the release step fails; the other steps still work with a bad -Dmacos-min.
+            const fail = b.addFail(b.fmt("release target {s}: {s} (check -Dmacos-min)", .{ triple, @errorName(err) }));
+            release_step.dependOn(&fail.step);
+            continue;
+        };
+        const exe = b.addExecutable(.{
+            .name = "blackice",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/main.zig"),
+                .target = b.resolveTargetQuery(query),
+                .optimize = .ReleaseSafe,
+                .strip = true,
+            }),
+        });
+        const install = b.addInstallArtifact(exe, .{
+            .dest_dir = .{ .override = .{ .custom = "release" } },
+            .dest_sub_path = b.fmt("blackice-{s}", .{name}),
+        });
+        release_step.dependOn(&install.step);
+    }
 }
