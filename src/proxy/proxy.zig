@@ -1,0 +1,852 @@
+//! The scope's proxy: the only way a confined command reaches a host by name.
+//!
+//! It runs outside the scope and listens on 127.0.0.1:<random>. The backend lets the command connect to that
+//! port and nothing else, and the command gets HTTP_PROXY, HTTPS_PROXY and ALL_PROXY (and lowercase) pointing
+//! at it (see `setEnv`).
+//!
+//! Two request forms:
+//! - `CONNECT host:port` (HTTPS and any other TLS or TCP traffic). After the tunnel opens, the first bytes the
+//!   command sends are checked: when they are a TLS ClientHello, its server name (SNI) must equal the CONNECT
+//!   host, otherwise the tunnel is closed. This stops "CONNECT allowed.com" followed by "SNI evil.com" from
+//!   reaching another site on a shared CDN address.
+//! - Plain HTTP with an absolute URI (`GET http://host/path`). The Host header is rewritten from the URI, so
+//!   the request cannot name a different site, hop-by-hop headers are dropped, and the upstream connection
+//!   carries exactly one request.
+//!
+//! Decision, in order:
+//! 1. The host is normalized (lowercase, no trailing dot). An IP literal is decided by `Policy.checkLiteral`.
+//! 2. A name is decided by `Policy.checkHost`; when the policy refuses it, an active grant may still allow it.
+//! 3. An allowed name is resolved here, by the proxy, and every address is checked with
+//!    `Policy.checkResolved`. Only addresses that pass are dialed. The command's own resolution is never used.
+//!
+//! One receipt per decision (point "proxy"), event "connect" or "http". Besides the policy reason codes
+//! (policy.Reason), the proxy uses:
+//!   granted               allowed by an active grant (rule = the grant)
+//!   bad_request           the request could not be parsed (400)
+//!   resolve_failed        an allowed name did not resolve (502; rule = the allow entry)
+//!   upstream_unreachable  no checked address accepted the connection (502; rule = the allow entry)
+//!   sni_mismatch          the TLS server name differs from the CONNECT host (tunnel closed)
+//!   tls_unparsed          the first bytes were a TLS handshake that could not be parsed (tunnel closed)
+//!   grant_expired         a tunnel opened under a grant was closed when the grant expired
+//!
+//! Declared limits (v0):
+//! - Only the destination name and port are decided. Content inside TLS is not inspected: a request to an
+//!   allowed host can carry any data to that host.
+//! - Any port of an allowed host is allowed.
+//! - Every process that can reach the port can use the proxy; there is no per-scope credential yet
+//!   (TODO: Proxy-Authorization token per scope, claude-followup D4).
+
+const std = @import("std");
+const Io = std.Io;
+const net = Io.net;
+const http = std.http;
+const policy = @import("../core/policy.zig");
+const receipt = @import("../core/receipt.zig");
+pub const Grants = @import("grants.zig").Grants;
+
+pub const Config = struct {
+    /// Connections served at the same time. More are answered with 503.
+    max_connections: u32 = 256,
+    /// Largest request head (request line and headers).
+    max_head_bytes: usize = 16 * 1024,
+    /// Per-address dial timeout.
+    connect_timeout: Io.Duration = .fromSeconds(10),
+    /// Addresses tried per name.
+    max_addresses: usize = 8,
+    /// Name resolution. `null` uses the system resolver (`std.Io.net.HostName.lookup`).
+    resolver: ?Resolver = null,
+    /// Grants consulted when the policy refuses a name. Owned by the caller.
+    grants: ?*Grants = null,
+};
+
+/// Resolves `host` (normalized, not an IP literal) into `out`, returning how many addresses were written.
+pub const Resolver = struct {
+    context: ?*anyopaque = null,
+    resolve: *const fn (context: ?*anyopaque, io: Io, host: []const u8, port: u16, out: []net.IpAddress) anyerror!usize,
+};
+
+const tls_record_max = 16384 + 5;
+
+pub const Proxy = struct {
+    gpa: std.mem.Allocator,
+    io: Io,
+    policy: *const policy.Policy,
+    receipts: *receipt.Log,
+    config: Config,
+    server: net.Server,
+    /// The port the proxy listens on, on 127.0.0.1.
+    port: u16,
+    group: Io.Group = .init,
+    active: std.atomic.Value(u32) = .init(0),
+
+    pub const StartError = net.IpAddress.ListenError || Io.ConcurrentError || error{OutOfMemory};
+
+    /// Listens on 127.0.0.1:<random> and starts serving. `pol` and `receipts` must outlive the proxy.
+    pub fn start(
+        gpa: std.mem.Allocator,
+        io: Io,
+        pol: *const policy.Policy,
+        receipts: *receipt.Log,
+        config: Config,
+    ) StartError!*Proxy {
+        const p = try gpa.create(Proxy);
+        errdefer gpa.destroy(p);
+        const addr: net.IpAddress = .{ .ip4 = .loopback(0) };
+        var server = try addr.listen(io, .{});
+        errdefer server.deinit(io);
+        p.* = .{
+            .gpa = gpa,
+            .io = io,
+            .policy = pol,
+            .receipts = receipts,
+            .config = config,
+            .server = server,
+            .port = server.socket.address.getPort(),
+        };
+        try p.group.concurrent(io, acceptLoop, .{p});
+        return p;
+    }
+
+    /// Stops accepting, closes every open connection and frees the proxy.
+    pub fn stop(p: *Proxy) void {
+        const io = p.io;
+        p.group.cancel(io);
+        p.server.deinit(io);
+        p.gpa.destroy(p);
+    }
+
+    fn acceptLoop(p: *Proxy) Io.Cancelable!void {
+        const io = p.io;
+        while (true) {
+            const stream = p.server.accept(io) catch |err| switch (err) {
+                error.Canceled => |e| return e,
+                error.ConnectionAborted, error.WouldBlock => continue,
+                error.SocketNotListening => return,
+                else => {
+                    p.receipts.write(.{ .event = "warning", .point = .proxy, .reason = "accept_failed", .detail = @errorName(err) });
+                    try io.sleep(.fromMilliseconds(100), .awake);
+                    continue;
+                },
+            };
+            if (p.active.fetchAdd(1, .monotonic) >= p.config.max_connections) {
+                _ = p.active.fetchSub(1, .monotonic);
+                var wbuf: [256]u8 = undefined;
+                var w = stream.writer(io, &wbuf);
+                w.interface.writeAll("HTTP/1.1 503 Service Unavailable\r\ncontent-length: 0\r\nconnection: close\r\n\r\n") catch {};
+                w.interface.flush() catch {};
+                stream.close(io);
+                continue;
+            }
+            p.group.concurrent(io, serveConnection, .{ p, stream }) catch {
+                _ = p.active.fetchSub(1, .monotonic);
+                stream.close(io);
+            };
+        }
+    }
+
+    fn serveConnection(p: *Proxy, stream: net.Stream) Io.Cancelable!void {
+        defer {
+            stream.close(p.io);
+            _ = p.active.fetchSub(1, .monotonic);
+        }
+        var conn: Connection = undefined;
+        conn.init(p, stream);
+        conn.serve() catch |err| switch (err) {
+            error.Canceled => |e| return e,
+        };
+    }
+};
+
+/// One client connection. Lives on the serving task's stack.
+const Connection = struct {
+    p: *Proxy,
+    io: Io,
+    client: net.Stream,
+    in_buf: [16 * 1024 + tls_record_max]u8,
+    out_buf: [4096]u8,
+    reader: net.Stream.Reader,
+    writer: net.Stream.Writer,
+
+    fn init(c: *Connection, p: *Proxy, stream: net.Stream) void {
+        c.p = p;
+        c.io = p.io;
+        c.client = stream;
+        c.reader = stream.reader(p.io, &c.in_buf);
+        c.writer = stream.writer(p.io, &c.out_buf);
+    }
+
+    fn serve(c: *Connection) Io.Cancelable!void {
+        var hs = http.Server.init(&c.reader.interface, &c.writer.interface);
+        hs.reader.max_head_len = @min(c.p.config.max_head_bytes, c.in_buf.len);
+        var req = hs.receiveHead() catch |err| switch (err) {
+            error.HttpConnectionClosing, error.HttpRequestTruncated, error.ReadFailed => return c.canceled(),
+            error.HttpHeadersOversize => return c.badRequest("431 Request Header Fields Too Large", "headers_too_large", null),
+            error.HttpHeadersInvalid => return c.badRequest("400 Bad Request", "invalid_request", null),
+        };
+        if (req.head.method == .CONNECT) return c.serveConnect(&req);
+        return c.servePlain(&req);
+    }
+
+    /// Returns error.Canceled when a read or write failed because the task was canceled.
+    fn canceled(c: *Connection) Io.Cancelable!void {
+        if (c.reader.err) |e| if (e == error.Canceled) return error.Canceled;
+        if (c.writer.err) |e| if (e == error.Canceled) return error.Canceled;
+    }
+
+    fn badRequest(c: *Connection, status: []const u8, detail: []const u8, event: ?[]const u8) Io.Cancelable!void {
+        c.p.receipts.write(.{
+            .event = event orelse "http",
+            .point = .proxy,
+            .verdict = .deny,
+            .reason = "bad_request",
+            .detail = detail,
+        });
+        c.respondError(status, "blackice: bad proxy request\n");
+        return c.canceled();
+    }
+
+    fn respondError(c: *Connection, status: []const u8, body: []const u8) void {
+        const w = &c.writer.interface;
+        w.print("HTTP/1.1 {s}\r\ncontent-type: text/plain\r\ncontent-length: {d}\r\nconnection: close\r\n\r\n{s}", .{
+            status, body.len, body,
+        }) catch return;
+        w.flush() catch {};
+    }
+
+    fn serveConnect(c: *Connection, req: *http.Server.Request) Io.Cancelable!void {
+        var host_buf: [policy.max_host_len + 2]u8 = undefined;
+        const target = parseAuthority(req.head.target, null) catch
+            return c.badRequest("400 Bad Request", "invalid_connect_target", "connect");
+        if (target.host.len > host_buf.len) return c.badRequest("400 Bad Request", "invalid_connect_target", "connect");
+        @memcpy(host_buf[0..target.host.len], target.host);
+        const host_raw = host_buf[0..target.host.len];
+
+        var d: Decision = .{ .event = "connect", .port = target.port };
+        var addrs_buf: [16]net.IpAddress = undefined;
+        const addrs = try c.decide(&d, host_raw, target.port, &addrs_buf);
+        if (!d.allowed) return c.refuse(&d);
+
+        const upstream = c.dial(&d, addrs) orelse return c.refuse(&d);
+        defer upstream.close(c.io);
+
+        const w = &c.writer.interface;
+        w.writeAll("HTTP/1.1 200 Connection Established\r\n\r\n") catch return c.canceled();
+        w.flush() catch return c.canceled();
+
+        // Upstream -> client runs on its own task, so protocols where the server speaks first still work.
+        var down_buf: [16 * 1024]u8 = undefined;
+        var down_reader = upstream.reader(c.io, &down_buf);
+        var down = c.io.concurrent(pump, .{ &down_reader, &c.writer }) catch {
+            d.allowed = false;
+            d.reason = "upstream_unreachable";
+            d.detail = "concurrency_unavailable";
+            c.writeReceipt(&d);
+            return;
+        };
+        defer down.cancel(c.io) catch {};
+
+        // Grant expiry closes the tunnel, not only new connections.
+        var watchdog: ?Io.Future(Io.Cancelable!void) = null;
+        if (d.expires) |expires| {
+            watchdog = c.io.concurrent(expireTunnel, .{ c.p, c.client, upstream, expires, d.host }) catch null;
+        }
+        defer if (watchdog) |*f| f.cancel(c.io) catch {};
+
+        if (d.literal) {
+            d.detail = "ip_literal";
+        } else switch (c.checkSni(d.host)) {
+            .match => d.detail = "sni_match",
+            .no_sni => d.detail = "no_sni",
+            .not_tls => d.detail = "not_tls",
+            .no_data => d.detail = "no_data",
+            .mismatch => |name| {
+                d.allowed = false;
+                d.reason = "sni_mismatch";
+                d.sni = name;
+                c.writeReceipt(&d);
+                shutdownProtected(c.io, upstream, .both);
+                shutdownProtected(c.io, c.client, .both);
+                return;
+            },
+            .unparsed => {
+                d.allowed = false;
+                d.reason = "tls_unparsed";
+                c.writeReceipt(&d);
+                shutdownProtected(c.io, upstream, .both);
+                shutdownProtected(c.io, c.client, .both);
+                return;
+            },
+        }
+        c.writeReceipt(&d);
+
+        var up_buf: [0]u8 = undefined;
+        var up_writer = upstream.writer(c.io, &up_buf);
+        pump(&c.reader, &up_writer) catch |err| {
+            down.cancel(c.io) catch {};
+            return err;
+        };
+        // Awaiting is a cancelation point: a stop() while the response still flows cancels `down` too.
+        try down.await(c.io);
+    }
+
+    fn servePlain(c: *Connection, req: *http.Server.Request) Io.Cancelable!void {
+        const url = parseHttpUrl(req.head.target) catch |err| {
+            const detail = if (err == error.HttpsNeedsConnect) "https_needs_connect" else "invalid_url";
+            return c.badRequest("400 Bad Request", detail, "http");
+        };
+
+        var d: Decision = .{ .event = "http", .port = url.port, .method = @tagName(req.head.method) };
+        var addrs_buf: [16]net.IpAddress = undefined;
+        const addrs = try c.decide(&d, url.host, url.port, &addrs_buf);
+        if (!d.allowed) return c.refuse(&d);
+
+        const upstream = c.dial(&d, addrs) orelse return c.refuse(&d);
+        defer upstream.close(c.io);
+        c.writeReceipt(&d);
+
+        // Request head, rewritten. Strings in req.head point into the client buffer and stay valid until
+        // the body reader is created below.
+        var up_buf: [4096]u8 = undefined;
+        var up_writer = upstream.writer(c.io, &up_buf);
+        const uw = &up_writer.interface;
+        const has_body = req.head.method.requestHasBody();
+        writeUpstreamHead(uw, req, url) catch return c.canceled();
+
+        if (has_body) {
+            const chunked = req.head.transfer_encoding == .chunked;
+            var body_buf: [8192]u8 = undefined;
+            const body = req.readerExpectContinue(&body_buf) catch return c.canceled();
+            copyBody(body, uw, chunked) catch return c.canceled();
+        }
+        uw.flush() catch return c.canceled();
+
+        // The response goes back as is. The upstream connection carries this one request and then closes.
+        var down_buf: [16 * 1024]u8 = undefined;
+        var down_reader = upstream.reader(c.io, &down_buf);
+        try pump(&down_reader, &c.writer);
+    }
+
+    fn refuse(c: *Connection, d: *Decision) Io.Cancelable!void {
+        c.writeReceipt(d);
+        const status = if (d.policy_denied) "403 Forbidden" else "502 Bad Gateway";
+        var body_buf: [512]u8 = undefined;
+        const body = std.fmt.bufPrint(&body_buf, "blackice: {s} refused ({s})\n", .{ d.host, d.reason }) catch "blackice: refused\n";
+        c.respondError(status, body);
+        return c.canceled();
+    }
+
+    /// Fills `d` with the policy decision and returns the addresses that may be dialed.
+    fn decide(c: *Connection, d: *Decision, host_raw: []const u8, port: u16, buf: *[16]net.IpAddress) Io.Cancelable![]net.IpAddress {
+        const pol = c.p.policy;
+        if (policy.parseIpLiteral(host_raw)) |lit| {
+            d.literal = true;
+            d.host = host_raw;
+            const v = pol.checkLiteral(lit);
+            d.setVerdict(v);
+            if (!v.allowed) {
+                d.setIp(lit);
+                return buf[0..0];
+            }
+            buf[0] = lit;
+            buf[0].setPort(port);
+            return buf[0..1];
+        }
+
+        const host = policy.normalizeHost(&d.host_buf, host_raw) catch {
+            d.host = "";
+            d.allowed = false;
+            d.policy_denied = true;
+            d.reason = policy.Reason.invalid_host.code();
+            return buf[0..0];
+        };
+        d.host = host;
+
+        var v = pol.checkHost(host);
+        if (!v.allowed) {
+            if (c.p.config.grants) |g| {
+                if (g.check(c.io, host, &d.rule_buf)) |m| {
+                    d.allowed = true;
+                    d.policy_denied = false;
+                    d.reason = "granted";
+                    d.rule = m.rule;
+                    d.expires = m.expires;
+                    v = .{ .allowed = true, .reason = .allowed_by_rule };
+                }
+            }
+            if (!d.allowed) {
+                d.setVerdict(v);
+                return buf[0..0];
+            }
+        } else d.setVerdict(v);
+
+        const max = @min(buf.len, c.p.config.max_addresses);
+        const n = c.resolve(host, port, buf[0..max]) catch |err| switch (err) {
+            error.Canceled => |e| return e,
+            else => {
+                d.allowed = false;
+                d.reason = "resolve_failed";
+                d.detail = @errorName(err);
+                return buf[0..0];
+            },
+        };
+        if (n == 0) {
+            d.allowed = false;
+            d.reason = "resolve_failed";
+            d.detail = "no_address";
+            return buf[0..0];
+        }
+
+        // Keep only the addresses the policy accepts; the first refusal explains a total refusal.
+        var kept: usize = 0;
+        var first_denied: ?policy.Verdict = null;
+        var first_denied_addr: net.IpAddress = undefined;
+        for (buf[0..n]) |a| {
+            const rv = pol.checkResolved(a);
+            if (rv.allowed) {
+                buf[kept] = a;
+                buf[kept].setPort(port);
+                kept += 1;
+            } else if (first_denied == null) {
+                first_denied = rv;
+                first_denied_addr = a;
+            }
+        }
+        if (kept == 0) {
+            const rv = first_denied.?;
+            d.allowed = false;
+            d.policy_denied = true;
+            d.reason = rv.reason.code();
+            d.rule = rv.rule;
+            d.expires = null;
+            d.setIp(first_denied_addr);
+        }
+        return buf[0..kept];
+    }
+
+    fn resolve(c: *Connection, host: []const u8, port: u16, out: []net.IpAddress) anyerror!usize {
+        if (c.p.config.resolver) |r| return r.resolve(r.context, c.io, host, port, out);
+        return systemResolve(c.io, host, port, out);
+    }
+
+    /// Dials the checked addresses in order. Returns null (and fills `d`) when none answers.
+    fn dial(c: *Connection, d: *Decision, addrs: []const net.IpAddress) ?net.Stream {
+        var last_err: anyerror = error.NoAddress;
+        for (addrs) |*a| {
+            const s = connectTimeout(c.io, a.*, c.p.config.connect_timeout) catch |err| {
+                last_err = err;
+                continue;
+            };
+            d.setIp(a.*);
+            return s;
+        }
+        d.allowed = false;
+        d.reason = "upstream_unreachable";
+        d.detail = @errorName(last_err);
+        if (addrs.len > 0) d.setIp(addrs[addrs.len - 1]);
+        return null;
+    }
+
+    const SniResult = union(enum) { match, no_sni, not_tls, no_data, unparsed, mismatch: []const u8 };
+
+    /// Peeks at the first bytes of the tunnel without consuming them.
+    fn checkSni(c: *Connection, host: []const u8) SniResult {
+        const r = &c.reader.interface;
+        const first = r.peek(1) catch return .no_data;
+        if (first[0] != 0x16) return .not_tls;
+        const hdr = r.peek(5) catch return .unparsed;
+        const len = std.mem.readInt(u16, hdr[3..5], .big);
+        if (5 + @as(usize, len) > tls_record_max) return .unparsed;
+        const record = r.peek(5 + @as(usize, len)) catch return .unparsed;
+        const sni = parseSni(record) catch return .unparsed;
+        const name = sni orelse return .no_sni;
+        var buf: [policy.max_host_len]u8 = undefined;
+        const norm = policy.normalizeHost(&buf, name) catch return .{ .mismatch = name };
+        if (!std.mem.eql(u8, norm, host)) return .{ .mismatch = name };
+        return .match;
+    }
+
+    fn writeReceipt(c: *Connection, d: *Decision) void {
+        var detail_buf: [320]u8 = undefined;
+        var w: Io.Writer = .fixed(&detail_buf);
+        if (d.method) |m| w.print("method={s}", .{m}) catch {};
+        if (d.detail) |x| {
+            if (w.end > 0) w.writeByte(' ') catch {};
+            w.writeAll(x) catch {};
+        }
+        if (d.sni) |s| {
+            if (w.end > 0) w.writeByte(' ') catch {};
+            w.writeAll("sni=") catch {};
+            for (s) |ch| w.writeByte(if (std.ascii.isPrint(ch)) ch else '?') catch {};
+        }
+        if (d.expires) |e| {
+            var ts_buf: [32]u8 = undefined;
+            if (w.end > 0) w.writeByte(' ') catch {};
+            w.print("grant_until={s}", .{receipt.formatTimestamp(&ts_buf, e)}) catch {};
+        }
+        c.p.receipts.write(.{
+            .event = d.event,
+            .point = .proxy,
+            .verdict = if (d.allowed) .allow else .deny,
+            .reason = d.reason,
+            .rule = d.rule,
+            .host = if (d.host.len > 0) d.host else null,
+            .ip = if (d.ip_len > 0) d.ip_buf[0..d.ip_len] else null,
+            .port = d.port,
+            .detail = if (w.end > 0) w.buffered() else null,
+        });
+    }
+};
+
+const Decision = struct {
+    event: []const u8,
+    port: u16,
+    method: ?[]const u8 = null,
+    allowed: bool = false,
+    /// True when the refusal comes from the policy (403); false for network failures (502).
+    policy_denied: bool = false,
+    literal: bool = false,
+    reason: []const u8 = "",
+    rule: ?[]const u8 = null,
+    detail: ?[]const u8 = null,
+    sni: ?[]const u8 = null,
+    /// Set when a grant allowed the connection.
+    expires: ?Io.Timestamp = null,
+    host: []const u8 = "",
+    host_buf: [policy.max_host_len]u8 = undefined,
+    rule_buf: [policy.max_host_len + 16]u8 = undefined,
+    ip_buf: [64]u8 = undefined,
+    ip_len: usize = 0,
+
+    fn setVerdict(d: *Decision, v: policy.Verdict) void {
+        d.allowed = v.allowed;
+        d.policy_denied = !v.allowed;
+        d.reason = v.reason.code();
+        d.rule = v.rule;
+    }
+
+    fn setIp(d: *Decision, a: net.IpAddress) void {
+        d.ip_len = formatIp(&d.ip_buf, a).len;
+    }
+};
+
+/// Copies `from` to `to` until end of stream, flushing after every read so interactive protocols work.
+/// When the source ends, the sending half of `to` is shut down so the other side sees end of stream.
+/// Returns error.Canceled when a read or write was canceled, so the caller can cancel the other direction.
+fn pump(from: *net.Stream.Reader, to: *net.Stream.Writer) Io.Cancelable!void {
+    const r = &from.interface;
+    while (true) {
+        const data = r.peekGreedy(1) catch break;
+        to.interface.writeAll(data) catch break;
+        to.interface.flush() catch break;
+        r.toss(data.len);
+    }
+    shutdownProtected(to.io, to.stream, .send);
+    if (from.err) |e| if (e == error.Canceled) return error.Canceled;
+    if (to.err) |e| if (e == error.Canceled) return error.Canceled;
+}
+
+/// Shuts a socket down without consuming a pending cancelation request. Otherwise a stop() that arrives
+/// right after end of stream is swallowed here, and the task then waits forever on the other direction.
+fn shutdownProtected(io: Io, stream: net.Stream, how: net.ShutdownHow) void {
+    const old = io.swapCancelProtection(.blocked);
+    defer _ = io.swapCancelProtection(old);
+    stream.shutdown(io, how) catch {};
+}
+
+/// `IpAddress.connect` with a timeout. (Zig 0.17's threaded Io does not implement the connect timeout
+/// option yet, so the dial races a timer.)
+pub fn connectTimeout(io: Io, addr: net.IpAddress, timeout: Io.Duration) (net.IpAddress.ConnectError || error{Timeout})!net.Stream {
+    const U = union(enum) {
+        conn: net.IpAddress.ConnectError!net.Stream,
+        timer: Io.Cancelable!void,
+    };
+    var buf: [2]U = undefined;
+    var sel: Io.Select(U) = .init(io, &buf);
+    sel.concurrent(.conn, connectPlain, .{ addr, io }) catch return connectPlain(addr, io);
+    sel.concurrent(.timer, sleepFor, .{ io, timeout }) catch {};
+    const first = sel.await() catch |err| {
+        drainSelect(U, &sel, io);
+        return err;
+    };
+    drainSelect(U, &sel, io);
+    return switch (first) {
+        .conn => |r| r,
+        .timer => error.Timeout,
+    };
+}
+
+fn drainSelect(comptime U: type, sel: *Io.Select(U), io: Io) void {
+    while (sel.cancel()) |late| switch (late) {
+        .conn => |r| if (r) |s| s.close(io) else |_| {},
+        .timer => {},
+    };
+}
+
+fn connectPlain(addr: net.IpAddress, io: Io) net.IpAddress.ConnectError!net.Stream {
+    return addr.connect(io, .{ .mode = .stream });
+}
+
+fn sleepFor(io: Io, d: Io.Duration) Io.Cancelable!void {
+    return io.sleep(d, .awake);
+}
+
+fn expireTunnel(p: *Proxy, client: net.Stream, upstream: net.Stream, expires: Io.Timestamp, host: []const u8) Io.Cancelable!void {
+    const io = p.io;
+    const t: Io.Timeout = .{ .deadline = .{ .raw = expires, .clock = .real } };
+    try t.sleep(io);
+    p.receipts.write(.{
+        .event = "connect",
+        .point = .proxy,
+        .verdict = .deny,
+        .reason = "grant_expired",
+        .host = host,
+        .detail = "tunnel_closed",
+    });
+    upstream.shutdown(io, .both) catch {};
+    client.shutdown(io, .both) catch {};
+}
+
+fn writeUpstreamHead(w: *Io.Writer, req: *http.Server.Request, url: HttpUrl) Io.Writer.Error!void {
+    try w.print("{s} {s} HTTP/1.1\r\nhost: {s}\r\n", .{ @tagName(req.head.method), url.path, url.authority });
+
+    // Headers named in Connection are hop-by-hop too.
+    var named: [8][]const u8 = undefined;
+    var named_len: usize = 0;
+    var it = req.iterateHeaders();
+    while (it.next()) |h| {
+        if (!std.ascii.eqlIgnoreCase(h.name, "connection")) continue;
+        var tokens = std.mem.tokenizeAny(u8, h.value, ", \t");
+        while (tokens.next()) |tok| {
+            if (named_len < named.len) {
+                named[named_len] = tok;
+                named_len += 1;
+            }
+        }
+    }
+
+    it = req.iterateHeaders();
+    outer: while (it.next()) |h| {
+        for (hop_by_hop) |name| if (std.ascii.eqlIgnoreCase(h.name, name)) continue :outer;
+        for (named[0..named_len]) |name| if (std.ascii.eqlIgnoreCase(h.name, name)) continue :outer;
+        try w.print("{s}: {s}\r\n", .{ h.name, h.value });
+    }
+    if (req.head.method.requestHasBody()) {
+        if (req.head.transfer_encoding == .chunked) {
+            try w.writeAll("transfer-encoding: chunked\r\n");
+        } else {
+            try w.print("content-length: {d}\r\n", .{req.head.content_length orelse 0});
+        }
+    }
+    try w.writeAll("connection: close\r\n\r\n");
+}
+
+const hop_by_hop = [_][]const u8{
+    "host",                "connection",         "proxy-connection", "keep-alive",
+    "proxy-authorization", "proxy-authenticate", "te",               "trailer",
+    "transfer-encoding",   "upgrade",            "content-length",   "expect",
+};
+
+fn copyBody(body: *Io.Reader, w: *Io.Writer, chunked: bool) !void {
+    var buf: [8192]u8 = undefined;
+    while (true) {
+        const n = try body.readSliceShort(&buf);
+        if (n == 0) break;
+        if (chunked) {
+            try w.print("{x}\r\n", .{n});
+            try w.writeAll(buf[0..n]);
+            try w.writeAll("\r\n");
+        } else {
+            try w.writeAll(buf[0..n]);
+        }
+        if (n < buf.len) break;
+    }
+    if (chunked) try w.writeAll("0\r\n\r\n");
+}
+
+// ---------------------------------------------------------------- parsing
+
+pub const Authority = struct {
+    /// Without brackets for IPv6.
+    host: []const u8,
+    port: u16,
+};
+
+/// Parses "host:port", "[v6]:port", or, when `default_port` is given, a bare host.
+pub fn parseAuthority(text: []const u8, default_port: ?u16) error{InvalidAuthority}!Authority {
+    if (text.len == 0) return error.InvalidAuthority;
+    var host: []const u8 = undefined;
+    var rest: []const u8 = undefined;
+    if (text[0] == '[') {
+        const close = std.mem.findScalar(u8, text, ']') orelse return error.InvalidAuthority;
+        host = text[1..close];
+        rest = text[close + 1 ..];
+    } else {
+        if (std.mem.findScalar(u8, text, ':')) |colon| {
+            if (std.mem.findScalarPos(u8, text, colon + 1, ':') != null) return error.InvalidAuthority;
+            host = text[0..colon];
+            rest = text[colon..];
+        } else {
+            host = text;
+            rest = "";
+        }
+    }
+    if (host.len == 0) return error.InvalidAuthority;
+    for (host) |ch| if (ch <= ' ' or ch == '@' or ch == '/' or ch == 0x7f) return error.InvalidAuthority;
+    var port: u16 = undefined;
+    if (rest.len == 0) {
+        port = default_port orelse return error.InvalidAuthority;
+    } else {
+        if (rest[0] != ':' or rest.len == 1) return error.InvalidAuthority;
+        port = std.fmt.parseInt(u16, rest[1..], 10) catch return error.InvalidAuthority;
+    }
+    if (port == 0) return error.InvalidAuthority;
+    return .{ .host = host, .port = port };
+}
+
+pub const HttpUrl = struct {
+    /// As written, for the Host header.
+    authority: []const u8,
+    host: []const u8,
+    port: u16,
+    /// Origin form: path and query, "/" when empty.
+    path: []const u8,
+};
+
+pub fn parseHttpUrl(target: []const u8) error{ InvalidUrl, HttpsNeedsConnect }!HttpUrl {
+    const scheme_end = std.mem.find(u8, target, "://") orelse return error.InvalidUrl;
+    const scheme = target[0..scheme_end];
+    if (std.ascii.eqlIgnoreCase(scheme, "https")) return error.HttpsNeedsConnect;
+    if (!std.ascii.eqlIgnoreCase(scheme, "http")) return error.InvalidUrl;
+    const rest = target[scheme_end + 3 ..];
+    const auth_end = std.mem.findAny(u8, rest, "/?#") orelse rest.len;
+    const authority = rest[0..auth_end];
+    const a = parseAuthority(authority, 80) catch return error.InvalidUrl;
+    var path = rest[auth_end..];
+    if (std.mem.findScalar(u8, path, '#')) |hash| path = path[0..hash];
+    if (path.len == 0) path = "/";
+    if (path[0] == '?') return error.InvalidUrl; // keep it simple: "http://h?q" is rare
+    return .{ .authority = authority, .host = a.host, .port = a.port, .path = path };
+}
+
+/// Returns the server name of a TLS ClientHello record, or null when it carries none.
+/// `record` is one complete TLS record, starting with its 5-byte header.
+pub fn parseSni(record: []const u8) error{Malformed}!?[]const u8 {
+    var r: ByteReader = .{ .data = record };
+    if (try r.byte() != 0x16) return error.Malformed; // handshake
+    _ = try r.int(u16); // record version
+    const rec_len = try r.int(u16);
+    var hs: ByteReader = .{ .data = try r.bytes(rec_len) };
+    if (try hs.byte() != 0x01) return error.Malformed; // ClientHello
+    const hs_len = try hs.int(u24);
+    // A ClientHello split across records is refused rather than half-parsed.
+    var ch: ByteReader = .{ .data = try hs.bytes(hs_len) };
+    _ = try ch.int(u16); // legacy_version
+    _ = try ch.bytes(32); // random
+    _ = try ch.bytes(try ch.byte()); // session id
+    _ = try ch.bytes(try ch.int(u16)); // cipher suites
+    _ = try ch.bytes(try ch.byte()); // compression methods
+    if (ch.pos == ch.data.len) return null; // no extensions
+    var exts: ByteReader = .{ .data = try ch.bytes(try ch.int(u16)) };
+    while (exts.pos < exts.data.len) {
+        const ext_type = try exts.int(u16);
+        const ext = try exts.bytes(try exts.int(u16));
+        if (ext_type != 0) continue; // server_name
+        var list_r: ByteReader = .{ .data = ext };
+        var list: ByteReader = .{ .data = try list_r.bytes(try list_r.int(u16)) };
+        while (list.pos < list.data.len) {
+            const name_type = try list.byte();
+            const name = try list.bytes(try list.int(u16));
+            if (name_type == 0) {
+                if (name.len == 0) return error.Malformed;
+                return name;
+            }
+        }
+        return null;
+    }
+    return null;
+}
+
+const ByteReader = struct {
+    data: []const u8,
+    pos: usize = 0,
+
+    fn byte(r: *ByteReader) error{Malformed}!u8 {
+        if (r.pos >= r.data.len) return error.Malformed;
+        r.pos += 1;
+        return r.data[r.pos - 1];
+    }
+
+    fn int(r: *ByteReader, comptime T: type) error{Malformed}!T {
+        const n = @divExact(@typeInfo(T).int.bits, 8);
+        const b = try r.bytes(n);
+        return std.mem.readInt(T, b[0..n], .big);
+    }
+
+    fn bytes(r: *ByteReader, n: usize) error{Malformed}![]const u8 {
+        if (r.data.len - r.pos < n) return error.Malformed;
+        r.pos += n;
+        return r.data[r.pos - n .. r.pos];
+    }
+};
+
+/// The address without its port: "93.184.216.34" or "2606:2800::1".
+pub fn formatIp(buf: *[64]u8, a: net.IpAddress) []const u8 {
+    return switch (a) {
+        .ip4 => |v| std.fmt.bufPrint(buf, "{d}.{d}.{d}.{d}", .{ v.bytes[0], v.bytes[1], v.bytes[2], v.bytes[3] }) catch unreachable,
+        .ip6 => |v| std.fmt.bufPrint(buf, "{f}", .{net.Ip6Address.Unresolved{ .bytes = v.bytes, .interface_name = null }}) catch unreachable,
+    };
+}
+
+fn systemResolve(io: Io, host: []const u8, port: u16, out: []net.IpAddress) !usize {
+    const name = try net.HostName.init(host);
+    // lookup does not block when the queue holds at least 16 results.
+    var results: [32]net.HostName.LookupResult = undefined;
+    var queue: Io.Queue(net.HostName.LookupResult) = .init(&results);
+    try name.lookup(io, &queue, .{ .port = port });
+    var n: usize = 0;
+    while (queue.getOne(io)) |r| switch (r) {
+        .address => |a| {
+            if (n == out.len) continue;
+            var dup = false;
+            for (out[0..n]) |*o| {
+                if (sameAddress(o.*, a)) dup = true;
+            }
+            if (!dup) {
+                out[n] = a;
+                n += 1;
+            }
+        },
+        .canonical_name => {},
+    } else |err| switch (err) {
+        error.Canceled => |e| return e,
+        error.Closed => {},
+    }
+    return n;
+}
+
+fn sameAddress(a: net.IpAddress, b: net.IpAddress) bool {
+    return switch (a) {
+        .ip4 => |x| b == .ip4 and std.mem.eql(u8, &x.bytes, &b.ip4.bytes),
+        .ip6 => |x| b == .ip6 and std.mem.eql(u8, &x.bytes, &b.ip6.bytes),
+    };
+}
+
+/// Points the command at the proxy: HTTP_PROXY, HTTPS_PROXY, ALL_PROXY and their lowercase forms.
+/// NO_PROXY is set to loopback only, replacing any inherited value: loopback stays direct (the backend
+/// allows only the scope's own ports there), and an inherited NO_PROXY cannot send other hosts around
+/// the proxy, where the backend would refuse them anyway.
+pub fn setEnv(env: *std.process.Environ.Map, port: u16) error{OutOfMemory}!void {
+    var buf: [32]u8 = undefined;
+    const url = std.fmt.bufPrint(&buf, "http://127.0.0.1:{d}", .{port}) catch unreachable;
+    for ([_][]const u8{ "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy" }) |k| {
+        try env.put(k, url);
+    }
+    try env.put("NO_PROXY", no_proxy);
+    try env.put("no_proxy", no_proxy);
+}
+
+pub const no_proxy = "localhost,127.0.0.1,::1";
+
+test {
+    _ = @import("test.zig");
+}

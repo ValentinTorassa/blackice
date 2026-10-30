@@ -72,4 +72,5 @@ test {
     _ = scope;
     _ = backend;
     _ = seatbelt;
+    _ = @import("proxy/proxy.zig");
 }
