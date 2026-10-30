@@ -89,7 +89,7 @@ and `jq` are enough to read it.
 | Proxy decisions write receipts | network | done | |
 | Relay calls and grants write receipts | network | doing | |
 | Clean and cut long fields instead of dropping the line | lead | done | |
-| Linux kernel refusals (ring buffer) passed to the `blackice` process as receipts | codex-linux | todo | |
+| Linux kernel refusals (ring buffer) passed to the `blackice` process as receipts | codex-linux | done | |
 | After a helper kill, the receipts say `command_not_started` and `scope_end` 127 for a command that had been running; report a helper failure during the run as such (P0-06 finding P6-4) | lead | todo | |
 | Kernel receipts carry the kernel's refusal time in `detail`: `ts` is when the line was written, so refusals made while `blackice run` was stopped carry the resume time (P0-06) | codex-linux | todo | |
 
