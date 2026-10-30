@@ -193,6 +193,20 @@ retired process stays tagged but loses proxy service after restart. The script
 uses real polkit for each reload/off and ends with an authorized off. Receiver
 corroboration is required in addition to its local checks.
 
+`scripts/e2e/linux-appfilter-reload-streams-vm.py` opens two real eight-second HTTPS
+drip streams through the listed launcher. It requires widening to preserve both,
+then narrowing to reset only the removed hostname within one observed watchdog
+period, with exactly one `policy_narrowed` receipt at the new generation. The
+still-allowed stream must continue transferring body bytes. Remote HTTP errors
+and stalled endpoints fail the test; they are not enforcement evidence.
+
+Run independent VM cases with a fresh systemd start budget. The unchanged
+`StartLimitIntervalSec=600` / `StartLimitBurst=5` limit counts successful socket
+activations too, including off-state status requests. A test operator may reset
+the failed/start budget between isolated cases in VM3; the test drivers do not
+reset it inside a case or hide a restart loop. Preserve any rate-limit failure
+and its journal before rerunning. Do not loosen the installed unit's limit.
+
 Crash testing has a separate opt-in build:
 
 ```sh
