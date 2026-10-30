@@ -32,8 +32,10 @@
 //!   tls_unparsed          the first bytes were a TLS handshake that could not be parsed (tunnel closed)
 //!   not_tls               the first bytes over CONNECT were not TLS, or there were none (tunnel closed)
 //!   sni_missing           a ClientHello for a name carried no server name (tunnel closed)
-//!   grant_expired         a connection opened under a grant was closed when the grant expired
-//!   grant_revoked         a connection opened under a grant was closed when the owner revoked it
+//!   grant_expired         a connection opened under a grant was reset when the grant expired
+//!   grant_revoked         a connection opened under a grant was reset when the owner revoked it
+//!   (Both sides are reset, not closed: bytes still queued toward the client or the upstream are dropped, so
+//!   nothing moves through the proxy after the grant ends.)
 //!   grant_watchdog_failed the task that enforces a grant's lifetime could not start (503)
 //!
 //! Declared limits (v0):
@@ -655,10 +657,21 @@ fn watchGrant(p: *Proxy, id: u64, first_deadline: Io.Timestamp, client: net.Stre
         .verdict = .deny,
         .reason = reason,
         .host = host,
-        .detail = "connection_closed",
+        .detail = "connection_reset",
     });
+    // A plain shutdown would still deliver what is queued in the socket buffers (on a loopback socket that can
+    // be megabytes) before the FIN. With linger 0 the close that follows sends a reset and drops the queue.
+    abortOnClose(upstream);
+    abortOnClose(client);
     shutdownProtected(io, upstream, .both);
     shutdownProtected(io, client, .both);
+}
+
+/// Makes the socket's close send a reset and drop anything still queued, instead of delivering the queue and
+/// then a FIN. The shutdown that follows wakes the pumps; the connection's own close then resets.
+fn abortOnClose(stream: net.Stream) void {
+    const l: std.posix.linger = .{ .onoff = 1, .linger = 0 };
+    std.posix.setsockopt(stream.socket.handle, std.posix.SOL.SOCKET, std.posix.SO.LINGER, std.mem.asBytes(&l)) catch {};
 }
 
 /// Tests only: makes the grant watchdog fail to start.

@@ -28,12 +28,14 @@ pub fn main(init: std.process.Init) !u8 {
     const io = init.io;
     const args = try init.minimal.args.toSlice(arena);
 
+    // Streaming, never positional: with `blackice run ... > log 2>&1` the command shares this file and its
+    // offset, so a positional write would overwrite the command's output.
     var out_buf: [4096]u8 = undefined;
-    var out_w: Io.File.Writer = .init(.stdout(), io, &out_buf);
+    var out_w: Io.File.Writer = .initStreaming(.stdout(), io, &out_buf);
     const out = &out_w.interface;
     defer out.flush() catch {};
     var err_buf: [4096]u8 = undefined;
-    var err_w: Io.File.Writer = .init(.stderr(), io, &err_buf);
+    var err_w: Io.File.Writer = .initStreaming(.stderr(), io, &err_buf);
     const errw = &err_w.interface;
     defer errw.flush() catch {};
 
