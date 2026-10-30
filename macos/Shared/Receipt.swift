@@ -40,7 +40,8 @@ struct Receipt: Encodable {
         receipt.host = flow.hostname.flatMap(normalizeHost)
         receipt.ip = flow.ip?.text
         receipt.port = flow.port
-        receipt.detail = "backend=network_extension;scope_kind=app;app=\(identityLabel(flow.app));" +
+        receipt.detail = "backend=network_extension;scope_kind=app;" + (result.echPresent ? "ech_present;" : "") +
+            "app=\(identityLabel(flow.app));" +
             "process=\(identityLabel(flow.process));hostname_source=\(flow.hostname == nil ? "absent" : "os_metadata");" +
             "hostname_mode=\(hostnameMode ?? "unavailable")"
         return receipt

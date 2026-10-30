@@ -1,10 +1,11 @@
 import Foundation
 
 /// First TLS record only. Never release bytes while this result is needMore.
-/// Fragmented TLS records, ECH, malformed and oversized handshakes fail closed.
+/// Fragmented TLS records, malformed and oversized handshakes fail closed.
+/// ECH is opaque: GREASE cannot be distinguished from a real encrypted hello.
 enum TLSHelloResult: Equatable {
     case needMore(Int)
-    case serverName(String)
+    case serverName(String, echPresent: Bool = false)
     case deny(String)
 }
 
@@ -47,8 +48,8 @@ enum TLSClientHello {
             cursor += 4
             let end = cursor + length
             guard end <= extensionEnd, seen.insert(kind).inserted else { return .deny("tls_unparsed") }
-            // The inner name is unavailable. Do not authorize the outer cover name.
-            if kind == 0xfe0d { return .deny("tls_unparsed") }
+            // Preserve ECH presence for diagnostics. Only the outer SNI can be
+            // checked; permitting an ECH front end is a domain-fronting limit.
             if kind == 0 {
                 guard length >= 5, uint16(cursor) == length - 2 else { return .deny("tls_unparsed") }
                 cursor += 2
@@ -65,7 +66,7 @@ enum TLSClientHello {
             }
             cursor = end
         }
-        return serverName.map(TLSHelloResult.serverName) ?? .deny("sni_missing")
+        return serverName.map { .serverName($0, echPresent: seen.contains(0xfe0d)) } ?? .deny("sni_missing")
     }
 }
 
@@ -74,6 +75,7 @@ enum TLSClientHello {
 struct TLSInspection {
     private var bytes = Data()
     let expectedHost: String
+    private(set) var echPresent = false
 
     mutating func receive(_ data: Data, offset: Int) -> TLSHelloResult {
         guard offset >= 0, offset <= bytes.count, data.count <= TLSClientHello.maximumBytes - offset else {
@@ -85,7 +87,9 @@ struct TLSInspection {
         }
         bytes.append(data.dropFirst(overlap))
         switch TLSClientHello.inspect(bytes) {
-        case .serverName(let name): return name == expectedHost ? .serverName(name) : .deny("sni_mismatch")
+        case .serverName(let name, let ech):
+            echPresent = ech
+            return name == expectedHost ? .serverName(name, echPresent: ech) : .deny("sni_mismatch")
         case let result: return result
         }
     }

@@ -242,14 +242,25 @@ permit UDP. No allow receipt is emitted while TLS inspection is pending.
 
 Peeks are bounded to 16,384 bytes per flow, 256 pending flows and 10 seconds
 (timeouts are swept once a second). TCP callback slices can be reassembled, but
-a ClientHello split across TLS records, duplicate extensions and ECH are rejected.
-ECH's visible outer name cannot authorize a hidden inner name. Pending handshakes
+a ClientHello split across TLS records and duplicate extensions are rejected.
+Pending handshakes
 are dropped on a policy change; capacity exhaustion and timeout deny. Only the
 bounded initial handshake is held transiently, never logged or written to disk.
 The TCP connection handshake can occur before payload approval. This check
 prevents switching the initial SNI or sending plaintext HTTP after a domain allow;
 it does not validate TLS certificates, decrypt later HTTP Host/`:authority`, or
 prevent routing/coalescing within a connection accepted under the same SNI.
+
+The `encrypted_client_hello` extension (`0xfe0d`) is permitted when the **outer
+SNI exactly matches** the allowed metadata hostname. The receipt's `detail`
+includes `ech_present`; a mismatched outer SNI still denies. ECH-capable clients
+send GREASE ECH even without a server ECH configuration; see
+[RFC 9849, section 6.2](https://www.rfc-editor.org/rfc/rfc9849.html#section-6.2)
+and [Chromium's client configuration](https://chromium.googlesource.com/chromium/src/+/812dd783e5e140e555b6a8b8b31cdb8bdcd8988d/net/socket/ssl_client_socket_impl.cc).
+This observer cannot distinguish GREASE from genuine ECH or inspect the inner
+SNI. Allowing an ECH front end's public name can therefore allow a different
+hidden inner name, within the same domain-fronting limit. `ech_present` reports
+extension presence only; it does not claim ECH acceptance or inner-name approval.
 
 The native settings request callback delivery for normal traffic and explicitly
 include loopback rules for `127/8`, `::1` and IPv4-mapped loopback. Apple's
@@ -412,7 +423,23 @@ mode or disabled SIP as evidence of a supported installation.
 unsigned/ad hoc host. Each request also creates a fresh `LAContext` and requires
 [`deviceOwnerAuthentication`](https://developer.apple.com/documentation/localauthentication/lapolicy/deviceownerauthentication),
 with an operation-specific prompt (Touch ID or the macOS authentication fallback,
-including password). Touch ID reuse duration is zero. Cancellation, unavailable
+including password). The same complete summary is printed to stderr before
+authentication: action, generation, configuration SHA-256 prefix, unmatched and
+hostname modes, every bound signing identifier/Team ID and each original policy's
+SHA-256 prefix. `enable` describes the frozen candidate; other actions describe
+the saved policy. Absent or unreadable saved configuration is explicitly labeled
+so recovery remains possible. For example:
+
+```text
+Blackice: enable or replace app filtering policy. generation 7; configuration sha256 <12 hex>; unmatched allow; hostname mode ip-only; apps: com.example.probe/ABCDE12345 (policy sha256 <12 hex>). Parent: zsh (pid 1234, audit only).
+```
+
+Every action includes the parent process name and PID as untrusted audit context;
+name controls/bidi are cleaned and its length capped. A parent name/PID is never
+authorization evidence. A preference change while the prompt is outstanding
+aborts the operation and requires review and retry. No app binding is silently
+omitted from the summary; real dialog layout remains a signed-run test gate.
+Touch ID reuse duration is zero. Cancellation, unavailable
 authentication or failure prevents the mutation; there is no CLI/environment
 bypass or cached owner authorization. A confined app cannot change the filter
 through this helper without user authentication. This does not prevent a user
@@ -446,7 +473,7 @@ fresh user-presence check.
 Verified on 2026-10-30 on an arm64 Mac running macOS 27.0.1 (26A434), with SIP
 enabled, Apple Swift 6.4 (`swiftlang-6.4.0.34.1`) and the Command Line Tools
 macOS 27.0 SDK. Both bundles compiled with warnings as errors; the four resource
-plists passed `plutil`; 320 test assertions passed. The host's `make-config` and
+plists passed `plutil`; 351 test assertions passed. The host's `make-config` and
 `validate` commands accepted both included examples, and `status` reported
 `built, unsigned` with `enforcement_verified: false`. Signature inspection
 confirmed only linker ad hoc signing with no Team ID. No activation or live
@@ -459,11 +486,24 @@ handling, generations, receipt encoding and aggregate-only outside-scope logs.
 The actual Security framework identifies the ad hoc test executable distinctly
 and rejects missing/invalid audit tokens. Fake authenticators test denial and
 approval for every mutating command without prompting the user or changing
-preferences. TLS tests port the proxy's ClientHello vectors and add truncated
+preferences. Prompt tests check policy digests, identities, generation/unmatched
+changes, parent-label cleaning and identical terminal/authentication text.
+TLS tests port the proxy's ClientHello vectors and add truncated
 prefixes, callback slicing, exact-SNI mismatch, plaintext HTTP, UDP, ECH,
 duplicate extensions, invalid names and buffer limits. These tests do not replace
 signed-app runtime identity, real LocalAuthentication UI or Network Extension
 callback/timeout testing. No authentication prompt was displayed during testing.
+
+An isolated headless Google Chrome 156.0.8078.48 instance on that Mac also sent a
+real ClientHello to a temporary loopback listener for `ech-probe.blackice.test`.
+No ECH configuration/feature override was supplied. The 1,931-byte TLS record
+contained that outer SNI and a 186-byte ECH extension. Replaying the captured
+record through the pre-fix parser reproduced `tls_unparsed`; the revised parser
+accepted the exact outer name with `ech_present` and denied a different expected
+name. This was capture of one controlled TCP stream, **not a raw packet capture
+or live filter enforcement test**. Raw BPF devices required root and were not
+used. Chrome used a temporary profile, which was removed; no personal browser
+profile, filter preference, security setting or authentication UI was changed.
 
 Before this app-scope backend can be called operational, record separate evidence
 for normal-security signed activation; a signed probe launched outside blackice;

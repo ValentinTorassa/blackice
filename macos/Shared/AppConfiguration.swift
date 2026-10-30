@@ -179,6 +179,7 @@ struct AppDecision {
     let generation: UInt32
     let decision: Decision
     var requiredTLSHost: String? = nil
+    var echPresent = false
 }
 
 enum AppEvaluator {

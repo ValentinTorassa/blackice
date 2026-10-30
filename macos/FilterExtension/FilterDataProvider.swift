@@ -172,11 +172,11 @@ final class FilterDataProvider: NEFilterDataProvider {
             return .init(passBytes: 0, peekBytes: total)
         case .serverName:
             pending.removeValue(forKey: flow.identifier)
-            emitFlow(entry.facts, result: resolved(entry.result, denied: nil))
+            emitFlow(entry.facts, result: resolved(entry.result, denied: nil, echPresent: entry.inspection.echPresent))
             return .allow()
         case .deny(let reason):
             pending.removeValue(forKey: flow.identifier)
-            emitFlow(entry.facts, result: resolved(entry.result, denied: reason))
+            emitFlow(entry.facts, result: resolved(entry.result, denied: reason, echPresent: entry.inspection.echPresent))
             return .drop()
         }
     }
@@ -189,9 +189,10 @@ final class FilterDataProvider: NEFilterDataProvider {
         return .drop()
     }
 
-    private func resolved(_ result: AppDecision, denied reason: String?) -> AppDecision {
+    private func resolved(_ result: AppDecision, denied reason: String?, echPresent: Bool = false) -> AppDecision {
         AppDecision(scope: result.scope, policy: result.policy, generation: result.generation,
-                    decision: reason.map { Decision(allowed: false, reason: $0) } ?? result.decision)
+                    decision: reason.map { Decision(allowed: false, reason: $0) } ?? result.decision,
+                    echPresent: echPresent)
     }
 
     private func startMaintenance() {
