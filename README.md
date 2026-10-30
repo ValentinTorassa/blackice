@@ -29,12 +29,15 @@ Network permissions for apps and agent tasks on macOS and Linux. Native and head
 
 The CLI is not frozen yet.
 
-## Platforms (planned)
+## Platforms
+
+Nothing in this table is verified yet; see [`evidence/`](evidence/).
 
 | | Apps | Agent tasks |
 |---|---|---|
-| macOS | Network Extension filter (needs Developer ID signing) | Seatbelt session with a local proxy (experimental) |
-| Linux | Chosen after a spike | cgroup v2 with eBPF, plus a local proxy |
+| macOS | Network Extension content filter: built, unsigned (#8). It cannot run until it is signed with a Developer ID. | Seatbelt task scope with a local proxy, experimental (#7) |
+| Linux | Not built. Grouping apps by the desktop's systemd scopes still has to be proven. | cgroup v2 with eBPF socket programs and a small privileged helper, installed once with a setup script run with sudo, plus a local proxy (#6) |
+| Windows | Later, not part of the first release | Later, not part of the first release |
 
 ## Limits
 
