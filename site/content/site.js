@@ -8,3 +8,14 @@ export const SITE = {
   authorUrl: 'https://valentorassa.com',
   command: 'blackice run --policy policy.json -- npm ci',
 };
+
+// The current release. The Install section on the landing page and the Install docs page read it.
+const VERSION = '0.1.0';
+
+export const RELEASE = {
+  version: VERSION,
+  url: `${SITE.repo}/releases/tag/v${VERSION}`,
+  npm: 'npm install -g @legios/blackice',
+  brew: 'brew install valentintorassa/tap/blackice',
+  linuxSetup: `${SITE.repo}/blob/v${VERSION}/docs/linux.md#build-and-install`,
+};

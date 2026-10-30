@@ -1,5 +1,5 @@
 import Link from 'next/link';
-import { SITE } from './site';
+import { RELEASE, SITE } from './site';
 import { CHECKPOINTS, INVARIANTS } from './status';
 import { highlight } from './highlight';
 import CopyButton from '../components/CopyButton';
@@ -195,6 +195,48 @@ $ tail -f ~/.local/state/${SITE.name}/scopes/${SCOPE}/receipts.jsonl`}</Code>
             </Link>
           ))}
         </div>
+      </>
+    ),
+  },
+  {
+    slug: 'install',
+    group: 'Overview',
+    title: 'Install',
+    description: `Install the ${SITE.name} CLI from npm or Homebrew. On Debian 13, task scopes also need a helper, set up separately with sudo.`,
+    // Same wording as the v0.1.0 release notes, which security reviewed.
+    body: () => (
+      <>
+        <Note>
+          <strong>v{RELEASE.version}</strong> is the first release. It is v0 and not ready for production. The{' '}
+          <a href={RELEASE.url}>release page</a> has the release notes, the checksums and the steps to verify each file.
+        </Note>
+        <H2>npm</H2>
+        <Code title="terminal" label="Node.js 22 or later">{`$ ${RELEASE.npm}`}</Code>
+        <p>
+          <code>@legios/blackice</code> installs the <code>{SITE.name}</code> command, which runs the binary from one of
+          four platform packages: macOS on Apple silicon or Intel, and Linux on x86_64 or arm64.
+        </p>
+        <H2>Homebrew</H2>
+        <Code title="terminal">{`$ ${RELEASE.brew}`}</Code>
+        <H2>Linux helper</H2>
+        <p>
+          Both install the CLI only. On Debian 13 (x86_64), task scopes also need a small helper, set up from a checkout
+          of v{RELEASE.version}. You verify the release, build the helper, check its hash against <code>SHA256SUMS</code>{' '}
+          and run the setup script with sudo, again after each reboot. Neither npm nor Homebrew runs it. The steps are in{' '}
+          <a href={RELEASE.linuxSetup}>docs/linux.md</a>.
+        </p>
+        <p>
+          The helper keeps four file capabilities (<code>CAP_CHOWN</code>, <code>CAP_DAC_OVERRIDE</code>,{' '}
+          <code>CAP_NET_ADMIN</code> and <code>CAP_BPF</code>). Only root and the primary group of the user named at setup
+          can run it, and <code>sudo ./scripts/linux-teardown.sh</code> removes it.
+        </p>
+        <H2>Other platforms</H2>
+        <p>
+          Intel Macs and Linux arm64 get a CLI build, but task scopes have not been shown on them. Linux arm64 has no
+          helper yet, so scopes do not run there. Other Linux distributions are untested. On Ubuntu 24.04 and later,
+          where <code>kernel.apparmor_restrict_unprivileged_userns=1</code> is the default, scopes are expected to fail
+          closed.
+        </p>
       </>
     ),
   },

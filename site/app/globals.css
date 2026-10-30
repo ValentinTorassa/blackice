@@ -417,6 +417,24 @@ h3 { margin: 0; font-size: 16px; font-weight: 600; letter-spacing: -0.01em; }
 .state-verified .state-dot { background: var(--green); box-shadow: 0 0 8px rgba(70, 167, 88, 0.6); }
 .state-verified { color: var(--fg); }
 
+/* Install: one row per package manager, then the Linux step they do not cover */
+.install { margin-top: 40px; border: 1px solid var(--line); border-radius: 14px; background: var(--card); }
+.install-row { display: grid; grid-template-columns: 180px minmax(0, 1fr); align-items: center; gap: 16px; padding: 16px 20px; }
+.install-row + .install-row { border-top: 1px solid var(--line); }
+.install-label { margin: 0; display: flex; flex-direction: column; gap: 6px; font-size: 15px; font-weight: 500; }
+.install-label span { font: 12px/1.3 var(--mono); color: var(--fg-3); }
+.install .command { margin: 0; display: flex; width: 100%; justify-content: space-between; box-shadow: none; }
+.install-note { display: grid; grid-template-columns: 16px minmax(0, 1fr); gap: 12px; padding: 16px 20px 18px; border-top: 1px solid var(--line); color: var(--fg-2); font-size: 14px; line-height: 1.6; }
+.install-note svg { margin-top: 3px; color: var(--fg); }
+.install-note p { margin: 0; }
+.install-note a { display: inline-flex; align-items: center; gap: 4px; color: var(--fg); text-decoration: underline; text-decoration-color: var(--line-3); text-underline-offset: 3px; }
+.install-note a:hover { text-decoration-color: var(--fg); }
+@media (max-width: 640px) {
+  .install-row { grid-template-columns: minmax(0, 1fr); gap: 10px; padding: 14px 16px; }
+  .install-label { flex-direction: row; align-items: baseline; gap: 10px; }
+  .install-note { padding: 14px 16px 16px; }
+}
+
 /* Closing block, with the mark in CSS 3D */
 .cta { position: relative; padding: 64px 24px 60px; border: 1px solid var(--line); text-align: center; background: radial-gradient(50% 60% at 50% 25%, rgba(255, 255, 255, 0.05), transparent), #030303; }
 .cta::before {

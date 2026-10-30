@@ -11,6 +11,8 @@ import CubeMark from '../components/CubeMark';
 import StatusCards from '../components/StatusCards';
 import Corners from '../components/Corners';
 import DemoVideo from '../components/DemoVideo';
+import Install from '../components/Install';
+import { RELEASE } from '../content/site';
 import { IsoScope, IsoPolicy, IsoReceipt } from '../components/Iso';
 import {
   Logo,
@@ -294,6 +296,23 @@ export default function Home() {
             </ol>
           </div>
           <StatusCards />
+        </section>
+
+        <section className="container section" id="install" aria-labelledby="install-title">
+          <div className="head-row">
+            <h2 className="h2" id="install-title">
+              Install
+            </h2>
+            <a className="link" href={RELEASE.url}>
+              v{RELEASE.version} release notes
+              <IconArrowRight size={14} />
+            </a>
+          </div>
+          <p className="sub">
+            v{RELEASE.version} is the first release. It is v0 and not ready for production. The release page has the
+            checksums and the steps to verify each file.
+          </p>
+          <Install />
         </section>
 
         <section className="container section">
