@@ -1,3 +1,20 @@
+diff --git a/src/acp/server.zig b/src/acp/server.zig
+index 23b3c8f..8549187 100644
+--- a/src/acp/server.zig
++++ b/src/acp/server.zig
+@@ -865,6 +865,12 @@ pub fn runWithTransport(
+     reader_value: jsonrpc.Reader,
+     writer_value: jsonrpc.Writer,
+ ) !void {
++    // blackice patch: the ACP server has no blackice hook, so with FX_BLACKICE_POLICY set it would run every
++    // command unscoped. Refuse to start instead.
++    if (io_mod.getenv("FX_BLACKICE_POLICY") != null) {
++        std.Io.File.stderr().writeStreamingAll(io_mod.getIo(), "fx acp: blackice mode (FX_BLACKICE_POLICY) is not supported by the ACP server; use fx or fx ask.\n") catch {};
++        return error.BlackiceModeUnsupported;
++    }
+     if (cfg.log_file) |path| {
+         try debug_trace.configure(.{ .file_path = path });
+     }
 diff --git a/src/builtins/hooks.zig b/src/builtins/hooks.zig
 index 0ee675c..843ee71 100644
 --- a/src/builtins/hooks.zig
@@ -13,30 +30,42 @@ index 0ee675c..843ee71 100644
  pub fn Runtime(comptime App: type) type {
 diff --git a/src/builtins/hooks/blackice.zig b/src/builtins/hooks/blackice.zig
 new file mode 100644
-index 0000000..e8c35be
+index 0000000..08854cb
 --- /dev/null
 +++ b/src/builtins/hooks/blackice.zig
-@@ -0,0 +1,250 @@
+@@ -0,0 +1,374 @@
 +//! blackice task scopes for the commands fx runs.
 +//!
 +//! This file is a declared patch to fx v0.0.16, kept in the blackice repository (integrations/fx). It is not
 +//! part of upstream fx.
 +//!
-+//! Enabled when FX_BLACKICE_POLICY names a policy file (absolute path). A PreToolUse handler then acts before
-+//! fx validates, reviews or runs a tool call:
-+//! - `shell` that starts a command (action "run", or no action and a command): the command is rewritten to
-+//!       '<blackice>' run --policy '<policy>' -- '<shell>' <no-startup-files flag> -c '<command>'
-+//!   so it starts inside its own blackice task scope: network only through the scope's proxy, decided by the
-+//!   policy, with receipts, and a clean environment. The shell is the call's own `shell.path` or $SHELL when
-+//!   it is a POSIX shell, else /bin/sh; it starts without startup files, so they cannot add secrets back.
-+//! - `shell` interact and stop: unchanged; they talk to a session that was started inside a scope.
-+//! - `web_fetch` and `web_search`: blocked. They run inside fx, outside any scope.
++//! Enabled when FX_BLACKICE_POLICY names a policy file (absolute path). FX_BLACKICE_BIN must then name the
++//! blackice executable by its real path (absolute, no symlinks). At start the hook pins the policy (its
++//! sha256) and finds fx's own executable. A PreToolUse handler acts before fx validates, reviews or runs a
++//! tool call:
++//! - Only these tools run: shell, read_file, write_file, edit_file, glob_files, grep_files,
++//!   ask_user_question, read_tool_result, skill and subagent (a subagent's calls pass through this same
++//!   hook). Every other tool (web_fetch, web_search, install_skill, mcp_select_tool, MCP tools, vision,
++//!   capability_search, and any tool added later) would act from fx itself, outside every scope, so it is
++//!   blocked.
++//! - `shell` run (action "run", or no action and a command) is rewritten to
++//!       '<blackice>' run --policy-sha256 '<hash>' --protect '<fx>' --policy '<policy>' -- '<shell>' <flags> '-c' '<command>'
++//!   with profile "clean". The command starts in its own blackice task scope: network only through the
++//!   scope's proxy, decided by the pinned policy, with receipts, and a clean environment. fx's own outer shell
++//!   reads no startup files, because a scoped command can edit them (~/.zshrc) and the outer shell runs
++//!   outside the scope. The inner shell is $SHELL when it is sh, bash or zsh, else /bin/sh, and also skips
++//!   startup files. blackice refuses a policy whose hash changed, and inside the scope it refuses writes to
++//!   itself, to the policy and to fx's executable (which fx re-runs for every command on macOS), so one
++//!   command cannot unscope the next.
++//! - `shell` reload, tty sessions and the `shell` field are blocked: reload re-reads startup files for the
++//!   outer shell, and a tty session runs fx's bootstrap outside the scope.
++//! - `shell` interact and stop: unchanged; they talk to a command started inside a scope.
 +//! - A call that cannot be read safely (a request wrapper, a command that is not a string or holds a NUL
-+//!   byte, a shell that is not POSIX) is blocked, never run unscoped.
-+//! FX_BLACKICE_BIN is the blackice executable (absolute path; default "blackice" from PATH).
++//!   byte) is blocked, never run unscoped. A misconfiguration blocks every call.
 +//!
-+//! fx's own permission modes still apply, to the rewritten command. In this mode fx itself and its model
-+//! traffic stay outside the scopes.
++//! fx's own permission modes still apply, to the rewritten command. fx itself, its model traffic and its
++//! own git calls (safe_git, at fixed system paths) stay outside the scopes. `fx acp` refuses to start in
++//! this mode.
 +
 +const std = @import("std");
 +const hooks = @import("../../core/hooks/hooks.zig");
@@ -44,39 +73,97 @@ index 0000000..e8c35be
 +
 +pub const handler_name = "blackice.scope_shell";
 +
++/// The tools that may run in blackice mode.
++const allowed_tools = [_][]const u8{
++    "shell",      "read_file",         "write_file",       "edit_file", "glob_files",
++    "grep_files", "ask_user_question", "read_tool_result", "skill",     "subagent",
++};
++
 +pub const State = struct {
 +    enabled: bool = false,
-+    /// When set, every shell and web call is blocked with this reason (misconfiguration fails closed).
++    /// When set, every call is blocked with this reason (misconfiguration fails closed).
 +    problem: ?[]const u8 = null,
-+    bin: []const u8 = "blackice",
++    bin: []const u8 = "",
 +    policy: []const u8 = "",
++    policy_sha256: [64]u8 = @splat('0'),
++    pinned: bool = false,
++    /// fx's own executable, protected inside every scope.
++    fx_exe: []const u8 = "",
++    fx_exe_buf: [std.Io.Dir.max_path_bytes]u8 = undefined,
 +    /// $SHELL when it is a POSIX shell.
 +    default_shell: ?[]const u8 = null,
 +
 +    pub fn initFromEnv(state: *State) void {
 +        state.configure(io_mod.getenv("FX_BLACKICE_POLICY"), io_mod.getenv("FX_BLACKICE_BIN"), io_mod.getenv("SHELL"));
++        if (!state.enabled or state.problem != null) return;
++        const io = io_mod.getIo();
++        const gpa = std.heap.page_allocator;
++
++        // A symlink in a user directory could be re-pointed by a scoped command; the real path cannot be
++        // changed from inside a scope (blackice protects it and its parents).
++        const real = io_mod.realpathAlloc(gpa, state.bin) catch {
++            state.problem = "blackice: FX_BLACKICE_BIN cannot be resolved; it must name the blackice executable.";
++            return;
++        };
++        defer gpa.free(real);
++        if (!std.mem.eql(u8, real, state.bin)) {
++            state.problem = "blackice: FX_BLACKICE_BIN must be the executable's real path (no symlinks).";
++            return;
++        }
++
++        var file = io_mod.openExistingReadOnlyRegularFile(std.Io.Dir.cwd(), state.policy, .follow) catch {
++            state.problem = "blackice: FX_BLACKICE_POLICY cannot be read.";
++            return;
++        };
++        defer file.close(io);
++        const bytes = io_mod.readFileToEnd(gpa, &file, 1 << 20) catch {
++            state.problem = "blackice: FX_BLACKICE_POLICY cannot be read.";
++            return;
++        };
++        defer gpa.free(bytes);
++        state.pin(bytes);
++
++        const exe_len = std.process.executablePath(io, &state.fx_exe_buf) catch {
++            state.problem = "blackice: fx cannot find its own executable to protect it.";
++            return;
++        };
++        state.fx_exe = state.fx_exe_buf[0..exe_len];
 +    }
 +
 +    pub fn configure(state: *State, policy: ?[]const u8, bin: ?[]const u8, shell: ?[]const u8) void {
 +        const p = policy orelse return;
 +        state.enabled = true;
-+        if (p.len == 0 or p[0] != '/' or std.mem.findScalar(u8, p, 0) != null) {
++        if (!absolute(p)) {
 +            state.problem = "blackice: FX_BLACKICE_POLICY must be an absolute path to a policy file.";
 +            return;
 +        }
 +        state.policy = p;
-+        if (bin) |b| {
-+            if (b.len == 0 or b[0] != '/' or std.mem.findScalar(u8, b, 0) != null) {
-+                state.problem = "blackice: FX_BLACKICE_BIN must be an absolute path to the blackice executable.";
-+                return;
-+            }
-+            state.bin = b;
++        const b = bin orelse {
++            state.problem = "blackice: set FX_BLACKICE_BIN to the blackice executable (absolute path).";
++            return;
++        };
++        if (!absolute(b)) {
++            state.problem = "blackice: FX_BLACKICE_BIN must be an absolute path to the blackice executable.";
++            return;
 +        }
++        state.bin = b;
 +        if (shell) |s| {
 +            if (shellKind(s) != null) state.default_shell = s;
 +        }
 +    }
++
++    /// Pins the policy: blackice refuses to start a scope if the file no longer hashes to this.
++    pub fn pin(state: *State, policy_bytes: []const u8) void {
++        var digest: [32]u8 = undefined;
++        std.crypto.hash.sha2.Sha256.hash(policy_bytes, &digest, .{});
++        state.policy_sha256 = std.fmt.bytesToHex(digest, .lower);
++        state.pinned = true;
++    }
 +};
++
++fn absolute(path: []const u8) bool {
++    return path.len > 0 and path[0] == '/' and std.mem.findScalar(u8, path, 0) == null;
++}
 +
 +pub fn register(runtime: *hooks.Runtime, state: *State) !void {
 +    if (!state.enabled) return;
@@ -87,7 +174,7 @@ index 0000000..e8c35be
 +
 +/// POSIX shells the rewrite knows how to start without startup files.
 +fn shellKind(path: []const u8) ?ShellKind {
-+    if (path.len == 0 or path[0] != '/' or std.mem.findScalar(u8, path, 0) != null) return null;
++    if (!absolute(path)) return null;
 +    const base = if (std.mem.findScalarLast(u8, path, '/')) |i| path[i + 1 ..] else path;
 +    if (std.mem.eql(u8, base, "bash")) return .bash;
 +    if (std.mem.eql(u8, base, "zsh")) return .zsh;
@@ -104,40 +191,68 @@ index 0000000..e8c35be
 +    try out.append(gpa, '\'');
 +}
 +
-+/// The rewritten command line.
-+pub fn wrapCommand(gpa: std.mem.Allocator, state: *const State, shell_path: []const u8, command: []const u8) ![]u8 {
++/// The rewritten command line. Every word is quoted. Caller owns the result.
++fn wrapCommand(gpa: std.mem.Allocator, state: *const State, shell_path: []const u8, command: []const u8) ![]u8 {
 +    const kind = shellKind(shell_path) orelse return error.UnsupportedShell;
++    if (!state.pinned) return error.PolicyNotPinned;
 +    var out: std.ArrayList(u8) = .empty;
 +    errdefer out.deinit(gpa);
 +    try appendQuoted(&out, gpa, state.bin);
-+    try out.appendSlice(gpa, " run --policy ");
++    try out.appendSlice(gpa, " run --policy-sha256 ");
++    try appendQuoted(&out, gpa, &state.policy_sha256);
++    if (state.fx_exe.len > 0) {
++        try out.appendSlice(gpa, " --protect ");
++        try appendQuoted(&out, gpa, state.fx_exe);
++    }
++    try out.appendSlice(gpa, " --policy ");
 +    try appendQuoted(&out, gpa, state.policy);
 +    try out.appendSlice(gpa, " -- ");
 +    try appendQuoted(&out, gpa, shell_path);
-+    try out.appendSlice(gpa, switch (kind) {
-+        .zsh => " -f -c ",
-+        .bash => " --noprofile --norc -c ",
-+        .sh => " -c ",
-+    });
++    const flags: []const []const u8 = switch (kind) {
++        .zsh => &.{"-f"},
++        .bash => &.{ "--noprofile", "--norc" },
++        .sh => &.{},
++    };
++    for (flags) |flag| {
++        try out.append(gpa, ' ');
++        try appendQuoted(&out, gpa, flag);
++    }
++    try out.appendSlice(gpa, " '-c' ");
 +    try appendQuoted(&out, gpa, command);
 +    return out.toOwnedSlice(gpa);
 +}
 +
-+pub const Decision = union(enum) {
++const Decision = union(enum) {
 +    keep,
 +    /// New arguments JSON.
 +    rewrite: []u8,
 +    block: []const u8,
 +};
 +
++fn isAllowed(tool_name: []const u8) bool {
++    for (allowed_tools) |t| if (std.mem.eql(u8, t, tool_name)) return true;
++    return false;
++}
++
++/// A field that is absent, null or false.
++fn offOrAbsent(object: std.json.ObjectMap, name: []const u8) bool {
++    const v = object.get(name) orelse return true;
++    return switch (v) {
++        .null => true,
++        .bool => |b| !b,
++        else => false,
++    };
++}
++
 +/// The whole decision, separate from the hook plumbing so it can be tested.
-+pub fn decide(arena: std.mem.Allocator, state: *const State, tool_name: []const u8, arguments_json: []const u8) !Decision {
-+    const is_shell = std.mem.eql(u8, tool_name, "shell");
-+    const is_web = std.mem.eql(u8, tool_name, "web_fetch") or std.mem.eql(u8, tool_name, "web_search");
-+    if (!is_shell and !is_web) return .keep;
++fn decide(arena: std.mem.Allocator, state: *const State, tool_name: []const u8, arguments_json: []const u8) !Decision {
 +    if (state.problem) |p| return .{ .block = p };
-+    if (is_web) return .{ .block = "blackice: fx's own web tools run outside every blackice scope, so they are off. " ++
-+        "Use a shell command (for example curl) instead; it runs in a scope under the network policy." };
++    if (std.mem.eql(u8, tool_name, "web_fetch") or std.mem.eql(u8, tool_name, "web_search"))
++        return .{ .block = "blackice: fx's own web tools run outside every blackice scope, so they are off. " ++
++            "Use a shell command (for example curl) instead; it runs in a scope under the network policy." };
++    if (!isAllowed(tool_name))
++        return .{ .block = "blackice: this tool would act from fx itself, outside every blackice scope, so it is off in blackice mode." };
++    if (!std.mem.eql(u8, tool_name, "shell")) return .keep;
 +
 +    const parsed = std.json.parseFromSliceLeaky(std.json.Value, arena, arguments_json, .{}) catch
 +        return .{ .block = "blackice: the shell arguments are not a JSON object; the call was not run." };
@@ -153,27 +268,30 @@ index 0000000..e8c35be
 +    } else object.get("command") != null;
 +    if (!starts_command) return .keep;
 +
++    if (!offOrAbsent(object, "tty"))
++        return .{ .block = "blackice: tty sessions are off in blackice mode (fx's terminal bootstrap runs outside the scope). Run the command without tty." };
++    if (!offOrAbsent(object, "reload"))
++        return .{ .block = "blackice: reload is off in blackice mode; commands run in a clean shell with no startup files." };
++    if (object.get("shell")) |sv| if (sv != .null)
++        return .{ .block = "blackice: the shell field is off in blackice mode; commands run in a clean POSIX shell." };
++
 +    const command = switch (object.get("command") orelse return .{ .block = "blackice: a shell run needs a command." }) {
 +        .string => |s| s,
 +        else => return .{ .block = "blackice: the shell command must be a string." },
 +    };
 +    if (std.mem.findScalar(u8, command, 0) != null) return .{ .block = "blackice: the shell command holds a NUL byte." };
 +
-+    var shell_path: []const u8 = state.default_shell orelse "/bin/sh";
-+    if (object.get("shell")) |sv| switch (sv) {
-+        .null => {},
-+        .object => |so| {
-+            const path = so.get("path") orelse return .{ .block = "blackice: the shell field needs a path." };
-+            if (path != .string or shellKind(path.string) == null)
-+                return .{ .block = "blackice: only sh, bash and zsh (absolute path) are supported in blackice mode." };
-+            shell_path = path.string;
-+        },
-+        else => return .{ .block = "blackice: the shell field must be an object." },
++    const wrapped = wrapCommand(arena, state, state.default_shell orelse "/bin/sh", command) catch |err| switch (err) {
++        error.OutOfMemory => return error.OutOfMemory,
++        else => return .{ .block = "blackice: the call could not be prepared for a scope; it was not run." },
 +    };
-+
-+    const wrapped = try wrapCommand(arena, state, shell_path, command);
 +    try object.put(arena, "command", .{ .string = wrapped });
-+    const json = try std.fmt.allocPrint(arena, "{f}", .{std.json.fmt(std.json.Value{ .object = object }, .{})});
++    // fx's outer shell must not read startup files a scoped command could have edited.
++    try object.put(arena, "profile", .{ .string = "clean" });
++    _ = object.orderedRemove("shell");
++    _ = object.orderedRemove("reload");
++    _ = object.orderedRemove("tty");
++    const json = try arena.print("{f}", .{std.json.fmt(std.json.Value{ .object = object }, .{})});
 +    return .{ .rewrite = json };
 +}
 +
@@ -201,24 +319,25 @@ index 0000000..e8c35be
 +
 +fn testState() State {
 +    var s: State = .{};
-+    s.configure("/home/u/policy.json", "/usr/local/bin/blackice", "/bin/zsh");
++    s.configure("/home/example/policy.json", "/usr/local/bin/blackice", "/bin/zsh");
++    s.pin("{\"version\":\"blackice.policy/v0\"}");
++    s.fx_exe = "/home/example/.local/bin/fx";
 +    return s;
 +}
 +
-+test "a shell run is rewritten into a scope, quoting kept intact" {
++test "a shell run is rewritten into a pinned scope with a clean outer shell" {
 +    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
 +    defer arena_state.deinit();
 +    const arena = arena_state.allocator();
 +    const s = testState();
 +    const d = try decide(arena, &s, "shell",
-+        \\{"action":"run","command":"echo 'it''s' && curl -s https://example.com | head -1","cwd":"src"}
++        \\{"action":"run","command":"echo 'it''s' && curl -s https://example.com | head -1","cwd":"src","profile":"user"}
 +    );
-+    const json = d.rewrite;
-+    const v = try std.json.parseFromSliceLeaky(std.json.Value, arena, json, .{});
++    const v = try std.json.parseFromSliceLeaky(std.json.Value, arena, d.rewrite, .{});
 +    try testing.expectEqualStrings("src", v.object.get("cwd").?.string);
-+    try testing.expectEqualStrings(
-+        \\'/usr/local/bin/blackice' run --policy '/home/u/policy.json' -- '/bin/zsh' -f -c 'echo '\''it'\'''\''s'\'' && curl -s https://example.com | head -1'
-+    , v.object.get("command").?.string);
++    try testing.expectEqualStrings("clean", v.object.get("profile").?.string);
++    const want = try arena.print("'/usr/local/bin/blackice' run --policy-sha256 '{s}' --protect '/home/example/.local/bin/fx' --policy '/home/example/policy.json' -- '/bin/zsh' '-f' '-c' 'echo '\\''it'\\'''\\''s'\\'' && curl -s https://example.com | head -1'", .{&s.policy_sha256});
++    try testing.expectEqualStrings(want, v.object.get("command").?.string);
 +}
 +
 +test "a command without an action is still a run; interact and stop are kept" {
@@ -228,9 +347,23 @@ index 0000000..e8c35be
 +    const s = testState();
 +    try testing.expect((try decide(arena, &s, "shell", "{\"command\":\"ls\"}")) == .rewrite);
 +    try testing.expect((try decide(arena, &s, "shell", "{\"action\":null,\"command\":\"ls\"}")) == .rewrite);
++    const off = try decide(arena, &s, "shell", "{\"action\":\"run\",\"command\":\"ls\",\"tty\":false,\"reload\":false}");
++    try testing.expect(std.mem.find(u8, off.rewrite, "reload") == null);
 +    try testing.expect((try decide(arena, &s, "shell", "{\"action\":\"interact\",\"session_id\":\"shell-1\",\"chars\":\"y\\n\"}")) == .keep);
 +    try testing.expect((try decide(arena, &s, "shell", "{\"action\":\"stop\",\"session_id\":\"shell-1\"}")) == .keep);
-+    try testing.expect((try decide(arena, &s, "read_file", "{\"path\":\"a\"}")) == .keep);
++}
++
++test "only the listed tools run" {
++    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
++    defer arena_state.deinit();
++    const arena = arena_state.allocator();
++    const s = testState();
++    for ([_][]const u8{ "read_file", "write_file", "edit_file", "glob_files", "grep_files", "ask_user_question", "read_tool_result", "skill", "subagent" }) |t| {
++        try testing.expect((try decide(arena, &s, t, "{}")) == .keep);
++    }
++    for ([_][]const u8{ "web_fetch", "web_search", "install_skill", "mcp_select_tool", "capability_search", "vision", "mcp__github__create_issue", "some_new_tool", "" }) |t| {
++        try testing.expect((try decide(arena, &s, t, "{}")) == .block);
++    }
 +}
 +
 +test "unsafe or unknown shapes are blocked, never run unscoped" {
@@ -238,34 +371,42 @@ index 0000000..e8c35be
 +    defer arena_state.deinit();
 +    const arena = arena_state.allocator();
 +    const s = testState();
-+    try testing.expect((try decide(arena, &s, "web_fetch", "{\"url\":\"https://x.test\"}")) == .block);
-+    try testing.expect((try decide(arena, &s, "web_search", "{\"query\":\"x\"}")) == .block);
 +    try testing.expect((try decide(arena, &s, "shell", "{\"request\":{\"command\":\"ls\"}}")) == .block);
 +    try testing.expect((try decide(arena, &s, "shell", "{\"action\":\"run\",\"command\":[\"ls\"]}")) == .block);
 +    try testing.expect((try decide(arena, &s, "shell", "{\"action\":\"run\",\"command\":\"ls\\u0000x\"}")) == .block);
-+    try testing.expect((try decide(arena, &s, "shell", "{\"action\":\"run\",\"command\":\"ls\",\"shell\":{\"kind\":\"executable\",\"path\":\"/usr/bin/fish\"}}")) == .block);
++    try testing.expect((try decide(arena, &s, "shell", "{\"action\":\"run\",\"command\":\"ls\",\"tty\":true}")) == .block);
++    try testing.expect((try decide(arena, &s, "shell", "{\"action\":\"run\",\"command\":\"ls\",\"reload\":true}")) == .block);
++    try testing.expect((try decide(arena, &s, "shell", "{\"action\":\"run\",\"command\":\"ls\",\"reload\":\"yes\"}")) == .block);
++    try testing.expect((try decide(arena, &s, "shell", "{\"action\":\"run\",\"command\":\"ls\",\"shell\":{\"kind\":\"executable\",\"path\":\"/bin/bash\"}}")) == .block);
++    try testing.expect((try decide(arena, &s, "shell", "{\"action\":7,\"command\":\"ls\"}")) == .block);
 +    try testing.expect((try decide(arena, &s, "shell", "not json")) == .block);
-+    // An explicit POSIX shell is used as given.
-+    const d = try decide(arena, &s, "shell", "{\"action\":\"run\",\"command\":\"ls\",\"shell\":{\"kind\":\"executable\",\"path\":\"/bin/bash\"}}");
-+    try testing.expect(std.mem.find(u8, d.rewrite, "'/bin/bash' --noprofile --norc -c 'ls'") != null);
 +}
 +
 +test "misconfiguration fails closed" {
 +    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
 +    defer arena_state.deinit();
 +    const arena = arena_state.allocator();
-+    var s: State = .{};
-+    s.configure("relative/policy.json", null, null);
-+    try testing.expect(s.enabled);
-+    try testing.expect((try decide(arena, &s, "shell", "{\"command\":\"ls\"}")) == .block);
++    var rel: State = .{};
++    rel.configure("relative/policy.json", "/usr/local/bin/blackice", null);
++    try testing.expect(rel.enabled);
++    try testing.expect((try decide(arena, &rel, "shell", "{\"command\":\"ls\"}")) == .block);
++    try testing.expect((try decide(arena, &rel, "read_file", "{\"path\":\"a\"}")) == .block);
++    var no_bin: State = .{};
++    no_bin.configure("/p.json", null, null);
++    try testing.expect((try decide(arena, &no_bin, "shell", "{\"command\":\"ls\"}")) == .block);
 +    var off: State = .{};
 +    off.configure(null, null, null);
 +    try testing.expect(!off.enabled);
++    // Not pinned: no scope can be prepared, so the call is blocked.
++    var unpinned: State = .{};
++    unpinned.configure("/p.json", "/b/blackice", null);
++    try testing.expect((try decide(arena, &unpinned, "shell", "{\"command\":\"ls\"}")) == .block);
 +    // fish as $SHELL falls back to /bin/sh.
 +    var f: State = .{};
-+    f.configure("/p.json", null, "/usr/bin/fish");
++    f.configure("/p.json", "/b/blackice", "/usr/bin/fish");
++    f.pin("{}");
 +    const d = try decide(arena, &f, "shell", "{\"command\":\"ls\"}");
-+    try testing.expect(std.mem.find(u8, d.rewrite, "'blackice' run --policy '/p.json' -- '/bin/sh' -c 'ls'") != null);
++    try testing.expect(std.mem.find(u8, d.rewrite, "--policy '/p.json' -- '/bin/sh' '-c' 'ls'") != null);
 +}
 diff --git a/src/core/cli/cli_ask.zig b/src/core/cli/cli_ask.zig
 index b2fe6b1..e5ff336 100644
