@@ -129,6 +129,7 @@ the system resolver's sockets do not exist, so it cannot ask a system service to
 | Fixtures: immediate connect, fork and exec, TCP and both UDP modes on IPv4 and IPv6, migration, `systemd-run --user`, Docker socket, raw sockets, io_uring, `ping`, an SCTP connect, an unconnected ICMP `sendto`, `bind` and `listen`, DNS paths (`getent hosts`, `resolvectl query`, `busctl call org.freedesktop.resolve1`) | codex-linux | doing | |
 | End-to-end kernel deny with receipts, an off-host receiver that sees nothing per protocol and family, and an evidence entry: checks prepared, with receiver controls before and after each scoped stage (`scripts/e2e/linux-offhost.sh` and `scripts/evidence/offhost-*.py`); recorded in the P0-01 and P0-02 Linux entries | codex-linux | done | |
 | docs/linux.md | codex-linux | done | |
+| After a helper death, sweep the user's orphaned scopes (kill, wait, remove the cgroup, warn) at the next helper start and as a user command. Today the survivors keep the dead proxy's port, which another local program can listen on, and removing them needs root (P0-06 finding P6-1; R9 fails in this case) | codex-linux | todo | |
 | docs/threat-model.md | codex | done | |
 
 ## Evidence
@@ -142,6 +143,7 @@ the system resolver's sockets do not exist, so it cannot ask a system service to
 | linux-task-scope.R8 | probe | Reported by the Linux owner: the first helper build installed (SHA-256 `ef675825…`), Debian 13, no sudo during the run | The first scope launch failed closed: exit 125, `root_cgroup: PermissionDenied`, receipts `linux_helper_failure` and `linux_launch_refused`, and the command never ran. Cause: a chown before a chmod in the helper, fixed in a later build of PR #6. Not evidence for the deny checkpoints |
 | linux-task-scope.R4 | probe | Name lookup from a network namespace with only loopback (bubblewrap), Debian 13, kernel 6.12, without blackice code | TCP to a public address was unreachable, but `example.com` still resolved through systemd-resolved's world-writable Unix socket. With a tmpfs over `/run/systemd/resolve`, resolution failed. A network namespace alone does not close DNS |
 | linux-task-scope.R2 | probe | fx 0.0.16 in the same kind of network namespace, scripted local model, stand-in proxy | A direct `curl` from a tool could not resolve the host; through the stand-in proxy it arrived as `CONNECT example.com:443`. Uses a network namespace, not cgroup rules, so it shows the proxy route, not the kernel rule |
+| linux-task-scope.R2, linux-task-scope.R3 | entry | [P0-06 Linux](../../evidence/P0-06-faults-linux.md) | Launcher 5f84f67, helper 515ebfac, host and a VM with the same helper: every direct attempt refused under each fault, and no scoped connection left the host; after a helper kill, a survivor's connection to the scope's own proxy port reached another local program that had taken that port (P6-1); refusals made while the launcher was stopped got their receipts after it resumed; writes lost to a full disk counted in `scope_end`. The same entry shows R9 failing after a helper kill (see Tasks) |
 
 ## Terms
 
