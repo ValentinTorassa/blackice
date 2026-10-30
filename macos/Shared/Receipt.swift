@@ -46,8 +46,8 @@ struct Receipt: Encodable {
         return receipt
     }
 
-    private static func identityLabel(_ identity: SigningIdentity?) -> String {
-        guard let label = identity?.label else { return "unknown" }
+    private static func identityLabel(_ identity: IdentityResolution) -> String {
+        let label = identity.label
         // Keep both identities and name provenance within the core's 512-byte
         // detail cap. Long ASCII identifiers retain a hash of the complete label.
         return label.utf8.count <= 128 ? label : String(label.prefix(112)) + "...#" + digestID(Data(label.utf8))

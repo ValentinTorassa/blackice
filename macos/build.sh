@@ -17,7 +17,7 @@ case "$BUILD_ARCH" in arm64|x86_64) ;; *) echo 'Unsupported build architecture' 
 mkdir -p "$BUILD_DIR"
 BUILD_DIR="$(cd -- "$BUILD_DIR" && pwd)"
 APP_DIR="$BUILD_DIR/Blackice.app"
-EXTENSION_DIR="$APP_DIR/Contents/Library/SystemExtensions/com.blackice.app.filter.systemextension"
+EXTENSION_DIR="$APP_DIR/Contents/Library/SystemExtensions/com.valentorassa.blackice.filter.systemextension"
 # Do not leave an old signed bundle/provisioning profile under a fresh unsigned build.
 if [[ -e "$APP_DIR" ]]; then
     echo 'Output app already exists; choose a fresh build directory.' >&2
@@ -29,11 +29,11 @@ COMMON=(-sdk "$SDK_PATH" -target "$BUILD_ARCH-apple-macosx13.0" -swift-version 5
 SHARED=("$MACOS_SOURCE_DIR"/Shared/*.swift)
 xcrun swiftc "${COMMON[@]}" -module-name BlackiceFilter \
     "${SHARED[@]}" "$MACOS_SOURCE_DIR"/FilterExtension/*.swift \
-    -framework Foundation -framework CryptoKit -framework Network -framework NetworkExtension -framework Security \
+    -framework Foundation -framework CryptoKit -framework LocalAuthentication -framework Network -framework NetworkExtension -framework Security \
     -o "$EXTENSION_DIR/Contents/MacOS/BlackiceFilter"
 xcrun swiftc "${COMMON[@]}" -module-name BlackiceApp \
     "${SHARED[@]}" "$MACOS_SOURCE_DIR/Host/main.swift" \
-    -framework Foundation -framework CryptoKit -framework NetworkExtension -framework Security -framework SystemExtensions \
+    -framework Foundation -framework CryptoKit -framework LocalAuthentication -framework NetworkExtension -framework Security -framework SystemExtensions \
     -o "$APP_DIR/Contents/MacOS/BlackiceApp"
 cp "$MACOS_SOURCE_DIR/Resources/Host-Info.plist" "$APP_DIR/Contents/Info.plist"
 cp "$MACOS_SOURCE_DIR/Resources/Filter-Info.plist" "$EXTENSION_DIR/Contents/Info.plist"

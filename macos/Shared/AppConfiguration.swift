@@ -1,10 +1,10 @@
 import Foundation
 
 enum AppFilterConstants {
-    static let hostBundleID = "com.blackice.app"
-    static let extensionBundleID = "com.blackice.app.filter"
+    static let hostBundleID = "com.valentorassa.blackice"
+    static let extensionBundleID = "com.valentorassa.blackice.filter"
     static let configurationKey = "blackice.appscope.configuration"
-    static let logSubsystem = "com.blackice.app.filter"
+    static let logSubsystem = "com.valentorassa.blackice.filter"
 }
 
 struct AppBindingDocument: Codable {
@@ -69,6 +69,26 @@ struct SigningIdentity: Equatable {
     let signingID: String
     let teamID: String?
     var label: String { (teamID ?? "apple") + "/" + signingID }
+}
+
+enum IdentityResolution: Equatable {
+    case verified(SigningIdentity)
+    case adHoc
+    case unresolved
+    case invalidSignature
+
+    var verifiedIdentity: SigningIdentity? {
+        if case .verified(let identity) = self { return identity }
+        return nil
+    }
+    var label: String {
+        switch self {
+        case .verified(let identity): return identity.label
+        case .adHoc: return "adhoc"
+        case .unresolved: return "unknown"
+        case .invalidSignature: return "invalid_signature"
+        }
+    }
 }
 
 struct AppBinding {
@@ -144,9 +164,10 @@ final class SnapshotStore {
 struct FlowFacts {
     enum Direction { case inbound, outbound, unknown }
     let direction: Direction
-    let app: SigningIdentity?
-    let process: SigningIdentity?
+    let app: IdentityResolution
+    let process: IdentityResolution
     let supportedSocket: Bool
+    let isTCP: Bool
     let hostname: String?
     let ip: IPAddress?
     let port: UInt16?
@@ -157,6 +178,7 @@ struct AppDecision {
     let policy: String
     let generation: UInt32
     let decision: Decision
+    var requiredTLSHost: String? = nil
 }
 
 enum AppEvaluator {
@@ -168,22 +190,37 @@ enum AppEvaluator {
         func unbound(_ decision: Decision) -> AppDecision {
             AppDecision(scope: "app-unbound", policy: config.id, generation: config.generation, decision: decision)
         }
-        // This is an outbound app filter, not an inbound host firewall.
-        if flow.direction == .inbound { return unbound(Decision(allowed: true, reason: "outside_scope_inbound")) }
-        guard flow.direction == .outbound else {
+        guard flow.direction != .unknown else {
             return unbound(Decision(allowed: false, reason: "unknown_direction"))
         }
-        // Unknown/invalid/unsigned source apps NEVER inherit the unmatched allow.
-        guard let app = flow.app else { return unbound(Decision(allowed: false, reason: "unknown_app_identity")) }
+        // Only a positively identified ad hoc guest can use unmatched. Failed
+        // resolution or signed-code validation must never fall into this path.
+        if flow.app == .adHoc {
+            return unbound(Decision(allowed: config.unmatched == "allow", reason: "outside_scope_adhoc"))
+        }
+        guard let app = flow.app.verifiedIdentity else {
+            return unbound(Decision(allowed: false, reason: "unknown_app_identity"))
+        }
         guard let binding = config.apps.first(where: { $0.identity == app }) else {
-            return unbound(Decision(allowed: config.unmatched == "allow", reason: "outside_scope"))
+            return unbound(Decision(allowed: config.unmatched == "allow",
+                                   reason: flow.direction == .inbound ? "outside_scope_inbound" : "outside_scope"))
         }
         let decision: Decision
-        if !flow.supportedSocket {
+        if flow.direction == .inbound {
+            decision = Decision(allowed: false, reason: "inbound_not_allowed")
+        } else if !flow.supportedSocket {
             decision = Decision(allowed: false, reason: "unsupported_socket")
         } else {
             decision = binding.policy.evaluate(hostname: config.hostnameMode == "os-metadata" ? flow.hostname : nil,
                                                ip: flow.ip, port: flow.port)
+        }
+        if decision.allowed && decision.reason == "allowed_by_rule" {
+            guard flow.isTCP, let host = flow.hostname.flatMap(normalizeHost) else {
+                return AppDecision(scope: binding.scope, policy: binding.policy.id, generation: config.generation,
+                                   decision: Decision(allowed: false, reason: "domain_requires_tls_tcp"))
+            }
+            return AppDecision(scope: binding.scope, policy: binding.policy.id, generation: config.generation,
+                               decision: decision, requiredTLSHost: host)
         }
         return AppDecision(scope: binding.scope, policy: binding.policy.id, generation: config.generation, decision: decision)
     }
