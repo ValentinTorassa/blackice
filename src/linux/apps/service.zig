@@ -272,8 +272,7 @@ const Runtime = struct {
         errdefer r.closeListeners();
         // Reserve the ENTIRE range before any proxy starts, so a collision cannot produce partial arming.
         for (abi.first_port..abi.last_port + 1) |port| for (0..2) |family| {
-            const address: Io.net.IpAddress = if (family == 0) .{ .ip4 = .loopback(@intCast(port)) } else .{ .ip6 = .loopback(@intCast(port)) };
-            r.servers[(port - abi.first_port) * 2 + family] = address.listen(r.io, .{}) catch |err| {
+            r.servers[(port - abi.first_port) * 2 + family] = @import("listener.zig").listen(@intCast(port), family == 1) catch |err| {
                 var b: [128]u8 = undefined;
                 const detail = try std.fmt.bufPrint(&b, "loopback port={d} family={d}: {s}", .{ port, family + 4, @errorName(err) });
                 r.service_log.?.write(.{ .event = "app_filter_on_failed", .point = .app_filter, .reason = "listener_unavailable", .detail = detail });
