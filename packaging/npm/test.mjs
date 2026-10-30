@@ -9,6 +9,7 @@ import {
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
+import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import { platforms, prepare } from './prepare.mjs';
 import { pack } from './pack.mjs';
@@ -59,6 +60,23 @@ function launcher(f, args = [], options = {}) {
   });
 }
 
+test('source templates pin the owned namespace without stale platform identities', () => {
+  const main = load(new URL('./blackice/package.json', import.meta.url));
+  const platformNames = Object.fromEntries(platforms.map(p => [p.id, `@legios/blackice-${p.id}`]));
+  assert.equal(main.name, 'blackice');
+  assert.deepEqual(main.blackicePlatforms, platformNames);
+  assert.deepEqual(main.optionalDependencies,
+    Object.fromEntries(Object.values(platformNames).map(name => [name, main.version])));
+  for (const file of ['blackice/package.json', ...platforms.map(p => `platforms/${p.id}/package.json`)]) {
+    const raw = readFileSync(new URL(file, import.meta.url), 'utf8');
+    assert.doesNotMatch(raw, /@blackice\//, `${file}: unowned namespace in source template`);
+    const metadata = JSON.parse(raw);
+    if (file !== 'blackice/package.json') {
+      assert.equal(metadata.name, platformNames[file.split('/')[1]]);
+    }
+  }
+});
+
 test('all five manifests, exact pins and unchanged release bytes', t => {
   const f = fixture(t);
   const report = prepare(f);
@@ -105,6 +123,21 @@ test('CLI-only releases need no Linux helper or setup assets', t => {
   assert.equal(prepare(f).packages.length, 5);
 });
 
+test('Linux package READMEs verify separate release and checkout setup files without a sudo command', t => {
+  const f = fixture(t);
+  prepare(f);
+  for (const id of ['linux-x64', 'linux-arm64']) {
+    const readme = readFileSync(join(f.outDir, id, 'README.md'), 'utf8');
+    assert.ok(readme.includes('https://github.com/ValentinTorassa/blackice/releases/tag/v0.1.0'));
+    assert.ok(readme.includes('https://github.com/ValentinTorassa/blackice/blob/v0.1.0/docs/linux.md'));
+    for (const file of ['blackice-linux-helper-0.1.0-x86_64-linux', 'linux-setup.sh', 'linux-teardown.sh', 'scripts/linux-setup.sh', 'scripts/linux-teardown.sh']) {
+      assert.ok(readme.includes(`gh attestation verify ${file} --repo ValentinTorassa/blackice --signer-workflow ValentinTorassa/blackice/.github/workflows/release.yml`));
+    }
+    assert.doesNotMatch(readme, /^\s*sudo\b/m);
+    assert.match(readme, /Linux arm64 has no supported task scopes/);
+  }
+});
+
 test('scope, main name and version can change together without changing the command name', t => {
   const f = fixture(t, '1.2.3');
   prepare({ ...f, scope: '@example-native', name: '@example-native/cli' });
@@ -116,6 +149,27 @@ test('scope, main name and version can change together without changing the comm
   assert.deepEqual(pkg.blackicePlatforms, Object.fromEntries(platforms.map(p => [p.id, `@example-native/blackice-${p.id}`])));
   linkPlatform(f);
   assert.equal(launcher(f, ['exit', '19']).status, 19);
+});
+
+test('CLI --scope selects a different organization with prefixed platform package names', t => {
+  const f = fixture(t);
+  const result = spawnSync(process.execPath, [fileURLToPath(new URL('./prepare.mjs', import.meta.url)),
+    '--release-dir', f.releaseDir, '--out-dir', f.outDir, '--scope', '@blackice-sh'], { encoding: 'utf8' });
+  assert.equal(result.status, 0, result.stderr);
+  const main = load(join(f.outDir, 'blackice/package.json'));
+  assert.equal(main.name, 'blackice');
+  assert.deepEqual(main.blackicePlatforms,
+    Object.fromEntries(platforms.map(p => [p.id, `@blackice-sh/blackice-${p.id}`])));
+  linkPlatform(f);
+  assert.equal(launcher(f, ['exit', '17']).status, 17);
+});
+
+test('only stable X.Y.Z versions are accepted, without prerelease, build or whitespace suffixes', t => {
+  const f = fixture(t);
+  for (const version of ['0.1.0-beta.1', '0.1.0+build.1', 'v0.1.0', '0.1', '0.01.0', ' 0.1.0', '0.1.0\n']) {
+    assert.throws(() => prepare({ ...f, version }), /version must be a stable x\.y\.z version/);
+    assert.equal(existsSync(f.outDir), false);
+  }
 });
 
 test('modified bytes, missing/duplicate/path checksum entries and symlinks refuse before output', async t => {

@@ -53,7 +53,7 @@ function checksums(bytes, required, allowed) {
 }
 
 export function releaseManifest(releaseDir, version = '0.1.0') {
-  if (!/^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/.test(version) || version.length > 40) {
+  if (!/^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/.test(version) || version !== version.trim() || version.length > 40) {
     throw new Error('version must be a stable x.y.z version');
   }
   const source = realpathSync(releaseDir);
@@ -119,7 +119,29 @@ export function prepare({ releaseDir, outDir, version = '0.1.0', scope = '@legio
       const mappings = [[`blackice-${version}-${platform.target}`, 'bin/blackice']];
       let readme = `# ${pkg.name}\n\nNative blackice ${version} for ${platform.os}/${platform.cpu}. Installed by ${name}'s optional dependencies. No JavaScript or install scripts.\n`;
       if (platform.os === 'linux') {
-        readme += `\n## Separate Linux setup\n\nThis npm package contains the CLI only. The helper and setup scripts are not npm payloads. Obtain them separately from the [matching release](https://github.com/ValentinTorassa/blackice/releases/tag/v${version}) or its checkout. Linux arm64 has no supported task scopes until a reviewed helper and runtime evidence exist for that CPU.\n\nFor a release that provides a reviewed x86_64 helper, verify the downloaded files before following the [manual setup instructions](https://github.com/ValentinTorassa/blackice/blob/v${version}/packaging/npm/README.md#manual-linux-setup):\n\n\`\`\`sh\ngh attestation verify blackice-linux-helper-${version}-x86_64-linux --repo ValentinTorassa/blackice --signer-workflow ValentinTorassa/blackice/.github/workflows/release.yml --source-ref refs/tags/v${version}\ngh attestation verify linux-setup.sh --repo ValentinTorassa/blackice --signer-workflow ValentinTorassa/blackice/.github/workflows/release.yml --source-ref refs/tags/v${version}\ngh attestation verify linux-teardown.sh --repo ValentinTorassa/blackice --signer-workflow ValentinTorassa/blackice/.github/workflows/release.yml --source-ref refs/tags/v${version}\n\`\`\`\n\nThe setup digest must come from the independently verified release manifest, never from npm. Review the separate setup procedure yourself. No setup, privilege change or lifecycle script runs during npm installation.\n`;
+        const verification = file => `gh attestation verify ${file} --repo ValentinTorassa/blackice --signer-workflow ValentinTorassa/blackice/.github/workflows/release.yml --source-ref refs/tags/v${version} --deny-self-hosted-runners`;
+        readme += `
+## Separate Linux setup
+
+This npm package contains the CLI only. The helper and setup scripts are not npm payloads. Obtain them separately from the [matching release](https://github.com/ValentinTorassa/blackice/releases/tag/v${version}) or its checkout. Linux arm64 has no supported task scopes until a reviewed helper and runtime evidence exist for that CPU.
+
+For a release that provides a reviewed x86_64 helper, verify the downloaded files before following [docs/linux.md](https://github.com/ValentinTorassa/blackice/blob/v${version}/docs/linux.md). Run these checks from the release download directory:
+
+\`\`\`sh
+${verification(`blackice-linux-helper-${version}-x86_64-linux`)}
+${verification('linux-setup.sh')}
+${verification('linux-teardown.sh')}
+\`\`\`
+
+The release publishes the scripts as flat assets. If using their copies in the matching source checkout, verify those exact files from the checkout root as well:
+
+\`\`\`sh
+${verification('scripts/linux-setup.sh')}
+${verification('scripts/linux-teardown.sh')}
+\`\`\`
+
+The setup digest must come from the independently verified release manifest, never from npm. Review the separate setup procedure yourself. No setup, privilege change or lifecycle script runs during npm installation.
+`;
       }
       readme += '\n| Release asset | Installed path | SHA-256 |\n| --- | --- | --- |\n';
       for (const [asset, destination] of mappings) {
