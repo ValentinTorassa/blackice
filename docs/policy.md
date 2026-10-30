@@ -12,6 +12,7 @@ This document describes `blackice.policy/v0` and the experimental `blackice.sand
   "network": {
     "mode": "allowlist",
     "allow": ["api.example.com", "*.packages.example"],
+    "ports": [80, 443],
     "subnets": {
       "allow": ["10.20.0.0/16"],
       "deny": ["10.20.10.0/24"]
@@ -20,7 +21,7 @@ This document describes `blackice.policy/v0` and the experimental `blackice.sand
 }
 ```
 
-The sample uses documentation names and addresses. Unknown fields, duplicate JSON fields, unknown modes and unsupported versions are errors. The native CLI reads at most 1 MiB.
+The sample uses documentation names and addresses. Unknown fields, duplicate JSON fields, unknown modes and unsupported versions are errors. The native CLI reads at most 1 MiB. `network.ports` defaults to `[80,443]`; an explicit list must contain at least one port between 1 and 65535. Every connection must pass `checkPort` as well as its destination checks, including subnet allows and temporary grants. A successful port check alone grants no destination access.
 
 | Mode | Destination behavior |
 | --- | --- |
@@ -71,9 +72,9 @@ const native = try imported.policyForBackend(qualified_capabilities, &diagnostic
 _ = native;
 ```
 
-The returned JSON and policy pointer borrow the `Import` lifetime. Keep it alive while evaluating the policy. It owns the backing JSON required by the current core parser.
+The returned JSON and policy pointer borrow the `Import` lifetime. Keep it alive while evaluating the policy. The core policy owns its parsed input, and the importer retains the canonical generated JSON for review/export.
 
-Every candidate requires `native_scope` and `dns_policy`. Domain permissions also require `bound_tls_domains`; address rules require `ipv4_cidrs`. Any granted access requires `local_ceiling_acknowledged`, an explicit acknowledgement of blackice's additional local restrictions. A missing requirement returns `MissingCapability` before a policy pointer is returned. Passing this gate does not arm a backend: the launch transaction must still acknowledge attachment before executing workload code.
+Every candidate requires `native_scope` and `dns_policy`. Domain permissions also require `bound_tls_domains`; address rules require `ipv4_cidrs`. Any granted access requires `destination_ports` and `local_ceiling_acknowledged`. The latter explicitly acknowledges blackice's additional local address restrictions and destination-port ceiling of 80/443. Every candidate writes `ports: [80,443]` explicitly rather than inheriting a core default; this restriction is local, not part of the upstream input. A missing requirement returns `MissingCapability` before a policy pointer is returned. Passing this gate does not arm a backend: the launch transaction must still acknowledge attachment before executing workload code.
 
 These flags are integration requirements, not an implemented capability detector. The current tests use synthetic flags to exercise both refusal and success paths. No native backend is marked qualified by this module.
 

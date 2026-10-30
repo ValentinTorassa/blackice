@@ -8,6 +8,6 @@ Run from the repository root:
 zig test src/core/sandbox_import.zig
 ```
 
-Accepted cases check normalized names and selected destination decisions. Rejected cases cover unsupported handling, unknown/duplicate fields, wildcard forms, invalid names and noncanonical or unsupported CIDRs. Additional Zig tests cover the activation capability gate, input-buffer lifetime, parser bounds and every allocation-failure point.
+Accepted cases check normalized names, selected destination decisions and the local destination-port ceiling. Rejected cases cover unsupported handling, unknown/duplicate fields, wildcard forms (including `*` and `www.*.com`), invalid names and noncanonical or unsupported CIDRs. Additional Zig tests cover the activation capability gate, explicit port-ceiling export and acknowledgement, input-buffer lifetime, parser bounds and every allocation-failure point.
 
 The capability flags used in these tests are synthetic. Results establish software conversion behavior only; they are not Vercel-cloud comparisons, kernel-enforcement tests or native release evidence. See [the policy contract](../../docs/policy.md) for source references and supported scope.

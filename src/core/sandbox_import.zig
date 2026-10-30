@@ -19,6 +19,8 @@ pub const source_commit = "8c996641a6ceac3a186ee45d9af0e1c8fcfd4d31";
 pub const max_input_bytes = 64 * 1024;
 pub const max_entries = 256;
 pub const max_depth = 8;
+/// Explicit local restriction on every generated candidate; never inherit a changing core default.
+pub const local_port_ceiling = [_]u16{ 80, 443 };
 
 pub const Error = error{
     InputTooLarge,
@@ -47,6 +49,7 @@ pub const Diagnostic = struct {
 pub const Requirements = struct {
     bound_tls_domains: bool,
     ipv4_cidrs: bool,
+    destination_ports: bool,
     local_ceiling_acknowledged: bool,
 };
 
@@ -59,7 +62,9 @@ pub const Capabilities = struct {
     bound_tls_domains: bool = false,
     /// Independent IPv4 range allows, deny precedence and IPv4-mapped IPv6 normalization.
     ipv4_cidrs: bool = false,
-    /// The operator explicitly accepts blackice's additional local/private-address ceiling.
+    /// Every connection checks the candidate's destination ports, including subnet allows and grants.
+    destination_ports: bool = false,
+    /// The operator explicitly accepts blackice's local address restrictions and 80/443 port ceiling.
     local_ceiling_acknowledged: bool = false,
 };
 
@@ -71,7 +76,7 @@ pub const Import = struct {
     source_digest_hex: [64]u8,
 
     pub fn deinit(self: *Import) void {
-        // Policy source/rule strings can borrow _json, so destroy them before the backing storage.
+        // The policy owns its parsed input; retain the canonical JSON separately for review/export.
         self._policy.deinit();
         self.allocator.free(self._json);
         self.* = undefined;
@@ -94,6 +99,8 @@ pub const Import = struct {
             return fail(diag, "$capabilities.bound_tls_domains", "TLS domain and destination-binding semantics are not qualified", error.MissingCapability);
         if (self.requirements.ipv4_cidrs and !caps.ipv4_cidrs)
             return fail(diag, "$capabilities.ipv4_cidrs", "independent CIDR semantics are not qualified", error.MissingCapability);
+        if (self.requirements.destination_ports and !caps.destination_ports)
+            return fail(diag, "$capabilities.destination_ports", "destination-port enforcement is not qualified", error.MissingCapability);
         if (self.requirements.local_ceiling_acknowledged and !caps.local_ceiling_acknowledged)
             return fail(diag, "$capabilities.local_ceiling_acknowledged", "additional local restrictions need explicit acknowledgement", error.MissingCapability);
         return &self._policy;
@@ -171,6 +178,9 @@ fn subnet(a: Allocator, raw: []const u8, diag: ?*Diagnostic) Error![]const u8 {
         if (!std.ascii.isDigit(c))
             return fail(diag, "$.subnets", "prefix must contain decimal digits only", error.InvalidSubnet);
     }
+    // The core normalizes mapped IPv6 CIDRs to IPv4. Subset v1 rejects their source syntax too.
+    if (std.mem.findScalar(u8, raw[0..slash], ':') != null)
+        return fail(diag, "$.subnets", "IPv6 CIDR import is outside subset v1", error.UnsupportedSubnet);
     const cidr = policy.Cidr.parse(raw) catch
         return fail(diag, "$.subnets", "invalid CIDR", error.InvalidSubnet);
     if (!cidr.is_ip4)
@@ -287,6 +297,7 @@ pub fn convert(gpa: Allocator, bytes: []const u8, diag: ?*Diagnostic) Error!Impo
             .mode = if (has_access) "allowlist" else "deny-all",
             .allow = names.items,
             .subnets = .{ .allow = allows.items, .deny = denies.items },
+            .ports = local_port_ceiling,
         },
     };
     const json = try std.json.Stringify.valueAlloc(gpa, output, .{});
@@ -305,6 +316,7 @@ pub fn convert(gpa: Allocator, bytes: []const u8, diag: ?*Diagnostic) Error!Impo
         .requirements = .{
             .bound_tls_domains = names.items.len != 0,
             .ipv4_cidrs = allows.items.len != 0 or denies.items.len != 0,
+            .destination_ports = has_access,
             .local_ceiling_acknowledged = has_access,
         },
     };
@@ -317,11 +329,12 @@ const test_caps: Capabilities = .{
     .dns_policy = true,
     .bound_tls_domains = true,
     .ipv4_cidrs = true,
+    .destination_ports = true,
     .local_ceiling_acknowledged = true,
 };
 
 test "versioned acceptance and rejection vectors" {
-    const Query = struct { kind: enum { host, literal, resolved }, value: []const u8, allowed: bool };
+    const Query = struct { kind: enum { host, literal, resolved, port }, value: []const u8, allowed: bool };
     const Case = struct {
         id: []const u8,
         input: []const u8,
@@ -361,6 +374,7 @@ test "versioned acceptance and rejection vectors" {
                 .host => p.checkHost(query.value),
                 .literal => p.checkLiteral(try std.Io.net.IpAddress.parse(query.value, 0)),
                 .resolved => p.checkResolved(try std.Io.net.IpAddress.parse(query.value, 0)),
+                .port => p.checkPort(try std.fmt.parseInt(u16, query.value, 10)),
             };
             if (verdict.allowed != query.allowed) std.debug.print("vector {s}, query {s}\n", .{ case.id, query.value });
             try testing.expectEqual(query.allowed, verdict.allowed);
@@ -373,7 +387,7 @@ test "conversion never implies qualified activation" {
     defer imported.deinit();
     var caps: Capabilities = .{};
     var diag: Diagnostic = .{};
-    const checks = .{ "native_scope", "dns_policy", "bound_tls_domains", "ipv4_cidrs", "local_ceiling_acknowledged" };
+    const checks = .{ "native_scope", "dns_policy", "bound_tls_domains", "ipv4_cidrs", "destination_ports", "local_ceiling_acknowledged" };
     inline for (checks) |field| {
         try testing.expectError(error.MissingCapability, imported.policyForBackend(caps, &diag));
         try testing.expectEqualStrings("$capabilities." ++ field, diag.path);
@@ -388,6 +402,18 @@ test "deny-all still requires native and DNS enforcement" {
     try testing.expectError(error.MissingCapability, imported.policyForBackend(.{ .native_scope = true }, null));
     const p = try imported.policyForBackend(.{ .native_scope = true, .dns_policy = true }, null);
     try testing.expect(!p.checkHost("example.com").allowed);
+}
+
+test "review candidate records the acknowledged local port ceiling" {
+    var imported = try convert(testing.allocator, "{\"allow\":[\"api.example.com\"]}", null);
+    defer imported.deinit();
+    try testing.expect(std.mem.find(u8, imported.candidateJson(), "\"ports\":[80,443]") != null);
+    var caps = test_caps;
+    caps.local_ceiling_acknowledged = false;
+    try testing.expectError(error.MissingCapability, imported.policyForBackend(caps, null));
+    caps.local_ceiling_acknowledged = true;
+    const p = try imported.policyForBackend(caps, null);
+    try testing.expectEqualSlices(u16, &local_port_ceiling, p.ports);
 }
 
 test "owned candidate survives input destruction and record-form escaping" {

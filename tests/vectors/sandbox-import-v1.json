@@ -131,6 +131,26 @@
           "kind": "host",
           "value": "other.example.com",
           "allowed": false
+        },
+        {
+          "kind": "port",
+          "value": "80",
+          "allowed": true
+        },
+        {
+          "kind": "port",
+          "value": "443",
+          "allowed": true
+        },
+        {
+          "kind": "port",
+          "value": "22",
+          "allowed": false
+        },
+        {
+          "kind": "port",
+          "value": "8443",
+          "allowed": false
         }
       ]
     },
@@ -205,6 +225,26 @@
         {
           "kind": "literal",
           "value": "203.0.113.10",
+          "allowed": false
+        },
+        {
+          "kind": "port",
+          "value": "80",
+          "allowed": true
+        },
+        {
+          "kind": "port",
+          "value": "443",
+          "allowed": true
+        },
+        {
+          "kind": "port",
+          "value": "22",
+          "allowed": false
+        },
+        {
+          "kind": "port",
+          "value": "8443",
           "allowed": false
         }
       ]
