@@ -1,6 +1,7 @@
 import Foundation
 import NetworkExtension
 import SystemExtensions
+import os
 
 func fail(_ message: String) -> Never {
     FileHandle.standardError.write(Data((message + "\n").utf8))
@@ -29,6 +30,30 @@ func requireSignedHost() {
           identity.signingID == AppFilterConstants.hostBundleID else {
         fail("built, unsigned: activation and preference changes require the provisioned Developer ID host")
     }
+}
+
+func withOwnerPresence(_ action: HostAction, perform: @escaping () -> Void) {
+    requireSignedHost()
+    let parent = getppid() // Audit only; never used as authorization evidence.
+    PresenceGate.perform(action, using: SystemPresenceAuthenticator(), denied: {
+        auditControl(action, parent: parent, approved: false)
+        fail("user_presence_required_or_cancelled")
+    }, authorized: {
+        DispatchQueue.main.async {
+            auditControl(action, parent: parent, approved: true)
+            perform()
+        }
+    })
+}
+
+func auditControl(_ action: HostAction, parent: pid_t, approved: Bool) {
+    var receipt = Receipt(scope: "app-control", policy: "unavailable", generation: 0,
+                          point: "control", event: "owner_authentication")
+    receipt.verdict = approved ? "allow" : "deny"
+    receipt.reason = approved ? "user_presence_confirmed" : "user_presence_refused"
+    receipt.detail = "backend=network_extension;action=\(action.rawValue);parent_pid=\(parent)"
+    let logger = Logger(subsystem: AppFilterConstants.logSubsystem, category: "control")
+    if let line = try? receipt.jsonLine() { logger.notice("\(line, privacy: .public)") }
 }
 
 func loadManager(_ body: @escaping (NEFilterManager) -> Void) {
@@ -74,7 +99,8 @@ BlackiceApp (unsigned build and qualified deployment helper)
   disable
   remove-config
   deactivate
-The last five commands require Developer ID signing, entitlements and user consent.
+The last five commands require Developer ID signing, entitlements and fresh user authentication.
+enable updates an existing configuration in place with a strictly higher generation.
 An enabled preference is not a verified enforcement status.
 """
 
@@ -117,60 +143,75 @@ do {
         FileHandle.standardOutput.write(Data([10]))
         exit(0)
     case "activate" where args.count == 1:
-        requireSignedHost()
-        let request = OSSystemExtensionRequest.activationRequest(forExtensionWithIdentifier: AppFilterConstants.extensionBundleID,
-                                                                queue: .main)
-        request.delegate = delegate
-        OSSystemExtensionManager.shared.submitRequest(request)
+        withOwnerPresence(.activate) {
+            let request = OSSystemExtensionRequest.activationRequest(forExtensionWithIdentifier: AppFilterConstants.extensionBundleID,
+                                                                    queue: .main)
+            request.delegate = delegate
+            OSSystemExtensionManager.shared.submitRequest(request)
+        }
     case "enable" where args.count == 2:
         let data = try readBounded(args[1])
-        _ = try AppConfiguration(data: data)
-        requireSignedHost()
-        loadManager { manager in
-            guard !manager.isEnabled else { fail("disable_before_reconfiguration: existing flows are not revoked") }
-            let provider = NEFilterProviderConfiguration()
-            provider.filterSockets = true
-            provider.filterPackets = false
-            provider.filterDataProviderBundleIdentifier = AppFilterConstants.extensionBundleID
-            provider.vendorConfiguration = [AppFilterConstants.configurationKey: data]
-            manager.providerConfiguration = provider
-            manager.localizedDescription = "blackice app filter"
-            manager.isEnabled = true
-            manager.saveToPreferences { error in
-                guard error == nil else { fail("filter_preferences_save_failed") }
-                output(["state": "preferences_saved", "enforcement_verified": false,
-                        "next": "verify provider acknowledgement and real new-flow enforcement"])
-                exit(0)
+        let candidate = try AppConfiguration(data: data)
+        withOwnerPresence(.enable) {
+            loadManager { manager in
+                do {
+                    var current: AppConfiguration?
+                    if let existing = manager.providerConfiguration {
+                        guard let saved = existing.vendorConfiguration?[AppFilterConstants.configurationKey] as? Data else {
+                            fail("invalid_saved_configuration")
+                        }
+                        current = try AppConfiguration(data: saved)
+                    }
+                    try ConfigurationUpdate.validate(candidate, replacing: current)
+                } catch { fail("update_requires_valid_higher_generation") }
+                let provider = NEFilterProviderConfiguration()
+                provider.filterSockets = true
+                provider.filterPackets = false
+                provider.filterDataProviderBundleIdentifier = AppFilterConstants.extensionBundleID
+                provider.vendorConfiguration = [AppFilterConstants.configurationKey: data]
+                manager.providerConfiguration = provider
+                manager.localizedDescription = "blackice app filter"
+                manager.isEnabled = true
+                manager.saveToPreferences { error in
+                    guard error == nil else { fail("filter_preferences_save_failed") }
+                    output(["state": "preferences_saved", "enforcement_verified": false,
+                            "generation": candidate.generation, "existing_flows": "not_revoked",
+                            "next": "verify provider acknowledgement and real new-flow enforcement"])
+                    exit(0)
+                }
             }
         }
     case "disable" where args.count == 1:
-        requireSignedHost()
-        loadManager { manager in
-            guard manager.providerConfiguration != nil else { fail("no_owned_configuration") }
-            manager.isEnabled = false
-            manager.saveToPreferences { error in
-                guard error == nil else { fail("filter_disable_failed") }
-                output(["state": "disabled_preferences_saved", "enforcement_verified": false]); exit(0)
+        withOwnerPresence(.disable) {
+            loadManager { manager in
+                guard manager.providerConfiguration != nil else { fail("no_owned_configuration") }
+                manager.isEnabled = false
+                manager.saveToPreferences { error in
+                    guard error == nil else { fail("filter_disable_failed") }
+                    output(["state": "disabled_preferences_saved", "enforcement_verified": false]); exit(0)
+                }
             }
         }
     case "remove-config" where args.count == 1:
-        requireSignedHost()
-        loadManager { manager in
-            guard !manager.isEnabled else { fail("disable_before_removal") }
-            guard manager.providerConfiguration != nil else { fail("no_owned_configuration") }
-            manager.removeFromPreferences { error in
-                guard error == nil else { fail("filter_remove_failed") }
-                output(["state": "owned_configuration_removed", "enforcement_verified": false]); exit(0)
+        withOwnerPresence(.removeConfiguration) {
+            loadManager { manager in
+                guard !manager.isEnabled else { fail("disable_before_removal") }
+                guard manager.providerConfiguration != nil else { fail("no_owned_configuration") }
+                manager.removeFromPreferences { error in
+                    guard error == nil else { fail("filter_remove_failed") }
+                    output(["state": "owned_configuration_removed", "enforcement_verified": false]); exit(0)
+                }
             }
         }
     case "deactivate" where args.count == 1:
-        requireSignedHost()
-        loadManager { manager in
-            guard !manager.isEnabled else { fail("disable_before_deactivation") }
-            let request = OSSystemExtensionRequest.deactivationRequest(forExtensionWithIdentifier: AppFilterConstants.extensionBundleID,
-                                                                      queue: .main)
-            request.delegate = delegate
-            OSSystemExtensionManager.shared.submitRequest(request)
+        withOwnerPresence(.deactivate) {
+            loadManager { manager in
+                guard !manager.isEnabled else { fail("disable_before_deactivation") }
+                let request = OSSystemExtensionRequest.deactivationRequest(forExtensionWithIdentifier: AppFilterConstants.extensionBundleID,
+                                                                          queue: .main)
+                request.delegate = delegate
+                OSSystemExtensionManager.shared.submitRequest(request)
+            }
         }
     default: fail(usage)
     }

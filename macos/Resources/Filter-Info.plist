@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
-    <key>CFBundleIdentifier</key><string>com.blackice.app.filter</string>
+    <key>CFBundleIdentifier</key><string>com.valentorassa.blackice.filter</string>
     <key>CFBundleExecutable</key><string>BlackiceFilter</string>
     <key>CFBundleName</key><string>BlackiceFilter</string>
     <key>CFBundleDisplayName</key><string>Blackice App Filter</string>

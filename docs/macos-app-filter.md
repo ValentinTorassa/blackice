@@ -33,7 +33,7 @@ The output is:
 Blackice.app/Contents/
   Info.plist
   MacOS/BlackiceApp
-  Library/SystemExtensions/com.blackice.app.filter.systemextension/Contents/
+  Library/SystemExtensions/com.valentorassa.blackice.filter.systemextension/Contents/
     Info.plist
     MacOS/BlackiceFilter
 ```
@@ -46,25 +46,41 @@ it does not authorize a Network Extension. The build script never invokes
 
 ## Application identity and policy
 
-`NEFilterDataProvider.handleNewFlow` evaluates new outbound IPv4/IPv6 TCP/UDP
+`NEFilterDataProvider.handleNewFlow` evaluates new IPv4/IPv6 TCP/UDP
 socket flows. It takes an immutable configuration snapshot, resolves the OS
 source-app audit token through `SecCodeCopyGuestWithAttributes`, checks dynamic
-code validity against an Apple signing anchor, and verifies the signing
-identifier and certificate Team ID. A path, bundle display name or PID alone
+code validity, and reads signing metadata and runtime status from that dynamic
+code object. Team-signed bindings additionally require an Apple signing anchor,
+the exact signing identifier and certificate Team ID. A path, bundle display name or PID alone
 never authorizes an app. There is no positive identity cache or parent scan.
 
-Bindings require an exact `team_id` and `signing_id` pair. Unknown, unsigned,
-ad hoc, invalid or no-longer-resolvable source-app identities are denied even
-when the configured unmatched action is `allow`. Apple platform processes
-without a Team ID can be verified as known but cannot be explicitly enrolled by
-this version's Team ID binding format. Other known identities follow the
-explicit `unmatched` action and receive `outside_scope` receipts.
+Bindings require an exact `team_id` and `signing_id` pair. OS-confirmed valid ad
+hoc code without a Team ID cannot match a binding: it follows `unmatched`, with
+reason `outside_scope_adhoc`, including loopback. This keeps Homebrew tools,
+locally built Zig/Go/Rust tools and the blackice proxy reachable when unmatched
+traffic is allowed. Missing/unresolvable tokens, invalid dynamic signatures and
+failed Team-ID validation still deny as `unknown_app_identity`; an invalidated
+signed app never falls back to unmatched allow. Truly unsigned code for which
+Security cannot establish a valid ad hoc identity also denies. Apple platform
+processes without a Team ID can be verified as known but cannot be enrolled by
+this binding format. Other verified identities follow the explicit `unmatched`
+action. Inbound flows resolve identity too: a bound app always denies with
+`inbound_not_allowed`; a verified unbound app follows `unmatched` with
+`outside_scope_inbound` (ad hoc flows retain `outside_scope_adhoc`).
+
+See Apple's [signing-information API](https://developer.apple.com/documentation/security/seccodecopysigninginformation(_:_:_:))
+for dynamic-code information and its requirement to validate before trusting
+the metadata. The resolver checks dynamic validity both before interpreting
+flags and against the exact signed identity before binding it.
 
 Source application and source process are recorded separately. A service may
 create a connection for another app; its process identity does not replace the
 source-app selector. See Apple's [audit token properties](https://developer.apple.com/documentation/networkextension/nefilterflow).
 Helpers, interpreters and delegated traffic must be tested independently; a
-binding to an app does not imply all descendants have that identity.
+binding to an app does not imply all descendants have that identity. With
+`unmatched: allow`, a bound app can launch an unbound Electron Helper, shell,
+`curl` or ad hoc executable whose traffic escapes that binding. This is especially
+relevant to agents with shell tools; app scope is not process-tree confinement.
 
 The network policy remains `blackice.policy/v0`, as defined in
 `src/core/policy.zig`. It supports `deny-all`, `allow-all`, `allowlist`, exact
@@ -196,8 +212,9 @@ The provider validates the full candidate before installing a snapshot under a
 lock. During a provider lifetime, a lower generation, or a different snapshot
 at the same generation, is rejected. Invalid updates retain the last valid
 snapshot. An invalid startup configuration fails startup; callbacks without a
-snapshot deny. Generation monotonicity is in memory only; durable rollback
-protection is not implemented.
+snapshot deny while the provider runs. The host also requires a generation
+strictly above the saved configuration for every replacement. Neither check is
+durable rollback protection against deleting preferences or reinstalling.
 
 ## Destination coverage
 
@@ -206,16 +223,33 @@ protection is not implemented.
 | Mode | Behavior |
 | --- | --- |
 | `ip-only` | Uses numeric socket endpoints and CIDRs. Rejects policies containing domain entries. |
-| `os-metadata` | Uses `remoteHostname` when supplied, then checks the actual numeric endpoint. Without a name, uses IP-literal policy. |
+| `os-metadata` | Uses `remoteHostname` and the actual numeric endpoint. Domain-rule allows require TCP and a first TLS ClientHello whose SNI exactly matches that hostname. Without a name, uses IP-literal policy. |
 
-The hostname is optional OS metadata, not an authenticated remote-service
-identity. Apple's SDK documents it for flows from Network.framework and
-NSURLSession. There is no DNS correlation, reverse lookup, SNI/HTTP inspection
-or TLS certificate verification. A missing name cannot satisfy a domain rule;
-a name without a numeric destination cannot authorize the flow. Malformed or
-unsupported required data denies. Domain policies cannot promise universal
-coverage or protection against a client supplying misleading hostname metadata.
+The hostname is optional OS metadata. Apple's SDK documents it for flows from
+Network.framework and NSURLSession. A missing name cannot satisfy a domain rule;
+a name without a numeric destination cannot authorize the flow. There is no DNS
+correlation or reverse lookup. Malformed or unsupported required data denies.
 See [`remoteHostname`](https://developer.apple.com/documentation/networkextension/nefiltersocketflow/remotehostname).
+
+An allow based on a domain rule first requests outbound data inspection and
+keeps `passBytes` at zero. The first complete TLS record must contain a parseable
+ClientHello with one SNI matching the normalized metadata host exactly, even if
+another host matches the same wildcard rule. Plain HTTP (`not_tls`), no SNI
+(`sni_missing`), another SNI (`sni_mismatch`) and malformed/unsupported TLS
+(`tls_unparsed`) deny with a receipt. UDP/QUIC cannot satisfy a domain decision
+(`domain_requires_tls_tcp`). IP/subnet decisions do not depend on SNI and can
+permit UDP. No allow receipt is emitted while TLS inspection is pending.
+
+Peeks are bounded to 16,384 bytes per flow, 256 pending flows and 10 seconds
+(timeouts are swept once a second). TCP callback slices can be reassembled, but
+a ClientHello split across TLS records, duplicate extensions and ECH are rejected.
+ECH's visible outer name cannot authorize a hidden inner name. Pending handshakes
+are dropped on a policy change; capacity exhaustion and timeout deny. Only the
+bounded initial handshake is held transiently, never logged or written to disk.
+The TCP connection handshake can occur before payload approval. This check
+prevents switching the initial SNI or sending plaintext HTTP after a domain allow;
+it does not validate TLS certificates, decrypt later HTTP Host/`:authority`, or
+prevent routing/coalescing within a connection accepted under the same SNI.
 
 The native settings request callback delivery for normal traffic and explicitly
 include loopback rules for `127/8`, `::1` and IPv4-mapped loopback. Apple's
@@ -223,12 +257,28 @@ include loopback rules for `127/8`, `::1` and IPv4-mapped loopback. Apple's
 defaults do not filter loopback. These rules still require real signed-run
 qualification, including all loopback aliases and VPN interactions.
 
-An allowed flow is allowed for its remaining lifetime. This implementation does
-not inspect data or revoke already allowed sockets when policy changes. Traffic
-that predates activation is unverified. Inbound flows are explicitly outside
-scope. Unsupported socket families/protocols delivered for an enrolled app deny;
-traffic not delivered by the OS cannot be claimed as covered. Local IPC, file
-access, app tamper resistance and full descendant containment are separate gaps.
+After approval, a flow is allowed for its remaining lifetime. Already allowed
+sockets are not revoked on policy changes; traffic predating activation is
+unverified. Delivered inbound flows for a bound app deny. Unsupported socket
+families/protocols delivered for a bound app also deny, but this socket filter
+does not provide ICMP/unprivileged ping or other non-TCP/UDP coverage. Traffic
+not delivered to the provider bypasses these decisions; this is not a packet
+filter. Local IPC, file access and app tamper resistance are separate gaps.
+
+System DNS lookups can leave through `mDNSResponder` under its own identity.
+A bound app's DNS query names can therefore leave despite its network policy;
+names such as `<data>.attacker.example` are an exfiltration channel. There is no
+DNS proxy or delegated-DNS enforcement here. Helper/process identity gaps and
+DNS must be covered separately before claiming confinement.
+
+**When no provider is running, this backend does not filter traffic.** That
+includes a failed `startFilter`, a crash before relaunch, disable/deactivation
+and any OS-driven interruption. Denial inside a callback is not a system-wide
+fail-closed guarantee. Updates keep the filter enabled rather than deliberately
+disabling it, but availability across an OS update/restart is unqualified.
+`status` cannot yet establish enforcement health. Future launch integration must
+refuse to launch a bound app until the provider acknowledges the exact policy
+generation, and must address loss of that acknowledgement/enforcement.
 
 ## Receipts and status
 
@@ -255,8 +305,14 @@ so both app and process evidence fit within the detail field.
 | `ip` | 64 |
 | `detail` | 512 |
 
+Only bound-app decisions and unresolved/invalid-identity or callback-error denials
+produce per-flow diagnostics. Verified unbound and ad hoc connections produce
+no per-flow log, including when `unmatched` denies. They increment allow/deny
+counters, emitted at most once a minute and on stop as a `control` event named
+`outside_scope_summary`. No destination or identity is retained in those counts.
+
 Currently the provider emits bounded JSON lines to unified logging under
-subsystem `com.blackice.app.filter`, category `receipts`. It never writes the
+subsystem `com.valentorassa.blackice.filter`, category `receipts`. It never writes the
 Zig scope's `receipts.jsonl`. This preserves one writer per persisted scope.
 There is no durable ingestion/acknowledgement bridge yet. Unified logging may
 drop or truncate entries, and has no application-level loss accounting; these
@@ -265,20 +321,24 @@ deny into an allow. No runtime receipts have been captured from this unsigned
 build. After future activation, inspect diagnostic output with:
 
 ```sh
-log stream --style json --predicate 'subsystem == "com.blackice.app.filter" AND category == "receipts"'
+log stream --style json --predicate 'subsystem == "com.valentorassa.blackice.filter" AND category == "receipts"'
 ```
 
-This command produces unified-log envelopes; the JSON receipt is in the message
-field. The message is marked public for local collection and contains network
-destinations and app identifiers; it does not contain payloads, complete URLs,
-raw audit tokens, executable paths, credentials or environment variables.
-Retention follows the OS logging policy. No broad log deletion is performed.
+This command produces unified-log envelopes. Per-flow JSON (including destinations
+and identities) is marked private and is normally shown as `<private>` under the
+OS privacy policy. Public control records contain lifecycle state, aggregate
+counts or host authorization outcomes, never connection destinations. The host
+uses category `control` for user-presence results and includes the requesting
+host's parent PID for audit only; that PID never authorizes anything. No payloads,
+complete URLs, raw audit tokens, executable paths, credentials or environment
+variables are logged. Retention follows OS policy; no logging privacy settings
+are changed by this build. Durable receipt ingestion remains **pending**.
 
 The host's `status` always reports `enforcement_verified: false` in this build.
 Saving an enabled filter preference reports only `preferences_saved`. Neither
 configuration save nor system-extension activation is an enforcement health
-acknowledgement. Provider crash/suspension behavior, startup failure behavior
-outside callbacks, and recovery remain runtime qualification gates.
+acknowledgement. Provider downtime leaves no app-filter protection; recovery and
+lifecycle behavior remain runtime qualification gates.
 
 ## Signing, entitlements and installation
 
@@ -288,7 +348,7 @@ app. Direct distribution supports Developer ID signing. See Apple's
 
 For the intended Developer ID route, obtain Apple Developer Program membership,
 a Developer ID Application certificate and profiles for two explicit App IDs:
-`com.blackice.app` and `com.blackice.app.filter`. These are build identifiers,
+`com.valentorassa.blackice` and `com.valentorassa.blackice.filter`. These are build identifiers,
 not a claim that they have already been registered. If another prefix is needed,
 update `AppFilterConstants`, both Info plists and the build's extension path
 together before signing.
@@ -349,10 +409,23 @@ activation. Keep SIP enabled and normal security settings. Never use developer
 mode or disabled SIP as evidence of a supported installation.
 
 `activate`, `enable`, `disable`, `remove-config` and `deactivate` refuse an
-unsigned/ad hoc host. macOS additionally enforces entitlement/profile and user
-consent requirements. `enable` refuses an already enabled configuration so a
-policy change cannot be mistaken for immediate revocation of old sockets.
-The helper rejects a configuration owned by a different provider identifier.
+unsigned/ad hoc host. Each request also creates a fresh `LAContext` and requires
+[`deviceOwnerAuthentication`](https://developer.apple.com/documentation/localauthentication/lapolicy/deviceownerauthentication),
+with an operation-specific prompt (Touch ID or the macOS authentication fallback,
+including password). Touch ID reuse duration is zero. Cancellation, unavailable
+authentication or failure prevents the mutation; there is no CLI/environment
+bypass or cached owner authorization. A confined app cannot change the filter
+through this helper without user authentication. This does not prevent a user
+from approving a malicious request or using macOS's own administration controls.
+macOS separately enforces entitlement/profile and system-consent requirements.
+
+`enable` validates and freezes the candidate bytes before requesting user
+presence, then saves an update in place while keeping `isEnabled = true`. It
+requires a generation strictly higher than the saved configuration and never
+cycles through disable. The provider observes preference changes and validates
+the candidate again. Already allowed sockets remain allowed; `preferences_saved`
+does not mean the provider has acknowledged the update. The helper rejects a
+configuration owned by a different provider identifier.
 
 Recovery removes only this filter's configuration and extension:
 
@@ -365,27 +438,32 @@ Recovery removes only this filter's configuration and extension:
 Confirm the resulting state in System Settings and honor any restart request.
 This restores the absence of this app's filtering, not a protection guarantee.
 It neither flushes host firewall rules nor changes another filter. Local
-diagnostic log retention is unchanged. Configuration management currently relies
-on macOS authorization and a trusted local operator; it does not provide a
-separate per-request owner-authentication protocol.
+diagnostic log retention is unchanged. Each recovery command requires its own
+fresh user-presence check.
 
 ## Validation and remaining gates
 
 Verified on 2026-10-30 on an arm64 Mac running macOS 27.0.1 (26A434), with SIP
 enabled, Apple Swift 6.4 (`swiftlang-6.4.0.34.1`) and the Command Line Tools
 macOS 27.0 SDK. Both bundles compiled with warnings as errors; the four resource
-plists passed `plutil`; 174 test assertions passed. The host's `make-config` and
+plists passed `plutil`; 320 test assertions passed. The host's `make-config` and
 `validate` commands accepted both included examples, and `status` reported
 `built, unsigned` with `enforcement_verified: false`. Signature inspection
 confirmed only linker ad hoc signing with no Team ID. No activation or live
 enforcement test was performed.
 
 Tests cover exact/wildcard matching, private and mapped addresses, IPv6 CIDRs,
-ports, malformed/duplicate/unknown configuration, identity binding isolation,
-unknown-app denial, delegated-source handling, missing destination data,
-snapshot generations and receipt encoding. The Security framework tests verify
-rejection of missing/invalid audit tokens and the ad hoc test executable. They
-do not substitute for a correctly signed app's runtime identity tests.
+ports, strict configuration, identity binding isolation, inbound denial,
+ad hoc unmatched allow/deny, unresolved/invalid-signed denial, delegated-source
+handling, generations, receipt encoding and aggregate-only outside-scope logs.
+The actual Security framework identifies the ad hoc test executable distinctly
+and rejects missing/invalid audit tokens. Fake authenticators test denial and
+approval for every mutating command without prompting the user or changing
+preferences. TLS tests port the proxy's ClientHello vectors and add truncated
+prefixes, callback slicing, exact-SNI mismatch, plaintext HTTP, UDP, ECH,
+duplicate extensions, invalid names and buffer limits. These tests do not replace
+signed-app runtime identity, real LocalAuthentication UI or Network Extension
+callback/timeout testing. No authentication prompt was displayed during testing.
 
 Before this app-scope backend can be called operational, record separate evidence
 for normal-security signed activation; a signed probe launched outside blackice;

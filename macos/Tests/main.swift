@@ -28,8 +28,9 @@ func configuration(policy text: String = "{\"mode\":\"deny-all\"}", gen: UInt32 
 let probe = SigningIdentity(signingID: "com.example.probe", teamID: "ABCDE12345")
 func flow(app: SigningIdentity? = probe, process: SigningIdentity? = probe, hostname: String? = nil,
           address: String? = "198.51.100.8", port: UInt16? = 443, supported: Bool = true,
-          direction: FlowFacts.Direction = .outbound) -> FlowFacts {
-    FlowFacts(direction: direction, app: app, process: process, supportedSocket: supported,
+          direction: FlowFacts.Direction = .outbound, resolution: IdentityResolution? = nil, tcp: Bool = true) -> FlowFacts {
+    FlowFacts(direction: direction, app: resolution ?? app.map(IdentityResolution.verified) ?? .unresolved,
+              process: process.map(IdentityResolution.verified) ?? .unresolved, supportedSocket: supported, isTCP: tcp,
               hostname: hostname, ip: address.flatMap { IPAddress($0) }, port: port)
 }
 
@@ -136,7 +137,7 @@ do {
     expect(AppEvaluator.evaluate(flow(app: nil), configuration: config).decision.reason == "unknown_app_identity", "unknown app denied despite unmatched allow")
     expect(AppEvaluator.evaluate(flow(app: SigningIdentity(signingID: probe.signingID, teamID: "OTHER12345")), configuration: config).decision.reason == "outside_scope", "identifier without correct team never enrolls")
     expect(!AppEvaluator.evaluate(flow(), configuration: nil).decision.allowed, "missing configuration denies")
-    expect(AppEvaluator.evaluate(flow(direction: .inbound), configuration: config).decision.reason == "outside_scope_inbound", "inbound explicitly outside scope")
+    expect(AppEvaluator.evaluate(flow(direction: .inbound), configuration: config).decision.reason == "inbound_not_allowed", "bound inbound denies")
     expect(!AppEvaluator.evaluate(flow(direction: .unknown), configuration: config).decision.allowed, "unknown direction denied")
     expect(AppEvaluator.evaluate(flow(supported: false), configuration: config).decision.reason == "unsupported_socket", "unknown socket denies")
     expect(!AppEvaluator.evaluate(flow(process: SigningIdentity(signingID: "com.apple.service", teamID: nil)), configuration: config).decision.allowed, "delegated process cannot replace source app policy")
@@ -193,9 +194,9 @@ do {
     snapshots.clear()
     expect(snapshots.read() == nil, "stop clears snapshot")
 
-    expect(CodeIdentity.resolve(auditToken: nil) == nil, "missing audit token rejected")
-    expect(CodeIdentity.resolve(auditToken: Data([1, 2])) == nil, "invalid audit token length rejected")
-    expect(CodeIdentity.resolve(auditToken: Data(repeating: 0, count: 32)) == nil, "invalid audit token rejected by Security")
+    expect(CodeIdentity.resolve(auditToken: nil) == .unresolved, "missing audit token rejected")
+    expect(CodeIdentity.resolve(auditToken: Data([1, 2])) == .unresolved, "invalid audit token length rejected")
+    expect(CodeIdentity.resolve(auditToken: Data(repeating: 0, count: 32)) == .unresolved, "invalid audit token rejected by Security")
     expect(CodeIdentity.current() == nil, "ad hoc test binary not trusted app identity")
     expect(NSClassFromString("BlackiceFilter.FilterDataProvider") != nil, "Info.plist runtime provider class resolves")
     let settings = FilterDataProvider.makeSettings()
@@ -239,6 +240,7 @@ do {
     expect(capped.utf8.count < 4096, "large receipt fields fit core line cap")
     let cappedObject = try JSONSerialization.jsonObject(with: Data(capped.utf8)) as! [String: Any]
     expect((cappedObject["detail"] as? String)?.utf8.count == 512, "core detail byte cap")
-    print("PASS: \(tests) assertions (policy, app scope, malformed configuration, snapshots, Security identity rejection, receipts)")
+    try securityRegressions()
+    print("PASS: \(tests) assertions (policy, app scope, identity, user presence, TLS, privacy, snapshots, receipts)")
     print("Unit tests only. No Network Extension was activated; no live enforcement is claimed.")
 } catch { FileHandle.standardError.write(Data("Unexpected test error: \(error)\n".utf8)); exit(1) }
