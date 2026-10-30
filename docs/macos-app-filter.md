@@ -86,9 +86,16 @@ As in the core, a null `ports` field uses the default. Other explicitly null
 policy fields are invalid. Noncanonical dotted IPv4, including leading zeros,
 is rejected before invoking the platform parser.
 
-App bindings live in a separate `blackice.apps/v0` configuration. The helper
-embeds each unmodified network policy as a `policy_json` string; it never asks
-the provider to read a user-supplied file path:
+App bindings live in a separate `blackice.appscope/v0` configuration. The helper
+embeds each unmodified network policy as a `policy_json` string and its full,
+lowercase SHA-256 as `policy_sha256`. The provider recomputes the hash over the
+decoded string's exact UTF-8 bytes and rejects a mismatch; it never reserializes
+the inner JSON before hashing or asks the provider to read a user-supplied file
+path. Receipts retain the core's first-12-hex policy ID. The digest checks byte
+consistency, not owner authorization or tamper resistance against an actor who
+can change the whole configuration.
+
+Generate and validate a configuration:
 
 ```sh
 APP=./macos/build/Blackice.app/Contents/MacOS/BlackiceApp
@@ -104,7 +111,7 @@ The generated shape is:
 
 ```json
 {
-  "version": "blackice.apps/v0",
+  "version": "blackice.appscope/v0",
   "generation": 1,
   "unmatched": "allow",
   "hostname_mode": "ip-only",
@@ -112,10 +119,77 @@ The generated shape is:
     "scope": "app-probe",
     "team_id": "ABCDE12345",
     "signing_id": "com.example.probe",
-    "policy_json": "{\"version\":\"blackice.policy/v0\",\"network\":{\"mode\":\"deny-all\"}}"
+    "policy_json": "{\"version\":\"blackice.policy/v0\",\"network\":{\"mode\":\"deny-all\"}}",
+    "policy_sha256": "f9789c9c9a6702d0db5723bad39cbfb2bfee0c7d786e71924d9373a84826e999"
   }]
 }
 ```
+
+The strict wrapper schema (JSON Schema 2020-12) is:
+
+```json
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "blackice.appscope/v0",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "generation", "unmatched", "hostname_mode", "apps"],
+  "properties": {
+    "version": { "const": "blackice.appscope/v0" },
+    "generation": { "type": "integer", "minimum": 1, "maximum": 4294967295 },
+    "unmatched": { "enum": ["allow", "deny"] },
+    "hostname_mode": { "enum": ["ip-only", "os-metadata"] },
+    "apps": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 256,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["scope", "team_id", "signing_id", "policy_json", "policy_sha256"],
+        "properties": {
+          "scope": {
+            "type": "string", "minLength": 4, "maxLength": 64,
+            "pattern": "^app-", "not": { "pattern": "[^A-Za-z0-9_.-]" }
+          },
+          "team_id": {
+            "type": "string", "minLength": 10, "maxLength": 10,
+            "not": { "pattern": "[^A-Z0-9]" }
+          },
+          "signing_id": {
+            "type": "string", "minLength": 1, "maxLength": 255,
+            "not": { "pattern": "[^A-Za-z0-9_.-]" }
+          },
+          "policy_json": {
+            "type": "string",
+            "minLength": 1,
+            "contentMediaType": "application/json"
+          },
+          "policy_sha256": {
+            "type": "string", "minLength": 64, "maxLength": 64,
+            "not": { "pattern": "[^a-f0-9]" }
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+The parser also enforces constraints that this wrapper schema cannot express:
+
+- The complete UTF-8 wrapper and each embedded policy are at most 1 MiB, with
+  nesting depth below 32. Duplicate object keys, including escaped aliases, are
+  rejected before ordinary decoding. No required field accepts `null`.
+- Each scope and each `(team_id, signing_id)` pair is unique. These are signing
+  selectors, not a PID or filesystem path. Unknown selector fields are errors.
+- Each `policy_json` must independently pass the strict `blackice.policy/v0`
+  parser and the declared resource limits. The hash covers the policy bytes,
+  including whitespace and trailing newlines, not the escaped wrapper string.
+- A hash must match all 64 lowercase hex characters. Domain entries require
+  `hostname_mode: "os-metadata"`; unsupported capabilities reject the candidate.
+- The old provisional name `blackice.apps/v0` is rejected, with no implicit
+  migration or relaxed fallback. `make-config` emits only the approved version.
 
 Scope names start with `app-`. Duplicate scopes or identity pairs are rejected.
 The provider validates the full candidate before installing a snapshot under a
@@ -165,9 +239,21 @@ Absent optional values are omitted. Flow decisions use `point: "app_filter"` and
 `detail` identifies `backend=network_extension;scope_kind=app`, the separate
 validated app/process identities and hostname provenance.
 Lifecycle/configuration events use `point: "control"`. String fields are cleaned
-and capped at the same byte limits as the core; control and bidi characters
-become `?`. Long identity labels retain a prefix and a hash of the complete label
+and capped at the same byte limits as the core. Invalid UTF-8 bytes, C0/C1,
+bidi and zero-width characters become `?`; truncation preserves UTF-8 character
+boundaries and appends `...`. The raw-byte cleaner handles malformed UTF-8 before
+string conversion; ordinary Swift string fields already contain valid Unicode.
+Long identity labels retain a prefix and a hash of the complete label
 so both app and process evidence fit within the detail field.
+
+| Field | Maximum cleaned UTF-8 bytes |
+| --- | ---: |
+| `event` | 32 |
+| `reason` | 64 |
+| `rule` | 256 |
+| `host` | 256 |
+| `ip` | 64 |
+| `detail` | 512 |
 
 Currently the provider emits bounded JSON lines to unified logging under
 subsystem `com.blackice.app.filter`, category `receipts`. It never writes the
@@ -288,7 +374,7 @@ separate per-request owner-authentication protocol.
 Verified on 2026-10-30 on an arm64 Mac running macOS 27.0.1 (26A434), with SIP
 enabled, Apple Swift 6.4 (`swiftlang-6.4.0.34.1`) and the Command Line Tools
 macOS 27.0 SDK. Both bundles compiled with warnings as errors; the four resource
-plists passed `plutil`; 140 test assertions passed. The host's `make-config` and
+plists passed `plutil`; 174 test assertions passed. The host's `make-config` and
 `validate` commands accepted both included examples, and `status` reported
 `built, unsigned` with `enforcement_verified: false`. Signature inspection
 confirmed only linker ad hoc signing with no Team ID. No activation or live
