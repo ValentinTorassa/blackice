@@ -34,6 +34,7 @@ import subprocess
 import sys
 import time
 import traceback
+from datetime import datetime
 
 ROOT = "/opt/aftest"
 SELF = ROOT + "/aftest.py"
@@ -897,7 +898,16 @@ def journal(name, since):
     if CURRENT is not None:
         with open(f"{CURRENT.dir}/journal-{name}.txt", "w") as f:
             f.write(out)
-    return out
+    # --since takes whole seconds; keep only lines at or after the exact start, so an earlier case's lines from the
+    # same second are not counted here.
+    keep = []
+    for line in out.splitlines():
+        try:
+            if datetime.fromisoformat(line.split(" ", 1)[0]).timestamp() >= since:
+                keep.append(line)
+        except ValueError:
+            continue
+    return "\n".join(keep)
 
 
 def ours(rows):
@@ -957,12 +967,33 @@ def armed_check(prefix):
     return ok
 
 
+CONTROL_SOCKET = "/run/blackice-appfilter/control.sock"
+
+
+def wake_service():
+    """While off, the service exits after each valid request, so a status call cannot hold it up. A root connection
+    is refused (NotOwner) and the service keeps serving after a refused request, so its MainPID stays put until the
+    next valid request. Leaves one app_filter_control deny receipt; recorded."""
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.settimeout(10)
+    try:
+        s.connect(CONTROL_SOCKET)
+        reply = s.recv(200).decode(errors="replace").strip()
+    finally:
+        s.close()
+    wait_active()
+    pid = unit_show().get("MainPID", "0")
+    if CURRENT is not None:
+        CURRENT.write(f"# woke the service with a root control connection: reply {reply!r}, MainPID {pid}\n")
+        record(f"{CURRENT.cid}.wake", "harness", "root control connection refused NotOwner; the service stays up", {"reply": reply, "main_pid": pid}, "OBSERVE")
+    return reply
+
+
 def main_pid():
     """The service's main pid, starting it through its socket if it is not running. Never 0: `kill -9 0` would
     signal the harness's own process group."""
     if unit_show().get("MainPID", "0") == "0":
-        cli_status()
-        wait_active()
+        wake_service()
     pid = int(unit_show().get("MainPID", "0"))
     if pid <= 1:
         raise RuntimeError("the service is not running (MainPID 0)")
@@ -1596,6 +1627,11 @@ def phase_restart(_args):
             check("F02b.works", "M5", "curl 200 after the restart", [rc, out.strip()], rc == 0 and out.strip() == "200")
             journal("proxy-kill", since)
         ok &= not case.failed
+    steps = int(unit_props(UNIT, "RestartSteps").get("RestartSteps", "0") or 0)
+    if steps > 0:
+        ok &= f02c_backoff(steps)
+        ok &= f02d_collision_during_recovery()
+        return ok
     with Case("F02c-start-limit", "crash restarts past the start limit: the unit fails, pins and filtering stay; reset-failed restores it", "A3") as case:
         limits = dict(l.split("=", 1) for l in run(["systemctl", "show", UNIT, "-p", "StartLimitBurst", "-p", "StartLimitIntervalUSec"], timeout=10)[1].split())
         burst = int(limits.get("StartLimitBurst", "5"))
@@ -1649,12 +1685,169 @@ def phase_restart(_args):
     return ok
 
 
+def ids(rows):
+    return sorted(r["id"] for r in ours(rows))
+
+
+def systemd_times(text, needle):
+    """Timestamps (epoch seconds) of the journal lines that contain `needle`."""
+    out = []
+    for line in text.splitlines():
+        if needle in line:
+            try:
+                out.append(datetime.fromisoformat(line.split(" ", 1)[0]).timestamp())
+            except ValueError:
+                pass
+    return out
+
+
+def wait_new_main(old, limit, t0=None):
+    """Waits until the unit is active with a MainPID other than `old`. Returns (outcome, seconds since t0).
+    Reads systemd only: a control-socket request would start the service at once and skip the backoff."""
+    t0 = time.time() if t0 is None else t0
+    while time.time() - t0 < limit:
+        u = unit_show()
+        if u.get("ActiveState") == "active" and u.get("MainPID") not in (str(old), "0"):
+            return "restarted", round(time.time() - t0, 2)
+        if u.get("ActiveState") == "failed":
+            return "failed", round(time.time() - t0, 2)
+        time.sleep(0.1)
+    return "timeout", round(time.time() - t0, 2)
+
+
+def f02c_backoff(steps):
+    """A3-R1 fix: crash restarts back off (RestartSec -> RestartMaxDelaySec over RestartSteps) instead of
+    stopping at a start limit. steps+1 kills: the delays rise to the maximum, the pins and the filtering stay in
+    every gap, and it ends armed."""
+    with Case("F02c-backoff", "a crash loop backs off instead of hitting the start limit; pins and filtering stay in every gap", "A3-R1") as case:
+        limits = unit_props(UNIT, "Restart,RestartUSec,RestartSteps,RestartMaxDelayUSec,StartLimitBurst,StartLimitIntervalUSec")
+        record("F02c.unit-limits", "A3-R1", "recorded", limits, "OBSERVE")
+        ensure_service("F02c")
+        reset_start_limit()
+        before, since, kills = ids(cgroup_attachments()), time.time(), []
+        for i in range(steps + 1):
+            unit = unit_show()
+            if unit.get("ActiveState") != "active" or unit.get("MainPID", "0") == "0":
+                break
+            pid = unit["MainPID"]
+            t_kill = time.time()
+            run(["/usr/bin/kill", "-9", pid])
+            gap = {"ids_held": ids(cgroup_attachments()) == before and len(before) == 7, "tagcheck": tagcheck(1)}
+            outcome, seconds = wait_new_main(pid, 150, t_kill)
+            kills.append({"kill": i + 1, "pid": pid, "outcome": outcome, "seconds": seconds, **gap})
+            if outcome != "restarted":
+                break
+            time.sleep(0.5)
+        text = journal("backoff", since)
+        with open(f"{case.dir}/kills.json", "w") as f:
+            json.dump(kills, f, indent=1)
+        secs = [k["seconds"] for k in kills]
+        check("F02c.all-restarted", "A3-R1", f"{steps + 1} kills, each one restarted (never failed)", [k["outcome"] for k in kills],
+              len(kills) == steps + 1 and all(k["outcome"] == "restarted" for k in kills))
+        check("F02c.backoff", "A3-R1", "restart delays rise (non-decreasing within 0.5 s) and the last is at least 30 s", secs,
+              len(secs) >= 2 and all(b >= a - 0.5 for a, b in zip(secs, secs[1:])) and secs[-1] >= 30)
+        check("F02c.no-start-limit", "A3-R1", "no start-limit-hit in the journal", [l for l in text.splitlines() if "start-limit" in l or "repeated too quickly" in l][:4],
+              "start-limit" not in text and "repeated too quickly" not in text)
+        check("F02c.pins-hold", "A3-R1", "the same seven attachment ids in every gap", [k["ids_held"] for k in kills], bool(kills) and all(k["ids_held"] for k in kills))
+        check("F02c.filtering-in-gaps", "A3-R1", "a tagged app gets EPERM to the netns in every gap", [k["tagcheck"].get("netns") for k in kills],
+              bool(kills) and all(k["tagcheck"].get("netns") == "EPERM" for k in kills))
+        armed_check("F02c")
+        rc, out, _ = run(as_user(OWNER, CURL + ["https://example.com/"]), timeout=40)
+        check("F02c.works", "A3-R1", "curl 200 after the last restart", [rc, out.strip()], rc == 0 and out.strip() == "200")
+        return not case.failed
+
+
+def f02d_collision_during_recovery():
+    """Security's case: armed, the loader is killed, and root takes 127.0.0.1:765 before the restart. Each restart
+    is refused (exit 125) and retried with rising delays while the pins and the filtering hold; once root releases
+    the port, the next retry re-arms within 60 s."""
+    with Case("F02d-collision-during-recovery", "a live listener on 127.0.0.1:765 during an armed crash recovery: retries back off, pins and filtering hold, re-armed within 60 s of the release", "A3-R1") as case:
+        ensure_service("F02d")
+        reset_start_limit()
+        before, since, receipts0 = ids(cgroup_attachments()), time.time(), count_receipts(event="app_filter_restart")
+        pid = main_pid()
+        # The holder retries bind() until the service's listeners are gone (SO_REUSEADDR: TIME_WAIT may remain;
+        # a live listener still refuses it).
+        holder = subprocess.Popen(["/usr/bin/python3", "-I", "-c",
+            "import socket,time,errno\n"
+            "s=socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1); t=time.time()\n"
+            "while True:\n"
+            "    try:\n        s.bind(('127.0.0.1', 765)); break\n"
+            "    except OSError as e:\n"
+            "        if e.errno != errno.EADDRINUSE or time.time()-t > 10: print('bind failed', e, flush=True); raise SystemExit(1)\n"
+            "        time.sleep(0.002)\n"
+            "s.listen(4); print('listening', round(time.time()-t, 3), flush=True); time.sleep(300)"],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        time.sleep(0.3)
+        run(["/usr/bin/kill", "-9", str(pid)])
+        line = holder.stdout.readline().strip()
+        check("F02d.holder", "harness", "root bound 127.0.0.1:765 after the loader died, before the restart", line, line.startswith("listening"))
+        samples, t_hold = [], time.time()
+        while time.time() - t_hold < 25:
+            samples.append({"t": round(time.time() - t_hold, 1), "ids_held": ids(cgroup_attachments()) == before and len(before) == 7,
+                            "netns": tagcheck(1).get("netns"), "unit": unit_show().get("ActiveState")})
+            time.sleep(2)
+        held_text = journal("held", since)
+        refused = held_text.count("status=125")
+        starts = systemd_times(held_text, "Started blackice-appfilter.service")
+        gaps = [round(b - a, 2) for a, b in zip(starts, starts[1:])]
+        holder.kill()
+        holder.wait()
+        t_release = time.time()
+        with open(f"{case.dir}/samples.json", "w") as f:
+            json.dump(samples, f, indent=1)
+        check("F02d.retries", "A3-R1", "restarts refused (exit 125) and retried at least twice while the port was held", {"refused": refused, "starts": len(starts)}, refused >= 2)
+        check("F02d.backoff", "A3-R1", "the gaps between retries rise", gaps, len(gaps) >= 2 and all(b >= a - 0.5 for a, b in zip(gaps, gaps[1:])) and gaps[-1] > gaps[0])
+        check("F02d.pins-hold", "A3-R1", "the same seven attachment ids while the port was held", [x["ids_held"] for x in samples], all(x["ids_held"] for x in samples))
+        check("F02d.filtering-holds", "A3-R1", "a tagged app gets EPERM to the netns while the port was held", [x["netns"] for x in samples], all(x["netns"] == "EPERM" for x in samples))
+        # systemd only until it is back: an `app status` here would socket-start the service and skip the backoff.
+        up, recovered = False, None
+        while time.time() - t_release < 75:
+            u = unit_show()
+            if u.get("ActiveState") == "active" and u.get("SubState") == "running":
+                recovered = round(time.time() - t_release, 1)
+                time.sleep(1.5)
+                again = unit_show()
+                if again.get("ActiveState") == "active" and again.get("MainPID") == u.get("MainPID"):
+                    up = True
+                    break
+            time.sleep(0.5)
+        armed = up and status_label() == "armed"
+        text = journal("recovery", since)
+        check("F02d.recovered", "A3-R1", "armed again within 60 s of the release", {"armed": armed, "seconds_after_release": recovered}, armed and recovered <= 60)
+        check("F02d.no-start-limit", "A3-R1", "no start-limit-hit", [l for l in text.splitlines() if "start-limit" in l][:4], "start-limit" not in text and "repeated too quickly" not in text)
+        armed_check("F02d")
+        check("F02d.restart-receipt", "A3-R1", "one more app_filter_restart receipt", [receipts0, count_receipts(event="app_filter_restart")], count_receipts(event="app_filter_restart") >= receipts0 + 1)
+        rc, out, _ = run(as_user(OWNER, CURL + ["https://example.com/"]), timeout=40)
+        check("F02d.works", "A3-R1", "curl 200 after the recovery", [rc, out.strip()], rc == 0 and out.strip() == "200")
+        return not case.failed
+
+
 LISTENER_TEST = ROOT + "/bin/listener-vm-test"  # Codex's VM socket test (63a38cc), built on the host without running it
 
 
+def proxy_closed_connections(n=3, app=1):
+    """Tagged connections to the app's own TLS listener that send nothing. The proxy closes them at its 5 s header
+    deadline, so the proxy closes first and TIME_WAIT lands on the listener port (curl closes first, which leaves
+    TIME_WAIT on its own ephemeral port instead)."""
+    tls = app_ports(app)[0]
+    procs = [subprocess.Popen(as_user(OWNER, launched(app, probe_cmd("header-timeout", "--addr", "127.0.0.1", "--port", str(tls), "--wait", "10"))),
+                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True) for _ in range(n)]
+    rows = []
+    for p in procs:
+        try:
+            out, _ = p.communicate(timeout=40)
+        except subprocess.TimeoutExpired:
+            p.kill()
+            out, _ = p.communicate()
+        rows += json_lines(out)
+    return rows
+
+
 def traffic(n=6):
-    """Proxied TCP so the listener ports hold TIME_WAIT: n allowed requests and one refused name."""
-    out = []
+    """Proxied TCP so the listener ports hold TIME_WAIT: proxy-closed idle connections, n allowed requests and
+    one refused name."""
+    out = [{"proxy_closed": proxy_closed_connections()}]
     for _ in range(n):
         rc, o, _ = run(as_user(OWNER, CURL + ["https://example.com/"]), timeout=40, quiet=True)
         out.append([rc, o.strip()])

@@ -94,6 +94,18 @@ result pass.
   - Each launcher tags its child: it connects to its own listener and gets EPERM to the netns. An untagged
     process gets EPERM to the listener and connects to the netns.
 
+### A3-R1: the start limit while off (`startlimit`, right after setup, before the first arm)
+
+While off, the service is socket-activated once per control request and exits after answering, so every
+request is a start that counts against `StartLimitBurst`.
+- A3R1a: 30 `blackice app status` calls by the owner, with no reset-failed first (the state before and the
+  number of service starts this boot are recorded). All 30 must answer `OK ...`. On a failure the first failing
+  call, both units' `Result` and systemd's lines are recorded, then the owner's `app on`, and then root's
+  `reset-failed` plus starting the socket must bring status back to `OK off`.
+- A3R1b: root holds `127.0.0.1:765` and the owner runs `app on`: refused with `ListenerPortOccupied`. In the
+  journal from that moment on: at most one automatic restart, no start-limit line, the service not failed and
+  the socket listening, and status answers `OK off`.
+
 ### A: the root-cgroup listener guard (H1)
 
 Each caller runs the H1 probe.
@@ -186,6 +198,18 @@ The final commit limits the unit to 5 starts in 600 s (`StartLimitBurst`/`StartL
 P3). The harness kills the service on purpose many times, so it runs `systemctl reset-failed` before each
 deliberate kill. That clears the start counter only; it never restarts anything by itself.
 
+Every case (except A3R1a) starts with `systemctl reset-failed` on the service and the socket, and starts the
+socket if it is not listening. The state before goes to the case log, and to `<case>.harness-reset` (OBSERVE)
+when a unit was failed. One start-limit hit (A3-R1 on 63a38cc) then cannot cascade into later cases.
+
+While off, the service exits after each valid request, so the cases that need its pid before `app on` (G11–G15)
+first open the control socket as root: the request is refused (`NotOwner`) and the service keeps serving after a
+refused request, so its MainPID holds until the next valid one. Recorded as `<case>.wake`; it leaves one
+`app_filter_control` deny receipt.
+
+Journal excerpts keep only lines at or after the exact start of the step (journalctl's `--since` takes whole
+seconds).
+
 A failure that leaves the service down would also fail every later case. To stop that, the cases from F02 on
 start with a harness recovery when the control socket does not answer:
 - wait until no TIME_WAIT socket holds a listener port (up to 75 s);
@@ -209,7 +233,17 @@ case that caused it.
     receipt, and curl gets 200 again.
   - The TIME_WAIT sockets on 760–774 at the kill are recorded (F01 too). On 6c849ec a restart right after
     proxied traffic failed with `ListenerPortOccupied` until the start limit was hit.
-- **F02c (A3), start limit.**
+- **F02c, the backoff unit (`RestartSteps` > 0, 8ba8cca on).** `RestartSteps`+1 kills of the service. Each
+  restart is timed from the kill to an active unit with a new MainPID, reading systemd only (a control request
+  would start the service at once and skip the delay). The delays must rise (non-decreasing within 0.5 s) to at
+  least 30 s, no kill may end in `failed`, and the journal has no start-limit line. In every gap the seven ids
+  are unchanged and a tagged app gets EPERM to the netns. It ends armed with curl 200.
+- **F02d (backoff unit), a live collision during an armed crash recovery.** Armed; the loader is killed and
+  root binds `127.0.0.1:765` (with SO_REUSEADDR, retrying until the service's listeners are gone) before the
+  restart. For 25 s: restarts are refused (exit 125) at least twice, with rising gaps between starts, the seven
+  ids stay and a tagged app gets EPERM to the netns. After root releases the port the unit must be active and
+  steady within 60 s (systemd only, no control request), then armed, with a restart receipt and curl 200.
+- **F02c (A3), start limit (units without `RestartSteps`).**
   - Kill the service repeatedly with no traffic in between. After exactly `StartLimitBurst` restarts, the next
     start is refused: the unit is `failed`, and `start-limit-hit` shows on the unit (`Result=start-limit-hit`)
     or, with socket activation, on the socket (`Result=service-start-limit-hit`). The service's own `Result` is
@@ -225,8 +259,11 @@ case that caused it.
     `--listener-test`). In the VM it runs as the owner and must pass 2 of 2 (IPv4 and IPv6: `SO_REUSEADDR` 1,
     `SO_REUSEPORT` 0, server-side TIME_WAIT observed, immediate rebind, a live second listener refused). Its
     sha256 and `sys_vendor` (QEMU) are recorded.
-  - V1b1/V1b2/V1b3: after proxied TCP traffic (six allowed requests and one refused name), kill the proxy
-    child, kill the loader, or `systemctl restart`. TIME_WAIT on 760–774 must be present before the restart and
+  - V1b1/V1b2/V1b3: after proxied TCP traffic, kill the proxy
+    child, kill the loader, or `systemctl restart`. The traffic is three tagged connections to app 1's TLS
+    listener that send nothing, which the proxy closes at its 5 s header deadline (so TIME_WAIT is on the
+    listener port; curl closes first and leaves it on its own port), then six allowed requests and one refused
+    name. TIME_WAIT on 760–774 must be present before the restart and
     when it re-arms (both saved). It comes back active (NRestarts+1, or a new MainPID for `systemctl restart`),
     armed, with one more `app_filter_restart` receipt, no `ListenerPortOccupied` / `listener_unavailable` /
     start-limit line in the journal, and curl filtered as before.
