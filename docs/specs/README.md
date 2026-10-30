@@ -90,7 +90,7 @@ Builders update their own rows as they work, in the same commit as the change.
 ```markdown
 | Covers | Kind | Link | Note |
 |---|---|---|---|
-| proxy.R1 | entry | [P0-02-real-deny-linux](../../evidence/P0-02-real-deny-linux.md) | |
+| proxy.R9 | entry | [P0-02 macOS](../../evidence/P0-02-real-deny-macos.md) | |
 | proxy.R1 | test | `zig build test` (src/proxy/proxy.zig, "refuses a host outside the policy") | |
 ```
 
