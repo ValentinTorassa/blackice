@@ -65,8 +65,8 @@ HTTPS through the proxy, observe mode, and recovery after faults.
 - With the fx hook, fx itself runs outside the scopes. Its file tools are kept inside the workspace, so
   install blackice and fx outside it (root-owned is best). What fx reads goes to the model provider.
 - In v0, any process of the same user that runs outside every scope counts as the owner.
-- When a grant ends, the proxy cuts its connections at once, but data that already reached the program stays
-  readable.
+- When a grant ends, the proxy cuts its connections within 200 ms (11 ms measured), but data that already
+  reached the program stays readable.
 - Work handed to a service outside the scope (launchd, `open`, `systemd-run --user`, Docker) is refused only
   where a test shows it; otherwise it is a stated limit.
 - An allowed name on a shared CDN can reach other sites on that CDN through domain fronting inside TLS: the
