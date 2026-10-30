@@ -2,8 +2,9 @@
 //!
 //! It runs outside the scope and listens on 127.0.0.1:<random>. A tool inside the scope (fx in the fallback
 //! mode, where all of fx runs in one scope) is configured with a provider at http://127.0.0.1:<port>/v1 and
-//! auth "none". The relay forwards each allowed call to the upstream (by default the Vercel AI Gateway) with
-//! the key added there, so the key never enters the scope: not in its environment, its files or its memory.
+//! auth {"type":"bearer","env":"BLACKICE_RELAY_TOKEN"}. The relay forwards each allowed call to the upstream
+//! (by default the Vercel AI Gateway) with the key added there, so the key never enters the scope: not in its
+//! environment, its files or its memory.
 //!
 //! Endpoints:
 //!   POST /v1/chat/completions   forwarded when the body's "model" is on the allow list; streamed back as it
@@ -17,8 +18,12 @@
 //! Redirects are not followed.
 //!
 //! Callers: requests carrying Origin or Sec-Fetch-* headers (a browser page) are refused, the Host header
-//! must name this listener (127.0.0.1:<port> or localhost:<port>, which defeats DNS rebinding), and chat
-//! calls must be application/json (a page cannot send that without a CORS preflight, which is refused).
+//! must name this listener (127.0.0.1:<port> or localhost:<port>, which defeats DNS rebinding), every request
+//! must carry `Authorization: Bearer <token>` with this relay's token, and chat calls must be
+//! application/json (a page cannot send that without a CORS preflight, which is refused).
+//! The token is per relay, so per scope: 64 hex characters from fresh system entropy at start (`token()`).
+//! The launcher puts it in the scope's environment as BLACKICE_RELAY_TOKEN; it is compared in constant time
+//! and is never forwarded upstream or written to receipts.
 //! Only standard top-level chat-completion fields pass (`allowed_fields`); anything else, gateway routing
 //! options such as providerOptions or models included, is refused, so a call cannot fall back to a model
 //! that is not on the list.
@@ -27,8 +32,10 @@
 //!   model_allowed      forwarded (rule = the model; detail = status, bytes in and out, stream)
 //!   model_not_allowed  the model is not on the allow list (403)
 //!   routing_not_allowed the body carries a top-level field outside `allowed_fields` (403; detail = the field)
+//!   n_not_allowed      "n" other than 1: the provider bills every choice of one counted call (403)
 //!   browser_request    Origin or Sec-Fetch-* present (403)
 //!   bad_host_header    the Host header does not name this listener (403)
+//!   bad_relay_token    Authorization is missing, repeated or not this relay's token (401; detail = which)
 //!   bad_content_type   a chat call that is not application/json (415)
 //!   request_too_large  the body is over the size cap (413)
 //!   request_cap        the scope used up its calls (429)
@@ -46,7 +53,10 @@
 //!   allowed provider.
 //! - Spend is bounded by call count, response size and time per call, not by tokens or money. Set a budget
 //!   on the provider key as well.
-//! - Every process that can reach the port can use the relay; no per-scope credential yet (TODO).
+//! - The token keeps out local processes that are not in the scope. Every process in the scope can read it
+//!   from its environment, and so can a same-user process outside the scope that can read the scope's
+//!   process environments (/proc/<pid>/environ on Linux, KERN_PROCARGS2 on macOS), unless the backend
+//!   prevents that.
 //! - The key lives in this process's memory; `hardenProcess` keeps same-user debuggers and core dumps out.
 
 const std = @import("std");
@@ -134,6 +144,8 @@ pub const Relay = struct {
     client: http.Client,
     /// "Bearer <key>". Zeroed in stop().
     auth: []u8,
+    /// The per-relay caller token (hex). Zeroed in stop().
+    token_buf: [token_len]u8,
     chat_uri: std.Uri,
     chat_url: []u8,
     upstream_host: []u8,
@@ -142,7 +154,9 @@ pub const Relay = struct {
     active: std.atomic.Value(u32) = .init(0),
     calls: std.atomic.Value(u32) = .init(0),
 
-    pub const StartError = net.IpAddress.ListenError || Io.ConcurrentError ||
+    pub const token_len = 64;
+
+    pub const StartError = net.IpAddress.ListenError || Io.ConcurrentError || Io.RandomSecureError ||
         error{ OutOfMemory, InvalidUpstream, KeyInvalid };
 
     /// Listens on 127.0.0.1:<random> and starts serving. `key` is copied; `config.models` and `receipts`
@@ -163,6 +177,12 @@ pub const Relay = struct {
             gpa.free(auth);
         }
 
+        // Fresh entropy from the system, not a process-local generator; no fallback.
+        var raw: [token_len / 2]u8 = undefined;
+        try io.randomSecure(&raw);
+        const token_buf = std.fmt.bytesToHex(raw, .lower);
+        std.crypto.secureZero(u8, &raw);
+
         const r = try gpa.create(Relay);
         errdefer gpa.destroy(r);
         const addr: net.IpAddress = .{ .ip4 = .loopback(0) };
@@ -178,6 +198,7 @@ pub const Relay = struct {
             .port = server.socket.address.getPort(),
             .client = .{ .allocator = gpa, .io = io },
             .auth = auth,
+            .token_buf = token_buf,
             .chat_uri = std.Uri.parse(up.chat_url) catch unreachable,
             .chat_url = up.chat_url,
             .upstream_host = up.host,
@@ -198,9 +219,15 @@ pub const Relay = struct {
         r.client.deinit();
         std.crypto.secureZero(u8, r.auth);
         r.gpa.free(r.auth);
+        std.crypto.secureZero(u8, &r.token_buf);
         r.gpa.free(r.chat_url);
         r.gpa.free(r.upstream_host);
         r.gpa.destroy(r);
+    }
+
+    /// The token callers must send as `Authorization: Bearer <token>`. Valid until stop().
+    pub fn token(r: *const Relay) []const u8 {
+        return &r.token_buf;
     }
 
     /// Calls forwarded so far.
@@ -268,6 +295,14 @@ pub const Relay = struct {
             try r.respondErrorClose(req, .forbidden, reason, "the relay serves local tools, not browsers or other hosts");
             return false;
         }
+        if (r.tokenRefusal(req)) |why| {
+            var detail_buf: [192]u8 = undefined;
+            var target_buf: [160]u8 = undefined;
+            const detail = std.fmt.bufPrint(&detail_buf, "{s} {s}", .{ why, describeTarget(&target_buf, req) }) catch why;
+            r.writeReceipt(.{ .verdict = .deny, .reason = "bad_relay_token", .detail = detail });
+            try r.respondErrorClose(req, .unauthorized, "bad_relay_token", "send Authorization: Bearer $BLACKICE_RELAY_TOKEN");
+            return false;
+        }
         const target = req.head.target;
         const path = if (std.mem.findScalar(u8, target, '?')) |q| target[0..q] else target;
         if (req.head.method == .GET and std.mem.eql(u8, path, "/v1/models")) return r.listModels(req);
@@ -298,6 +333,22 @@ pub const Relay = struct {
         const b = std.fmt.bufPrint(&buf, "localhost:{d}", .{r.port}) catch unreachable;
         if (std.ascii.eqlIgnoreCase(got, b)) return null;
         return "bad_host_header";
+    }
+
+    /// Checks `Authorization: Bearer <token>`. Returns why it fails: missing, repeated or mismatch.
+    fn tokenRefusal(r: *const Relay, req: *const http.Server.Request) ?[]const u8 {
+        var value: ?[]const u8 = null;
+        var it = req.iterateHeaders();
+        while (it.next()) |h| {
+            if (!std.ascii.eqlIgnoreCase(h.name, "authorization")) continue;
+            if (value != null) return "repeated";
+            value = h.value;
+        }
+        const v = value orelse return "missing";
+        const scheme = "bearer ";
+        if (v.len != scheme.len + token_len or !std.ascii.eqlIgnoreCase(v[0..scheme.len], scheme)) return "mismatch";
+        if (!std.crypto.timing_safe.eql([token_len]u8, v[scheme.len..][0..token_len].*, r.token_buf)) return "mismatch";
+        return null;
     }
 
     fn listModels(r: *Relay, req: *http.Server.Request) HandleError!bool {
@@ -386,6 +437,12 @@ pub const Relay = struct {
             try r.respondError(req, .forbidden, "routing_not_allowed", "only standard chat-completion fields pass the relay");
             return keep_alive;
         }
+        // One counted call must be one generation: n multiplies what the provider bills, past the call cap.
+        if (obj.get("n")) |n| if (!(n == .integer and n.integer == 1)) {
+            r.writeReceipt(.{ .verdict = .deny, .reason = "n_not_allowed", .rule = model_label });
+            try r.respondError(req, .forbidden, "n_not_allowed", "\"n\" must be 1");
+            return keep_alive;
+        };
         if (!r.modelAllowed(model)) {
             r.writeReceipt(.{ .verdict = .deny, .reason = "model_not_allowed", .rule = model_label });
             try r.respondError(req, .forbidden, "model_not_allowed", "model not on the relay's allow list");
@@ -585,7 +642,8 @@ pub const Relay = struct {
     }
 };
 
-/// The top-level chat-completion fields that pass the relay. Any other field is refused (routing_not_allowed).
+/// The top-level chat-completion fields that pass the relay. Any other field is refused (routing_not_allowed);
+/// "n" passes only as 1.
 pub const allowed_fields = [_][]const u8{
     "model",               "messages",         "tools", "tool_choice", "stream",
     "stream_options",      "temperature",      "top_p", "max_tokens",  "max_completion_tokens",
