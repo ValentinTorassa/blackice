@@ -4,6 +4,7 @@ import { SITE } from '../content/site';
 import './globals.css';
 
 export const metadata = {
+  metadataBase: new URL('https://blackice-sh.vercel.app'),
   title: { default: `${SITE.name}: ${SITE.headline}`, template: `%s · ${SITE.name}` },
   description: SITE.description,
   icons: { icon: '/logo.svg' },

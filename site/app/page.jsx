@@ -123,7 +123,7 @@ export default function Home() {
               place before the command runs, and nothing inside can loosen them.
             </p>
             <p className="hero-status">
-              Task scopes work today on macOS and on Debian 13 (x86_64). The macOS app filter is built in its pull
+              Task scopes work today on macOS (Apple silicon) and Debian 13 (x86_64). The macOS app filter is built in its pull
               request and needs Developer ID signing to run. The Linux app filter is in design.
             </p>
             <CopyCommand command={SITE.command} />
@@ -225,7 +225,7 @@ export default function Home() {
         <section className="container section">
           <div className="head-row">
             <h2 className="h2">Design</h2>
-            <span className="badge">v0 design · verified for task scopes on macOS and Debian 13 (x86_64)</span>
+            <span className="badge">v0 design · verified for task scopes on macOS (Apple silicon) and Debian 13 (x86_64)</span>
           </div>
           <p className="sub">
             Each connection passes these layers in order and stops at the first one that refuses it. A hostname hides
