@@ -1,0 +1,13 @@
+# Build output
+/bin/
+/dist/
+/out/
+/target/
+zig-out/
+.zig-cache/
+
+# OS files
+.DS_Store
+
+# Local scratch receipts
+*.local.jsonl
