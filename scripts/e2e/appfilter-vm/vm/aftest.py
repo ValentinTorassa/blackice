@@ -222,8 +222,9 @@ def trees():
 class Case:
     """One test case: its own directory, log and before/after trees."""
 
-    def __init__(self, cid, title, finding, before=True, after=True, resume=False):
+    def __init__(self, cid, title, finding, before=True, after=True, resume=False, reset=True):
         self.cid, self.title, self.finding, self.failed = cid, title, finding, False
+        self.reset = reset
         self.dir = f"{RESULTS}/cases/{cid}"
         # A case driven from the host (interactive off) spans two phases: the first records tree-before, the
         # second resumes the same log and records tree-after.
@@ -251,6 +252,8 @@ class Case:
         else:
             self.write(f"# {self.cid}: {self.title} ({self.finding})\n# run: {LABEL_TEXT}, commit {CONF.get('commit', '?')}\n# start {now}\n")
         print(f"-- case {self.cid}: {self.title}{' (resumed)' if self.resume else ''}", flush=True)
+        if self.reset and not self.resume:
+            harness_reset(self)
         self.before = self.tree("before") if self.want_before else None
         return self
 
@@ -804,6 +807,33 @@ def unit_show():
     return dict(line.split("=", 1) for line in out.splitlines() if "=" in line)
 
 
+SOCKET_UNIT = "blackice-appfilter.socket"
+
+
+def unit_props(unit, props):
+    out = run(["systemctl", "show", unit, "-p", props], timeout=15, quiet=True)[1]
+    return dict(line.split("=", 1) for line in out.splitlines() if "=" in line)
+
+
+def harness_reset(case):
+    """Before each case: `systemctl reset-failed` on the service and its socket, and start the socket if it is not
+    listening. One failure (a start limit hit, finding A3-R1 on 63a38cc) then cannot cascade into later cases. The
+    state before is written to the case log, and recorded as OBSERVE when something was failed. Cases that measure
+    the start limit itself opt out."""
+    svc = unit_props(UNIT, "LoadState,ActiveState,Result,NRestarts")
+    if svc.get("LoadState") != "loaded":
+        return
+    sock = unit_props(SOCKET_UNIT, "ActiveState,Result")
+    run(["systemctl", "reset-failed", UNIT, SOCKET_UNIT], timeout=15, quiet=True)
+    started = sock.get("ActiveState") != "active"
+    if started:
+        run(["systemctl", "start", SOCKET_UNIT], timeout=30, quiet=True)
+    case.write(f"# harness reset-failed before the case: service {svc}, socket {sock}{'; socket started' if started else ''}\n")
+    if svc.get("ActiveState") == "failed" or started:
+        record(f"{case.cid}.harness-reset", "harness", "reset-failed before the case found a failed unit (state before recorded)",
+               {"service": svc, "socket": sock, "socket_started": started}, "OBSERVE")
+
+
 def cli(*args, user=OWNER, app=None):
     cmd = [CLI, "app"] + list(args)
     if app is not None:
@@ -1236,6 +1266,12 @@ def write_policy(path, apps):
     os.chmod(path, 0o644)
 
 
+def write_policies():
+    os.makedirs(ROOT + "/policies", exist_ok=True)
+    write_policy(POLICY, [(exe, host) for _, exe, _, host in APPS])
+    write_policy(POLICY_HOST, [("/usr/bin/curl", "example.com")])
+
+
 def arm(name, policy=POLICY):
     since = time.time()
     rc, out, err = cli("on", "--policy", policy)
@@ -1248,9 +1284,7 @@ def arm(name, policy=POLICY):
 
 def phase_arm(_args):
     with Case("P4-arm", "first arming: verifier accepts all programs; seven hooks; launchers are tagged", "test1/test6") as case:
-        os.makedirs(ROOT + "/policies", exist_ok=True)
-        write_policy(POLICY, [(exe, host) for _, exe, _, host in APPS])
-        write_policy(POLICY_HOST, [("/usr/bin/curl", "example.com")])
+        write_policies()
         # V1 precondition (security): arm only when no TIME_WAIT is left on 760-774 (from any earlier install), so
         # TIME_WAIT seen later comes from this build's own traffic.
         tw, waited = time_wait_on_listener_ports(), 0
@@ -1757,6 +1791,74 @@ def phase_v1(_args):
         owners = sorted({p for r in table for p in r["pids"]})
         check("V1d.owners", "V1", "every listener owned by a process of the service", {"owners": owners, "service": sorted(service)},
               bool(owners) and all(p in service for p in owners) and all(r["pids"] for r in table))
+        ok &= not case.failed
+    return ok
+
+
+def hold_port(addr, port=765):
+    """Root holds a live listener on addr:port (a stand-in for another program owning a listener port)."""
+    holder = subprocess.Popen(["/usr/bin/python3", "-I", "-c",
+        "import socket,sys,time; f=socket.AF_INET6 if ':' in sys.argv[1] else socket.AF_INET; s=socket.socket(f); "
+        "s.bind((sys.argv[1], int(sys.argv[2]))); s.listen(4); print('listening', flush=True); time.sleep(300)", addr, str(port)],
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    return holder, holder.stdout.readline().strip()
+
+
+def phase_startlimit(_args):
+    """A3-R1: while off, the service is socket-activated once per control request and exits after answering, so
+    every request is a start that counts against StartLimitBurst. Runs right after setup, before the first arm."""
+    ok = True
+    write_policies()
+    with Case("A3R1a-status-calls-while-off", "30 `app status` calls by the owner while off; no reset-failed first", "A3-R1", reset=False) as case:
+        since = time.time()
+        svc0, sock0 = unit_props(UNIT, "ActiveState,Result,NRestarts"), unit_props(SOCKET_UNIT, "ActiveState,Result")
+        boot = run(["journalctl", "--no-pager", "-b", "-u", UNIT, "-o", "cat"], timeout=30, quiet=True)[1]
+        record("A3R1a.before", "A3-R1", "state before the calls (security: no reset-failed before them)",
+               {"service": svc0, "socket": sock0, "service_starts_this_boot": boot.count("Started blackice-appfilter.service")}, "OBSERVE")
+        calls, t0 = [], time.time()
+        for n in range(1, 31):
+            rc, out, err = cli("status")
+            calls.append({"n": n, "rc": rc, "out": (out + err).strip()[:160], "t": round(time.time() - t0, 2)})
+        with open(f"{case.dir}/calls.json", "w") as f:
+            json.dump(calls, f, indent=1)
+        bad = [c for c in calls if c["rc"] != 0 or not c["out"].startswith("OK ")]
+        first = bad[0]["n"] if bad else None
+        svc, sock = unit_props(UNIT, "ActiveState,Result,NRestarts"), unit_props(SOCKET_UNIT, "ActiveState,Result")
+        text = journal("status-calls", since)
+        check("A3R1a.thirty-calls", "A3-R1", "30 status calls by the owner while off all answer OK",
+              {"first_failure": first, "failed_calls": len(bad), "seconds": calls[-1]["t"], "service": svc, "socket": sock,
+               "starts_in_journal": text.count("Started blackice-appfilter.service")}, first is None)
+        if first is not None:
+            record("A3R1a.lockout", "A3-R1", "the first failing call, both units' Result, and systemd's lines",
+                   {"call": bad[0], "service": svc, "socket": sock,
+                    "systemd": [l for l in text.splitlines() if "repeated too quickly" in l or "start-limit" in l]}, "OBSERVE")
+            rc, out, err = cli("on", "--policy", POLICY)
+            record("A3R1a.owner-cannot-arm", "A3-R1", "the owner's `app on` while locked out", [rc, (out + err).strip()[:200]], "OBSERVE")
+            run(["systemctl", "reset-failed", UNIT, SOCKET_UNIT], timeout=15)
+            run(["systemctl", "start", SOCKET_UNIT], timeout=30)
+            status = cli_status()
+            check("A3R1a.root-recovers", "A3-R1", "root's reset-failed and starting the socket bring status back: OK off", status, status_label(status) == "off",
+                  socket_after=unit_props(SOCKET_UNIT, "ActiveState,Result"))
+        ok &= not case.failed
+    with Case("A3R1b-refused-arm", "a refused arm (root holds 127.0.0.1:765): no start-limit, at most one automatic restart, the socket keeps answering", "A3-R1") as case:
+        holder, first_line = hold_port("127.0.0.1")
+        check("A3R1b.holder", "harness", "root holds 127.0.0.1:765", first_line, first_line == "listening")
+        since, n0 = time.time(), unit_props(UNIT, "NRestarts").get("NRestarts")
+        rc, text = arm("a3r1b-arm")
+        holder.kill()
+        holder.wait()
+        check("A3R1b.refused", "V1", "app on refused with ListenerPortOccupied", [rc, text], rc != 0 and "ListenerPortOccupied" in text)
+        time.sleep(6)  # RestartSec=1, plus a margin for one restart and its exit
+        text_j = journal("refused-arm", since)
+        svc, sock = unit_props(UNIT, "ActiveState,Result,NRestarts"), unit_props(SOCKET_UNIT, "ActiveState,Result")
+        starts, scheduled = text_j.count("Started blackice-appfilter.service"), text_j.count("Scheduled restart job")
+        record("A3R1b.starts", "A3-R1", "service starts and automatic restarts after the refused arm",
+               {"starts": starts, "scheduled_restarts": scheduled, "nrestarts": [n0, svc.get("NRestarts")]}, "OBSERVE")
+        check("A3R1b.restarts-low", "A3-R1", "at most one automatic restart", scheduled, scheduled <= 1)
+        check("A3R1b.no-start-limit", "A3-R1", "no start-limit-hit; the service is not failed and the socket is listening",
+              {"service": svc, "socket": sock}, "start-limit" not in text_j and svc.get("ActiveState") != "failed" and sock.get("ActiveState") == "active")
+        status = cli_status()
+        check("A3R1b.socket-answers", "A3-R1", "status answers OK off", status, status_label(status) == "off")
         ok &= not case.failed
     return ok
 
@@ -2537,7 +2639,7 @@ PHASES = {
     "preflight": phase_preflight, "provision": phase_provision, "baseline": phase_baseline, "setup": phase_setup,
     "arm": phase_arm, "guard": phase_guard, "inbound": phase_inbound, "bind": phase_bind, "srh": phase_srh,
     "dns-redirect": phase_dns_redirect, "restart": phase_restart, "kill-fork": phase_kill_fork, "off": phase_off,
-    "kill-phases": phase_kill_phases, "v1": phase_v1, "host-like": phase_host_like, "teardown": phase_teardown, "summary": phase_summary,
+    "kill-phases": phase_kill_phases, "v1": phase_v1, "startlimit": phase_startlimit, "host-like": phase_host_like, "teardown": phase_teardown, "summary": phase_summary,
     "interactive-setup": phase_interactive_setup, "interactive-pre": phase_interactive_pre, "interactive-post": phase_interactive_post,
     "service": phase_service, "reboot-check": phase_reboot_check,
     "extra-m4": phase_extra_m4, "extra-uring": phase_extra_uring, "extra-flood": phase_extra_flood,

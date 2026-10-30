@@ -9,12 +9,14 @@
 #   run.sh --vm DIR --commit SHA --binary-sha SHA256 --bundle-sha SHA256 [--cli-sha SHA256] \
 #          --label dry-run|evidence --results DIR [--agent yes|no] [--extra] [--skip phase,...] \
 #          [--secret-dir DIR] [--only interactive|reboot|teardown,...] [--targeted] [--bcases "B1 B9a ..."] \
-#          [--listener-test FILE --listener-test-sha SHA256]
+#          [--listener-test FILE --listener-test-sha SHA256] [--phases "startlimit arm restart ..."]
 #
 # --agent yes: the commit's CLI starts pkttyagent for `app off` on a tty. --agent no: it does not (before c592f6e).
 # --only:      re-run blocks against the kit already installed in the VM (after a harness fix); no build.
 # --targeted:  a fresh build and install of a new SHA, then only P0-P4, the restart phase (F01, F02, F02b,
 #              F02c), the interactive B1 and B9a-c, and the root teardown.
+# --phases:   a fresh build and install, P0-P3, then only the listed phases in order, then the root teardown.
+#              `interactive` runs the B cases (narrowed by --bcases) and `reboot` the reboot block; `arm` is critical.
 # --listener-test: the commit's VM socket test (V1-a), compiled beforehand with `zig test ... --test-no-exec` and
 #              never run on this host. It is checked against the reviewed hash, copied into the VM, and run there.
 set -euo pipefail
@@ -22,7 +24,7 @@ PINNED_KERNEL=6.12.113+deb13-amd64
 here=$(cd -- "$(dirname -- "$(readlink -f -- "$0")")" && pwd)
 repo=$(git -C "$here" rev-parse --show-toplevel)
 
-vm= commit= binary_sha= bundle_sha= cli_sha= label= results= agent=yes extra=0 skip= secret_dir= only= targeted=0 bcases= listener_test= listener_test_sha=
+vm= commit= binary_sha= bundle_sha= cli_sha= label= results= agent=yes extra=0 skip= secret_dir= only= targeted=0 bcases= listener_test= listener_test_sha= phases=
 while [[ $# -gt 0 ]]; do
     case $1 in
         --vm) vm=$2; shift 2 ;;
@@ -41,6 +43,7 @@ while [[ $# -gt 0 ]]; do
         --bcases) bcases=$2; shift 2 ;;
         --listener-test) listener_test=$2; shift 2 ;;
         --listener-test-sha) listener_test_sha=$2; shift 2 ;;
+        --phases) phases=$2; targeted=1; shift 2 ;;
         *) echo "unknown argument: $1" >&2; exit 2 ;;
     esac
 done
@@ -270,6 +273,26 @@ if [[ -n $only ]]; then
 fi
 
 build_and_install
+if [[ -n $phases ]]; then
+    say "phases: $phases"
+    critical preflight
+    critical provision
+    critical baseline
+    critical setup
+    for p in $phases; do
+        case $p in
+            interactive) interactive_block "$bcases" ;;
+            reboot) reboot_block ;;
+            arm) critical arm ;;
+            *) phase "$p" || true ;;
+        esac
+    done
+    phase teardown || true
+    phase summary || true
+    fetch
+    say "done: $out"
+    exit 0
+fi
 if [[ $targeted == 1 ]]; then
     critical preflight
     critical provision
