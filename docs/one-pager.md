@@ -62,7 +62,10 @@ HTTPS through the proxy, observe mode, and recovery after faults.
 - In v0, any process of the same user that runs outside every scope counts as the owner.
 - Work handed to a service outside the scope (launchd, `open`, `systemd-run --user`, Docker) is refused only
   where a test shows it; otherwise it is a stated limit.
-- Receipts are a local record for diagnosis, not proof against someone with administrator rights.
+- An allowed name on a shared CDN can reach other sites on that CDN through domain fronting inside TLS: the
+  proxy checks the TLS server name, not the encrypted request.
+- Receipts are a local record for diagnosis. Other programs of the same user, and administrators, can change
+  them. Keeping the scoped command itself from writing them is designed but not yet tested on either OS.
 
 ## Build
 

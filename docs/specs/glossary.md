@@ -136,6 +136,17 @@ A network namespace alone is not enough: a probe showed lookups still escaping t
 
 **See also.** DNS, mount namespace, CONNECT proxy
 
+## domain fronting
+
+**Plain.** Using an allowed site's name on the outside of an encrypted connection while asking, on the
+inside, for a different site served by the same provider.
+
+**Technical.** Works where many sites share one CDN or hosting front end: the TLS server name says the
+allowed host, the encrypted HTTP `Host` names another one, and the front end routes by the inner name. The
+blackice proxy checks the server name but cannot read the encrypted request, so this stays a stated limit.
+
+**See also.** SNI, TLS, CONNECT proxy
+
 ## eBPF
 
 **Plain.** A way to load small, checked programs into the Linux kernel so it can make decisions quickly,

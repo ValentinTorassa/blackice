@@ -32,7 +32,7 @@ if both the name and the address it found are allowed. Every answer it gives is 
 | proxy.R8 | When the scope ends, blackice shall stop the proxy and close every connection it is relaying. | P0-05 |
 | proxy.R9 | When a request names a port the policy does not allow, the proxy shall answer 403 and write a `deny` receipt with reason `port_not_allowed`. | P0-03 |
 | proxy.R10 | When a `CONNECT` tunnel's first bytes are a TLS ClientHello whose server name (SNI) differs from the `CONNECT` host, the proxy shall close the tunnel before any byte reaches the destination and write a `deny` receipt (`sni_mismatch`). | P0-03 |
-| proxy.R11 | When a `CONNECT` tunnel's first bytes are not a TLS ClientHello, the proxy shall close the tunnel and write a `deny` receipt (`not_tls`). | P0-03 |
+| proxy.R11 | When a `CONNECT` tunnel's first bytes are not a TLS ClientHello, or are a ClientHello without a server name, the proxy shall close the tunnel and write a `deny` receipt (`not_tls` or `no_sni`). Without a server name, a shared front end would pick the site from whatever the client sends next. | P0-03 |
 | proxy.R12 | When the proxy starts a command's environment, blackice shall point `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY` and their lowercase forms at the proxy, and set `NO_PROXY` to loopback only. | P0-03 |
 
 ## Design
@@ -63,6 +63,9 @@ service by the program.
   - The `CONNECT` host is what the client says. The proxy binds it to a real destination by resolving it
     itself and compares the TLS server name with it, but it does not check certificates and cannot see inside
     ECH. A matching name check does not prove who the remote server is.
+  - Domain fronting: an allowed name served by a shared CDN or hosting front end can carry requests for other
+    sites on that front end inside TLS. The server-name check stops the plaintext and SNI-less forms, not
+    this one.
   - Ports: only the ports the policy allows, 80 and 443 by default.
   - Only HTTP and HTTPS through the proxy are covered. Other protocols, UDP and QUIC are meant to be blocked
     entirely by the backend, which allows only the proxy and relay ports; each platform spec says what is
@@ -96,8 +99,8 @@ service by the program.
 |---|---|---|---|
 | proxy.R2 | probe | - | Feasibility only, no blackice code: on macOS 27.0.1 (SIP on and off) and Linux, a command confined to one loopback port reached a stand-in proxy, which received `CONNECT example.com:443` while direct DNS failed inside the sandbox |
 | proxy.R2, proxy.R3, proxy.R4, proxy.R5, proxy.R6, proxy.R7, proxy.R10, proxy.R12 | test | `zig build test`, src/proxy/test.zig: "CONNECT to a name outside the policy is refused with 403 and a receipt", "an allowed name that resolves to a private address is refused", "CONNECT to an allowed name tunnels bytes to the checked address", "TLS server name must match the CONNECT host", "plain HTTP: Host comes from the URI and proxy headers are dropped", "IP literals need an allowed subnet; requests that are not proxy requests get 400", "setEnv points every proxy variable at the proxy and keeps loopback direct" | 36/36 passed at dd44a0e (PR #4), Zig 0.17.0, Linux x86_64, real loopback sockets with a fixed resolver; no network |
-| proxy.R9, proxy.R11 | test | src/proxy/test.zig: "ports outside the policy are refused before any name work, and grants do not lift them", "CONNECT carries TLS only: other bytes close the tunnel" | Committed on network/proxy-relay (3737e7b, b29d33f); does not compile yet without `Policy.checkPort` in the core, so not run |
+| proxy.R9, proxy.R11 | test | src/proxy/test.zig: "ports outside the policy are refused before any name work, and grants do not lift them", "CONNECT carries TLS only: other bytes close the tunnel" | Committed on network/proxy-relay (3737e7b, b29d33f); does not compile yet without `Policy.checkPort` in the core, so not run. A ClientHello without a server name is not covered yet |
 
 ## Terms
 
-CONNECT proxy, proxy variables, policy, receipt, reason code, loopback, DNS, SNI, ECH, TLS, scope
+CONNECT proxy, proxy variables, policy, receipt, reason code, loopback, DNS, SNI, ECH, TLS, domain fronting, scope

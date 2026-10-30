@@ -85,7 +85,7 @@ configuration and are not read from the imported file.
 
 | Covers | Kind | Link | Note |
 |---|---|---|---|
-| sandbox-import.R1, sandbox-import.R2, sandbox-import.R3, sandbox-import.R4, sandbox-import.R5, sandbox-import.R6, sandbox-import.R7, sandbox-import.R9, sandbox-import.R10 | test | `zig test src/core/sandbox_import.zig`, 63 vectors in tests/vectors/sandbox-import-v1.json plus the capability gate, input bounds and allocation-failure tests | 12/12 passed at fe37bb3 (codex/importer-docs, not pushed yet), Zig 0.17.0, Linux x86_64. Conversion only: no comparison with Sandbox itself and no enforcement |
+| sandbox-import.R1, sandbox-import.R2, sandbox-import.R3, sandbox-import.R4, sandbox-import.R5, sandbox-import.R6, sandbox-import.R7, sandbox-import.R9, sandbox-import.R10 | test | `zig test src/core/sandbox_import.zig`, 63 vectors in tests/vectors/sandbox-import-v1.json plus the capability gate, input bounds and allocation-failure tests | 12/12 passed at fe37bb3 (PR #5), Zig 0.17.0, Linux x86_64. Conversion only: no comparison with Sandbox itself and no enforcement |
 
 ## Terms
 
