@@ -18,8 +18,8 @@ AI agent runs commands on my machine: tests, package installs, scripts. Each of 
 permissions, so any of them can connect to anywhere my user can reach.
 
 I wanted that limit written down in a file I can review in a pull request, and in place before the command
-starts. The operating system keeps the command away from everything except a local proxy, and the proxy applies
-the file. My earlier project, [VT-Agent-Firewall](https://github.com/ValentinTorassa/VT-Agent-Firewall),
+starts. The operating system lets the command connect only to a local proxy, and the proxy applies the file. My
+earlier project, [VT-Agent-Firewall](https://github.com/ValentinTorassa/VT-Agent-Firewall),
 checks which tools an agent calls. blackice works one layer down, on the connections the commands themselves open.
 
 It's v0 and not ready for production. Only what has an entry under [Evidence](#evidence) has been tested, and each

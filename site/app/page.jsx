@@ -202,8 +202,8 @@ export default function Home() {
           </p>
           <p className="sub">
             I wanted that limit in a file I can review in a pull request, in place before the command starts. The
-            operating system keeps the command away from everything except a local proxy, and the proxy applies the
-            file. My earlier project,{' '}
+            operating system lets the command connect only to a local proxy, and the proxy applies the file. My earlier
+            project,{' '}
             <a href="https://github.com/ValentinTorassa/VT-Agent-Firewall">VT-Agent-Firewall</a>, checks which tools an
             agent calls. blackice works one layer down, on the connections the commands themselves open.
           </p>
@@ -278,7 +278,7 @@ export default function Home() {
               <IconArrowRight size={14} />
             </Link>
           </div>
-          <p className="sub">A part is marked Verified only when a recorded run in the repository backs it.</p>
+          <p className="sub">A part is marked Tested only when a recorded run in the repository backs it.</p>
           <div className="progress">
             <p className="progress-top">
               <span className="progress-count">
