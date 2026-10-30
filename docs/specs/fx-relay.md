@@ -106,6 +106,9 @@ key out of the scope; it does not decide what content may be sent to the model.
     kept inside the workspace (R21), so blackice and fx must be installed outside it; root-owned is best.
   - Main mode: fx's reads are not limited, and what fx reads goes to the model provider; blackice limits only
     what scoped commands send.
+  - Main mode: the hook keeps fx's provider credential out of each scope's environment (R12). A scoped command
+    can still read a credential fx keeps in a file the user can read; whether it can read one fx keeps in the
+    macOS keychain was not tested. blackice limits the network, not reads.
   - Main mode: only fx profile files that exist when fx starts are protected. A missing one, such as `api-key` or
     `auth.json`, can be created from a scope and is read by the next fx session. A new `~/.fx/mcp.json` has no
     effect in this mode (R22).
