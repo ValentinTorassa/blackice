@@ -1,7 +1,7 @@
 # Linux task scopes
 
 This backend is an experimental managed-command implementation. It is not an app/host firewall. An actual
-installed-helper run on Debian x86_64, kernel 6.12.113, recorded
+installed-helper run on Debian 13 x86_64, kernel 6.12.113, recorded
 [policy-before-exec](https://github.com/ValentinTorassa/blackice/blob/aa5a048e1762a0c3c3c56cc8e7a0bf6c4473b0f8/evidence/P0-01-policy-before-exec-linux.md)
 and [off-host TCP/UDP denial](https://github.com/ValentinTorassa/blackice/blob/aa5a048e1762a0c3c3c56cc8e7a0bf6c4473b0f8/evidence/P0-02-real-deny-linux.md)
 with immediate and double-forked senders over IPv4 LAN and IPv6 Tailscale. Those entries identify the exact
@@ -89,10 +89,16 @@ namespaces, pidfds, `cgroup.kill`, `openat2`, `statx` mount IDs, `mount_setattr`
 version alone does not prove the required kernel configuration. The helper refuses missing capabilities.
 Source supports x86_64 and aarch64; only x86_64 has been exercised locally so far.
 
-Host security policy must permit the private user namespace and its mount operations. AppArmor restrictions
-can refuse those mounts even when the kernel supports them; launch then fails closed during child
-containment. Ubuntu CI currently reports `PermissionDenied` in namespace mount tests, and the installed
-helper has not been validated on Ubuntu. Setup does not change AppArmor policy or host sysctls.
+Tested on Debian 13 (kernel 6.12), without Ubuntu's AppArmor user-namespace restriction. Ubuntu introduced
+`kernel.apparmor_restrict_unprivileged_userns` in 23.10 and enabled it by default in
+[24.04 and later](https://documentation.ubuntu.com/release-notes/24.04/#unprivileged-user-namespace-restrictions);
+the [23.10 release notes](https://documentation.ubuntu.com/release-notes/23.10/#security-improvements)
+explicitly describe it as disabled by default. With that setting at `1` and no suitable AppArmor profile,
+scopes are expected to fail closed at `child_containment`: the helper's child drops its capabilities before
+`unshare` and counts as unprivileged, so the namespace's mount operations are denied. The namespace-mount
+failure was reproduced in Ubuntu 26.04 CI; an installed-helper run on Ubuntu remains unverified.
+An AppArmor profile installed by setup would be a separate privileged change requiring security review.
+Current setup does not install such a profile or change host sysctls.
 
 Build as the normal user:
 
