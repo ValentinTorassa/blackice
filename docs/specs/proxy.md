@@ -31,8 +31,8 @@ if both the name and the address it found are allowed. Every answer it gives is 
 | proxy.R7 | If a request is malformed, its header exceeds a fixed size, or it is neither `CONNECT` nor a plain HTTP request with an absolute URL, the proxy shall refuse it with a 4xx status and write a `deny` receipt. | P0-02 |
 | proxy.R8 | When the scope ends, blackice shall stop the proxy and close every connection it is relaying. | P0-05 |
 | proxy.R9 | When a request names a port the policy does not allow, the proxy shall answer 403 and write a `deny` receipt with reason `port_not_allowed`. | P0-03 |
-| proxy.R10 | When a `CONNECT` tunnel's first bytes are a TLS ClientHello whose server name (SNI) differs from the `CONNECT` host, the proxy shall close the tunnel before any byte reaches the destination and write a `deny` receipt (`sni_mismatch`). | P0-03 |
-| proxy.R11 | When a `CONNECT` tunnel's first bytes are not a TLS ClientHello, the proxy shall close the tunnel and write a `deny` receipt (`not_tls`). A tunnel the client closes before sending a byte keeps its allow verdict, with detail `client_closed`; nothing reaches the upstream. When a ClientHello for a name carries no server name, it shall do the same with `sni_missing`. Without a server name, a shared front end would pick the site from whatever the client sends next. | P0-03 |
+| proxy.R10 | When a `CONNECT` tunnel's first bytes are a TLS ClientHello whose server name (SNI) differs from the `CONNECT` host, the proxy shall close the tunnel before any of the client's bytes is forwarded to the destination and write a `deny` receipt (`sni_mismatch`). The connection to the destination is already open at that point; nothing from the client goes through it. | P0-03 |
+| proxy.R11 | When a `CONNECT` tunnel's first bytes are not a TLS ClientHello, the proxy shall close the tunnel and write a `deny` receipt (`not_tls`). A tunnel the client closes before sending a byte keeps its allow verdict, with detail `client_closed`; no client byte is forwarded upstream. When a ClientHello for a name carries no server name, it shall do the same with `sni_missing`. Without a server name, a shared front end would pick the site from whatever the client sends next. | P0-03 |
 | proxy.R12 | When the proxy starts a command's environment, blackice shall point `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY` and their lowercase forms at the proxy, and set `NO_PROXY` to loopback only. | P0-03 |
 | proxy.R13 | If a plain HTTP request head has a bare CR or LF, a control byte in the target or a header name that is not a valid token, the proxy shall answer 400, write a `deny` receipt (`bad_request`, detail `invalid_request`) and send nothing upstream. | P0-03 |
 | proxy.R14 | If the scope ends while the proxy is still dialing an upstream, the proxy shall stop dialing, open no further connection, and write `upstream_unreachable` with detail `canceled`. | P0-06 |
@@ -98,6 +98,7 @@ service by the program.
 | Tests: refused name, allowed name, private address behind an allowed name, IP literal | network | done | |
 | TLS server name must match the `CONNECT` host; non-TLS first bytes close the tunnel | network | done | |
 | Close the tunnel when the ClientHello has no server name | network | done | |
+| Test a TLS handshake the proxy cannot parse (`tls_unparsed`): tunnel closed, no client byte forwarded upstream | network | todo | |
 | Port check before any name work (`network.ports`) | network | done | |
 | Wire the proxy into `blackice run` (PR #7) | lead | done | |
 | Scope end stops the proxy and closes its tunnels | lead | done | |

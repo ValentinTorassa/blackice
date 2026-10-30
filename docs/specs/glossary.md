@@ -507,9 +507,9 @@ connection.
 **Technical.** Server Name Indication, a TLS ClientHello extension. It is a claim by the client, can be absent,
 and is hidden by Encrypted Client Hello. The blackice proxy decides on the `CONNECT` host name and its own name
 resolution, then reads the tunnel's first bytes: they must be a ClientHello, and for a destination given as a
-name its SNI must be present and equal that host. Otherwise the proxy closes the tunnel before any byte reaches
-the destination (`not_tls`, `sni_missing`, `sni_mismatch`; proxy.R10, proxy.R11). A matching name does not
-prove who the server is.
+name its SNI must be present and equal that host. Otherwise the proxy closes the tunnel before any of the
+client's bytes is forwarded (`not_tls`, `tls_unparsed`, `sni_missing`, `sni_mismatch`; proxy.R10, proxy.R11).
+The connection to the destination is already open by then. A matching name does not prove who the server is.
 
 **See also.** CONNECT proxy, ECH, domain fronting
 
