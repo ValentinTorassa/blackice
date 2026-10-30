@@ -82,7 +82,7 @@ export default function Home() {
           <div className="container hero-inner">
             <Link href="/docs/status/" className="pill">
               <span className="pill-dot" aria-hidden="true" />
-              Proof of concept · macOS and Linux
+              v0 · macOS and Linux
               <IconArrowRight size={13} className="pill-arrow" />
             </Link>
             <h1>
