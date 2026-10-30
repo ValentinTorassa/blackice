@@ -77,7 +77,9 @@ commit=$(git -C "$repo" rev-parse --verify "$commit^{commit}")
 tree=$(git -C "$repo" rev-parse "$commit^{tree}")
 short=${commit:0:7}
 stamp=$(date -u +%Y%m%dT%H%M%SZ)
-out=$results/$label-$short-$stamp${only:+-rerun}$([[ $targeted == 1 ]] && echo -targeted)
+suffix=${only:+-rerun}
+[[ $targeted == 1 ]] && suffix+=-targeted
+out=$results/$label-$short-$stamp$suffix
 mkdir -p "$out/host"
 exec > >(tee -a "$out/driver.log") 2>&1
 if [[ -z $secret_dir ]]; then secret_dir=$(mktemp -d); fi
