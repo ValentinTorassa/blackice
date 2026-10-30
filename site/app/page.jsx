@@ -94,8 +94,8 @@ export default function Home() {
               answer a prompt.
             </p>
             <p className="hero-status">
-              Task scopes work today on macOS. The macOS app filter is built in its pull request and needs Developer ID
-              signing to run. The Linux app filter is in design.
+              Task scopes work today on macOS and on Debian 13. The macOS app filter is built in its pull request and
+              needs Developer ID signing to run. The Linux app filter is in design.
             </p>
             <CopyCommand command={SITE.command} />
             <div className="actions">
