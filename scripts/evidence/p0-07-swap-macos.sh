@@ -4,8 +4,8 @@
 # command must still run in a scope under the pinned policy. No network receiver; no real key or credential.
 # Usage: p0-07-swap-macos.sh BLACKICE FX POLICY MODEL_PY UNUSED WORKDIR
 set -u
-[ $# -eq 6 ] || { echo "usage: $0 BLACKICE FX POLICY MODEL_PY RECEIVER_V4 WORKDIR" >&2; exit 2; }
-V4=$5; PORT=18785
+[ $# -eq 6 ] || { echo "usage: $0 BLACKICE FX POLICY MODEL_PY UNUSED WORKDIR" >&2; exit 2; }
+V4=$5; PORT=18785   # $5 is unused: it keeps the arguments in line with p0-07-fx-hook-macos.sh
 W=$6
 if [ -e "$W" ] && [ -n "$(ls -A "$W" 2>/dev/null)" ]; then echo "$W exists and is not empty" >&2; exit 2; fi
 mkdir -p "$W"; W=$(cd "$W" && pwd -P)

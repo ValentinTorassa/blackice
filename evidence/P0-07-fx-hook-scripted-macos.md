@@ -65,8 +65,9 @@ Tailscale address is shortened:
 ```
 
 The first four lines are the end of the P0-01/P0-02 run, at 07:12:48Z. This run sent its scoped
-attempt at 07:12:53.49Z and its control at 07:12:53.76Z. The receiver was stopped before run 2
-began (07:13:46Z), and nothing else had arrived.
+attempt at 07:12:53.49Z and its control at 07:12:53.76Z. The receiver had been started with a 200 s
+window (to 07:15:56Z), but it was stopped by hand at about 07:13:08Z, and its ports were checked
+closed at 07:13:15Z, before run 2 began (07:13:46Z). Nothing else had arrived.
 
 Hashes before and after the run:
 
