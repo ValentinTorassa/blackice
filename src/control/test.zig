@@ -1,6 +1,7 @@
 //! Control socket tests over a real Unix socket in a temporary scope directory.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const Io = std.Io;
 const net = Io.net;
 const testing = std.testing;
@@ -49,6 +50,14 @@ const Harness = struct {
     }
 };
 
+/// This process's pid. std.os.linux.getpid is a raw Linux syscall (SIGSYS on macOS); macOS goes through libc.
+fn selfPid() i32 {
+    return switch (builtin.os.tag) {
+        .linux => std.os.linux.getpid(),
+        else => std.c.getpid(),
+    };
+}
+
 fn expectField(v: std.json.Value, key: []const u8, want: []const u8) !void {
     const got = v.object.get(key) orelse {
         std.debug.print("receipt has no \"{s}\"\n", .{key});
@@ -92,7 +101,7 @@ test "grant and revoke from outside the scope" {
     try expectField(r0.value, "reason", "owner_grant");
     try expectField(r0.value, "host", "API.example.com");
     var pid_buf: [32]u8 = undefined;
-    const want_prefix = try std.fmt.bufPrint(&pid_buf, "pid={d} for 600s until ", .{std.os.linux.getpid()});
+    const want_prefix = try std.fmt.bufPrint(&pid_buf, "pid={d} for 600s until ", .{selfPid()});
     try testing.expect(std.mem.startsWith(u8, r0.value.object.get("detail").?.string, want_prefix));
     var r1 = try h.receiptAt(1);
     defer r1.deinit();
@@ -164,7 +173,7 @@ test "peerCred reports this process's uid and pid for a local peer" {
     const cred = control.peerCred(stream.socket.handle);
     try testing.expect(cred != null);
     try testing.expectEqual(h.server.uid, cred.?.uid);
-    try testing.expectEqual(@as(?i32, std.os.linux.getpid()), cred.?.pid);
+    try testing.expectEqual(@as(?i32, selfPid()), cred.?.pid);
 }
 
 test "parseDuration" {
