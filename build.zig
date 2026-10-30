@@ -39,6 +39,13 @@ pub fn build(b: *std.Build) void {
         const helper_tests = b.addTest(.{ .root_module = helper_root });
         test_step.dependOn(&b.addRunArtifact(helper_tests).step);
 
+        const launch_io_tests = b.addTest(.{ .root_module = b.createModule(.{
+            .root_source_file = b.path("src/linux/launch_io.zig"),
+            .target = target,
+            .optimize = optimize,
+        }) });
+        test_step.dependOn(&b.addRunArtifact(launch_io_tests).step);
+
         const probe_root = b.createModule(.{
             .root_source_file = b.path("src/linux/probe.zig"),
             .target = target,

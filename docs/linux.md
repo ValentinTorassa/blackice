@@ -82,6 +82,12 @@ permitted capabilities, with no inheritable capabilities. Setup records the inst
 entry, daemon, dependency download, sysctl change or firewall flush is installed.
 Run commands as the normal user after setup. Repeat setup after a reboot; cgroups are not persistent.
 
+`blackice run --policy examples/agent.json -- COMMAND ARGUMENTS` uses this backend through the shared
+launcher. The core starts the scope's proxy and control socket outside the cgroup and supplies only the proxy
+port; `--relay` adds the relay's port. All service and kernel receipts use the same core-owned log. With
+`--relay`, the unprivileged launcher replaces stdin with `/dev/null` before executing the helper, so the
+command cannot seek back through the provider-key input. Ordinary runs inherit non-socket stdin.
+
 Recovery is an explicit owner operation:
 
 ```sh

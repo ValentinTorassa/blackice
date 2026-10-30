@@ -25,7 +25,12 @@ pub const LaunchSpec = struct {
     state_dir: []const u8,
     /// Receipts for events the backend sees (for example kernel drops on Linux).
     receipts: *receipt.Log,
+    /// The command's stdin. `null_device` (/dev/null) when blackice itself read from stdin, such as the relay
+    /// key, so the command cannot read that stream back.
+    stdin: Stdin = .inherit,
 };
+
+pub const Stdin = enum { inherit, null_device };
 
 pub const Exit = union(enum) {
     exited: u8,
@@ -47,6 +52,13 @@ pub const Error = error{
     BackendUnavailable,
     SpawnFailed,
     OutOfMemory,
+};
+
+/// The enforcing backend's name, for receipts and messages.
+pub const name = switch (builtin.os.tag) {
+    .macos => "macos-seatbelt",
+    .linux => "linux-cgroup-bpf",
+    else => "none",
 };
 
 pub const available = switch (builtin.os.tag) {

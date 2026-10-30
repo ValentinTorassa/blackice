@@ -2,6 +2,7 @@
 const std = @import("std");
 const backend = @import("../core/backend.zig");
 const sys = @import("sys.zig");
+const launch_io = @import("launch_io.zig");
 const l = sys.l;
 const wire = @import("protocol.zig");
 pub const available = true;
@@ -39,7 +40,9 @@ fn launchInner(gpa: std.mem.Allocator, spec: backend.LaunchSpec) !backend.Exit {
     }
     args[args.len - 1] = null;
     const env = try spec.environ.createPosixBlock(alloc, .{ .zig_progress_fd = -1 });
-    try sys.ensureStdio();
+    const input = try launch_io.prepareStdin(spec.stdin == .null_device);
+    defer if (input) |fd| sys.close(fd);
+    try launch_io.ensureStdio(input);
     const executable = sys.fd(l.open(wire.helper_path, .{ .CLOEXEC = true, .NOFOLLOW = true }, 0)) catch {
         spec.receipts.write(.{ .event = "warning", .point = .control, .reason = "linux_helper_missing", .detail = "Build helper, then have the owner run scripts/linux-setup.sh; command was not launched" });
         return error.HelperNotInstalled;
@@ -55,6 +58,7 @@ fn launchInner(gpa: std.mem.Allocator, spec: backend.LaunchSpec) !backend.Exit {
     const pid: l.pid_t = @intCast(try sys.check(l.fork()));
     if (pid == 0) {
         // No allocation or std.Io after fork from a possibly multithreaded core.
+        launch_io.setStdin(input) catch l.exit_group(125);
         const exec_copy = sys.fd(l.fcntl(executable, l.F.DUPFD_CLOEXEC, 100)) catch l.exit_group(125);
         _ = sys.check(l.dup3(pipe[1], 3, 0)) catch l.exit_group(125);
         _ = sys.check(l.dup3(exec_copy, 4, @bitCast(l.O{ .CLOEXEC = true }))) catch l.exit_group(125);
