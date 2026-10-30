@@ -8,3 +8,18 @@ export const SITE = {
   authorUrl: 'https://valentorassa.com',
   command: 'blackice run --policy policy.json -- npm ci',
 };
+
+// The current release. The Install section on the landing page and the Install docs page read it.
+// It ships as one file per platform on the release page. A package manager gets a line here only once its package
+// is published and checked.
+const VERSION = '0.1.0';
+
+export const RELEASE = {
+  version: VERSION,
+  url: `${SITE.repo}/releases/tag/v${VERSION}`,
+  integrity: 'sha256sum -c SHA256SUMS --ignore-missing',
+  integrityMac: 'shasum -a 256 -c SHA256SUMS --ignore-missing',
+  provenance:
+    'gh attestation verify <file> --repo ValentinTorassa/blackice --signer-workflow ValentinTorassa/blackice/.github/workflows/release.yml',
+  linuxSetup: `${SITE.repo}/blob/v${VERSION}/docs/linux.md#build-and-install`,
+};
