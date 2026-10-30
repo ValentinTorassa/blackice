@@ -40,7 +40,7 @@ entry is one run, made by the people building blackice on their own machines; no
 | P0-03 Small explicit allow | Allowed names work through the proxy; other names are refused. | [macOS](../evidence/P0-03-explicit-allow-macos.md), [Linux](../evidence/P0-03-explicit-allow-linux.md) |
 | P0-04 Authorized change | The owner widens a scope from outside; the same request from inside fails. | [macOS](../evidence/P0-04-owner-grant-macos.md), [Linux](../evidence/P0-04-owner-grant-linux.md) |
 | P0-05 Bounded grant | The extra access ends at its expiry. | [macOS](../evidence/P0-05-grant-expiry-macos.md), [Linux](../evidence/P0-05-grant-expiry-linux.md) |
-| P0-07 fx | Every shell command fx 0.0.16 runs gets its own scope and receipts. The run used a scripted test model. | [macOS](../evidence/P0-07-fx-hook-scripted-macos.md) |
+| P0-07 fx | Every shell command fx 0.0.16 runs gets its own scope and receipts. The full run used a scripted test model; a run with a real model shows its one shell command in its own scope. | [macOS, scripted](../evidence/P0-07-fx-hook-scripted-macos.md), [macOS, real model](../evidence/P0-07-fx-real-model-macos.md) |
 | P0-08 Second platform | The same checks on the other OS. | Linux has P0-01 to P0-05; fx on Linux has no entry |
 | P0-09 Forwardable proof | Evidence entries, a short recording and this page. | pending: no recording yet |
 | P0-10 Release gap | The table below. | this page |
@@ -54,7 +54,7 @@ was shown working.
 
 | | Tasks | Apps |
 |---|---|---|
-| **macOS** | Shown on one Mac in the entries above. Not shown yet: launches through `open` or Apple Events refused, fx with a real model. | Built, unsigned, in #8: a Network Extension filter. It has never been activated. Needs an Apple Developer ID, a signed Network Extension, tests on a live system, and receipts written through blackice. |
+| **macOS** | Shown on one Mac in the entries above. Not shown yet: launches through `open` or Apple Events refused, fx with a real model through the relay. | Built, unsigned, in #8: a Network Extension filter. It has never been activated. Needs an Apple Developer ID, a signed Network Extension, tests on a live system, and receipts written through blackice. |
 | **Linux** | Shown on one Debian 13 machine in the entries above. A small helper is installed once by a setup script run with sudo. The first two real runs on 30 Oct failed closed before the command ran, and were fixed. Not shown yet: aarch64, fx, other distributions. On Ubuntu 24.04 and later, where `kernel.apparmor_restrict_unprivileged_userns=1` is the default, scopes are expected to fail closed. | In design. |
 
 Windows comes after macOS and Linux. Nothing is built for it.
