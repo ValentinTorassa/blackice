@@ -83,9 +83,8 @@ or addresses, only "any host" or "localhost", so every decision about names happ
   - The proxy port: what happens if the proxy restarts or another local process takes its port, and how one
     scope's proxy is kept from serving another, belong to [proxy](proxy.md) and are untested.
   - Inherited sockets (R7) are untested.
-  - The pasteboard is shared: a command in a scope read a value copied outside it (`pbcopy`/`pbpaste`, a
-    synthetic value, reported by the lead on 58e73cc). Writing goes through the same service, which the profile
-    does not deny (not tested separately). The write side matters more: a scoped command can leave a crafted
+  - The pasteboard is shared: a command in a scope read a value copied outside it, and a value it wrote was
+    read outside (`pbcopy`/`pbpaste`, synthetic values, the lead's probes on 58e73cc). The write side matters more: a scoped command can leave a crafted
     command line on the clipboard for the owner to paste into a terminal outside any scope. A fix is planned.
   - Reading another process's environment from a scope was refused the two ways tried: `/bin/ps` (setuid)
     does not start inside a scope, and `sysctl` `KERN_PROCARGS2` returns the arguments without the
