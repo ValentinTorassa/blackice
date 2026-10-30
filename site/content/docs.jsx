@@ -161,7 +161,7 @@ export const DOCS = [
         <Note>
           <strong>v0.</strong> A part counts as verified only when a recorded run in{' '}
           <code>evidence/</code> backs it. {recorded} of {CHECKPOINTS.length} checkpoints have recorded evidence; see{' '}
-          <Link href="/docs/status/">Status</Link>.
+          <Link href="/docs/status/">Status</Link>. Parts that are not built yet are written in the future tense.
         </Note>
         <p>
           A coding agent runs commands on your machine: tests, installs, scripts. Each of those commands can connect
@@ -688,7 +688,7 @@ ${SITE.name} run --policy policy.json -- npm ci`}</Code>
           </li>
           <li>
             <strong>Failure behavior.</strong> What happens when a broker, proxy or extension fails is stated per fault
-            and backend.
+            and backend. There is no blanket fail-closed claim.
           </li>
         </ul>
       </>
