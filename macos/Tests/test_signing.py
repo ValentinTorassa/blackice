@@ -1,7 +1,9 @@
 """Offline tests. No keychain access, signing, notarization or app execution."""
 from datetime import datetime, timezone
+import contextlib
 import hashlib
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
@@ -36,10 +38,11 @@ def template(role):
     return plistlib.loads((MACOS / "Resources" / (role + ".entitlements")).read_bytes())
 
 
-def bundle(directory):
-    app = Path(directory) / "Blackice.app"
-    for relative, role, executable in [(Path("."), "Host", "BlackiceApp"),
-                                       (signing.EXTENSION, "Filter", "BlackiceFilter")]:
+def bundle(directory, *, probe=False):
+    app = Path(directory) / ("BlackiceProbe.app" if probe else "Blackice.app")
+    targets = [(Path("."), "Probe", "BlackiceProbe")] if probe else [
+        (Path("."), "Host", "BlackiceApp"), (signing.EXTENSION, "Filter", "BlackiceFilter")]
+    for relative, role, executable in targets:
         contents = app / relative / "Contents"
         (contents / "MacOS").mkdir(parents=True)
         info = contents / "Info.plist"
@@ -183,7 +186,85 @@ class SigningTests(unittest.TestCase):
                 finally:
                     path.chmod(original)
 
-    def exercise_pipeline(self, status="Accepted", fail_at=None):
+    def test_probe_exact_layout_and_identity_without_profiles(self):
+        with tempfile.TemporaryDirectory() as directory:
+            app = bundle(directory, probe=True)
+            signing.validate_bundle(app, probe=True)
+            hashes = signing.executable_hashes(app, probe=True)
+            self.assertEqual(hashes, {"Contents/MacOS/BlackiceProbe": hashlib.sha256(b"synthetic, never executed").hexdigest()})
+            extra = app / "Contents/embedded.provisionprofile"
+            extra.write_bytes(b"must not inherit host profile"); extra.chmod(0o644)
+            with self.assertRaises(ValueError):
+                signing.validate_bundle(app, probe=True)
+            extra.unlink()
+            info_path = app / "Contents/Info.plist"
+            info = plistlib.loads(info_path.read_bytes())
+            info["CFBundleIdentifier"] = signing.HOST_ID
+            info_path.write_bytes(plistlib.dumps(info))
+            with self.assertRaises(ValueError):
+                signing.validate_bundle(app, probe=True)
+
+    def test_unsafe_optional_probe_stops_before_native_tools(self):
+        with tempfile.TemporaryDirectory() as directory:
+            app = bundle(directory)
+            probe = bundle(directory, probe=True)
+            probe.chmod(0o777)
+            arguments = ["sign-notarize", "--team-id", TEAM, "--identity", IDENTITY,
+                         "--host-profile", "unused-host-profile", "--extension-profile", "unused-filter-profile",
+                         "--keychain-profile", "synthetic-profile", "--app", str(app),
+                         "--output", str(Path(directory) / "new-output"), "--probe-app", str(probe)]
+            with mock.patch("sys.argv", arguments), mock.patch.object(signing.platform, "system", return_value="Darwin"), \
+                 mock.patch.object(signing, "run") as native:
+                with self.assertRaises(ValueError):
+                    signing.main()
+                native.assert_not_called()
+
+    def test_two_app_preparation_keeps_probe_separate_and_prints_hash_before_signing(self):
+        real_temporary = tempfile.TemporaryDirectory
+        with real_temporary() as directory:
+            root = Path(directory)
+            app, probe = bundle(root), bundle(root, probe=True)
+            for role in ["Host", "Filter"]:
+                (root / (role + ".provisionprofile")).write_bytes(b"synthetic CMS; never passed to native tools")
+            output = root / "output"
+            arguments = ["sign-notarize", "--team-id", TEAM, "--identity", IDENTITY,
+                         "--host-profile", str(root / "Host.provisionprofile"),
+                         "--extension-profile", str(root / "Filter.provisionprofile"),
+                         "--keychain-profile", "synthetic-profile", "--app", str(app),
+                         "--output", str(output), "--probe-app", str(probe)]
+            terminal = io.StringIO()
+            def native(arguments, *, environment, capture=False):
+                self.assertTrue(set(environment).issubset({"PATH", "HOME", "TMPDIR"}))
+                if "find-identity" in arguments:
+                    return ('  1) ' + FINGERPRINT + ' "' + IDENTITY + '"\n').encode()
+                if "cms" in arguments:
+                    role = Path(arguments[-1]).stem
+                    return plistlib.dumps(profile(signing.HOST_ID if role == "Host" else signing.FILTER_ID))
+                return b"/synthetic/tool"
+            def pipeline(app, destination, fingerprint, keychain_profile, entitlements, environment, *, probe=False):
+                self.assertEqual(fingerprint, FINGERPRINT)
+                self.assertEqual(keychain_profile, "synthetic-profile")
+                self.assertIn("Unsigned probe SHA-256:", terminal.getvalue())
+                self.assertTrue((output / "unsigned-executable-sha256.json").is_file())
+                self.assertTrue((output / "probe-unsigned-executable-sha256.json").is_file())
+                if probe:
+                    self.assertFalse((app / "Contents/embedded.provisionprofile").exists())
+                    self.assertEqual(entitlements, [])
+                else:
+                    self.assertTrue((app / "Contents/embedded.provisionprofile").is_file())
+                    self.assertTrue((app / signing.EXTENSION / "Contents/embedded.provisionprofile").is_file())
+                return destination / (app.stem + "-notarized.zip")
+            with mock.patch("sys.argv", arguments), mock.patch.object(signing.platform, "system", return_value="Darwin"), \
+                 mock.patch.object(signing, "run", side_effect=native), \
+                 mock.patch.object(signing.tempfile, "TemporaryDirectory", side_effect=lambda **kwargs: real_temporary(dir=root)), \
+                 mock.patch.object(signing, "sign_and_notarize", side_effect=pipeline) as pipelines, \
+                 contextlib.redirect_stdout(terminal):
+                signing.main()
+            self.assertEqual(pipelines.call_count, 2)
+            self.assertIn("Blackice-notarized.zip", terminal.getvalue())
+            self.assertIn("BlackiceProbe-notarized.zip", terminal.getvalue())
+
+    def exercise_pipeline(self, status="Accepted", fail_at=None, probe=False):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         output = Path(temporary.name)
@@ -198,9 +279,10 @@ class SigningTests(unittest.TestCase):
             return json.dumps({"status": status, "id": "synthetic"}).encode() if capture else None
 
         def execute():
-            return signing.sign_and_notarize(output / "Blackice.app", output, FINGERPRINT, "synthetic-profile",
-                                             [output / "Host.entitlements", output / "Filter.entitlements"],
-                                             environment, runner=runner)
+            return signing.sign_and_notarize(output / ("BlackiceProbe.app" if probe else "Blackice.app"),
+                                             output, FINGERPRINT, "synthetic-profile",
+                                             [] if probe else [output / "Host.entitlements", output / "Filter.entitlements"],
+                                             environment, runner=runner, probe=probe)
         return execute, calls
 
     def test_inside_out_signing_and_stapled_distribution_archive(self):
@@ -234,6 +316,33 @@ class SigningTests(unittest.TestCase):
     def test_command_failure_stops_pipeline(self):
         for position in range(1, 11):
             execute, calls = self.exercise_pipeline(fail_at=position)
+            with self.subTest(position=position), self.assertRaises(subprocess.CalledProcessError):
+                execute()
+            self.assertEqual(len(calls), position)
+
+    def test_probe_notarizes_and_staples_its_own_archive_without_ne_entitlements(self):
+        execute, calls = self.exercise_pipeline(probe=True)
+        final = execute()
+        self.assertEqual(final.name, "BlackiceProbe-notarized.zip")
+        self.assertTrue(calls[0][-1].endswith("BlackiceProbe.app"))
+        self.assertIn("runtime", calls[0]); self.assertIn("--timestamp", calls[0])
+        self.assertNotIn("--entitlements", calls[0])
+        self.assertIn("--strict", calls[1])
+        self.assertEqual(calls[3][1:3], ["notarytool", "submit"])
+        self.assertIn("--keychain-profile", calls[3]); self.assertIn("--wait", calls[3])
+        self.assertTrue(calls[3][3].endswith("BlackiceProbe-submission.zip"))
+        self.assertEqual(calls[4][1:3], ["stapler", "staple"])
+        self.assertEqual(calls[6][:3], ["/usr/sbin/spctl", "-a", "-vv"])
+        self.assertEqual(calls[7][1:3], ["stapler", "validate"])
+        self.assertEqual(calls[8][-1], str(final))
+
+    def test_probe_failures_never_complete_distribution(self):
+        execute, calls = self.exercise_pipeline(probe=True, status="Invalid")
+        with self.assertRaises(ValueError):
+            execute()
+        self.assertEqual(len(calls), 4)
+        for position in range(1, 10):
+            execute, calls = self.exercise_pipeline(probe=True, fail_at=position)
             with self.subTest(position=position), self.assertRaises(subprocess.CalledProcessError):
                 execute()
             self.assertEqual(len(calls), position)

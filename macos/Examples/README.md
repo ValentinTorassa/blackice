@@ -18,6 +18,53 @@ named probe wrapper without activating it. No example invents Valen's Team ID or
 an installed NetNewsWire identity. An unsigned/ad hoc probe follows unmatched
 allow and cannot prove an app binding.
 
+## Probe and NetNewsWire in one configuration
+
+Use the new read-only multi-app `make-config` form. This command path is prepared
+but still awaits Mac compilation/tests. Set `PROBE_TEAM_ID` from the enrolled
+identity and `NEWS_TEAM_ID`/`NEWS_SIGNING_ID` from the actual NetNewsWire signature,
+as shown in the [filter guide](../../docs/macos-app-filter.md#probe-and-native-app-demo).
+These identifiers are public selectors, not credentials. The following only
+writes and validates a configuration, without enabling it:
+
+```sh
+: "${PROBE_TEAM_ID:?Set the enrolled probe Team ID}"
+: "${NEWS_TEAM_ID:?Inspect NetNewsWire's actual Team ID}"
+: "${NEWS_SIGNING_ID:?Inspect NetNewsWire's actual signing identifier}"
+MULTI_WORK="$(mktemp -d /private/tmp/blackice-multi.XXXXXX)"
+APP=./macos/build/Blackice.app/Contents/MacOS/BlackiceApp
+"$APP" make-config --generation 2 --unmatched allow --hostname-mode os-metadata \
+  --app macos/Examples/probe-service-only.json "$PROBE_TEAM_ID" com.valentorassa.blackice.probe app-probe \
+  --app macos/Examples/netnewswire-feeds.json "$NEWS_TEAM_ID" "$NEWS_SIGNING_ID" app-netnewswire \
+  > "$MULTI_WORK/apps.json"
+"$APP" validate "$MULTI_WORK/apps.json"
+jq '{generation, unmatched, hostname_mode, apps: [.apps[] | {scope, signing_id, policy: (.policy_json | fromjson | .network)}]}' "$MULTI_WORK/apps.json"
+```
+
+Generation 2 is an example, not an automatic read of installed state. Choose a
+strictly higher generation for every update. After adding the previously denied
+feed host to `netnewswire-feeds.json`, inspect the real source change and rebuild
+the **whole** wrapper, keeping the probe binding:
+
+```sh
+git diff -- macos/Examples/netnewswire-feeds.json
+"$APP" make-config --generation 3 --unmatched allow --hostname-mode os-metadata \
+  --app macos/Examples/probe-service-only.json "$PROBE_TEAM_ID" com.valentorassa.blackice.probe app-probe \
+  --app macos/Examples/netnewswire-feeds.json "$NEWS_TEAM_ID" "$NEWS_SIGNING_ID" app-netnewswire \
+  > "$MULTI_WORK/apps-next.json"
+"$APP" validate "$MULTI_WORK/apps-next.json"
+```
+
+The builder preserves each policy's bytes, recalculates its original-byte
+SHA-256 and validates both bindings. Apply later with the signed host's `enable`
+command and owner authentication; wait for `policy_activated`/`snapshot_installed`
+at generation 3 before new requests. The required receipt-file output is still
+pending; `preferences_saved` is not that acknowledgement. Already allowed
+connections keep their verdict. The policy files remain ordinary
+`blackice.policy/v0` files usable by task scopes too.
+
+## Recovery
+
 For local recovery from an installed filter, use the signed host:
 
 ```sh

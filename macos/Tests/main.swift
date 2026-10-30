@@ -240,6 +240,7 @@ do {
     expect(capped.utf8.count < 4096, "large receipt fields fit core line cap")
     let cappedObject = try JSONSerialization.jsonObject(with: Data(capped.utf8)) as! [String: Any]
     expect((cappedObject["detail"] as? String)?.utf8.count == 512, "core detail byte cap")
+    try configurationBuilderRegressions()
     try securityRegressions()
     print("PASS: \(tests) assertions (policy, app scope, identity, user presence, TLS, privacy, snapshots, receipts)")
     print("Unit tests only. No Network Extension was activated; no live enforcement is claimed.")

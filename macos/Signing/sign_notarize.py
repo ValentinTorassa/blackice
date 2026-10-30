@@ -20,6 +20,7 @@ import tempfile
 
 HOST_ID = "com.valentorassa.blackice"
 FILTER_ID = "com.valentorassa.blackice.filter"
+PROBE_ID = "com.valentorassa.blackice.probe"
 EXTENSION = Path("Contents/Library/SystemExtensions") / (FILTER_ID + ".systemextension")
 NE_KEY = "com.apple.developer.networking.networkextension"
 NE_VALUE = "content-filter-provider-systemextension"
@@ -89,14 +90,15 @@ def make_entitlements(profile, template, team, bundle_id, fingerprint, now=None)
     return dict(expected, **{APP_KEY: app_id, TEAM_KEY: team})
 
 
-def validate_bundle(app):
+def validate_bundle(app, *, probe=False):
     paths.checked_tree(app)
-    files = {
+    files = {Path("Contents/Info.plist"), Path("Contents/MacOS/BlackiceProbe")} if probe else {
         Path("Contents/Info.plist"), Path("Contents/MacOS/BlackiceApp"),
         EXTENSION / "Contents/Info.plist", EXTENSION / "Contents/MacOS/BlackiceFilter",
     }
     directories = {parent for item in files for parent in item.parents if parent != Path(".")}
-    require(app.is_dir() and not app.is_symlink() and app.name == "Blackice.app", "expected unsigned Blackice.app")
+    expected_name = "BlackiceProbe.app" if probe else "Blackice.app"
+    require(app.is_dir() and not app.is_symlink() and app.name == expected_name, "expected unsigned " + expected_name)
     actual = set()
     for path in app.rglob("*"):
         relative = path.relative_to(app)
@@ -106,25 +108,27 @@ def validate_bundle(app):
         else:
             require(path.is_file() and relative in files, "unexpected bundle file: " + str(relative))
             actual.add(relative)
-    require(actual == files, "bundle is incomplete; run macos/build.sh into a fresh directory")
+    require(actual == files, "bundle is incomplete; build into a fresh directory")
     metadata = []
-    for relative, bundle_id, executable, kind in [
+    targets = [(Path("."), PROBE_ID, "BlackiceProbe", "APPL")] if probe else [
         (Path("."), HOST_ID, "BlackiceApp", "APPL"),
         (EXTENSION, FILTER_ID, "BlackiceFilter", "SYSX"),
-    ]:
+    ]
+    for relative, bundle_id, executable, kind in targets:
         info = plistlib.loads((app / relative / "Contents/Info.plist").read_bytes())
         require(info.get("CFBundleIdentifier") == bundle_id and info.get("CFBundleExecutable") == executable
                 and info.get("CFBundlePackageType") == kind, "bundle metadata mismatch")
         require(os.access(app / relative / "Contents/MacOS" / executable, os.X_OK), "bundle executable is not executable")
         metadata.append((info.get("CFBundleVersion"), info.get("CFBundleShortVersionString")))
-    require(metadata[0] == metadata[1] and all(isinstance(v, str) and v for v in metadata[0]),
-            "host and extension versions must match")
+    require(all(item == metadata[0] for item in metadata) and all(isinstance(v, str) and v for v in metadata[0]),
+            "bundle versions must exist and match")
 
 
-def executable_hashes(app):
-    return {str(relative): hashlib.sha256((app / relative).read_bytes()).hexdigest() for relative in [
+def executable_hashes(app, *, probe=False):
+    executables = [Path("Contents/MacOS/BlackiceProbe")] if probe else [
         Path("Contents/MacOS/BlackiceApp"), EXTENSION / "Contents/MacOS/BlackiceFilter",
-    ]}
+    ]
+    return {str(relative): hashlib.sha256((app / relative).read_bytes()).hexdigest() for relative in executables}
 
 
 def run(arguments, *, environment, capture=False):
@@ -134,28 +138,35 @@ def run(arguments, *, environment, capture=False):
                           text=False).stdout
 
 
-def sign_and_notarize(app, output, fingerprint, keychain_profile, entitlements, environment, runner=run):
-    extension = app / EXTENSION
-    for target, entitlement_path in [(extension, entitlements[1]), (app, entitlements[0])]:
+def sign_and_notarize(app, output, fingerprint, keychain_profile, entitlements, environment, runner=run, *, probe=False):
+    stem = "BlackiceProbe" if probe else "Blackice"
+    if probe:
+        require(not entitlements, "probe must not claim Network Extension entitlements")
         runner(["/usr/bin/codesign", "--force", "--sign", fingerprint, "--options", "runtime",
-                "--timestamp", "--generate-entitlement-der", "--entitlements", entitlement_path, target],
-               environment=environment)
+                "--timestamp", app], environment=environment)
+    else:
+        extension = app / EXTENSION
+        for target, entitlement_path in [(extension, entitlements[1]), (app, entitlements[0])]:
+            runner(["/usr/bin/codesign", "--force", "--sign", fingerprint, "--options", "runtime",
+                    "--timestamp", "--generate-entitlement-der", "--entitlements", entitlement_path, target],
+                   environment=environment)
     runner(["/usr/bin/codesign", "--verify", "--strict", "--deep", "--verbose=2", app], environment=environment)
-    submission = output / "Blackice-submission.zip"
+    submission = output / (stem + "-submission.zip")
     runner(["/usr/bin/ditto", "-c", "-k", "--keepParent", app, submission], environment=environment)
     result = runner(["/usr/bin/xcrun", "notarytool", "submit", submission, "--wait",
                      "--keychain-profile", keychain_profile, "--output-format", "json"],
                     environment=environment, capture=True)
-    (output / "notary-result.json").write_bytes(result)
+    result_path = output / ("probe-notary-result.json" if probe else "notary-result.json")
+    result_path.write_bytes(result)
     response = json.loads(result)
     require(isinstance(response, dict) and response.get("status") == "Accepted",
-            "notarization not accepted; see notary-result.json")
+            "notarization not accepted; see " + result_path.name)
     runner(["/usr/bin/xcrun", "stapler", "staple", app], environment=environment)
     runner(["/usr/bin/codesign", "--verify", "--strict", "--deep", "--verbose=2", app], environment=environment)
     runner(["/usr/sbin/spctl", "-a", "-vv", "--type", "execute", app], environment=environment)
     runner(["/usr/bin/xcrun", "stapler", "validate", app], environment=environment)
     # Distribute the archive made AFTER stapling, not the submission archive.
-    final_archive = output / "Blackice-notarized.zip"
+    final_archive = output / (stem + "-notarized.zip")
     runner(["/usr/bin/ditto", "-c", "-k", "--keepParent", app, final_archive], environment=environment)
     return final_archive
 
@@ -164,6 +175,7 @@ def main():
     parser = argparse.ArgumentParser(description="Manual signing/notarization after team enrollment and security review. Never installs or activates.")
     for name in ["team-id", "identity", "host-profile", "extension-profile", "keychain-profile", "app", "output"]:
         parser.add_argument("--" + name, required=True)
+    parser.add_argument("--probe-app", help="Optional fresh BlackiceProbe.app; signs and notarizes it with the same identity")
     args = parser.parse_args()
     require(re.fullmatch(r"[A-Z0-9]{10}", args.team_id), "TEAM_ID must be the enrolled ten-character Team ID")
     require(args.identity.startswith("Developer ID Application: ") and args.identity.endswith(" (" + args.team_id + ")"),
@@ -174,6 +186,12 @@ def main():
     require(not requested_app.is_symlink(), "input app cannot be a symlink")
     app = requested_app.resolve(strict=True)
     validate_bundle(app)
+    probe_app = None
+    if args.probe_app:
+        requested_probe = Path(args.probe_app).absolute()
+        require(not requested_probe.is_symlink(), "input probe cannot be a symlink")
+        probe_app = requested_probe.resolve(strict=True)
+        validate_bundle(probe_app, probe=True)
     requested_output = Path(args.output).absolute()
     require(not requested_output.is_symlink(), "output cannot be a symlink")
     output = requested_output.resolve()
@@ -182,6 +200,8 @@ def main():
     require(not output.exists() and output.parent.is_dir(), "output must be new, with an existing parent directory")
     paths.checked_directory(output.parent)
     require(output != app and app not in output.parents, "output cannot be inside the input app")
+    require(probe_app is None or (output != probe_app and probe_app not in output.parents),
+            "output cannot be inside the input probe")
     # Tools only see the OS user environment needed for the keychain and temp
     # files. Inherited Apple passwords, API keys and unrelated tokens are absent.
     environment = {"PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "HOME": str(Path.home())}
@@ -217,15 +237,28 @@ def main():
         (output / "unsigned-executable-sha256.json").write_text(json.dumps(hashes, sort_keys=True, indent=2) + "\n")
         for relative, digest in hashes.items():
             print("Unsigned executable SHA-256: " + digest + "  " + relative, flush=True)
+        signed_probe = None
+        if probe_app:
+            signed_probe = output / "BlackiceProbe.app"
+            shutil.copytree(probe_app, signed_probe)
+            validate_bundle(signed_probe, probe=True)
+            probe_hashes = executable_hashes(signed_probe, probe=True)
+            (output / "probe-unsigned-executable-sha256.json").write_text(json.dumps(probe_hashes, sort_keys=True, indent=2) + "\n")
+            for relative, digest in probe_hashes.items():
+                print("Unsigned probe SHA-256: " + digest + "  " + relative, flush=True)
         entitlement_paths = []
         for role, target, profile, values in zip(["Host", "Filter"], [signed_app, signed_app / EXTENSION], profiles, entitlements):
             shutil.copyfile(profile, target / "Contents/embedded.provisionprofile")
             path = output / (role + ".entitlements")
             path.write_bytes(plistlib.dumps(values, sort_keys=True))
             entitlement_paths.append(path)
-        final_archive = sign_and_notarize(signed_app, output, fingerprint, args.keychain_profile,
-                                         entitlement_paths, environment)
-        print("Verified notarized archive: " + str(final_archive))
+        archives = [sign_and_notarize(signed_app, output, fingerprint, args.keychain_profile,
+                                     entitlement_paths, environment)]
+        if signed_probe:
+            archives.append(sign_and_notarize(signed_probe, output, fingerprint, args.keychain_profile,
+                                             [], environment, probe=True))
+        for archive in archives:
+            print("Verified notarized archive: " + str(archive))
         print("No app or extension was installed, activated or loaded.")
 
 

@@ -82,6 +82,10 @@ Service, correlated with provider receipts. An unsigned/ad hoc probe follows
 `unmatched` and cannot prove the bound-app policy. The owner-readable receipt
 file is required for that comparison and awaits security design review.
 
+For one wrapper containing both apps and an explicit update generation, see the
+[multi-app recipe](../Examples/README.md#probe-and-netnewswire-in-one-configuration).
+It keeps policies as separate files and computes their embedded hashes.
+
 Use NetNewsWire as the first native-app candidate. Its
 [download implementation](https://github.com/Ranchero-Software/NetNewsWire/blob/main/Modules/RSWeb/Sources/RSWeb/DownloadSession.swift)
 uses an ephemeral `URLSession`. This is source evidence only: qualify the
@@ -98,34 +102,36 @@ own apps are not per-domain evidence targets for this version.
 
 The probe needs no Network Extension profile or capability. Use a fresh build
 and the same enrolled Developer ID Application identity; do not use ad hoc
-signing for evidence. The filter's `sign-notarize.sh` handles `Blackice.app`
-only; this separate ordinary app has the following owner-operated recipe.
+signing for evidence. `sign-notarize.sh --probe-app` prepares both apps together,
+with separate submission and final archives. The host and extension keep their
+own profiles; the probe gets neither profile nor Network Extension entitlement.
 These commands have **not** been run:
 
 ```sh
 PROBE_SIGN_WORK="$(mktemp -d /private/tmp/blackice-probe-sign.XXXXXX)"
-./macos/build-probe.sh "$PROBE_SIGN_WORK/build"
-PROBE_APP="$PROBE_SIGN_WORK/build/BlackiceProbe.app"
-/usr/bin/python3 -I macos/Signing/private_paths.py tree "$PROBE_APP"
-shasum -a 256 "$PROBE_APP/Contents/MacOS/BlackiceProbe"
-/usr/bin/codesign --force --options runtime --timestamp --sign 'Developer ID Application: OWNER NAME (TEAM_ID)' "$PROBE_APP"
-/usr/bin/codesign --verify --strict --deep "$PROBE_APP"
-/usr/bin/ditto -c -k --keepParent "$PROBE_APP" "$PROBE_SIGN_WORK/submission.zip"
-xcrun notarytool submit "$PROBE_SIGN_WORK/submission.zip" --keychain-profile blackice-notary --wait
+./macos/build.sh "$PROBE_SIGN_WORK/host-build"
+./macos/test.sh "$PROBE_SIGN_WORK/host-tests"
+./macos/build-probe.sh "$PROBE_SIGN_WORK/probe-build"
+./macos/test-probe.sh "$PROBE_SIGN_WORK/probe-tests"
+./macos/sign-notarize.sh \
+  --team-id TEAM_ID \
+  --identity 'Developer ID Application: OWNER NAME (TEAM_ID)' \
+  --host-profile /absolute/path/Blackice-Host.provisionprofile \
+  --extension-profile /absolute/path/Blackice-Filter.provisionprofile \
+  --keychain-profile blackice-notary \
+  --app "$PROBE_SIGN_WORK/host-build/Blackice.app" \
+  --probe-app "$PROBE_SIGN_WORK/probe-build/BlackiceProbe.app" \
+  --output "$PROBE_SIGN_WORK/notarized"
 ```
 
-Only after the response explicitly says `Accepted`, staple and verify:
-
-```sh
-xcrun stapler staple "$PROBE_APP"
-/usr/bin/codesign --verify --strict --deep "$PROBE_APP"
-/usr/sbin/spctl -a -vv --type execute "$PROBE_APP"
-xcrun stapler validate "$PROBE_APP"
-/usr/bin/ditto -c -k --keepParent "$PROBE_APP" "$PROBE_SIGN_WORK/BlackiceProbe-notarized.zip"
-```
-
-Stop on any failed command. The final archive is made after stapling. Installation
-and opening the window are separate later owner actions; this recipe does neither.
+Replace placeholders only after enrollment and security review. The script
+checks both input trees, prints their unsigned executable hashes, and uses only
+the named keychain profile for notary authentication. Each app must get an
+`Accepted` result before it is stapled, signature-checked, assessed by Gatekeeper
+and staple-validated. The final `Blackice-notarized.zip` and
+`BlackiceProbe-notarized.zip` are made after stapling. A failure stops the command;
+partial output is not a completed two-app release. Installation and opening the
+window remain separate owner actions.
 
 Recovery from an active filter is the signed host command
 `/Applications/Blackice.app/Contents/MacOS/BlackiceApp disable`, with local

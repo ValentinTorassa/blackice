@@ -126,6 +126,23 @@ The Team ID and signing identifier above are synthetic; substitute a real signed
 probe before future activation. `allow-test-subnet.json` uses documentation
 addresses; it is an evaluator fixture, not a real reachable service.
 
+For multiple apps, `make-config` also accepts the following fixed-order form:
+
+```text
+make-config --generation N --unmatched allow|deny --hostname-mode ip-only|os-metadata --app POLICY.json TEAM_ID SIGNING_ID app-SCOPE [--app POLICY.json TEAM_ID SIGNING_ID app-SCOPE ...]
+```
+
+It embeds each policy file's original UTF-8 bytes and computes its SHA-256,
+then validates the complete wrapper before writing anything to stdout. It
+rejects duplicate scopes or identity pairs, unknown flags, invalid generations,
+unsupported hostname modes and oversized configurations. It reads no saved
+preferences and performs no activation: the owner supplies an explicit positive
+generation greater than the saved one when preparing an update. The original
+one-app form still generates generation 1. The
+[two-app example](../macos/Examples/README.md#probe-and-netnewswire-in-one-configuration)
+covers the probe and NetNewsWire without editing embedded JSON or hashes by hand.
+This new command path awaits Mac compilation and tests.
+
 The generated shape is:
 
 ```json
@@ -418,6 +435,8 @@ security review must finish before the owner runs the following manual recipe.
 SIGNING_WORK="$(mktemp -d /private/tmp/blackice-sign.XXXXXX)"
 ./macos/build.sh "$SIGNING_WORK/build"
 ./macos/test.sh "$SIGNING_WORK/tests"
+./macos/build-probe.sh "$SIGNING_WORK/probe-build"
+./macos/test-probe.sh "$SIGNING_WORK/probe-tests"
 ./macos/sign-notarize.sh \
   --team-id TEAM_ID \
   --identity 'Developer ID Application: OWNER NAME (TEAM_ID)' \
@@ -425,6 +444,7 @@ SIGNING_WORK="$(mktemp -d /private/tmp/blackice-sign.XXXXXX)"
   --extension-profile /absolute/path/Blackice-Filter.provisionprofile \
   --keychain-profile blackice-notary \
   --app "$SIGNING_WORK/build/Blackice.app" \
+  --probe-app "$SIGNING_WORK/probe-build/BlackiceProbe.app" \
   --output "$SIGNING_WORK/notarized"
 ```
 
@@ -443,6 +463,14 @@ password or API key parameter and strips inherited credential environment
 variables from its tool invocations. Notary authentication uses only
 `notarytool --keychain-profile`; the certificate's private key stays in the
 owner's keychain.
+
+`--probe-app` is optional. With it, the script also requires the exact fresh
+`BlackiceProbe.app` layout and `com.valentorassa.blackice.probe` identifier,
+applies the same path checks, and prints/saves its unsigned executable hash
+before any signing. The probe uses the same Developer ID identity and hardened
+runtime, without the host's entitlements or provisioning profiles. An ordinary
+Mac app with no restricted entitlements needs no profile; see Apple's
+[provisioning-profile explanation](https://developer.apple.com/documentation/technotes/tn3125-inside-code-signing-provisioning-profiles).
 
 Before signing, it checks the exact unsigned bundle layout, both bundle IDs,
 matching versions, the available Developer ID identity, and each profile's
@@ -465,6 +493,13 @@ The final `Blackice-notarized.zip` is created **after** stapling; the earlier
 entitlements and `notary-result.json` remain in the private output directory for
 inspection. A notarized archive is not an installed or running filter.
 This ordering follows Apple's [custom notarization workflow](https://developer.apple.com/documentation/security/customizing-the-notarization-workflow).
+
+With the probe input, the script repeats submission, Accepted-status checking,
+stapling and all three verification commands for the probe. Its separate output
+is `BlackiceProbe-notarized.zip`, with `probe-notary-result.json` and
+`probe-unsigned-executable-sha256.json`. Neither app is embedded in the other.
+If either pipeline fails, the command fails; any partial output is not a
+completed two-app release. Neither pipeline installs or opens either app.
 
 Run the script's offline tests with `python3 macos/Tests/test_signing.py`.
 They use synthetic profiles and a mocked command runner, without touching a
@@ -681,6 +716,21 @@ accounting, pending security design review and implementation. The earlier
 unified-log-only demo plan is superseded. Expiring app grants remain out of scope;
 `blackice grant` applies to task scopes, not app-filter permissions.
 
+The proposed writer must put `policy_activated`/`snapshot_installed` with its new
+`gen` into the **same ordered JSONL stream** as flow decisions. This is a pending
+implementation requirement, not a current file-output capability. `enable`
+currently returns after saving preferences; it does not wait for that receipt.
+Use `tail -F` rather than `tail -f` for the future receipts pane so it follows
+file rotation, and show loss warnings rather than filtering them away.
+
+The first demo excludes refusing all unlisted apps and per-flow details for
+unlisted apps. Verified unrelated apps follow `unmatched: allow`; their
+ordinary outside-scope decisions contribute only to aggregate counters.
+Identity-resolution errors still deny and can produce private diagnostics.
+There is no special DNS exception for `unmatched: deny`, and no blanket promise
+that unlisted traffic has been tested. DNS and helper limits remain as described
+above.
+
 ## Validation and remaining gates
 
 Verified on 2026-10-30 on an arm64 Mac running macOS 27.0.1 (26A434), with SIP
@@ -692,15 +742,18 @@ plists passed `plutil`; 351 test assertions passed. The host's `make-config` and
 confirmed only linker ad hoc signing with no Team ID. No activation or live
 enforcement test was performed.
 
-The `appfilter/demo-prep` replay onto main `5f84f67` preserves the existing filter/host
-Swift, resources and Swift tests byte-for-byte. Build/test entry points now check
-output ownership and permissions. The probe is a separate, newly added target. The Mac was unreachable for a fresh run, so the
-351-assertion/build result above remains prior
-validation of identical source. The signing/path preparation has thirteen passing
-offline Python tests, including shared-path and wrong-owner rejection. The example wrapper's original-byte hashes and `jq` stream
-parser were checked locally; the stream input was synthetic, not a captured provider receipt. Host
-validation of the samples, compiling/running the new probe and its Swift tests,
-and signing with actual Apple profiles remain pending. No credentials or keychain
+The initial `appfilter/demo-prep` replay onto main `5f84f67` preserved the
+reviewed Swift source. Later preparation adds the separate probe, private
+build/test paths and the multi-app `make-config` builder/tests. The existing
+filter decision, identity, authorization and receipt-emission code is unchanged.
+The Mac was unreachable for a fresh run, so the 351-assertion/build result above
+is prior evidence and does not validate the new command or probe. The signing
+preparation has eighteen passing offline Python tests, including path rejection,
+probe isolation and both pipelines' failure gates. The example wrapper's
+original-byte hashes and `jq` stream parser were checked locally; stream input
+was synthetic, not a captured provider receipt. Mac build/tests for the complete
+current branch, host validation of the new command, compiling/running the probe,
+and signing with real Apple profiles remain pending. No credentials or keychain
 items were accessed for these checks.
 
 Tests cover exact/wildcard matching, private and mapped addresses, IPv6 CIDRs,

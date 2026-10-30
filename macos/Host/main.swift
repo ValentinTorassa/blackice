@@ -117,6 +117,8 @@ BlackiceApp (unsigned build and qualified deployment helper)
   status
   validate CONFIG.json
   make-config POLICY.json TEAM_ID SIGNING_ID app-SCOPE allow|deny ip-only|os-metadata
+  make-config --generation N --unmatched allow|deny --hostname-mode ip-only|os-metadata
+    --app POLICY.json TEAM_ID SIGNING_ID app-SCOPE [--app POLICY.json TEAM_ID SIGNING_ID app-SCOPE ...]
   activate
   enable CONFIG.json
   disable
@@ -152,16 +154,8 @@ do {
         output(["valid": true, "configuration": config.id, "generation": config.generation,
                 "apps": config.apps.count, "hostname_mode": config.hostnameMode, "enforcement_verified": false])
         exit(0)
-    case "make-config" where args.count == 7:
-        let data = try readBounded(args[1])
-        _ = try NetworkPolicy(data: data)
-        guard let policy = String(data: data, encoding: .utf8) else { fail("policy_requires_utf8") }
-        let doc = AppConfigurationDocument(generation: 1, unmatched: args[5], hostnameMode: args[6],
-            apps: [AppBindingDocument(scope: args[4], teamID: args[2], signingID: args[3], policyJSON: policy)])
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.sortedKeys, .prettyPrinted, .withoutEscapingSlashes]
-        let encoded = try encoder.encode(doc)
-        _ = try AppConfiguration(data: encoded)
+    case "make-config":
+        let encoded = try ConfigurationBuilder.make(arguments: Array(args.dropFirst()), readPolicy: readBounded)
         FileHandle.standardOutput.write(encoded)
         FileHandle.standardOutput.write(Data([10]))
         exit(0)
