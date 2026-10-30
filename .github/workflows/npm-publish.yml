@@ -1,0 +1,137 @@
+# Publishing the reviewed draft release is the trigger. The "npm" environment must require Valen's review.
+name: npm publish
+
+on:
+  release:
+    types: [published]
+
+permissions: {}
+
+concurrency:
+  group: npm-${{ github.event.release.tag_name }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  publish:
+    if: github.repository == 'ValentinTorassa/blackice' && !github.event.release.draft && !github.event.release.prerelease
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: npm
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      TAG: ${{ github.event.release.tag_name }}
+      # Required operator choices: no implicit dependency on an unverified namespace owner.
+      NPM_SCOPE: ${{ vars.NPM_SCOPE }}
+      NPM_PACKAGE_NAME: ${{ vars.NPM_PACKAGE_NAME }}
+      NODE_VERSION: '22.23.3'
+      NPM_VERSION: '12.2.0'
+      RELEASE_DIR: ${{ runner.temp }}/blackice-release
+      PACKAGE_DIR: ${{ runner.temp }}/blackice-npm-packages
+      TARBALL_DIR: ${{ runner.temp }}/blackice-npm-tarballs
+      NPM_CONFIG_USERCONFIG: ${{ runner.temp }}/blackice-npm-userconfig
+      NPM_CONFIG_GLOBALCONFIG: ${{ runner.temp }}/blackice-npm-globalconfig
+      NPM_CONFIG_CACHE: ${{ runner.temp }}/blackice-npm-cache
+
+    steps:
+      - name: Validate release tag and explicit package identities
+        run: |
+          set -euo pipefail
+          [[ "$TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || { echo 'Expected a stable vX.Y.Z tag' >&2; exit 1; }
+          : "${NPM_SCOPE:?Set NPM_SCOPE to a namespace the operator owns}"
+          : "${NPM_PACKAGE_NAME:?Set NPM_PACKAGE_NAME to the approved launcher package name}"
+          printf 'VERSION=%s\n' "${TAG#v}" >> "$GITHUB_ENV"
+          : > "$NPM_CONFIG_USERCONFIG"
+          : > "$NPM_CONFIG_GLOBALCONFIG"
+
+      - name: Check out the exact release tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.release.tag_name }}
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Require a release commit on main
+        run: |
+          set -euo pipefail
+          commit="$(git rev-parse HEAD)"
+          test "$commit" = "$(git rev-parse "refs/tags/$TAG^{commit}")"
+          git merge-base --is-ancestor "$commit" origin/main
+          printf 'RELEASE_COMMIT=%s\n' "$commit" >> "$GITHUB_ENV"
+
+      - name: Set up pinned Node
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: '22.23.3'
+          package-manager-cache: false
+
+      - name: Use pinned npm with trusted publishing support
+        run: |
+          set -euo pipefail
+          test "$(node --version)" = "v$NODE_VERSION"
+          npm install --global --ignore-scripts --no-audit --no-fund --registry=https://registry.npmjs.org "npm@$NPM_VERSION"
+          test "$(npm --version)" = "$NPM_VERSION"
+
+      - name: Download and verify the release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir "$RELEASE_DIR"
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir "$RELEASE_DIR"
+          verify() {
+            gh attestation verify "$1" --repo "$GITHUB_REPOSITORY" \
+              --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml" \
+              --source-ref "refs/tags/$TAG" --source-digest "$RELEASE_COMMIT" \
+              --deny-self-hosted-runners
+          }
+          verify "$RELEASE_DIR/SHA256SUMS"
+          # Validate the complete manifest's filenames before sha256sum reads any paths.
+          node --input-type=module > "$RUNNER_TEMP/blackice-release-assets.txt" <<'NODE'
+          import { readdirSync, lstatSync } from 'node:fs';
+          import { join } from 'node:path';
+          import { isDeepStrictEqual } from 'node:util';
+          import { releaseManifest } from './packaging/npm/prepare.mjs';
+          const { sums } = releaseManifest(process.env.RELEASE_DIR, process.env.VERSION);
+          const expected = ['SHA256SUMS', ...sums.keys()].sort();
+          if (!isDeepStrictEqual(readdirSync(process.env.RELEASE_DIR).sort(), expected)) {
+            throw new Error('downloaded assets do not match the release manifest');
+          }
+          for (const name of expected) {
+            if (!lstatSync(join(process.env.RELEASE_DIR, name)).isFile()) throw new Error('release asset is not a regular file');
+          }
+          for (const name of sums.keys()) console.log(name);
+          NODE
+          (cd "$RELEASE_DIR" && sha256sum -c SHA256SUMS)
+          while IFS= read -r asset; do
+            verify "$RELEASE_DIR/$asset"
+          done < "$RUNNER_TEMP/blackice-release-assets.txt"
+          # Never run a downloaded binary before both integrity and provenance pass.
+          native="$RELEASE_DIR/blackice-$VERSION-x86_64-linux"
+          chmod 0755 "$native"
+          test "$("$native" version)" = "blackice $VERSION"
+
+      - name: Prepare CLI-only npm packages
+        run: |
+          set -euo pipefail
+          node packaging/npm/prepare.mjs --release-dir "$RELEASE_DIR" --out-dir "$PACKAGE_DIR" \
+            --version "$VERSION" --scope "$NPM_SCOPE" --name "$NPM_PACKAGE_NAME"
+
+      - name: Dry-run, pack and verify every archive
+        run: |
+          set -euo pipefail
+          node packaging/npm/pack.mjs --prepared-dir "$PACKAGE_DIR" --out-dir "$TARBALL_DIR"
+
+      - name: Publish platforms first, then the launcher, with OIDC provenance
+        run: |
+          set -euo pipefail
+          test -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}"
+          test -n "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}"
+          while IFS= read -r archive; do
+            npm publish "$archive" --provenance --access public --ignore-scripts --registry=https://registry.npmjs.org
+          done < "$TARBALL_DIR/publish-order.txt"

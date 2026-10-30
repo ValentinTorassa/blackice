@@ -3,14 +3,15 @@
 const { spawnSync } = require('node:child_process');
 const { readFileSync } = require('node:fs');
 const { dirname, join } = require('node:path');
-const { version, optionalDependencies } = require('../package.json');
+const { version, optionalDependencies, blackicePlatforms } = require('../package.json');
 const platform = `${process.platform}-${process.arch}`;
-const name = Object.keys(optionalDependencies).find(key => key.endsWith(`/${platform}`));
+const name = blackicePlatforms?.[platform];
 function fail(message) {
   console.error(`blackice: ${message}`);
   process.exit(1);
 }
 if (!name) fail(`unsupported platform ${platform}; use a supported native release.`);
+if (optionalDependencies?.[name] !== version) fail(`invalid platform mapping for ${platform}.`);
 let binary;
 try {
   const file = require.resolve(`${name}/package.json`);

@@ -1,34 +1,34 @@
-# npm distribution preparation
+# npm distribution
 
-This directory prepares version **0.1.0** using a main launcher package and four optional platform packages. It does not publish, reserve names, log in to npm, build binaries, or change a privileged installation. The checked-in package manifests are private templates; prepare the output before packing.
+Version **0.1.0** uses a launcher package and four optional platform packages. The scripts here prepare and audit local tarballs; they do not publish, reserve names, log in to npm, build binaries or change a privileged installation. The checked-in manifests are private templates, not publishable packages.
 
 | Output directory | Default package | Platform | Payload beyond metadata, README and license |
 | --- | --- | --- | --- |
-| `blackice/` | `blackice` | Node.js 22+ | 32-line launcher |
-| `darwin-arm64/` | `@blackice/darwin-arm64` | macOS arm64 | `bin/blackice` |
-| `darwin-x64/` | `@blackice/darwin-x64` | macOS x64 | `bin/blackice` |
-| `linux-x64/` | `@blackice/linux-x64` | Linux x64 | `bin/blackice` and Linux setup data |
-| `linux-arm64/` | `@blackice/linux-arm64` | Linux arm64 | `bin/blackice` and Linux setup data |
+| `blackice/` | `blackice` | Node.js 22+ | 33-line launcher |
+| `darwin-arm64/` | `@legios/blackice-darwin-arm64` | macOS arm64 | `bin/blackice` |
+| `darwin-x64/` | `@legios/blackice-darwin-x64` | macOS x64 | `bin/blackice` |
+| `linux-x64/` | `@legios/blackice-linux-x64` | Linux x64 | `bin/blackice` |
+| `linux-arm64/` | `@legios/blackice-linux-arm64` | Linux arm64 | `bin/blackice` |
 
-The main package has no regular dependencies. Its four optional dependencies use exact matching versions. Each platform package declares `os` and `cpu`. There are no lifecycle scripts, registry fallback, PATH fallback, or runtime downloads. Node's architecture selects the binary; use a matching Node installation on the target machine.
+Every archive has exactly four files. **No npm package contains a Linux helper, setup/teardown script or setup bundle.** Linux arm64 supplies the CLI only; task scopes on that CPU remain unsupported until a reviewed helper and runtime evidence exist.
+
+The launcher has no regular dependencies. Its optional dependencies use exact matching versions, and its generated `blackicePlatforms` map selects the complete package name for each OS/CPU. Platform manifests declare `os` and `cpu`. There are no lifecycle scripts, registry fallback, PATH fallback or runtime downloads. npm fetches packages normally during installation; package code performs no additional downloads or setup. Node's architecture selects the binary, so use a matching Node installation.
 
 ## Release input and preparation
 
-The input is a local directory containing these eight raw release assets and `SHA256SUMS`:
+The four raw CLI assets and `SHA256SUMS` are required:
 
 ```text
 blackice-0.1.0-aarch64-macos
 blackice-0.1.0-x86_64-macos
 blackice-0.1.0-x86_64-linux
 blackice-0.1.0-aarch64-linux
-blackice-linux-helper-0.1.0-x86_64-linux
-blackice-linux-helper-0.1.0-aarch64-linux
-linux-setup.sh
-linux-teardown.sh
 SHA256SUMS
 ```
 
-Verify release attestations before preparing a public package. The preparer checks integrity, not provenance: its output manifest explicitly records `verification: "sha256-only"`. A locally produced checksum file does not establish release identity. For local packaging tests, use clearly labeled local fixtures rather than presenting them as attested releases.
+The manifest may also list `linux-setup.sh`, `linux-teardown.sh` and `blackice-linux-helper-0.1.0-{x86_64-linux,aarch64-linux}` from the separate root setup. The preparer never reads or copies those payloads. The publish workflow verifies every asset listed in the full release manifest, including those outside npm. An absent ARM helper does not block CLI packaging.
+
+Verify release attestations before preparing public packages. The preparer checks CLI integrity, not provenance: its output records `verification: "sha256-only"`. A locally produced checksum file does not establish release identity. Label local fixtures as test inputs, not attested releases.
 
 From the repository root:
 
@@ -36,53 +36,70 @@ From the repository root:
 node packaging/npm/prepare.mjs \
   --release-dir /absolute/path/to/verified-release \
   --out-dir out/npm-0.1.0 \
-  --version 0.1.0 --scope @blackice --name blackice
+  --version 0.1.0 --scope @legios --name blackice
+
+node packaging/npm/pack.mjs \
+  --prepared-dir out/npm-0.1.0 \
+  --out-dir out/npm-tarballs-0.1.0
 ```
 
-`--version`, `--scope` and `--name` default to the values shown. A different scope and main name can be supplied without changing the command name `blackice`. Name availability, organization creation and trusted-publisher configuration remain operator work.
+`--version`, `--scope` and `--name` default to the values shown. A different scope and main name leave the command name `blackice` unchanged; platform packages retain the `blackice-<platform>` prefix. The workflow requires explicit `NPM_SCOPE` and `NPM_PACKAGE_NAME` repository variables instead of relying on defaults. The operator must control all five identities and configure their trusted publishers before release.
 
-The output directory must not exist. All eight assets must have exactly one checksum entry; missing, duplicate, unexpected or path-bearing entries are rejected. Inputs must be bounded regular files, not symlinks. The preparer hashes each input and copies that same in-memory snapshot, then moves the completed output into place. It preserves asset bytes and sets explicit file permissions. `manifest.json` maps source assets to package paths and lists platform packages before the main package.
+Both output directories must be new. Required checksums must occur exactly once; duplicate, unknown, path-bearing and missing CLI entries are rejected. Versions must be stable `X.Y.Z`. Inputs must be bounded regular files, not symlinks. The preparer hashes each CLI and copies that same in-memory snapshot, preserving its bytes with explicit executable permissions, then atomically moves the completed output into place. `manifest.json` records source asset hashes and platform-first package order.
 
-## Linux setup data
+The packer checks exact identities, versions, platform selectors, dependency pins, the launcher map and the four-file allowlist. It runs `npm pack --dry-run --ignore-scripts --offline --json` and `npm pack` with the same flags for all packages. It verifies archive entries, extracted bytes and npm integrity hashes. Only after all five archives pass does it write `packs.json` and `publish-order.txt`. Partial output on failure is not publishable; start again with a fresh directory.
 
-The helper and scripts are shipped as non-executable data:
+## Manual Linux setup
 
-```text
-linux-setup/
-  SHA256SUMS
-  scripts/linux-setup.sh
-  scripts/linux-teardown.sh
-  zig-out/bin/blackice-linux-helper
+npm installation does not establish the Linux enforcement boundary. Obtain the reviewed helper and scripts separately from the matching GitHub release or its source checkout, and review the [Linux backend setup instructions](../../docs/linux.md). For x86_64, first verify the downloaded manifest and root setup assets against the release workflow and tag:
+
+```sh
+# Run in the directory containing the separately downloaded v0.1.0 release assets.
+gh attestation verify SHA256SUMS --repo ValentinTorassa/blackice \
+  --signer-workflow ValentinTorassa/blackice/.github/workflows/release.yml \
+  --source-ref refs/tags/v0.1.0 --deny-self-hosted-runners
+sha256sum -c SHA256SUMS
+
+gh attestation verify blackice-linux-helper-0.1.0-x86_64-linux \
+  --repo ValentinTorassa/blackice \
+  --signer-workflow ValentinTorassa/blackice/.github/workflows/release.yml \
+  --source-ref refs/tags/v0.1.0 --deny-self-hosted-runners
+gh attestation verify linux-setup.sh --repo ValentinTorassa/blackice \
+  --signer-workflow ValentinTorassa/blackice/.github/workflows/release.yml \
+  --source-ref refs/tags/v0.1.0 --deny-self-hosted-runners
+gh attestation verify linux-teardown.sh --repo ValentinTorassa/blackice \
+  --signer-workflow ValentinTorassa/blackice/.github/workflows/release.yml \
+  --source-ref refs/tags/v0.1.0 --deny-self-hosted-runners
 ```
 
-This preserves the reviewed setup script's `../zig-out/bin/blackice-linux-helper` lookup without changing it. `SHA256SUMS` is the original release manifest; filenames in it refer to release assets. Each generated platform README maps those names to installed paths, records their hashes, and shows the explicit operator setup command with the matching helper digest. Setup installs a verified copy outside npm's tree; package installation applies no capabilities and runs no sudo. Verify the scripts and helper's provenance before any root operation.
+Use the independently verified manifest's helper digest when following that separate setup procedure. Setup is an explicit operator action outside npm, using the reviewed checkout layout and architecture. Do not source a root-install digest from npm metadata. If no reviewed helper exists for the host CPU, installing a CLI package does not make task scopes supported. These are future release instructions, not a claim that version 0.1.0 is already published.
 
-## Validation and packing
+## Validation and launcher behavior
 
 ```sh
 node --test packaging/npm/test.mjs
 ```
 
-The suite checks refusal of altered input and malformed checksums, version/scope changes, exact package contents, launcher arguments and I/O, missing packages, exit statuses and signal exits. It runs `npm pack --dry-run --ignore-scripts --offline --json` for all five packages, then installs local tarballs offline with scripts disabled and runs the installed launcher. Test executables are synthetic fixtures, not native enforcement evidence.
+The suite checks changed bytes and malformed checksums, CLI-only releases, configurable scope/name/version, exact archive contents, launcher arguments and I/O, missing packages, numeric exits and signal exits. It exercises the production packer on all five packages, then installs local tarballs offline with scripts disabled and runs the installed launcher. Synthetic test executables do not establish native enforcement.
 
-For prepared release packages, run this from each of the five output directories:
+To exercise a real local binary, prepare a clearly labeled local build fixture, install its matching platform and launcher tarballs offline, and run `blackice version` plus a harmless command. Record the actual binary hash, source commit and reported version. Packaging metadata alone does not establish any of them.
 
-```sh
-npm pack --dry-run --ignore-scripts --offline --json
-npm pack --ignore-scripts --offline --json
-```
+The launcher uses `spawnSync` with inherited stdio and no shell. It mirrors numeric exit status and re-emits the child's termination signal. Terminal signals reach both processes through their shared foreground process group. Because synchronous spawning blocks JavaScript signal handlers, a signal addressed only to the launcher PID is not forwarded while its child runs. Use a supervisor that signals the process group or invoke the native binary directly; immediate PID-only forwarding would require an asynchronous launcher. See [Node's synchronous child-process contract](https://nodejs.org/api/child_process.html#child_processspawnsynccommand-args-options).
 
-Inspect the file lists and verify extracted binary bytes against the release checksums. To exercise a real local binary, prepare a local build fixture, install or link its matching platform package next to the launcher, and run `blackice version`. Record the actual binary hash and version; packaging metadata alone does not establish either.
+## Release-triggered publication
 
-The launcher uses `spawnSync` with inherited stdio and no shell. It mirrors numeric exit status and re-emits a child's termination signal. Terminal signals reach both processes through their shared foreground process group. Because synchronous spawning blocks JavaScript signal handlers, a signal addressed only to the launcher PID is not forwarded while its child runs. Use a supervisor that signals the process group or invoke the native binary directly; immediate PID-only forwarding would require an asynchronous launcher. See [Node's synchronous child-process contract](https://nodejs.org/api/child_process.html#child_processspawnsynccommand-args-options).
+[npm-publish.yml](../../.github/workflows/npm-publish.yml) runs only on `release: published`, after the operator publishes a reviewed draft. It refuses prereleases and requires the release tag's commit to be on `main`. There is no dispatch, push or pull-request trigger. Security reviews changes to this workflow before use.
 
-## Publishing-job contract
+Required operator configuration:
 
-Security owns `.github/` and the publishing workflow. Before enabling it:
+1. Set repository variables `NPM_SCOPE=@legios` and `NPM_PACKAGE_NAME=blackice`, or explicitly approved alternatives whose identities the operator owns.
+2. Create GitHub environment **npm**, require the operator's review, and restrict deployment refs to approved release tags. The YAML selects this environment; its protection rules are repository settings.
+3. Configure each of the five npm packages' trusted publishers for repository `ValentinTorassa/blackice`, workflow filename **npm-publish.yml**, environment **npm**, with direct `npm publish` allowed. Initial package setup and ownership verification are operator work; this branch does neither.
 
-1. Configure all five package identities for the exact repository, workflow filename and protected `npm` environment. The operator controls the name/org and initial package setup. Explicitly allow direct `npm publish` for each trusted publisher if that is the chosen route.
-2. Use a GitHub-hosted runner with pinned actions, Node and npm. [npm trusted publishing](https://docs.npmjs.com/trusted-publishers/) requires Node 22.14.0+ and npm 11.5.1+. Give only the publish job `id-token: write`; use OIDC with no npm token and no fallback credential.
-3. On the operator-approved published release, validate the stable tag and expected source commit. Download the assets, verify the manifest and each file's [GitHub attestation](https://cli.github.com/manual/gh_attestation_verify) against the release workflow, source repository, tag and commit, then run the preparer. The manifest checksum alone is insufficient. Check the native version against the release version.
-4. Dry-run and pack all five packages with scripts disabled. Publish the four platform tarballs first and the main tarball last, using `npm publish --provenance --access public --ignore-scripts`. Keep exact versions aligned. This directory has no publish command or workflow that can run automatically.
+The job uses only `contents: read` and `id-token: write`, SHA-pinned actions, Node 22.23.3 and npm 12.2.0. [npm trusted publishing](https://docs.npmjs.com/trusted-publishers/) uses OIDC on a GitHub-hosted runner; there is no npm token, login or credential fallback. npm user/global configuration files and its cache are isolated for the job.
 
-Release-binary attestations establish where the native bytes came from; npm provenance establishes where their package was assembled. Both checks matter. The job must not turn this preparation branch, an unverified local fixture, or a missing platform upload into a public main-package release.
+Before packing, the job downloads the tag's assets with `gh release download`, verifies the checksum manifest's attestation, validates its filenames, and runs `sha256sum -c SHA256SUMS`. It then verifies [GitHub attestations](https://cli.github.com/manual/gh_attestation_verify) for **every listed asset**, binding them to `release.yml`, the source repository, exact tag and checked-out commit, and refusing self-hosted build runners. Only then does it run the host CLI to require `blackice 0.1.0` (or the corresponding tag version).
+
+After all five archives pass the packer's checks, the job publishes the four platform tarballs first and the launcher last with `npm publish --provenance --access public --ignore-scripts`. A failed platform publish stops before the launcher. npm versions are immutable; a partial publication needs operator reconciliation rather than an automatic overwrite or name change. Publishing is never part of the local tests.
+
+Release attestations establish where the native bytes came from; npm provenance establishes where their packages were assembled. Local tests and mocked workflow checks do not verify live OIDC, registry ownership or release attestations. Those require the configured environment and a real reviewed release.

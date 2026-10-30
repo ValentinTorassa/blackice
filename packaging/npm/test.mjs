@@ -11,15 +11,11 @@ import { dirname, join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import test from 'node:test';
 import { platforms, prepare } from './prepare.mjs';
+import { pack } from './pack.mjs';
 
 const host = `${process.platform}-${process.arch}`;
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 const load = file => JSON.parse(readFileSync(file, 'utf8'));
-const packedInfo = output => {
-  const parsed = JSON.parse(output);
-  // npm 11 emits an array; npm 12 keys the result by package name.
-  return Array.isArray(parsed) ? parsed[0] : Object.values(parsed)[0];
-};
 const fixtureBinary = `#!${process.execPath}
 const fs = require('node:fs');
 const [op, ...args] = process.argv.slice(2);
@@ -50,10 +46,11 @@ function fixture(t, version = '0.1.0') {
   return { root, releaseDir, outDir, version, assets };
 }
 
-function linkPlatform(f, scope = '@blackice', id = host) {
-  const modules = join(f.outDir, 'blackice', 'node_modules', scope);
-  mkdirSync(modules, { recursive: true });
-  symlinkSync(join(f.outDir, id), join(modules, id), 'dir');
+function linkPlatform(f, id = host) {
+  const name = load(join(f.outDir, 'blackice/package.json')).blackicePlatforms[id];
+  const destination = join(f.outDir, 'blackice', 'node_modules', name);
+  mkdirSync(dirname(destination), { recursive: true });
+  symlinkSync(join(f.outDir, id), destination, 'dir');
 }
 
 function launcher(f, args = [], options = {}) {
@@ -85,16 +82,27 @@ test('all five manifests, exact pins and unchanged release bytes', t => {
       assert.deepEqual(metadata.os, [p.os]);
       assert.deepEqual(metadata.cpu, [p.cpu]);
       assert.equal(statSync(join(dir, 'bin/blackice')).mode & 0o777, 0o755);
-      if (p.os === 'linux') {
-        const script = join(dir, 'linux-setup/scripts/linux-setup.sh');
-        assert.ok(existsSync(join(dirname(script), '../zig-out/bin/blackice-linux-helper')));
-        assert.equal(statSync(join(dir, 'linux-setup/zig-out/bin/blackice-linux-helper')).mode & 0o777, 0o644);
-        assert.deepEqual(readFileSync(join(dir, 'linux-setup/SHA256SUMS')), readFileSync(join(f.releaseDir, 'SHA256SUMS')));
-      }
+      assert.deepEqual(metadata.files, ['bin/blackice']);
+      assert.equal(pkg.assets.length, 1);
+      assert.equal(existsSync(join(dir, 'linux-setup')), false);
     }
   }
   assert.deepEqual(load(join(f.outDir, 'blackice/package.json')).optionalDependencies,
-    Object.fromEntries(platforms.map(p => [`@blackice/${p.id}`, '0.1.0'])));
+    Object.fromEntries(platforms.map(p => [`@legios/blackice-${p.id}`, '0.1.0'])));
+  assert.deepEqual(load(join(f.outDir, 'blackice/package.json')).blackicePlatforms,
+    Object.fromEntries(platforms.map(p => [p.id, `@legios/blackice-${p.id}`])));
+});
+
+test('CLI-only releases need no Linux helper or setup assets', t => {
+  const f = fixture(t);
+  for (const [name] of f.assets) {
+    if (name.includes('helper') || name.endsWith('.sh')) {
+      f.assets.delete(name);
+      rmSync(join(f.releaseDir, name));
+    }
+  }
+  writeFileSync(join(f.releaseDir, 'SHA256SUMS'), [...f.assets].map(([file, bytes]) => `${hash(bytes)}  ${file}\n`).join(''));
+  assert.equal(prepare(f).packages.length, 5);
 });
 
 test('scope, main name and version can change together without changing the command name', t => {
@@ -104,8 +112,9 @@ test('scope, main name and version can change together without changing the comm
   assert.equal(pkg.name, '@example-native/cli');
   assert.equal(pkg.version, '1.2.3');
   assert.deepEqual(pkg.bin, { blackice: 'bin/blackice.cjs' });
-  assert.deepEqual(Object.keys(pkg.optionalDependencies), platforms.map(p => `@example-native/${p.id}`));
-  linkPlatform(f, '@example-native');
+  assert.deepEqual(Object.keys(pkg.optionalDependencies), platforms.map(p => `@example-native/blackice-${p.id}`));
+  assert.deepEqual(pkg.blackicePlatforms, Object.fromEntries(platforms.map(p => [p.id, `@example-native/blackice-${p.id}`])));
+  linkPlatform(f);
   assert.equal(launcher(f, ['exit', '19']).status, 19);
 });
 
@@ -133,7 +142,7 @@ test('modified bytes, missing/duplicate/path checksum entries and symlinks refus
 
 test('invalid names/versions and an existing output are refused', t => {
   const f = fixture(t);
-  for (const extra of [{ scope: '../escape' }, { name: 'Bad Name' }, { version: '01.2.3' }, { name: '@blackice/linux-x64' }]) {
+  for (const extra of [{ scope: '../escape' }, { name: 'Bad Name' }, { version: '01.2.3' }, { name: '@legios/blackice-linux-x64' }]) {
     assert.throws(() => prepare({ ...f, ...extra }));
   }
   mkdirSync(f.outDir);
@@ -220,37 +229,45 @@ test('foreground process-group termination reaches the binary and launcher', { t
 
 test('npm pack dry-run for all packages, then offline installation with scripts disabled', t => {
   const f = fixture(t);
-  const report = prepare(f);
+  prepare(f);
   const tarballs = join(f.root, 'tarballs');
-  mkdirSync(tarballs);
   const userconfig = join(f.root, 'user.npmrc');
   const globalconfig = join(f.root, 'global.npmrc');
   writeFileSync(userconfig, '');
   writeFileSync(globalconfig, '');
   const env = { PATH: process.env.PATH, npm_config_userconfig: userconfig, npm_config_globalconfig: globalconfig, npm_config_cache: join(f.root, 'npm-cache') };
-  const packs = new Map();
-  for (const pkg of report.packages) {
-    const cwd = join(f.outDir, pkg.directory);
-    const options = { cwd, env, encoding: 'utf8', timeout: 30000 };
-    const result = spawnSync('npm', ['pack', '--dry-run', '--ignore-scripts', '--offline', '--json'], options);
-    assert.equal(result.status, 0, result.stderr);
-    const packed = packedInfo(result.stdout);
-    assert.equal(packed.name, pkg.name);
-    const paths = packed.files.map(file => file.path).sort();
-    const expected = ['LICENSE', 'README.md', 'package.json', ...pkg.assets.map(asset => asset.path)];
-    if (pkg.directory === 'blackice') expected.push('bin/blackice.cjs');
-    if (pkg.directory.startsWith('linux-')) expected.push('linux-setup/SHA256SUMS');
-    assert.deepEqual(paths, expected.sort());
-    t.diagnostic(`npm pack --dry-run ${pkg.name}@${pkg.version}: ${paths.length} files, no unexpected payload`);
-    if (pkg.directory === host || pkg.directory === 'blackice') {
-      const actual = spawnSync('npm', ['pack', '--ignore-scripts', '--offline', '--json', '--pack-destination', tarballs], options);
-      assert.equal(actual.status, 0, actual.stderr);
-      packs.set(pkg.directory, join(tarballs, packedInfo(actual.stdout).filename));
-    }
+  const records = pack({ preparedDir: f.outDir, outDir: tarballs, env });
+  assert.deepEqual(records.map(p => p.directory), [...platforms.map(p => p.id), 'blackice']);
+  assert.equal(readFileSync(join(tarballs, 'publish-order.txt'), 'utf8'), records.map(p => p.path).join('\n') + '\n');
+  for (const pkg of records) {
+    assert.equal(pkg.files.length, 4);
+    assert.ok(pkg.files.every(p => !p.includes('helper') && !p.includes('setup')));
+    t.diagnostic(`npm pack --dry-run + archive check ${pkg.name}@${pkg.version}: 4 files, CLI only`);
   }
+  const packs = new Map(records.map(p => [p.directory, p.path]));
   const install = join(f.root, 'installed');
   const result = spawnSync('npm', ['install', '--prefix', install, '--ignore-scripts', '--offline', '--no-audit', '--no-fund', '--package-lock=false', packs.get(host), packs.get('blackice')], { env, encoding: 'utf8', timeout: 30000 });
   assert.equal(result.status, 0, result.stderr);
   const run = spawnSync(join(install, 'node_modules/.bin/blackice'), ['exit', '23'], { encoding: 'utf8', timeout: 5000 });
   assert.equal(run.status, 23, run.stderr);
+});
+
+test('packing refuses a changed binary and emits no publish order', t => {
+  const f = fixture(t);
+  prepare(f);
+  writeFileSync(join(f.outDir, platforms[0].id, 'bin/blackice'), 'modified after prepare');
+  const outDir = join(f.root, 'bad-pack');
+  assert.throws(() => pack({ preparedDir: f.outDir, outDir }), /prepared binary checksum mismatch/);
+  assert.equal(existsSync(join(outDir, 'publish-order.txt')), false);
+});
+
+test('packing refuses helpers or lifecycle hooks added to a prepared manifest', t => {
+  const f = fixture(t);
+  prepare(f);
+  const file = join(f.outDir, platforms[0].id, 'package.json');
+  const metadata = load(file);
+  writeFileSync(file, JSON.stringify({ ...metadata, files: [...metadata.files, 'linux-setup'] }));
+  assert.throws(() => pack({ preparedDir: f.outDir, outDir: join(f.root, 'extra-files') }), /file allowlist/);
+  writeFileSync(file, JSON.stringify({ ...metadata, scripts: { postinstall: 'false' } }));
+  assert.throws(() => pack({ preparedDir: f.outDir, outDir: join(f.root, 'extra-hook') }), /unexpected scripts/);
 });

@@ -1,5 +1,5 @@
 {
-  "name": "@blackice/darwin-arm64",
+  "name": "@legios/blackice-darwin-arm64",
   "version": "0.1.0",
   "private": true,
   "description": "blackice native binary for darwin/arm64",

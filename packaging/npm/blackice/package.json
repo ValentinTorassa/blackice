@@ -9,14 +9,29 @@
     "url": "git+https://github.com/ValentinTorassa/blackice.git",
     "directory": "packaging/npm"
   },
-  "bin": { "blackice": "bin/blackice.cjs" },
-  "files": ["bin/blackice.cjs"],
-  "engines": { "node": ">=22" },
-  "optionalDependencies": {
-    "@blackice/darwin-arm64": "0.1.0",
-    "@blackice/darwin-x64": "0.1.0",
-    "@blackice/linux-x64": "0.1.0",
-    "@blackice/linux-arm64": "0.1.0"
+  "bin": {
+    "blackice": "bin/blackice.cjs"
   },
-  "publishConfig": { "access": "public", "registry": "https://registry.npmjs.org/" }
+  "files": [
+    "bin/blackice.cjs"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "optionalDependencies": {
+    "@legios/blackice-darwin-arm64": "0.1.0",
+    "@legios/blackice-darwin-x64": "0.1.0",
+    "@legios/blackice-linux-x64": "0.1.0",
+    "@legios/blackice-linux-arm64": "0.1.0"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
+  "blackicePlatforms": {
+    "darwin-arm64": "@legios/blackice-darwin-arm64",
+    "darwin-x64": "@legios/blackice-darwin-x64",
+    "linux-x64": "@legios/blackice-linux-x64",
+    "linux-arm64": "@legios/blackice-linux-arm64"
+  }
 }
