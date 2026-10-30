@@ -115,7 +115,7 @@ export default function Home() {
             </p>
             <p className="hero-status">
               Task scopes work today on macOS (Apple silicon) and Debian 13 (x86_64). The macOS app filter is built in its pull
-              request and needs Developer ID signing to run. The Linux app filter is in design.
+              request and needs Developer ID signing to run. The Linux app filter is in review.
             </p>
             <CopyCommand command={SITE.command} />
             <div className="actions">
