@@ -83,7 +83,7 @@ or addresses, only "any host" or "localhost", so every decision about names happ
     scope's proxy is kept from serving another, belong to [proxy](proxy.md) and are untested.
   - Inherited sockets (R7) are untested.
   - A connection the sandbox refuses leaves no receipt yet: only the proxy's decisions are receipted on macOS.
-  - The state root's parent directories are also denied rename, hard links into the state root are refused,
+  - The state root's parent directories are also denied rename, hard links to files in the state root are refused,
     and the root is checked by its real path. An earlier build let a command rename a parent and then write
     its own receipts.
 
