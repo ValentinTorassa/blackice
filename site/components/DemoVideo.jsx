@@ -1,10 +1,10 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import { DEMO_LANG_PICK, DEMO_LANG_STATE, Flag } from './Flags';
+import { Flag } from './Flags';
 
-// The demo, one cut per caption language. The files are served from outside the build (content/demo.js). The flags
-// in the nav pick the language too, and ?lang=es opens it in that language.
+// The demo, one cut per caption language. The files are served from outside the build (content/demo.js). The
+// switch above the video picks the language, and ?lang=es opens it in that language.
 export default function DemoVideo({ sources, title = 'demo · v0' }) {
   const [lang, setLang] = useState(sources[0].lang);
   const langRef = useRef(lang);
@@ -24,16 +24,9 @@ export default function DemoVideo({ sources, title = 'demo · v0' }) {
   useEffect(() => {
     const asked = new URLSearchParams(window.location.search).get('lang');
     if (asked) choose(asked);
-    const onPick = (e) => choose(e.detail);
-    window.addEventListener(DEMO_LANG_PICK, onPick);
-    return () => window.removeEventListener(DEMO_LANG_PICK, onPick);
     // choose reads only refs and the sources, so the first one stays valid.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-
-  useEffect(() => {
-    window.dispatchEvent(new CustomEvent(DEMO_LANG_STATE, { detail: lang }));
-  }, [lang]);
 
   function onLoaded(e) {
     const p = pending.current;

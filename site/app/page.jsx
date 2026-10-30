@@ -153,20 +153,6 @@ export default function Home() {
           </div>
         </section>
 
-        {WALKTHROUGH || DEMO.length ? (
-          <section className="container demo-section" id="demo" aria-labelledby="demo-title">
-            <h2 className="h2" id="demo-title">
-              Demo
-            </h2>
-            {WALKTHROUGH ? <Walkthrough {...WALKTHROUGH} /> : null}
-            {DEMO.length ? <DemoVideo sources={DEMO} title="fx demo · 1 min" /> : null}
-            <p className="caption">
-              Recorded on macOS, on Debian 13 and in a Debian 13 virtual machine. Each demo carries a label that says
-              what it shows.
-            </p>
-          </section>
-        ) : null}
-
         <section className="container">
           <div className="frame">
             <div className="frame-bar">
@@ -200,21 +186,31 @@ export default function Home() {
         </section>
 
         <section className="container section about" aria-labelledby="about-title">
-          <h2 className="h2" id="about-title">
-            Why I built it
-          </h2>
-          <p className="sub">
-            I'm <a href={SITE.authorUrl}>Valen Torassa</a>, a security and backend engineer in Rosario, Argentina. Most
-            days an AI agent runs commands on my machine: tests, package installs, scripts. Each of those runs with my
-            user's permissions, so any of them can connect to anywhere my user can reach.
-          </p>
-          <p className="sub">
-            I wanted that limit in a file I can review in a pull request, in place before the command starts. The
-            operating system lets the command connect only to a local proxy, and the proxy applies the file. My earlier
-            project,{' '}
-            <a href="https://github.com/ValentinTorassa/VT-Agent-Firewall">VT-Agent-Firewall</a>, checks which tools an
-            agent calls. blackice works one layer down, on the connections the commands themselves open.
-          </p>
+          <div className={WALKTHROUGH ? 'about-grid' : undefined}>
+            <div className="about-text">
+              <h2 className="h2" id="about-title">
+                Why I built it
+              </h2>
+              <p className="sub">
+                I'm <a href={SITE.authorUrl}>Valen Torassa</a>, a security and backend engineer in Rosario, Argentina. Most
+                days an AI agent runs commands on my machine: tests, package installs, scripts. Each of those runs with my
+                user's permissions, so any of them can connect to anywhere my user can reach.
+              </p>
+              <p className="sub">
+                I wanted that limit in a file I can review in a pull request, in place before the command starts. The
+                operating system lets the command connect only to a local proxy, and the proxy applies the file. My earlier
+                project,{' '}
+                <a href="https://github.com/ValentinTorassa/VT-Agent-Firewall">VT-Agent-Firewall</a>, checks which tools an
+                agent calls. blackice works one layer down, on the connections the commands themselves open.
+              </p>
+            </div>
+            {WALKTHROUGH ? (
+              <div className="about-video">
+                <Walkthrough {...WALKTHROUGH} />
+                <p className="caption">Recorded on macOS, on Debian 13 and in a Debian 13 virtual machine.</p>
+              </div>
+            ) : null}
+          </div>
         </section>
 
         <section className="container section">
@@ -331,6 +327,16 @@ export default function Home() {
           </p>
           <Install />
         </section>
+
+        {DEMO.length ? (
+          <section className="container section" id="demo" aria-labelledby="demo-title">
+            <h2 className="h2" id="demo-title">
+              Demo
+            </h2>
+            <DemoVideo sources={DEMO} title="fx demo · 1 min" />
+            <p className="caption">Recorded on macOS. Each demo carries a label that says what it shows.</p>
+          </section>
+        ) : null}
 
         <section className="container section">
           <div className="cta">

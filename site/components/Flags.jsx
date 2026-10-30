@@ -1,9 +1,5 @@
 // Flags for the demo's two caption languages: Argentina for Spanish, the United States for English.
 
-// Events between the flags in the nav and the demo player.
-export const DEMO_LANG_PICK = 'blackice:demo-lang'; // detail: the language to switch to
-export const DEMO_LANG_STATE = 'blackice:demo-lang-state'; // detail: the language the demo has now
-
 // Sol de Mayo: 16 rays around a disc, inside the white band.
 const SUN = Array.from({ length: 32 }, (_, i) => {
   const r = i % 2 ? 1.75 : 2.75;
