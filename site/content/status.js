@@ -1,5 +1,5 @@
 // Project status shown on the site. Cell states are computed when the site builds (lib/evidence.js):
-// "verified" needs a recorded run in evidence/, "built" needs the code in the repository.
+// "verified" (shown as Tested) needs a recorded run in evidence/, "built" needs the code in the repository.
 
 export const MATRIX = [
   {
@@ -66,7 +66,7 @@ export const INVARIANTS = [
 export const STATE_LABEL = {
   pending: 'Pending',
   designed: 'Designed',
-  built: 'Built, not verified',
+  built: 'Built, not tested',
   unsigned: 'Built, unsigned',
-  verified: 'Verified',
+  verified: 'Tested',
 };

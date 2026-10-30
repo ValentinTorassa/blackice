@@ -215,7 +215,7 @@ $ tail -f ~/.local/state/${SITE.name}/scopes/${SCOPE}/receipts.jsonl`}</Code>
     body: ({ recordedSet, findingsSet, entries }) => (
       <>
         <p>
-          States are computed when this site is built. <strong>Verified</strong> needs a recorded run in{' '}
+          States are computed when this site is built. <strong>Tested</strong> needs a recorded run in{' '}
           <code>evidence/</code>; <strong>Built</strong> means the code is in the repository.
         </p>
         <StatusCards />
@@ -464,7 +464,7 @@ error: the control socket is not reachable from inside a scope`}</Code>
         <H2>Gaps</H2>
         <p>
           Lines that could not be written are counted and reported in the scope&apos;s last receipt,{' '}
-          <code>scope_end</code>, so a gap in the log is visible. If {SITE.name} itself is stopped before the scope
+          <code>scope_end</code>, so a gap in the log is visible. If {SITE.name} itself exits before the scope
           ends, there is no <code>scope_end</code> and the count is not reported.
         </p>
         <p>
