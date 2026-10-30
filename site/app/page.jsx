@@ -72,7 +72,7 @@ const SESSION = [
   ['cmd', "tail -1 ~/.local/state/blackice/scopes/s-7f3a91c2/receipts.jsonl | jq -c '{verdict,reason,host}'", 'as the owner'],
   ['out', '{"verdict":"deny","reason":"no_matching_rule","host":"paste.example"}'],
   ['cmd', `${SITE.name} grant s-7f3a91c2 api.example.com --for 10m`, 'as the owner'],
-  ['out', 'granted api.example.com to scope s-7f3a91c2 until 12:10:03'],
+  ['out', 'granted api.example.com to scope s-7f3a91c2 until 2026-10-30T12:10:03.000Z'],
 ];
 
 const UNIX = [
@@ -87,14 +87,14 @@ const UNIX = [
     text: 'Like a process after pledge(2), nothing inside a scope can get more access. Only the owner, from outside, can widen it, and only until a set time.',
   },
   {
-    name: 'Fails closed',
+    name: 'Fails early',
     Icon: IconFlag,
     text: "The Rule of Repair: fail noisily and as soon as possible. If the policy doesn't load, or doesn't match its pinned hash, the command never starts.",
   },
   {
     name: 'Everything is a file',
     Icon: IconLines,
-    text: 'The policy is a file, and each decision is a line appended to another one. tail -f, grep and jq work on both.',
+    text: 'The policy is a file, and each logged decision is a line appended to another one. grep and jq work on both, and tail -f follows the receipts.',
   },
 ];
 
@@ -230,7 +230,7 @@ export default function Home() {
           <p className="sub">
             Each connection passes these layers in order and stops at the first one that refuses it. A hostname hides
             the address behind it, so the proxy checks both: the name against the policy, then every address it
-            resolves to. Every decision leaves a receipt.
+            resolves to. The proxy writes a receipt for each of its decisions.
           </p>
           <Layers />
         </section>
