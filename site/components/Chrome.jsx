@@ -53,7 +53,9 @@ export function Footer({ wide = false }) {
             <Logo size={20} />
             <Wordmark />
           </Link>
-          <p className="faint">v0, by {SITE.author}.</p>
+          <p className="faint">
+            v0, by <a href={SITE.authorUrl}>{SITE.author}</a>.
+          </p>
         </div>
         {FOOTER.map(([title, links]) => (
           <div className="footer-col" key={title}>
