@@ -1,7 +1,8 @@
 # P0-05: a grant's expiry cuts the live connection and refuses new ones (macOS)
 
 **Claim.** When an owner grant ends, the proxy resets the connection opened under it within milliseconds. The
-stream stops at the expiry, and a new connection to the same name is refused again. Checkpoint P0-05.
+stream stops at the proxy at the expiry, and a new connection to the same name is refused again. Checkpoint
+P0-05.
 
 **Platform.** macOS 27.0.1 (26A434), arm64 (Apple silicon), SIP enabled.
 
@@ -10,8 +11,9 @@ stream stops at the expiry, and a new connection to the same name is refused aga
 `7663b87d11cd9d1da3be3b097e6dac5ebf628c4aea17f2e65e1b91b4f317c929`, checked on the Mac before the run (the
 run prints it too).
 
-**Policy.** `policy.json`, id `b0aa1758b9c7`: an allow list with only `example.com` (the same file as P0-03
-and P0-04). httpbingo.org is not on it.
+**Policy.** `policy.json`, sha256 `b0aa1758b9c758767c31ce561d6410331755e0faf71b9d7455fffa0a2f876ff2` (policy
+id `b0aa1758b9c7`, the first 12 hex digits): an allow list with only `example.com` (the same file as P0-03 and
+P0-04). httpbingo.org is not on it.
 
 ```json
 {
@@ -139,15 +141,19 @@ tcp4  244933      0  127.0.0.1.51476        127.0.0.1.51473        ESTABLISHED
 tcp4       0      0  127.0.0.1.51473        *.*                    LISTEN
 ```
 
+The grant and its end, from the same scope's receipts:
+
 ```
+{"ts":"2026-10-30T07:24:51.789Z","scope":"s-d2cef96e","policy":"b0aa1758b9c7","gen":1,"point":"control","event":"grant","verdict":"allow","reason":"owner_grant","rule":"github.com","host":"github.com","detail":"pid=12097 for 20s until 2026-10-30T07:25:11.789Z"}
 {"ts":"2026-10-30T07:25:11.799Z","scope":"s-d2cef96e","policy":"b0aa1758b9c7","gen":1,"point":"proxy","event":"connect","verdict":"deny","reason":"grant_expired","host":"github.com","detail":"connection_reset"}
 ```
 
-Three seconds into the download, 277,807 bytes were already in curl's socket receive buffer (Recv-Q), and
-nothing was queued in the proxy (Send-Q 0). At the first sample after the expiry (07:25:11.789, receipt at
-.799) both sockets of the tunnel were gone. curl still went on reading what its buffer held at 2000 bytes/s and
-ended on its own 45 s timeout with 98,295 bytes (exit 28). Nothing crossed the proxy after the expiry. The
-bytes curl read later had reached its buffer in the first seconds of the grant.
+Three seconds into the download (the 07:24:55Z sample), 277,807 bytes were already in curl's socket receive
+buffer (Recv-Q), and nothing was queued in the proxy (Send-Q 0). The grant ended at 07:25:11.789 and the
+proxy's reset receipt is at 07:25:11.799. The next sample, at 07:25:13Z, shows both sockets of the tunnel
+gone. curl still went on reading what its buffer held at 2000 bytes/s and ended on its own 45 s timeout with
+98,295 bytes (exit 28). Nothing crossed the proxy after the expiry. The bytes curl read later had reached its
+buffer in the first seconds of the grant.
 
 **Recording.** None for this run.
 
@@ -159,6 +165,9 @@ bytes curl read later had reached its buffer in the first seconds of the grant.
 - curl reports the cut as an end of stream in the middle of a body (exit 18), not as a reset error. The
   proxy's shutdown sends a FIN before its linger-0 close resets, and curl reads the FIN first. The receipt's
   `connection_reset` describes what the proxy does.
+- Neither run shows a non-empty proxy queue being dropped: the proxy had nothing queued (Send-Q 0 in the
+  follow-up). Dropping a queued backlog at the reset is shown by the proxy's unit test for it (a flooding
+  upstream, Linux), not here.
 - The watchdog wakes at least every 200 ms; here it acted 11 ms after the end (10 ms in the follow-up check).
 - Revoking a grant and a plain HTTP exchange cut by an expiry are covered by the proxy's unit tests, and
   extending a grant by the grant table's tests. This run shows none of them.
