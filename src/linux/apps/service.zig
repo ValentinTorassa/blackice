@@ -21,6 +21,7 @@ const reload_history = @import("reload_history.zig");
 const reload_maps = @import("reload_kernel.zig");
 const channel = @import("reload_channel.zig");
 const wire = @import("reload_protocol.zig");
+const faults = @import("reload_faults.zig");
 const port_count = abi.last_port - abi.first_port + 1;
 
 pub fn main(init: std.process.Init) u8 {
@@ -33,6 +34,7 @@ pub fn main(init: std.process.Init) u8 {
     return 0;
 }
 fn run(init: std.process.Init) !void {
+    try faults.requireGuest();
     const args = try init.minimal.args.toSlice(init.arena.allocator());
     if (args.len != 2) return error.ExpectedServiceOrTeardown;
     const teardown = std.mem.eql(u8, args[1], "--teardown");
@@ -659,6 +661,8 @@ const Runtime = struct {
         };
         const running = try r.loaded.?.scanExisting();
         for (running, 0..) |tgid, i| if (tgid != 0 and previous.snapshot.slots[i] == null) return error.CloseAddedAppsFirst;
+        const fault = try faults.read();
+        try faults.pause(fault, .after_validation);
         try host.writePolicy(r.gpa, r.io, &next.cfg.digest, bytes);
         try intent.pendingWrite(r.gpa, r.io, .{ .generation = next.cfg.generation, .old_policy = previous.cfg.digest, .new_policy = next.cfg.digest });
         // From this point any failed stage/ACK/disk write terminates the service.
@@ -668,9 +672,13 @@ const Runtime = struct {
             r.failed_start = true;
             r.closeListeners();
         };
+        try faults.announce(fault);
         const deadline = try channel.Deadline.start();
         const stamp = next.snapshot.stamp;
-        channel.exchange(r.policy_write, r.policy_read, deadline, .{ .command = .prepare, .stamp = stamp, .length = @intCast(bytes.len) }, bytes, .prepared) catch |err| {
+        if (faults.enabled and (fault == .stop_child or fault == .kill_child))
+            _ = try sys.check(l.pidfd_send_signal(r.worker_fd, if (fault == .stop_child) .STOP else .KILL, null, 0));
+        const worker_bytes: []const u8 = if (faults.enabled and fault == .invalid_policy) "{" else bytes;
+        channel.exchange(r.policy_write, r.policy_read, deadline, .{ .command = .prepare, .stamp = stamp, .length = @intCast(worker_bytes.len) }, worker_bytes, .prepared) catch |err| {
             if (err == error.ProxyRefused) {
                 try intent.pendingClear(r.io);
                 stop_on_error = false;
@@ -678,6 +686,7 @@ const Runtime = struct {
             }
             return err;
         };
+        try faults.pause(fault, .after_prepare);
         var maps = r.loaded.?.generationMaps();
         const image = try reload_maps.Image.fromSnapshot(r.install.owner_uid, &next.snapshot);
         const staged = try reload_maps.stage(&maps, &image);
@@ -686,6 +695,7 @@ const Runtime = struct {
         try r.loaded.?.setEpoch(active);
         try channel.exchange(r.policy_write, r.policy_read, deadline, .{ .command = .quiesce, .stamp = stamp, .length = 0 }, "", .quiesced);
         try intent.writeHistory(r.gpa, r.io, &r.history, next);
+        try faults.pause(fault, .after_intent);
         try reload_maps.publishFenced(&maps, staged);
         try channel.exchange(r.policy_write, r.policy_read, deadline, .{ .command = .activate, .stamp = stamp, .length = 0 }, "", .activated);
         r.history.publish(next);

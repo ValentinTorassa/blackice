@@ -174,6 +174,38 @@ request, root non-owner, tagged curl and a real terminal prompt cancelled with
 Ctrl-C. It verifies unchanged kernel state and service PID plus refusal receipts.
 It neither installs an auth rule nor exercises a successful reload.
 
+Crash testing has a separate opt-in build:
+
+```sh
+zig build linux-appfilter -Dappfilter-vm-faults=true
+```
+
+It refuses to run outside the designated `test3-vm`
+guest and prints `VM-ONLY RELOAD FAULT BUILD`. Never use its binary or a bundle
+containing it for a host installation. The default build compiles out all fault
+file reads, pauses and signals. After separate VM-only installation and arming,
+`scripts/e2e/linux-appfilter-reload-faults-vm.py --help` describes the controller.
+It checks exact binary hashes and uses real owner-terminal polkit authentication.
+Root creates an exclusive, non-symlink selector under `/etc/blackice-appfilter/`
+containing the exact loader PID and one fault mode; a restarted PID ignores it.
+The controller removes only its matching selector and leaves the recovered
+generation armed. It does not install a polkit rule or handle a password.
+
+The fault build can pause after added-app validation, after worker preparation,
+or after the fsynced intent but before kernel publication. A pause affects only
+the transaction thread, so the concurrent-request refuser remains testable.
+Pauses expire after 60 seconds and do not renew the five-second exchange budget.
+The controller covers both crash boundaries, child death, a stopped child (the
+real five-second timeout), and an invalid policy inside a valid prepare frame.
+Its `after_validation` mode requires a candidate adding `/usr/bin/sleep`: it
+launches an untagged instance during the pause, checks the warning/status flag,
+verifies a post-publication launch is tagged, and checks that the warning clears
+when the original process exits. Journal cursors prevent stale pause markers
+from satisfying a later run.
+It requires the appropriate interrupted/completed/refused receipt and unchanged
+or advanced intent generation. A successful subsequent retry and removal/retirement
+coverage remain separate requirements; compiled scripts alone are not evidence.
+
 Before host use, evidence must also cover add/remove membership and its race,
 slow allowed/revoked transfers, stale/malformed/oversized input, cancelled and
 unauthenticated/tagged/non-owner requests, concurrent/off/unarmed rejection,
