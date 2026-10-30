@@ -12,7 +12,8 @@
 //! passes, so tokens and keys in it stay out of the scope.
 //!
 //! With --relay, the provider key is read from stdin, never from argv, the environment or a file, after the
-//! process has been made non-dumpable. CMD reaches the model at BLACKICE_RELAY_URL.
+//! process has been made non-dumpable. CMD reaches the model at BLACKICE_RELAY_URL with the relay's per-scope
+//! token in BLACKICE_RELAY_TOKEN (a bearer token for the relay only; the provider key never enters the scope).
 //!
 //! Exit status: CMD's own status (128 + signal when it was killed), 125 when blackice could not set up the
 //! scope, 127 when the backend could not start CMD.
@@ -285,6 +286,9 @@ pub fn run(gpa: std.mem.Allocator, io: Io, parent_env: *const std.process.Enviro
     if (svc.rl) |r| {
         const url = std.fmt.bufPrint(&url_buf, "http://127.0.0.1:{d}/v1", .{r.port}) catch unreachable;
         env.put("BLACKICE_RELAY_URL", url) catch |err| return svc.finish(status_setup_failed, "environment_failed", @errorName(err));
+        // The relay's per-scope caller token (not the provider key): a client in the scope sends it as a bearer
+        // token, for example fx with auth {"type":"bearer","env":"BLACKICE_RELAY_TOKEN"}.
+        env.put("BLACKICE_RELAY_TOKEN", r.token()) catch |err| return svc.finish(status_setup_failed, "environment_failed", @errorName(err));
     }
 
     var detail_buf: [160]u8 = undefined;
