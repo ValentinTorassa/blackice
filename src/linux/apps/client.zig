@@ -4,13 +4,22 @@ const ipc = @import("ipc.zig");
 const sys = @import("../sys.zig");
 pub fn run(gpa: std.mem.Allocator, io: std.Io, args: []const []const u8, out: *std.Io.Writer, errw: *std.Io.Writer) !u8 {
     request(gpa, io, args, out) catch |err| {
-        try errw.print("blackice app: {s}\n", .{@errorName(err)});
+        const off = isOff(args);
+        const tty = if (off) std.Io.File.stdin().isTty(io) catch false else false;
+        try writeFailure(errw, err, off, tty);
         return 125;
     };
     return 0;
 }
+fn isOff(args: []const []const u8) bool {
+    return args.len == 1 and std.mem.eql(u8, args[0], "off");
+}
+fn writeFailure(errw: *std.Io.Writer, err: anyerror, off: bool, tty: bool) !void {
+    try errw.print("blackice app: {s}\n", .{@errorName(err)});
+    if (off and !tty) try errw.writeAll("For interactive authorization, run `blackice app off` from a terminal (ssh -t) or a desktop session with a polkit agent.\n");
+}
 fn request(gpa: std.mem.Allocator, io: std.Io, args: []const []const u8, out: *std.Io.Writer) !void {
-    const op: ipc.Op = if (args.len == 1 and std.mem.eql(u8, args[0], "off")) .off else if (args.len == 1 and std.mem.eql(u8, args[0], "status")) .status else if (args.len == 3 and std.mem.eql(u8, args[0], "on") and std.mem.eql(u8, args[1], "--policy")) .on else return error.ExpectedAppOnPolicyOffOrStatus;
+    const op: ipc.Op = if (isOff(args)) .off else if (args.len == 1 and std.mem.eql(u8, args[0], "status")) .status else if (args.len == 3 and std.mem.eql(u8, args[0], "on") and std.mem.eql(u8, args[1], "--policy")) .on else return error.ExpectedAppOnPolicyOffOrStatus;
     const bytes = if (op == .on) try std.Io.Dir.cwd().readFileAlloc(io, args[2], gpa, .limited(ipc.max_policy)) else try gpa.alloc(u8, 0);
     defer gpa.free(bytes);
     if (op == .on) {
@@ -36,4 +45,17 @@ fn request(gpa: std.mem.Allocator, io: std.Io, args: []const []const u8, out: *s
         }
     }
     return error.InvalidServiceReply;
+}
+
+test "appfilter off failure explains terminal authorization only for non-tty off" {
+    for ([_]bool{ false, true }) |tty| {
+        for ([_][]const []const u8{ &.{"off"}, &.{"status"}, &.{ "on", "--policy", "apps.json" }, &.{ "off", "extra" } }) |args| {
+            var buffer: [512]u8 = undefined;
+            var writer = std.Io.Writer.fixed(&buffer);
+            try writeFailure(&writer, error.AppFilterRefused, isOff(args), tty);
+            const message = writer.buffered();
+            try std.testing.expect(std.mem.startsWith(u8, message, "blackice app: AppFilterRefused\n"));
+            try std.testing.expectEqual(!tty and args.len == 1 and std.mem.eql(u8, args[0], "off"), std.mem.find(u8, message, "ssh -t") != null);
+        }
+    }
 }

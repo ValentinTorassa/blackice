@@ -106,3 +106,20 @@ test "appfilter agent process identity parses comm containing parentheses and re
     try std.testing.expectError(error.InvalidProcessStat, startTime(stat, 124));
     try std.testing.expectError(error.InvalidProcessStat, startTime("123 (name) S 1 2", 123));
 }
+
+test "appfilter non-tty input skips agent registration and process spawning" {
+    var checked: usize = 0;
+    var vtable = std.Io.failing.vtable.*;
+    vtable.fileIsTty = struct {
+        fn noTty(context: ?*anyopaque, file: std.Io.File) std.Io.Cancelable!bool {
+            const count: *usize = @ptrCast(@alignCast(context.?));
+            std.debug.assert(file.handle == 0);
+            count.* += 1;
+            return false;
+        }
+    }.noTty;
+    // Every other I/O operation is unsupported/unreachable. In particular, no process can be spawned.
+    const io: std.Io = .{ .userdata = &checked, .vtable = &vtable };
+    try std.testing.expect((try start(io)) == null);
+    try std.testing.expectEqual(@as(usize, 1), checked);
+}

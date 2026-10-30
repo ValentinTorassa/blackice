@@ -119,7 +119,9 @@ For `app off` with a terminal on stdin, the unprivileged CLI starts `/usr/bin/pk
 and process start time, waits for registration, and uses `--fallback` so an existing agent is not replaced.
 The agent owns any password prompt; passwords never enter blackice's control messages or receipts. It is
 terminated and reaped when the request ends, and the terminal mode is restored. Without a tty, the CLI does
-not start an agent; authorization still requires an existing session agent. Registration failure, denial,
+not start an agent; authorization still requires an existing session agent. A failed non-tty `off` keeps
+the original error and explains how to retry from a terminal (`ssh -t`) or a desktop session with an agent.
+Registration failure, denial,
 cancel or the daemon's 15-second authorization timeout leave the filter armed. This follows the
 [pkttyagent contract](https://www.freedesktop.org/software/polkit/docs/latest/pkttyagent.1.html); real approve,
 wrong-password, Ctrl-C and timeout cases remain VM tests. Answer the prompt promptly; on timeout,
