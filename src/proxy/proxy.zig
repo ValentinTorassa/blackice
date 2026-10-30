@@ -39,8 +39,9 @@
 //! Declared limits (v0):
 //! - Only the destination name and port are decided. Content inside TLS is not inspected: a request to an
 //!   allowed host can carry any data to that host.
-//! - Every process that can reach the port can use the proxy; there is no per-scope credential yet
-//!   (TODO: a Proxy-Authorization token per scope).
+//! - Every process that can reach the port can use the proxy. A per-scope credential is a non-goal: each
+//!   scope's backend lets it reach only its own proxy port, so another scope cannot use this one, and a
+//!   process outside every scope already has direct network access, so a credential would stop nothing.
 
 const std = @import("std");
 const Io = std.Io;
