@@ -34,3 +34,8 @@ Some macOS entries name a `claude/run` build. Those commits were squashed into m
 `git fetch origin pull/7/head`. The fx patch that P0-07 names, `claude/fx-hook` at 08e34f3, can be fetched with
 `git fetch origin pull/9/head`. It has the same sha256 as `integrations/fx/fx-v0.0.16-blackice-hook.patch` on
 main.
+
+The Linux entries and failed-run records also name builds that are not on main. Launcher 020f389 and the
+failed runs' helper commits 35ae1f8 and c962271 are kept on the branch `codex/linux-verifier-fix` (020f389 and
+35ae1f8 also on `codex/linux-demo-020f389`), and can be fetched with `git fetch origin codex/linux-verifier-fix`.
+Helper commit 7c3bcff, used in the passing runs, can be fetched with `git fetch origin pull/6/head`.
