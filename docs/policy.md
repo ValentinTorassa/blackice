@@ -41,6 +41,8 @@ An allowed subnet is an independent permission. A proxy that rejects an unlisted
 
 The importer consumes the JSON value of `networkPolicy`, not a complete SDK create request or an API response. Its input shape is pinned to the [Sandbox type definition at commit 8c996641](https://github.com/vercel/sandbox/blob/8c996641a6ceac3a186ee45d9af0e1c8fcfd4d31/packages/vercel-sandbox/src/network-policy.ts). This is a source reference, not a vendored runtime dependency.
 
+That pinned source format has no destination-port field. Subset v1 rejects supplied `ports` fields, including an empty list, as unknown rather than dropping them or treating them as native `network.ports`. The generated 80/443 ceiling is an explicit local restriction requiring acknowledgement; it is not a mapping from upstream input.
+
 | Input | Subset v1 behavior |
 | --- | --- |
 | `"deny-all"` | Convert to native deny mode. Native and DNS qualification are still required. |
@@ -51,6 +53,7 @@ The importer consumes the JSON value of `networkPolicy`, not a complete SDK crea
 | `"allow-all"`, catch-all `*`, middle wildcards such as `www.*.com`, partial/multiple wildcards | Reject as outside this subset. |
 | Nonempty request-rule arrays | Reject the entire import, including `match`, `transform`, `forwardURL`, `response`, or an empty rule object. |
 | IPv6 CIDRs, URLs, ports in names, IPs in domain lists, non-ASCII hostnames | Reject. They are not silently converted or omitted. |
+| Numeric hostnames such as `2130706433`, `127.1` and `0x7f000001` | Reject; a resolver may interpret them as IP addresses. |
 
 Input is bounded to 64 KiB, eight nested containers and 256 total domain/subnet entries before deduplication. Hostnames use ASCII hostname labels. CIDR prefixes accept canonical decimal digits only. The output sorts and deduplicates entries. Duplicate JSON keys remain errors.
 
@@ -99,6 +102,6 @@ zig-out/bin/blackice policy check examples/agent.json
 zig test src/core/sandbox_import.zig
 ```
 
-The importer command runs 63 acceptance/rejection vectors plus capability, ownership, resource-limit and allocation-failure tests. These are deterministic software tests, not traffic evidence. They must not be entered as a passing native checkpoint in `evidence/`.
+The importer command runs 69 acceptance/rejection vectors plus capability, ownership, resource-limit and allocation-failure tests. These are deterministic software tests, not traffic evidence. They must not be entered as a passing native checkpoint in `evidence/`.
 
 When integrating into the main build, import `sandbox_import.zig` from the root test module and include `tests/` in the package paths so the vectors remain available. Native support must be qualified separately on each OS.

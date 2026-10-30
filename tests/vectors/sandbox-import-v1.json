@@ -587,6 +587,36 @@
       "id": "trailing-document",
       "input": "{} {}",
       "expected_error": "InvalidJson"
+    },
+    {
+      "id": "unsupported-root-ports",
+      "input": "{\"allow\":[\"example.com\"],\"ports\":[443]}",
+      "expected_error": "UnknownField"
+    },
+    {
+      "id": "unsupported-empty-ports",
+      "input": "{\"allow\":[\"example.com\"],\"ports\":[]}",
+      "expected_error": "UnknownField"
+    },
+    {
+      "id": "unsupported-subnet-ports",
+      "input": "{\"subnets\":{\"allow\":[\"203.0.113.0/24\"],\"ports\":[443]}}",
+      "expected_error": "UnknownField"
+    },
+    {
+      "id": "domain-numeric-integer",
+      "input": "{\"allow\":[\"2130706433\"]}",
+      "expected_error": "InvalidDomain"
+    },
+    {
+      "id": "domain-numeric-short-ip",
+      "input": "{\"allow\":[\"127.1\"]}",
+      "expected_error": "InvalidDomain"
+    },
+    {
+      "id": "domain-numeric-hex",
+      "input": "{\"allow\":[\"0x7f000001\"]}",
+      "expected_error": "InvalidDomain"
     }
   ]
 }
