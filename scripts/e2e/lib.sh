@@ -91,8 +91,11 @@ scoped() {
     ERR="$W/out/$name.err"
     echo
     echo "\$ blackice run --policy agent.json $*"
-    "$B" run --policy "$POLICY" "$@" > "$OUT" 2> "$ERR" < /dev/null
-    RC=$?
+    # Through pipes, not straight into files: some builds write their own lines at fixed file offsets, which
+    # overwrites the command's output in a regular file. stdout -> OUT, stderr -> ERR; RC via a file because
+    # the braces run in a subshell.
+    { "$B" run --policy "$POLICY" "$@" < /dev/null 2>&1 1>&3 3>&- | cat > "$ERR"; echo "${PIPESTATUS[0]}" > "$W/out/$name.rc"; } 3>&1 | cat > "$OUT"
+    RC=$(cat "$W/out/$name.rc")
     sed 's/^/  | /' "$OUT"
     grep -v '^blackice: scope ' "$ERR" | sed 's/^/  ! /'
     echo "  [exit $RC]"
