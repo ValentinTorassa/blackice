@@ -94,6 +94,7 @@ and `jq` are enough to read it.
 
 | Covers | Kind | Link | Note |
 |---|---|---|---|
+| receipts.R2, receipts.R4 | entry | [P0-02 macOS](../../evidence/P0-02-real-deny-macos.md) | macOS 27.0.1 arm64, SIP on, claude/run 58e73cc, Zig 0.17.0, one run, PR #11 (not merged). Receipts from three points (`control`, `kernel`, `proxy`), each with `ts`, `scope`, `policy`, `gen`, `point` and `event`. macOS logs refusals only for Apple-signed programs; here python3 and curl |
 | receipts.R1, receipts.R2, receipts.R4 | entry | [P0-04 macOS](../../evidence/P0-04-owner-grant-macos.md) | macOS 27.0.1 arm64, SIP on, claude/run 58e73cc, Zig 0.17.0, one run, PR #10 (not merged). Eight lines in one file, flat fields, points `control`, `kernel` and `proxy` |
 | receipts.R1, receipts.R2 | test | `zig build test`, src/core/receipt.zig: "receipt lines are JSON with nulls omitted" | One line per receipt, escaping, nulls omitted. 21/21 passed at 99e2f4e (PR #1), Zig 0.17.0, Linux x86_64 |
 | receipts.R2 | test | `zig build test`, src/core/receipt.zig: "formatTimestamp" | Timestamp format. Same run |

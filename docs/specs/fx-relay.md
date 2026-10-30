@@ -43,8 +43,9 @@ out, so the key never enters the scope.
 | fx-relay.R17 | When the fx hook is active, only a fixed list of fx tools shall run (`shell`, `read_file`, `write_file`, `edit_file`, `glob_files`, `grep_files`, `ask_user_question`, `read_tool_result`, `skill`, `subagent`). Every other tool, including `web_fetch`, `web_search`, `install_skill`, MCP tools and tools added later, shall be blocked, and `fx acp` shall refuse to start. | P0-07 |
 | fx-relay.R18 | If the hook cannot read a tool call safely (a request wrapper, a command that is not a string or contains a NUL byte, a shell other than `sh`, `bash` or `zsh`), it shall block the call. | P0-01 |
 | fx-relay.R19 | When the hook rewrites a command, fx's outer shell shall start clean, without the user's startup files (`zsh -f`, `bash --noprofile --norc`); terminal sessions, shell reloads and a changed shell shall be blocked. | P0-01 |
-| fx-relay.R20 | The hook shall require an absolute `FX_BLACKICE_BIN` equal to its real path, pin the policy's SHA-256 when fx starts, and run every command with `--policy-sha256` and `--protect <fx's own executable>`, so that blackice, the policy and fx stay unchanged for the next command. | P0-01 |
+| fx-relay.R20 | The hook shall require an absolute `FX_BLACKICE_BIN` equal to its real path, pin the policy's SHA-256 when fx starts, and run every command with `--policy-sha256`, `--protect <fx's own executable>` and a `--protect` for each of fx's profile files under `~/.fx` that exists when fx starts (`settings.json`, `mcp.json`, `auth.json`, `api-key`, and the provider sign-in files), so that blackice, the policy, fx and the next session's provider, model, credential and MCP servers stay unchanged for the next command. | P0-01 |
 | fx-relay.R21 | When the fx hook is active, fx's `write_file` and `edit_file` shall accept only a relative path with no `..`, no leading `~`, and no NUL or backslash. If blackice, the policy or fx's own executable lies inside the workspace (the real path of fx's working directory), the hook shall block every call. | P0-01 |
+| fx-relay.R22 | When the fx hook is active, fx shall start no MCP servers, from `~/.fx/mcp.json` or a project's `.mcp.json`: they would run outside every scope, and a scoped command can write a project's files. | P0-07 |
 
 ## Design
 
@@ -90,7 +91,7 @@ key out of the scope; it does not decide what content may be sent to the model.
     excerpts of earlier tool output in the turn; it cannot read the files the command runs. If the reviewer is
     unavailable, fx refuses the command. In `full-access` mode nothing asks or reviews; the command still runs
     in its scope.
-  - Main mode: MCP and ACP are not covered. `cd` and
+  - Main mode: fx starts no MCP servers and `fx acp` refuses to start (R17, R22). `cd` and
     `export` do not carry over between commands, since each runs in its own scope. Scopes are clients only.
   - Main mode: the hook is a patch, not an fx feature. Until fx offers a supported launch hook, each fx release
     needs the patch checked again.
@@ -104,9 +105,12 @@ key out of the scope; it does not decide what content may be sent to the model.
     kept inside the workspace (R21), so blackice and fx must be installed outside it; root-owned is best.
   - Main mode: fx's reads are not limited, and what fx reads goes to the model provider; blackice limits only
     what scoped commands send.
-  - Earlier versions had four more gaps, fixed in 617882a and b88c52e: the outer shell ran the user's startup
-    files, the policy and binary could be changed from a scope, fx tools other than the shell were allowed,
-    and fx's file tools could write outside the workspace.
+  - Main mode: only fx profile files that exist when fx starts are protected. A file created later, such as a
+    new `~/.fx/mcp.json`, is not protected, but fx does not read MCP servers in this mode (R22).
+  - Earlier versions had five more gaps, fixed in 617882a, b88c52e and 08e34f3: the outer shell ran the user's
+    startup files, the policy and binary could be changed from a scope, fx tools other than the shell were
+    allowed, fx's file tools could write outside the workspace, and a scoped command could change fx's profile
+    files or add an MCP server for the next session.
   - L0: one scope for fx and its tools, so no per-tool isolation; fx features that need other destinations fail
     unless the policy allows them.
   - The key is protected from the scope, not from other processes of the same user running outside every
@@ -126,6 +130,7 @@ key out of the scope; it does not decide what content may be sent to the model.
 | Run the rewritten command with fx's clean shell profile, never the user's startup files, and refuse a reload (617882a) | lead | done | |
 | Absolute `blackice` path; policy pinned (`--policy-sha256`); blackice, the policy and fx protected inside each scope (617882a) | lead | done | |
 | Block absolute, `~` and `..` paths in fx's file tools in blackice mode; refuse when blackice, the policy or fx is inside the workspace (b88c52e) | lead | done | |
+| Protect fx's existing profile files in every scope; start no MCP servers in blackice mode (08e34f3) | lead | done | |
 | Relay token: random per relay, exported as `BLACKICE_RELAY_TOKEN`, sent by fx as a bearer token | network | done | |
 | End-to-end scripts in `scripts/e2e/` (`linux-run.sh`, `linux-grant.sh`, `fx-l0.sh`), PASS, FAIL or NOT RUN per check | network | done | |
 | Relay: loopback endpoint, key on stdin, forwarding to the gateway | network | done | |
@@ -144,6 +149,7 @@ key out of the scope; it does not decide what content may be sent to the model.
 
 | Covers | Kind | Link | Note |
 |---|---|---|---|
+| fx-relay.R11, fx-relay.R12, fx-relay.R17, fx-relay.R20, fx-relay.R21 | entry | [P0-07 macOS, scripted model](../../evidence/P0-07-fx-hook-scripted-macos.md) | macOS 27.0.1 arm64, SIP on, blackice claude/run 58e73cc, fx v0.0.16 (481104f) with the hook patch at 08e34f3, full-access mode, scripted model, one run, PR #11 (not merged). Six shell commands got six scopes, each with "4 protected files; policy pinned"; a variable from fx's environment was absent inside; writes to `~/.fx/settings.json` and over blackice were refused (`protected_path`); `write_file` to an absolute path and `web_fetch` were blocked by the hook. Shows what the hook does with each call, not what a real model would ask for |
 | fx-relay.R8, fx-relay.R9 | probe | - | Linux, 30 Oct: fx v0.0.16 in an empty network namespace with a scripted model on loopback and a stand-in proxy. No Authorization header reached the model; a direct request from a tool failed to resolve; the same request through the stand-in proxy arrived as CONNECT with the host name; fx exited 0. No blackice code. |
 | fx-relay.R8, fx-relay.R9 | probe | - | macOS 27.0.1, 30 Oct, SIP off and then on: the same run under a Seatbelt profile allowing two loopback ports. Same results. No blackice code. |
 | fx-relay.R1, fx-relay.R3, fx-relay.R4, fx-relay.R5 | test | `zig build test`, src/relay/test.zig: "readKey", "an allowed model is forwarded with the relay's key, never the caller's headers", "models off the allow list, oversized bodies, bad JSON and other endpoints are refused locally", "browser pages, foreign Host headers, non-JSON bodies and routing fields are refused", "only standard chat-completion fields pass the relay", "the response cap and the call time limit cut a call", "a call whose time limit cannot be armed is refused", "the call cap refuses calls once used up", "upstream URLs: https anywhere, plain http only to loopback" | 65/65 passed at 986645a (PR #4), Zig 0.17.0, Linux x86_64, six runs, real loopback sockets, fixed resolver, stand-in upstreams; no network, synthetic key |

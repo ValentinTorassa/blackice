@@ -30,12 +30,12 @@ it, and every decision is written down. It runs locally, headless, with no accou
 
 | Checkpoint | What it shows | Evidence |
 |---|---|---|
-| P0-01 Policy before execution | A command cannot connect before its scope is armed, even at its first instruction. | pending |
-| P0-02 Real deny | A direct connection is refused by the OS, and a receiver on another machine sees nothing. Each protocol and address family is stated separately. | pending |
+| P0-01 Policy before execution | A command cannot connect before its scope is armed, even at its first instruction. | macOS: [entry](../evidence/P0-01-policy-before-exec-macos.md). Linux: pending |
+| P0-02 Real deny | A direct connection is refused by the OS, and a receiver on another machine sees nothing. Each protocol and address family is stated separately. | macOS, TCP and UDP over IPv4 and IPv6: [entry](../evidence/P0-02-real-deny-macos.md). Linux: pending |
 | P0-03 Small explicit allow | One allowed destination works through the proxy; another is refused. | macOS: [entry](../evidence/P0-03-explicit-allow-macos.md). Linux: pending |
 | P0-04 Authorized change | The owner widens a scope from outside; the same request from inside fails. | macOS: [entry](../evidence/P0-04-owner-grant-macos.md). Linux: pending |
 | P0-05 Bounded grant | The extra access ends at its expiry or when the scope ends. | pending |
-| P0-07 fx | fx runs with blackice and its commands are confined, with receipts. The fx version is pinned. | pending |
+| P0-07 fx | fx runs with blackice and its commands are confined, with receipts. The fx version is pinned. | macOS, scripted model, full-access mode: [entry](../evidence/P0-07-fx-hook-scripted-macos.md). Real model: pending. Linux: pending |
 | P0-08 Second platform | The same checks on the other OS, or the exact blocker. | pending |
 | P0-09 Forwardable proof | Evidence entries, a short recording and this page. | pending |
 | P0-10 Release gap | The table below. | this page |
