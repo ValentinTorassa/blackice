@@ -15,15 +15,15 @@ Network permissions for apps and agent tasks on macOS and Linux. Native and head
 
 ## Design
 
-- A **task scope** will wrap a command and every process it starts:
-  `blackice run --policy policy.json -- <command>`. The policy will be armed before the command runs.
+- A **task scope** wraps a command and every process it starts:
+  `blackice run --policy policy.json -- <command>`. The policy is armed before the command runs.
 - An **app scope** will apply a policy to an app already on the machine.
 - A **host ceiling** will sit over every scope. Nested scopes can only narrow.
 - The policy is a strict JSON file (`blackice.policy/v0`): a mode (`deny-all`, `allow-all` or `allowlist`),
   allowed names, subnets and ports. Unknown fields are rejected.
-- A command inside a scope will reach the network only through a local proxy outside it, which checks every name
+- A command inside a scope reaches the network only through a local proxy outside it, which checks every name
   against the policy and every resolved address again.
-- Only the owner will be able to widen a scope, from outside it, for a limited time.
+- Only the owner can widen a scope, from outside it, for a limited time.
 - Each decision is one flat JSON line: the scope, the policy hash and generation, where it was enforced, the
   verdict, a stable reason code and the destination.
 
@@ -42,7 +42,7 @@ Only the macOS agent-task cell has evidence entries ([Evidence](#evidence)). Eve
 ## Evidence
 
 macOS agent tasks only: macOS 27.0.1 on Apple silicon with SIP on, release builds of `claude/run` at 58e73cc
-(P0-05 at 58b9491), run by the people who built it, with no recording yet. Each entry states its own limits.
+(P0-05 at 58b9491), run by the people who built it, with no video of the runs yet. Each entry states its own limits.
 
 | Checkpoint | What the entry shows |
 |---|---|
