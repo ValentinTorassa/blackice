@@ -4,7 +4,8 @@
 # The same checks as the macOS run (allowed names through the proxy, denied names, direct connections, the
 # metadata address, the clean environment, receipts the scope cannot change), plus two Linux-only checks:
 # an unconnected UDP sendto, refused by the kernel with a receipt, and a ping from inside the scope, refused by
-# the kernel (seccomp, EPERM) without a receipt: a declared limit, so its receipt check is expected to FAIL.
+# the kernel (seccomp, EPERM) without a receipt. That missing receipt is a declared limit, reported as LIMIT
+# (or CHANGED if a receipt ever appears), not as a failure.
 #
 # Needs: a built blackice whose `run` launches the Linux backend, and the helper the owner installed with
 # scripts/linux-setup.sh. This script never installs anything and never uses sudo. Synthetic policy; the only
@@ -156,8 +157,8 @@ check "UDP to 1.1.1.1:53: kernel_drop receipt" has_receipt "$RCPT" point=kernel 
 scoped ping -- /usr/bin/ping -n -c 1 -W 2 1.1.1.1
 check "ping 1.1.1.1 from inside: refused (Operation not permitted)" \
     sh -c "[ $RC -ne 0 ] && grep -qi 'operation not permitted' '$OUT' '$ERR'"
-# Declared limit: seccomp refuses ping's socket with EPERM and leaves no kernel_drop receipt. Expected to FAIL.
-check "ping: kernel deny receipt (declared limit: seccomp EPERM leaves none; FAIL expected)" has_receipt "$RCPT" point=kernel verdict=deny
+limit "ping: no kernel deny receipt (seccomp refuses the socket with EPERM and leaves none)" \
+    has_receipt "$RCPT" point=kernel verdict=deny
 
 # 9. Every scope ends with scope_end, and the state is owner-only.
 ok=true

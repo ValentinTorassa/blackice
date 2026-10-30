@@ -6,6 +6,8 @@
 
 E2E_PASS=0
 E2E_FAIL=0
+E2E_LIMIT=0
+E2E_CHANGED=0
 
 pass() { echo "PASS  $*"; E2E_PASS=$((E2E_PASS + 1)); }
 fail() { echo "FAIL  $*"; E2E_FAIL=$((E2E_FAIL + 1)); }
@@ -17,10 +19,28 @@ check() {
     if "$@"; then pass "$what"; else fail "$what"; fi
 }
 
+# limit DESCRIPTION COMMAND [ARG]...: a declared limit, where COMMAND succeeding would mean the limit no longer
+# holds. Counted apart from passes and failures: LIMIT while it holds, CHANGED when it does not (then the
+# declaration needs updating). Neither changes the exit status.
+limit() {
+    local what="$1"
+    shift
+    if "$@"; then
+        echo "CHANGED  $what: the declared limit no longer holds; update the declaration"
+        E2E_CHANGED=$((E2E_CHANGED + 1))
+    else
+        echo "LIMIT  $what"
+        E2E_LIMIT=$((E2E_LIMIT + 1))
+    fi
+}
+
 # summary: prints the totals and returns 1 when anything failed.
 summary() {
     echo
     echo "== $E2E_PASS passed, $E2E_FAIL failed"
+    if [ "$E2E_LIMIT" -gt 0 ] || [ "$E2E_CHANGED" -gt 0 ]; then
+        echo "== declared limits: $E2E_LIMIT held, $E2E_CHANGED changed"
+    fi
     [ "$E2E_FAIL" -eq 0 ]
 }
 
