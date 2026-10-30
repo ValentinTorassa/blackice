@@ -74,7 +74,7 @@ App scopes are planned, not designed in detail. Each platform has one candidate 
 | macOS: ClientHellos with ECH: allow on the exact outer server name, with an `ech_present` note (013d718) | appfilter | done | |
 | macOS: sign the extension and run it on a Mac | valen | blocked | No Apple Developer Program membership (signing) and no full Xcode on the Mac. Until then its state stays "built, unsigned" and never "verified" |
 | Linux: qualify desktop app groups (first-packet coverage, unknown groups, user-created units, migration, terminal children) | codex | todo | |
-| Linux: choose how an app is recognised and matched, and build it; a design is reviewed and its first build, with unit tests only and nothing loaded in the kernel, is in security review | codex | doing | |
+| Linux: choose how an app is recognised and matched, and build it; a design is reviewed; its first build (unit tests only, nothing loaded in the kernel) needs the fixes from security's review, then kernel tests in a virtual machine, before any install | codex | doing | |
 | Show both app-scope cells as not available in status and docs | marketing | done | |
 
 ## Evidence
