@@ -12,7 +12,7 @@ pub const grant_cmd = @import("cli/grant.zig");
 pub const version = "0.1.0";
 
 const usage =
-    \\blackice: network permissions for apps and agent tasks (proof of concept)
+    \\blackice: network permissions for apps and agent tasks
     \\
     \\usage:
     \\  blackice version
