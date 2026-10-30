@@ -164,10 +164,12 @@ buffer.
 **Plain.** Encrypted Client Hello: a newer TLS feature that hides the name of the site a program is
 connecting to, even from the local network.
 
-**Technical.** It encrypts the inner ClientHello, including SNI, behind a public outer name. Anything that
-filters by reading SNI loses that signal. blackice v0 does not read SNI, so ECH does not change its decisions.
+**Technical.** It encrypts the inner ClientHello, including the real SNI, behind a public outer name. Anything
+that filters by reading SNI sees only the outer name. The blackice proxy requires the SNI it sees to equal the
+`CONNECT` host (proxy.R10), so with ECH it compares the outer name: a tunnel whose outer name differs is closed
+(`sni_mismatch`), and the inner name stays hidden from it. No run with ECH through the proxy is recorded.
 
-**See also.** SNI, TLS
+**See also.** SNI, TLS, CONNECT proxy
 
 ## enforcement point
 
@@ -503,10 +505,13 @@ on; a result with SIP off is reported as such.
 connection.
 
 **Technical.** Server Name Indication, a TLS ClientHello extension. It is a claim by the client, can be absent,
-and is hidden by Encrypted Client Hello. blackice v0 does not read it; the proxy decides on the CONNECT host
-name and its own name resolution.
+and is hidden by Encrypted Client Hello. The blackice proxy decides on the `CONNECT` host name and its own name
+resolution, then reads the tunnel's first bytes: they must be a ClientHello, and for a destination given as a
+name its SNI must be present and equal that host. Otherwise the proxy closes the tunnel before any byte reaches
+the destination (`not_tls`, `sni_missing`, `sni_mismatch`; proxy.R10, proxy.R11). A matching name does not
+prove who the server is.
 
-**See also.** CONNECT proxy
+**See also.** CONNECT proxy, ECH, domain fronting
 
 ## state directory
 
