@@ -21,8 +21,9 @@ comptime {
 /// libSystem.
 const release_targets = [_][]const u8{ "x86_64-linux", "aarch64-linux", "aarch64-macos", "x86_64-macos" };
 
-/// The Linux helper's release targets, built like scripts/linux-build-helper.sh does.
-const helper_targets = [_][]const u8{ "x86_64-linux", "aarch64-linux" };
+/// The Linux helper's release targets. A privileged binary ships only after it has run once on a real machine
+/// of its architecture, so aarch64 stays out until an arm64 run exists (its own step builds it meanwhile).
+const helper_targets = [_][]const u8{"x86_64-linux"};
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
@@ -94,15 +95,18 @@ pub fn build(b: *std.Build) void {
 
 /// `zig build release`: in zig-out/release/,
 /// - blackice-<version>-<target> for every release target,
-/// - blackice-linux-helper-<version>-<arch>-linux for x86_64 and aarch64,
+/// - blackice-linux-helper-<version>-<arch>-linux for each helper target,
 /// - SHA256SUMS, covering every file above.
 ///
 /// All are ReleaseSafe, stripped and built for the baseline CPU of their architecture. Stripping drops the
 /// debug info, which holds absolute build paths, so the same commit built with the same Zig gives the same
-/// bytes in any directory, and the helpers match scripts/linux-build-helper.sh.
+/// bytes in any directory, and the helper matches scripts/linux-build-helper.sh.
 ///
 /// -Dmacos-min sets the oldest macOS the binaries start on. Without it, Zig would write its own default (15.0).
 /// It also decides which system interfaces the standard library may use, so test with the same minimum.
+///
+/// `zig build helper-aarch64` builds the aarch64 helper the same way, into zig-out/unreleased/. It is not a
+/// release file and is not in SHA256SUMS.
 fn addRelease(b: *std.Build) void {
     const macos_min = b.option([]const u8, "macos-min", "Oldest macOS the release binaries run on (default 13.0)") orelse "13.0";
     const release_step = b.step("release", "Build stripped, reproducible release files and their SHA256SUMS");
@@ -137,21 +141,33 @@ fn addRelease(b: *std.Build) void {
         addReleaseFile(b, release_step, sums, exe, b.fmt("blackice-{s}-{s}", .{ manifest.version, name }));
     }
     for (helper_targets) |name| {
-        const query = std.Target.Query.parse(.{ .arch_os_abi = name, .cpu_features = "baseline" }) catch unreachable;
-        const helper = b.addExecutable(.{
-            .name = "blackice-linux-helper",
-            .root_module = b.createModule(.{
-                .root_source_file = b.path("src/linux/helper.zig"),
-                .target = b.resolveTargetQuery(query),
-                .optimize = .ReleaseSafe,
-                .strip = true,
-            }),
-        });
-        addReleaseFile(b, release_step, sums, helper, b.fmt("blackice-linux-helper-{s}-{s}", .{ manifest.version, name }));
+        addReleaseFile(b, release_step, sums, linuxHelper(b, name), b.fmt("blackice-linux-helper-{s}-{s}", .{ manifest.version, name }));
     }
 
     const install_sums = b.addInstallFileWithDir(sums_file, .{ .custom = "release" }, "SHA256SUMS");
     release_step.dependOn(&install_sums.step);
+
+    const arm_step = b.step("helper-aarch64", "Build the aarch64 Linux helper into zig-out/unreleased (not a release file until an arm64 run exists)");
+    const arm_install = b.addInstallArtifact(linuxHelper(b, "aarch64-linux"), .{
+        .dest_dir = .{ .override = .{ .custom = "unreleased" } },
+        .dest_sub_path = b.fmt("blackice-linux-helper-{s}-aarch64-linux", .{manifest.version}),
+    });
+    arm_step.dependOn(&arm_install.step);
+}
+
+/// The Linux helper for one `<arch>-linux` target, with the flags scripts/linux-build-helper.sh uses:
+/// baseline CPU, ReleaseSafe, stripped.
+fn linuxHelper(b: *std.Build, arch_os: []const u8) *std.Build.Step.Compile {
+    const query = std.Target.Query.parse(.{ .arch_os_abi = arch_os, .cpu_features = "baseline" }) catch unreachable;
+    return b.addExecutable(.{
+        .name = "blackice-linux-helper",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/linux/helper.zig"),
+            .target = b.resolveTargetQuery(query),
+            .optimize = .ReleaseSafe,
+            .strip = true,
+        }),
+    });
 }
 
 /// Installs one release file under its release name and lists it in SHA256SUMS.
