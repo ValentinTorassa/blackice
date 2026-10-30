@@ -3,10 +3,9 @@
 import { useEffect, useRef, useState } from 'react';
 import { DEMO_LANG_PICK, DEMO_LANG_STATE, Flag } from './Flags';
 
-// The demo, with a voice-over in one or two languages. The video files are not in the repository: a deployment adds
-// them to public/demo/ before the build (see page.jsx). The flags in the nav pick the language too, and ?lang=es
-// opens it in that language.
-export default function DemoVideo({ sources, poster }) {
+// The demo, one cut per caption language. The files are served from outside the build (content/demo.js). The flags
+// in the nav pick the language too, and ?lang=es opens it in that language.
+export default function DemoVideo({ sources }) {
   const [lang, setLang] = useState(sources[0].lang);
   const langRef = useRef(lang);
   langRef.current = lang;
@@ -49,7 +48,7 @@ export default function DemoVideo({ sources, poster }) {
       <figcaption className="frame-bar">
         <span className="frame-title">demo · v0</span>
         {sources.length > 1 ? (
-          <span className="demo-langs" role="group" aria-label="Voice-over language">
+          <span className="demo-langs" role="group" aria-label="Caption language">
             {sources.map((s) => (
               <button
                 key={s.lang}
@@ -71,7 +70,7 @@ export default function DemoVideo({ sources, poster }) {
         ref={ref}
         className="demo-video"
         src={current.src}
-        poster={poster || undefined}
+        poster={current.poster || undefined}
         controls
         preload="metadata"
         playsInline

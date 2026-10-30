@@ -60,7 +60,7 @@ code, pre, .mono { font-family: var(--mono); }
 .nav-links a:hover, .nav-links a.is-active { color: var(--fg); }
 .nav-gh { display: inline-flex; }
 .nav-right { display: flex; align-items: center; gap: 20px; }
-/* The demo's voice-over languages: Argentina for Spanish, the United States for English */
+/* The demo's caption languages: Argentina for Spanish, the United States for English */
 .flags { display: inline-flex; align-items: center; gap: 2px; padding-right: 18px; border-right: 1px solid var(--line); }
 .flag-btn { display: grid; place-items: center; width: 34px; height: 28px; padding: 0; border: 1px solid transparent; border-radius: 8px; background: transparent; cursor: pointer; transition: background 0.15s, border-color 0.15s; }
 .flag-btn:hover { background: var(--bg-2); }

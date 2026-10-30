@@ -1,13 +1,12 @@
-import fs from 'node:fs';
-import path from 'node:path';
+// The demo videos are not in the repository or the build: they are served from a Vercel Blob store, one cut with
+// English captions and one with Spanish captions. Each URL stays empty until its file is uploaded. The demo section
+// shows once a URL is set, and the language flags in the nav once both are.
+const BLOB = {
+  en: { src: '', poster: '' },
+  es: { src: '', poster: '' },
+};
 
-// The demo video is not in the repository. A deployment copies it into site/public/demo/ before the build; without
-// it, the demo section and the language flags in the nav are left out.
 export const DEMO = [
-  { lang: 'en', label: 'English', src: '/demo/blackice-demo-en.mp4' },
-  { lang: 'es', label: 'Español', src: '/demo/blackice-demo-es.mp4' },
-].filter((s) => fs.existsSync(path.join(process.cwd(), 'public', s.src)));
-
-export const DEMO_POSTER = fs.existsSync(path.join(process.cwd(), 'public', 'demo', 'poster.jpg'))
-  ? '/demo/poster.jpg'
-  : null;
+  { lang: 'en', label: 'English', ...BLOB.en },
+  { lang: 'es', label: 'Español', ...BLOB.es },
+].filter((s) => s.src);

@@ -8,7 +8,7 @@ const CHOICES = [
   { lang: 'en', label: 'Demo in English' },
 ];
 
-// The two flags at the top of every page. Each one switches the demo's voice-over and scrolls to it; on a page
+// The two flags at the top of every page. Each one switches the demo's captions and scrolls to it; on a page
 // without the demo, it opens the landing page's demo in that language (/?lang=es#demo).
 export default function DemoLangFlags() {
   const [current, setCurrent] = useState(null);

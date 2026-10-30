@@ -1,4 +1,4 @@
-// Flags for the demo's two voice-overs: Argentina for Spanish, the United States for English.
+// Flags for the demo's two caption languages: Argentina for Spanish, the United States for English.
 
 // Events between the flags in the nav and the demo player.
 export const DEMO_LANG_PICK = 'blackice:demo-lang'; // detail: the language to switch to

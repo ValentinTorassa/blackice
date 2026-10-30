@@ -28,7 +28,7 @@ import {
   IconTerminal,
 } from '../components/Icons';
 import { SITE } from '../content/site';
-import { DEMO, DEMO_POSTER } from '../content/demo';
+import { DEMO } from '../content/demo';
 import { CHECKPOINTS } from '../content/status';
 import { recordedCheckpoints } from '../lib/evidence';
 
@@ -154,8 +154,8 @@ export default function Home() {
             <h2 className="h2" id="demo-title">
               Demo
             </h2>
-            <DemoVideo sources={DEMO} poster={DEMO_POSTER} />
-            <p className="caption">Recorded on macOS. Labels on screen mark what is not verified.</p>
+            <DemoVideo sources={DEMO} />
+            <p className="caption">Recorded on macOS and in a Debian 13 virtual machine. Each demo carries a label that says what it shows.</p>
           </section>
         ) : null}
 
