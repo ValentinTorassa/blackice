@@ -1,10 +1,12 @@
 # P0-07: fx runs each command in its own scope (macOS, scripted model)
 
 **Claim.** With the blackice hook patch, every shell command fx runs starts in its own blackice
-task scope, under the pinned policy, with its own receipts. fx's own tools that would act outside
-the scopes are blocked. A command cannot change what the next scope runs: blackice, fx, the policy
-and fx's settings stay as they were. This covers checkpoint P0-07 (fx contract), hook mode. The run
-used a **scripted test model, not a real model**. A run with a real model is still pending.
+task scope, under the pinned policy, with its own receipts. fx's `write_file` outside the workspace
+and its `web_fetch` are blocked; fx's own reads, its writes inside the workspace and its model
+traffic still run outside the scopes (see Limits). A command cannot change what the next scope
+runs: blackice, fx, the policy and fx's settings stay as they were. This covers checkpoint P0-07
+(fx contract), hook mode. The run used a **scripted test model, not a real model**. A run with a
+real model is still pending.
 
 **Platform.** macOS 27.0.1 (26A434), arm64 (MacBook Air), System Integrity Protection enabled.
 
@@ -131,8 +133,8 @@ Run 2:
   rewrite comes before fx's permission check (`orchestrator.zig:10006` and `:10066`, then
   `requestToolPermissionTraced`), as the spec session's hero-shot note cites. So in auto mode each
   rewritten command would go to fx's reviewer.
-- fx itself, its model traffic and its own reads (`read_file`, `glob_files`, `grep_files`) run
-  outside the scopes. What the model reads goes to its provider.
+- fx itself, its model traffic, its own reads (`read_file`, `glob_files`, `grep_files`) and its
+  writes inside the workspace run outside the scopes. What the model reads goes to its provider.
 - macOS writes a kernel log line, and blackice turns it into a `kernel_drop` receipt, only for
   refusals of Apple-signed binaries (here curl, Python, zsh, cp and mv). A refusal of an ad-hoc-signed
   binary (tested with blackice itself and a program built with cc) is enforced but leaves no receipt.
