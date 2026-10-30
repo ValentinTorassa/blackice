@@ -31,6 +31,7 @@ blackice exits with the command's own status, so it can sit in front of any comm
 | scope-core.R7 | When the scope starts and ends, blackice shall write a `scope_start` and a `scope_end` receipt; `scope_end` carries CMD's exit status and the number of receipts that could not be written. | P0-09 |
 | scope-core.R8 | When CMD ends, blackice shall stop the scope's proxy and relay and exit with CMD's exit code, or 128 plus the signal number if CMD was killed by a signal. | P0-01 |
 | scope-core.R9 | When `--name N` is given, blackice shall record N in the `scope_start` receipt as a label only; a name never selects or widens a policy. | P0-09 |
+| scope-core.R10 | blackice shall make the scope's state directory read-only, or hidden, for the command and every process it starts, and shall load the policy into memory once, never re-reading it from that directory. | P0-04 |
 
 ## Design
 
@@ -49,7 +50,8 @@ loopback ports; names and addresses are then decided by the proxy.
   otherwise `~/.local/state/blackice/scopes/<id>/`. It holds `policy.json` (the exact bytes the scope started
   with) and `receipts.jsonl`.
 - Backend contract (`src/core/backend.zig`): the core passes a `LaunchSpec` with the scope id, argv, the
-  environment (already carrying the proxy variables), `allowed_loopback_ports` and the receipt log. The backend
+  environment (already carrying the proxy variables), `allowed_loopback_ports`, the state directory
+  (`state_dir`, which the backend makes read-only or hidden inside the scope) and the receipt log. The backend
   must confine the command before it runs and returns its exit (`exited`, `signal` or `other`).
   `BackendUnavailable` means the command was not run. Changing this contract is a recorded change between
   owners.
@@ -63,9 +65,9 @@ loopback ports; names and addresses are then decided by the proxy.
     through.
   - Work handed to a service outside the scope (a container daemon, launchd, `systemd-run --user`) runs
     outside the scope. Each platform spec lists what it blocks and what it does not.
-  - The state directory is in the user's home. The command runs as the same user, so in v0 it can read and
-    change that directory unless the platform backend hides it. Receipts are a record for diagnosis, not
-    tamper-proof evidence.
+  - The state directory is in the user's home and only the blackice process writes it; inside the scope it is
+    read-only or hidden. Other processes of the same user outside every scope can still change it, so
+    receipts are a record for diagnosis, not tamper-proof evidence.
   - What happens to processes still running after CMD exits is not defined yet (see Tasks).
 
 ## Tasks
@@ -77,6 +79,8 @@ loopback ports; names and addresses are then decided by the proxy.
 | Linux placeholder that refuses to run and writes a `backend_unavailable` receipt | lead | done | |
 | `blackice run`: arguments, policy load, scope creation, launch, exit status | lead | doing | |
 | Write the policy bytes into the state directory | lead | todo | |
+| State directory read-only inside the scope on macOS (`state_dir` in the launch contract) | lead | todo | |
+| State directory read-only or hidden inside the scope on Linux | codex-linux | todo | |
 | Proxy variables in the command's environment | lead | todo | |
 | `scope_start` and `scope_end` receipts, with the failed-write count | lead | todo | |
 | Decide and document what happens to processes left running after CMD exits | lead | todo | |

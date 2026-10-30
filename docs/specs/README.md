@@ -23,7 +23,7 @@ Specs describe the product. They do not hold plans, schedules or discussion.
 ---
 id: proxy                  # file name without .md; lowercase, dashes
 title: Proxy
-owner: lead                # who builds it: lead | codex | codex-linux | codex-network | security | marketing | spec; comma-separated if shared
+owner: lead                # who builds it: lead | codex | codex-linux | network | appfilter | security | marketing | spec; comma-separated if shared
 stage: poc                 # poc: needed for the proof of concept; release: needed later
 paths: src/proxy/          # code that implements it, comma-separated; empty if none yet
 cases: P0-02, P0-03        # proof-of-concept checkpoints it serves (see evidence/README.md)
@@ -78,7 +78,7 @@ limits. Name what the design does not cover.
 | Parse policy v0 and reject unknown fields | lead | done | |
 ```
 
-- **Owner**: `lead`, `codex`, `codex-linux`, `codex-network`, `security`, `marketing`, `spec` or `valen`.
+- **Owner**: `lead`, `codex`, `codex-linux`, `network`, `appfilter`, `security`, `marketing`, `spec` or `valen`.
 - **State**: `todo`, `doing`, `done` or `blocked`. Use `blocked` only for something outside the normal build order: a
   decision, an account, a machine, a person. A `todo` that simply comes after other work may name that work in
   **Blocked by**.

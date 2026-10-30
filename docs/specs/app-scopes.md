@@ -63,7 +63,8 @@ App scopes are planned, not designed in detail. Each platform has one candidate 
 
 | Task | Owner | State | Blocked by |
 |---|---|---|---|
-| macOS: Network Extension filter and host app | lead | blocked | No Apple Developer Program membership (signing), no full Xcode on the Mac |
+| macOS: Network Extension filter (Swift) and host app in `macos/`, deciding per app by code-signing identity, with the same policy and receipt formats; built unsigned | appfilter | doing | |
+| macOS: sign the extension and run it on a Mac | valen | blocked | No Apple Developer Program membership (signing) and no full Xcode on the Mac. Until then its state stays "built, unsigned" and never "verified" |
 | Linux: qualify desktop app groups (first-packet coverage, unknown groups, user-created units, migration, terminal children) | codex | todo | |
 | Linux: choose the matching mechanism (nftables socket match or cgroup eBPF) for app groups | codex | todo | |
 | Show both app-scope cells as not available in status and docs | marketing | done | |

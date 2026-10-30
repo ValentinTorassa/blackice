@@ -1,7 +1,7 @@
 ---
 id: proxy
 title: Proxy
-owner: codex-network
+owner: network
 stage: poc
 paths: src/proxy/
 cases: P0-02, P0-03
@@ -30,6 +30,7 @@ if both the name and the address it found are allowed. Every answer it gives is 
 | proxy.R6 | When the proxy allows a connection, it shall write one `allow` receipt with the matching rule, the host, the address it connected to and the port. | P0-03 |
 | proxy.R7 | If a request is malformed, its header exceeds a fixed size, or it is neither `CONNECT` nor a plain HTTP request with an absolute URL, the proxy shall refuse it with a 4xx status and write a `deny` receipt. | P0-02 |
 | proxy.R8 | When the scope ends, blackice shall stop the proxy and close every connection it is relaying. | P0-05 |
+| proxy.R9 | When a request names a port the policy does not allow, the proxy shall answer 403 and write a `deny` receipt with reason `port_not_allowed`. | P0-03 |
 
 ## Design
 
@@ -45,7 +46,7 @@ service by the program.
   passed to the backend as an allowed loopback port.
 - `CONNECT host:port`: decide on `host`; on allow, reply `200 Connection established` and splice bytes.
 - Plain HTTP (`GET http://host/path`): decide on the URL host; forward the request to the checked address.
-- Decision order: host or IP literal check, then resolution (allowed names only), then the address check on
+- Decision order: host or IP literal check and port check, then resolution (allowed names only), then the address check on
   each result (see [policy](policy.md)).
 - Responses on refusal: 403 for a policy refusal, 400 or 405 for a malformed or unsupported request.
 - Every decision writes one receipt with `point: proxy` (see [receipts](receipts.md)).
@@ -53,7 +54,7 @@ service by the program.
   - The `CONNECT` host is what the client says. The proxy binds it to a real destination by resolving it
     itself, but it does not read the TLS handshake: SNI, ECH and certificates are not checked, and the tunnel
     carries whatever the client sends to the allowed address.
-  - Ports are not a policy dimension in v0: an allowed host is allowed on any port.
+  - Ports: only the ports the policy allows, 80 and 443 by default.
   - Only HTTP and HTTPS through the proxy are covered. Other protocols, UDP and QUIC are meant to be blocked
     entirely by the backend, which allows only the proxy and relay ports; each platform spec says what is
     verified.
@@ -65,11 +66,11 @@ service by the program.
 
 | Task | Owner | State | Blocked by |
 |---|---|---|---|
-| `CONNECT` and plain HTTP proxy on a random loopback port | codex-network | todo | |
-| Resolve allowed names in the proxy and dial only checked addresses | codex-network | todo | |
-| One receipt per decision | codex-network | todo | |
-| Bound header size and refuse unsupported requests | codex-network | todo | |
-| Tests: refused name, allowed name, private address behind an allowed name, IP literal | codex-network | todo | |
+| `CONNECT` and plain HTTP proxy on a random loopback port | network | todo | |
+| Resolve allowed names in the proxy and dial only checked addresses | network | todo | |
+| One receipt per decision | network | todo | |
+| Bound header size and refuse unsupported requests | network | todo | |
+| Tests: refused name, allowed name, private address behind an allowed name, IP literal | network | todo | |
 
 ## Evidence
 

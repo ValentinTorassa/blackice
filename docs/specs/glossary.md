@@ -215,6 +215,17 @@ matters most, because nobody looked at what the command does.
 
 **See also.** fx, L0
 
+## fx hook
+
+**Plain.** A small, declared patch to fx so that every command fx launches runs in its own blackice scope. fx
+itself stays outside. This is the main way blackice works with fx.
+
+**Technical.** A builtin `PreToolUse` handler, kept in the repo under `integrations/fx/`, that rewrites each
+shell tool call to `blackice run --policy <file> -- <command>` with a scrubbed environment. Each command gets its
+own receipts. The patch names the fx release it applies to. L0 is the fallback.
+
+**See also.** fx, L0, task scope
+
 ## grant
 
 **Plain.** Extra access the owner gives a running scope, for a limited time, for example "allow
@@ -258,13 +269,13 @@ receipt records `point: kernel` when the kernel refused.
 
 ## L0
 
-**Plain.** The first, simplest way to use blackice with fx: run all of fx inside one task scope, with no
-changes to fx.
+**Plain.** The fallback way to use blackice with fx: run all of fx inside one task scope, with no changes to
+fx.
 
-**Technical.** `blackice run --policy FILE -- fx`. fx and every tool it starts share one network envelope.
-Giving each tool call its own scope needs a launch hook inside fx and is future work.
+**Technical.** `blackice run --policy FILE -- fx`. fx and every tool it starts share one network envelope, and
+fx reaches its model through the relay. The main mode is the fx hook, which gives each command its own scope.
 
-**See also.** fx, task scope, relay
+**See also.** fx hook, relay, task scope
 
 ## Landlock
 
@@ -417,7 +428,7 @@ payloads, no secrets. Lines that fail to write are counted and reported when the
 ## relay
 
 **Plain.** A local helper outside the scope that forwards the agent's model requests to the model provider and
-adds the API key on the way, so the agent never has the key.
+adds the API key on the way, so the agent never has the key. Only the L0 mode needs it.
 
 **Technical.** An OpenAI-compatible endpoint on `127.0.0.1:<port>` that forwards to AI Gateway. It reads the key
 from standard input, never from the environment, the command line or a file. It limits models, request size
@@ -499,9 +510,9 @@ name and its own name resolution.
 **Plain.** The folder where blackice keeps one scope's files: the exact policy it started with and its
 receipts.
 
-**Technical.** `$XDG_STATE_HOME/blackice/scopes/<id>/`, by default `~/.local/state/blackice/scopes/<id>/`. The
-scoped command runs as the same user, so in v0 the folder is a record for diagnosis, not tamper-proof
-evidence, unless the backend hides it.
+**Technical.** `$XDG_STATE_HOME/blackice/scopes/<id>/`, by default `~/.local/state/blackice/scopes/<id>/`. Only
+the blackice process writes it; inside the scope it is read-only or hidden. Other processes of the same user
+outside every scope can still change it, so it is a record for diagnosis, not tamper-proof evidence.
 
 **See also.** receipt, scope
 

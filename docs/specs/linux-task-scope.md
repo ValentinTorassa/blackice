@@ -103,7 +103,7 @@ the system resolver's sockets do not exist, so it cannot ask a system service to
 | Security review of the setup script before it runs | security | todo | |
 | Run the setup script with sudo, once it is reviewed | valen | todo | waits for: the scripts and their review |
 | Fixtures: immediate connect, fork and exec, TCP and both UDP modes on IPv4 and IPv6, migration, `systemd-run --user`, Docker socket, raw sockets, io_uring, DNS paths (`getent hosts`, `resolvectl query`, `busctl call org.freedesktop.resolve1`) | codex-linux | todo | |
-| End-to-end kernel deny with receipts and an evidence entry | codex-linux | todo | |
+| End-to-end kernel deny with receipts, an off-host receiver that sees nothing per protocol and family, and an evidence entry | codex-linux | todo | |
 | docs/linux.md | codex-linux | todo | |
 | docs/threat-model.md | codex | todo | |
 

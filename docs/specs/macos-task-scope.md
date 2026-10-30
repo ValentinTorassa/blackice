@@ -80,7 +80,7 @@ or addresses, only "any host" or "localhost", so every decision about names happ
 | Profile generator and launch through sandbox-exec | lead | done | |
 | Wire `blackice run` on macOS: scope, proxy, receipts, launch | lead | doing | |
 | Cross-build for aarch64-macos | lead | done | |
-| End-to-end run on the Mac with SIP on, with receipts and an evidence entry | lead | todo | |
+| End-to-end run on the Mac with SIP on, with receipts, an off-host receiver that sees nothing, and an evidence entry | lead | todo | |
 | Test hardening against launchd job creation (no window opens) | lead | todo | |
 | Test hardening against `open` and `osascript` | lead | blocked | Valen's OK: these tests open windows, so not while recording |
 | Test inherited sockets, proxy restart and port takeover | lead | todo | |

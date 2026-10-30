@@ -30,6 +30,7 @@ names the rule that made it, so a person can see why a connection was allowed or
 | policy.R6 | When a destination is written as an IP address, blackice shall allow it only if an allowed subnet covers it, or, in `allow-all` mode, if it is a public address. A denied subnet always refuses. | P0-03 |
 | policy.R7 | blackice shall give every decision a stable reason code and, when a policy entry decided it, that entry exactly as written in the file. | P0-09 |
 | policy.R8 | blackice shall identify each loaded policy by a digest of its exact bytes, and carry that identifier in every receipt of the scope. | P0-09 |
+| policy.R9 | When a destination port is not in `network.ports` (80 and 443 when the field is absent), blackice shall refuse it with reason `port_not_allowed`, even if the host is allowed. | P0-03 |
 
 ## Design
 
@@ -48,22 +49,25 @@ asked for, then every address that name resolves to. The second step stops an al
     "network": {
       "mode": "allowlist",
       "allow": ["example.com", "*.npmjs.org"],
-      "subnets": { "allow": ["10.20.0.0/16"], "deny": ["203.0.113.0/24"] }
+      "subnets": { "allow": ["10.20.0.0/16"], "deny": ["203.0.113.0/24"] },
+      "ports": [443]
     }
   }
   ```
 
-- `mode`: `deny-all`, `allow-all` or `allowlist`. `allow`, `subnets.allow` and `subnets.deny` are optional.
+- `mode`: `deny-all`, `allow-all` or `allowlist`. `allow`, `subnets.allow`, `subnets.deny` and `ports` are
+  optional. Without `ports`, only 80 and 443 are allowed.
 - Parsing uses the Zig standard library JSON parser with unknown fields rejected.
 - Evaluation (`src/core/policy.zig`): `checkHost` for a name, `checkResolved` for each address an allowed
-  name resolves to, `checkLiteral` for a destination written as an address. Order inside `checkResolved` and
+  name resolves to, `checkLiteral` for a destination written as an address, and `checkPort` for every
+  destination port. Order inside `checkResolved` and
   `checkLiteral`: denied subnet, then allowed subnet, then the local/private test.
 - Reason codes: `allowed_by_rule`, `allowed_by_mode`, `allowed_subnet`, `public_address`,
   `no_matching_rule`, `mode_deny_all`, `ip_literal_needs_subnet`, `denied_subnet`,
-  `local_or_private_address`, `invalid_host`. Renaming one is a contract change.
+  `local_or_private_address`, `port_not_allowed`, `invalid_host`. Renaming one is a contract change.
 - Policy identifier: the first 12 hex digits of the SHA-256 of the file bytes.
 - `blackice policy check FILE` loads a policy and prints its mode, counts and identifier.
-- Not in v0: ports and protocols as policy dimensions, nested scopes and a host ceiling (a child scope can
+- Not in v0: protocols as a policy dimension, nested scopes and a host ceiling (a child scope can
   only narrow its parent), observe mode, policy updates while a scope runs (except grants), and any
   Sandbox-specific field (see [sandbox-import](sandbox-import.md)).
 
@@ -74,6 +78,7 @@ asked for, then every address that name resolves to. The second step stops an al
 | Parse policy v0 and reject unknown fields, versions and modes | lead | done | |
 | Name, resolved-address and IP-literal checks with reason codes | lead | done | |
 | `blackice policy check FILE` | lead | done | |
+| `network.ports` (default 80 and 443) and `checkPort` | lead | todo | |
 | Shared test vectors that every enforcement point runs against the same verdicts | codex | todo | |
 | docs/policy.md for users | codex | todo | |
 
