@@ -251,7 +251,10 @@ case that caused it.
 - **F04 off** (case A, steps 3–4).
   - The VM-only rule is written, `app off` prints `OK off`, and the rule is removed at once.
   - All seven hooks are detached. No `bi_af_` program, pin or listener is left, and the foreign attachments
-    equal the baseline.
+    equal the baseline. The one tolerated difference, recorded as OBSERVE: systemd's own `sd_devices` /
+    `sd_fw_*` on a `system.slice/<unit>.service` cgroup, which systemd adds when a service starts after the
+    baseline (polkit.service is D-Bus activated by the first authorization) and removes when it stops. Every
+    other difference fails, with the added and removed rows.
   - An `app_filter_off` receipt is written.
 - **F05.** Arming again with the six-app policy works.
 - **G11–G15 kill at each arming phase.**

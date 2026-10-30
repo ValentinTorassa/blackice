@@ -892,14 +892,27 @@ def baseline_foreign():
         return [tuple(x) for x in json.load(f)]
 
 
+def systemd_unit_program(row):
+    cgroup, _, name = row
+    return bool(re.fullmatch(r"/sys/fs/cgroup/system\.slice/[^/]+\.service", cgroup)) and name in ("sd_devices", "sd_fw_egress", "sd_fw_ingress")
+
+
 def clean_check(prefix):
     """No program, link, pin or listener of ours is left, and foreign attachments equal the baseline."""
     _, data = trees()
     ok = check(f"{prefix}.no-hooks", "cleanup", "no bi_af_ attachment", [r["name"] for r in ours(data["cgroup_tree"])], not ours(data["cgroup_tree"]))
     ok &= check(f"{prefix}.no-programs", "cleanup", "no bi_af_ program loaded", data["bi_af_programs"], data["bi_af_programs"] == [])
     ok &= check(f"{prefix}.no-pins", "cleanup", "bpffs empty or absent", data["pins"], not data["pins"])
-    ok &= check(f"{prefix}.foreign-unchanged", "cleanup", "other attachments equal the baseline", foreign(data["cgroup_tree"]),
-                foreign(data["cgroup_tree"]) == baseline_foreign())
+    got, base = foreign(data["cgroup_tree"]), baseline_foreign()
+    added, removed = sorted(set(got) - set(base)), sorted(set(base) - set(got))
+    if got != base and all(systemd_unit_program(row) for row in added + removed):
+        # systemd attaches its own sd_devices / sd_fw_* to a service's cgroup when the service starts (polkit.service,
+        # D-Bus activated by the first authorization) and detaches them when it stops: not ours, recorded only.
+        record(f"{prefix}.foreign-unchanged", "cleanup", "other attachments equal the baseline, apart from systemd's own per-service programs",
+               {"added": added, "removed": removed}, "OBSERVE")
+    else:
+        ok &= check(f"{prefix}.foreign-unchanged", "cleanup", "other attachments equal the baseline", {"added": added, "removed": removed, "all": got},
+                    got == base)
     listeners = run(["/usr/bin/ss", "-ltnH", "sport >= :760 and sport <= :774"], timeout=15)[1].strip()
     ok &= check(f"{prefix}.no-listeners", "cleanup", "nothing listens on 760-774", listeners, listeners == "")
     return ok
