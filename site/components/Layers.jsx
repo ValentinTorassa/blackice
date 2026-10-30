@@ -14,7 +14,7 @@ const LAYERS = [
     Icon: IconChip,
     text: 'On macOS, the built-in sandbox. On Linux, eBPF on the task\'s cgroup. Either way the command can reach only a local proxy, which checks every name and address. A denied connection stops here.',
   },
-  { key: 'net', name: 'Network', Icon: IconGlobe, text: 'Only destinations the policy names get through. Every decision writes a receipt.' },
+  { key: 'net', name: 'Network', Icon: IconGlobe, text: 'Only destinations the policy names get through. Every proxy decision writes a receipt.' },
 ];
 
 // Where the three connections cross the stack, in the planes' 230px space.
