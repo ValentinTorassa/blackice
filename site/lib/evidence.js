@@ -18,10 +18,23 @@ export function recordedCheckpoints() {
   return new Set(evidenceFiles().map((f) => f.slice(0, 5)));
 }
 
+// Code counts as built when its path exists and, for a cell with builtWhen, when that file matches it.
+function codeBuilt(cell) {
+  if (!cell.code) return false;
+  const file = path.join(ROOT, cell.code);
+  if (!fs.existsSync(file)) return false;
+  if (!cell.builtWhen) return true;
+  try {
+    return cell.builtWhen.test(fs.readFileSync(file, 'utf8'));
+  } catch {
+    return false;
+  }
+}
+
 // A platform cell is verified by its evidence file, built when its code is in the repository,
 // and otherwise keeps its design state.
 export function cellState(cell) {
   if (cell.evidence && evidenceFiles().some((f) => cell.evidence.test(f))) return 'verified';
-  if (cell.code && fs.existsSync(path.join(ROOT, cell.code))) return cell.builtAs || 'built';
+  if (codeBuilt(cell)) return cell.builtAs || 'built';
   return cell.base;
 }
