@@ -216,6 +216,7 @@ pub fn listenerGuardLayout(hook: bpf.AttachType, fds: Fds, comptime layout: Layo
     const yes = p.len;
     p.ret(1);
     const no = p.len;
+    if (layout == .generations) captureReceiptGeneration(&p, fds);
     emitRefusal(&p, hook, fds, layout);
     allow.patch(&p, yes);
     deny.patch(&p, no);
@@ -434,6 +435,24 @@ fn captureBinding(p: *a.Program, fds: Fds, deny: *Fixups) void {
     const end = p.len;
     p.emit(I.mov(.r0, 0));
     p.patch(unlisted, end);
+}
+
+// A root-guard refusal is already decided. Resolve a retired slot's stamp for
+// the receipt only; never extend this guard's traffic restrictions or refetch the epoch.
+fn captureReceiptGeneration(p: *a.Program, fds: Fds) void {
+    var done: Fixups = .{};
+    done.add(p, I.jeq(.r9, 0, 0));
+    p.emit(I.stx(.word, .r10, -28, .r9));
+    p.emit(I.ldx(.word, .r0, .r10, -56));
+    p.emit(I.stx(.word, .r10, -24, .r0));
+    p.lookup(fds.ports, -28);
+    done.add(p, I.jeq(.r0, 0, 0));
+    p.emit(I.ldx(.word, .r0, .r0, @offsetOf(epoch.PortValue, "decision_generation")));
+    done.add(p, I.jeq(.r0, 0, 0));
+    p.emit(I.stx(.word, .r10, -60, .r0));
+    const end = p.len;
+    p.emit(I.mov(.r0, 0));
+    done.patch(p, end);
 }
 
 pub const fixture_fds: Fds = .{ .files = 10, .tags = 11, .ports = 12, .state = 13, .ring = 14, .lost = 15, .existing = 16 };

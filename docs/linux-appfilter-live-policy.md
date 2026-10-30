@@ -45,7 +45,7 @@ generation and two full lowercase SHA-256 values before writing
 
 No runtime activation record is emitted while reload is unavailable. A raw reload
 request that reaches the service's reload handler records
-`policy_change_refused` with the unchanged generation. Earlier peer/tag/header
+`policy_change_refused` with the existing log context. Earlier peer/tag/header
 refusals use the existing generic control record. The CLI's local refusal does
 not invent a service receipt. UDP aggregation has a tested generation boundary:
 it refuses a mismatched event without changing the batch. Kernel generation decoding,

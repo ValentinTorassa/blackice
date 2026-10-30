@@ -414,6 +414,11 @@ test "appfilter emitted refusal carries event time generation and retired bindin
     v.socket(false, 22, 6);
     try std.testing.expectEqual(@as(u64, 0), try v.run(&code));
     try std.testing.expectEqual(@as(u64, 1), v.get(event + epoch.event_generation_offset, 4));
+    v.socket(false, 760, 6); // retired slot 2 cannot use slot 1's listener
+    v.addr4(0x7f000001);
+    try std.testing.expectEqual(@as(u64, 0), try v.run(&programs.listenerGuardLayout(.cgroup_inet4_connect, fd, .generations)));
+    try std.testing.expectEqual(@as(u64, 1), v.get(event + epoch.event_generation_offset, 4));
+    try std.testing.expectEqual(@as(u64, @backingInt(abi.Reason.listener_peer)), v.get(event + @offsetOf(abi.Event, "reason"), 4));
 }
 
 test "appfilter emitted candidate fence denies tagged admission without changing tags or unlisted traffic" {
