@@ -34,7 +34,7 @@ it, and every decision is written down. It runs locally, headless, with no accou
 | P0-02 Real deny | A direct connection is refused by the OS, and a receiver on another machine sees nothing. Each protocol and address family is stated separately. | macOS, TCP and UDP over IPv4 and IPv6, name lookup, listening and launchd jobs: [entry](../evidence/P0-02-real-deny-macos.md). Linux: pending |
 | P0-03 Small explicit allow | One allowed destination works through the proxy; another is refused. | macOS: [entry](../evidence/P0-03-explicit-allow-macos.md). Linux: pending |
 | P0-04 Authorized change | The owner widens a scope from outside; the same request from inside fails. | macOS: [entry](../evidence/P0-04-owner-grant-macos.md). Linux: pending |
-| P0-05 Bounded grant | The extra access ends at its expiry or when the scope ends. | pending |
+| P0-05 Bounded grant | The extra access ends at its expiry or when the scope ends. | macOS, expiry: [entry](../evidence/P0-05-grant-expiry-macos.md). Linux: pending |
 | P0-07 fx | fx runs with blackice and its commands are confined, with receipts. The fx version is pinned. | macOS, scripted model, full-access mode: [entry](../evidence/P0-07-fx-hook-scripted-macos.md). Real model: pending. Linux: pending |
 | P0-08 Second platform | The same checks on the other OS, or the exact blocker. | pending |
 | P0-09 Forwardable proof | Evidence entries, a short recording and this page. | pending |
@@ -65,6 +65,8 @@ HTTPS through the proxy, observe mode, and recovery after faults.
 - With the fx hook, fx itself runs outside the scopes. Its file tools are kept inside the workspace, so
   install blackice and fx outside it (root-owned is best). What fx reads goes to the model provider.
 - In v0, any process of the same user that runs outside every scope counts as the owner.
+- When a grant ends, the proxy cuts its connections at once, but data that already reached the program stays
+  readable.
 - Work handed to a service outside the scope (launchd, `open`, `systemd-run --user`, Docker) is refused only
   where a test shows it; otherwise it is a stated limit.
 - An allowed name on a shared CDN can reach other sites on that CDN through domain fronting inside TLS: the
