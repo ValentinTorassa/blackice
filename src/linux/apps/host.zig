@@ -78,14 +78,15 @@ pub fn identity(gpa: std.mem.Allocator, path: []const u8) !abi.FileKey {
             var fs: [32]u64 = @splat(0);
             _ = try sys.check(l.syscall2(.fstatfs, @as(usize, @intCast(dir)), @intFromPtr(&fs)));
             if (!identityFilesystemSupported(fs[0])) return error.UnsupportedExecutableFilesystem;
-            try requireNativeExecutable(dir);
-            return .{ .device = try abi.kernelDevice(s.dev_major, s.dev_minor), .inode = s.ino };
+            const readable = try openNativeExecutable(dir);
+            defer sys.close(readable);
+            return .{ .device = try abi.kernelDevice(s.dev_major, s.dev_minor), .generation = try inodeGeneration(readable), .inode = s.ino };
         }
     }
     return error.ExecutableRequired;
 }
 
-fn requireNativeExecutable(pinned: l.fd_t) !void {
+fn openNativeExecutable(pinned: l.fd_t) !l.fd_t {
     const original = try sys.stat(pinned);
     if (original.mode & 0o170000 != 0o100000) return error.CanonicalRootOwnedExecutableRequired;
     // O_PATH cannot read. Follow only our own fixed fd link, never the policy's pathname again:
@@ -93,7 +94,7 @@ fn requireNativeExecutable(pinned: l.fd_t) !void {
     var path: [64]u8 = undefined;
     const fd_path = try std.fmt.bufPrintSentinel(&path, "/proc/self/fd/{d}", .{pinned}, 0);
     const readable = try sys.fd(l.open(fd_path, .{ .CLOEXEC = true, .NONBLOCK = true }, 0));
-    defer sys.close(readable);
+    errdefer sys.close(readable);
     const opened = try sys.stat(readable);
     if (opened.ino != original.ino or opened.dev_major != original.dev_major or opened.dev_minor != original.dev_minor)
         return error.ExecutableIdentityChanged;
@@ -108,6 +109,21 @@ fn requireNativeExecutable(pinned: l.fd_t) !void {
     // Other interpreter/binfmt formats also cannot be identified by the configured file's inode.
     // This checks the format prefix only; the kernel still validates the full ELF at exec.
     if (n != magic.len or !std.mem.eql(u8, &magic, "\x7fELF")) return error.UnsupportedExecutableFormat;
+    return readable;
+}
+
+fn inodeGeneration(readable: l.fd_t) !u32 {
+    // FS_IOC_GETVERSION encodes a C long but ext4/xfs write a u32 i_generation.
+    // Read it from the same open inode used for the ELF check, never reopen the policy path.
+    var generation: u32 = 0;
+    _ = sys.check(l.ioctl(readable, l.IOCTL.IOR('v', 1, c_long), @intFromPtr(&generation))) catch
+        return error.ExecutableGenerationUnavailable;
+    return generation;
+}
+
+test "appfilter missing inode generation refuses instead of falling back to device and inode" {
+    try std.testing.expectEqual(@as(u32, 0x80087601), l.IOCTL.IOR('v', 1, c_long));
+    try std.testing.expectError(error.ExecutableGenerationUnavailable, inodeGeneration(-1));
 }
 
 pub fn identityFilesystemSupported(magic: u64) bool {
@@ -128,19 +144,19 @@ test "appfilter executable headers refuse scripts and incomplete or foreign form
         try tmp.dir.writeFile(io, .{ .sub_path = "listed", .data = bytes });
         const fd = try sys.fd(l.openat(tmp.dir.handle, "listed", .{ .PATH = true, .NOFOLLOW = true, .CLOEXEC = true }, 0));
         defer sys.close(fd);
-        try std.testing.expectError(error.ScriptExecutableUnsupported, requireNativeExecutable(fd));
+        try std.testing.expectError(error.ScriptExecutableUnsupported, openNativeExecutable(fd));
     }
     for ([_][]const u8{ "", "#", "\x7fEL", "echo test\n", "MZ\x00\x00" }) |bytes| {
         try tmp.dir.writeFile(io, .{ .sub_path = "listed", .data = bytes });
         const fd = try sys.fd(l.openat(tmp.dir.handle, "listed", .{ .PATH = true, .NOFOLLOW = true, .CLOEXEC = true }, 0));
         defer sys.close(fd);
-        try std.testing.expectError(error.UnsupportedExecutableFormat, requireNativeExecutable(fd));
+        try std.testing.expectError(error.UnsupportedExecutableFormat, openNativeExecutable(fd));
     }
     try tmp.dir.writeFile(io, .{ .sub_path = "listed", .data = "\x7fELF\x02\x01\x01\x00" });
     const native = try sys.fd(l.openat(tmp.dir.handle, "listed", .{ .PATH = true, .NOFOLLOW = true, .CLOEXEC = true }, 0));
     defer sys.close(native);
-    try requireNativeExecutable(native);
-    try std.testing.expectError(error.CanonicalRootOwnedExecutableRequired, requireNativeExecutable(tmp.dir.handle));
+    sys.close(try openNativeExecutable(native));
+    try std.testing.expectError(error.CanonicalRootOwnedExecutableRequired, openNativeExecutable(tmp.dir.handle));
 }
 
 test "appfilter executable header stays with the pinned inode across rename replacement" {
@@ -158,8 +174,8 @@ test "appfilter executable header stays with the pinned inode across rename repl
         const replaced = try sys.fd(l.openat(tmp.dir.handle, "listed", .{ .PATH = true, .NOFOLLOW = true, .CLOEXEC = true }, 0));
         defer sys.close(replaced);
         try std.testing.expect((try sys.stat(pinned)).ino != (try sys.stat(replaced)).ino);
-        try requireNativeExecutable(if (script_first) replaced else pinned);
-        try std.testing.expectError(error.ScriptExecutableUnsupported, requireNativeExecutable(if (script_first) pinned else replaced));
+        sys.close(try openNativeExecutable(if (script_first) replaced else pinned));
+        try std.testing.expectError(error.ScriptExecutableUnsupported, openNativeExecutable(if (script_first) pinned else replaced));
     }
 }
 
@@ -174,7 +190,7 @@ test "appfilter unreadable executable header refuses instead of accepting an unc
     _ = try sys.check(l.fchmod(file.handle, 0o111));
     const pinned = try sys.fd(l.openat(tmp.dir.handle, "listed", .{ .PATH = true, .NOFOLLOW = true, .CLOEXEC = true }, 0));
     defer sys.close(pinned);
-    try std.testing.expectError(error.PermissionDenied, requireNativeExecutable(pinned));
+    try std.testing.expectError(error.PermissionDenied, openNativeExecutable(pinned));
 }
 
 pub fn writePolicy(gpa: std.mem.Allocator, io: std.Io, digest: []const u8, bytes: []const u8) !void {

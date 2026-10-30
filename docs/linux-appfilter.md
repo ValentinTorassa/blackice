@@ -31,7 +31,7 @@ These commands have not been run for this revision.
 
 ## Identity and decisions
 
-Three `tp_btf` programs tag an exec by its kernel `(device, inode)`, copy its tag at every fork, and clear it
+Three `tp_btf` programs tag an exec by its kernel `(device, inode, generation)`, copy its tag at every fork, and clear it
 only when the thread group dies. A 4,194,304-slot array covers every possible initial-namespace tgid; fork writes
 zero too, preventing PID reuse from keeping an old tag. The first listed application remains the identity across
 reexec and detached descendants. Only the authenticated owner's real UID acquires a new listed identity.
@@ -159,6 +159,8 @@ request starts the service once, so a low limit would stop the socket.
   ancestors, on ext4 or xfs. Other filesystems, including btrfs and overlayfs, refuse arming because their
   statx device identity may differ from the kernel inode's superblock device. Errors name the executable.
   Symlinks and home-directory applications are refused. List the resolved installed binary.
+  `FS_IOC_GETVERSION` must supply the inode generation from that same open file; otherwise `on` or refresh
+  refuses with `ExecutableGenerationUnavailable`. The exec hook and startup iterator compare all three fields.
 - Only readable ELF executables may be listed. The service reads a four-byte prefix from the same pinned
   inode used for identity: `#!` files refuse with `ScriptExecutableUnsupported`; empty, truncated and other
   formats refuse with `UnsupportedExecutableFormat`. An unreadable file also refuses. Initial `on` validates
@@ -170,8 +172,12 @@ request starts the service once, so a low limit would stop the socket.
   including while the service is down, is not tagged. A descendant already started before arming and now running
   another file is not discoverable by the task iterator. Processes an app started before arming are not covered.
   New directory watches are installed before refreshing identities, so a concurrent replacement stays queued.
-  Retained old inode numbers can be reused by the filesystem and falsely tag an unrelated executable (L12);
-  this build does not yet include inode generation in its key.
+  A reused inode with a different generation does not match a retained entry. Generations are 32-bit filesystem
+  values, not cryptographic identities: collisions and privileged changes to an inode remain outside this guarantee.
+- The generation-aware identity map uses state ABI 2. Old pins are refused, never migrated or detached by
+  the new service. Before an approved upgrade, use the matching old installation's authorized `off` or
+  teardown flow, then install and arm the reviewed new version. Real verifier/identity checks for this change
+  remain part of its separate disposable-VM gate.
 - DNS through the stub is a full two-way data channel. Unix sockets, delegated work through D-Bus/systemd/portals
   or cron/at, rootless containers relayed by pasta/slirp4netns (including raw AF_PACKET traffic),
   sockets connected before arming and sockets inherited or received from an unlisted process are not fully

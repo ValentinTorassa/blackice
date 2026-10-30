@@ -16,7 +16,7 @@ Audit of the service, CLI, Linux task backend and explicit test fixtures:
 | `/proc/sys/kernel/random/boot_id` | `open` plus direct `read` into 64 bytes. UUID length and syntax are checked; empty/short input refuses. |
 | `/proc/self/stat` for the tty agent | Direct `read` into 4096 bytes; a full buffer is rejected. Empty/invalid PID or start-time data refuses agent setup. |
 | `/proc/self/task` | `getdents64` with record bounds checked. Capability drop requires exactly the expected single thread. |
-| `/proc/self/fd/<owned fd>` for executable headers | Reopens the pinned regular file and directly reads at most four bytes. Device/inode are checked against the original FD; no reported file size is used. |
+| `/proc/self/fd/<owned fd>` for executable identity | Reopens the pinned regular file and directly reads at most four header bytes. Device/inode are checked against the original FD; `FS_IOC_GETVERSION` reads the generation from that same FD. No reported file size is used. |
 | Task-scope uid/gid maps, cgroup files and mount information | Bounded direct reads; namespace links use `readlink`. Cgroup filesystem checks use `statfs`, not file contents. The task helper is unchanged by this audit. |
 | VM socket fixture: DMI vendor and `/proc/net/tcp{,6}` | Direct reads; the TCP-table reader is bounded. No socket fixture was run during this audit. |
 | Python BTF/probe/evidence tools | Python file reads consume the stream. They do not use Zig's size-based allocation behavior. Runtime probes retain their explicit execution guards. |
@@ -25,6 +25,23 @@ The app filter's other `readFileAlloc` calls read ordinary policy, intent or uni
 supplying an empty pseudo-file as a CLI policy gets a parse refusal. No additional zero-size procfs
 allocation bug was found. These are source and metadata checks, not a host installation preflight or
 evidence that the service has run.
+
+## Inode reuse
+
+Executable identities include the filesystem's 32-bit inode generation. Both supported filesystems return
+`i_generation` through `FS_IOC_GETVERSION`: [ext4](https://github.com/torvalds/linux/blob/v6.12/fs/ext4/ioctl.c)
+and [XFS](https://github.com/torvalds/linux/blob/v6.12/fs/xfs/xfs_ioctl.c). The ioctl encodes `long` in its request
+but writes a 32-bit result. It uses the FD already checked for the executable header; failure refuses arming
+or refresh. The reviewed BTF hash stays unchanged, with `inode.i_generation` at byte offset 124.
+
+Pure tests run the actual emitted exec and iterator instructions against a retained identity and a reused
+inode with a different generation. They check refusal, recognition after the full replacement identity is
+registered, generation values 0 and the high-bit boundaries, and device/full-inode mismatches. Additional
+tests cover generation-read failure and rejection of the old pinned-state ABI. No program is loaded.
+
+The VM gate must check verifier acceptance and a real listed ELF's userspace generation against the kernel
+classification, including replacement, service recovery and the old-pin upgrade refusal. These checks have
+not been run for this revision. A generation is not a content hash; a 32-bit collision remains possible.
 
 ## Teardown interruptions
 

@@ -26,6 +26,7 @@ const Vm = struct {
     mem: [65536]u8 = @splat(0),
     regs: [11]u64 = @splat(0),
     tag_keys: [16]u32 = @splat(0),
+    file_key: abi.FileKey = .{ .device = 259 << 20 | 2, .generation = 0x8abc1234, .inode = 123456 },
     tgid: u32 = 100,
     ring_full: bool = false,
     events: u32 = 0,
@@ -42,9 +43,10 @@ const Vm = struct {
         v.put(mm + pin.mm_struct_exe_file, file, 8);
         v.put(bprm + pin.linux_binprm_file, file, 8);
         v.put(file + pin.file_f_inode, inode, 8);
-        v.put(inode + pin.inode_i_ino, 123456, 8);
+        v.put(inode + pin.inode_i_ino, v.file_key.inode, 8);
         v.put(inode + pin.inode_i_sb, sb, 8);
-        v.put(sb + pin.super_block_s_dev, 259 << 20 | 2, 4);
+        v.put(inode + pin.inode_i_generation, v.file_key.generation, 4);
+        v.put(sb + pin.super_block_s_dev, v.file_key.device, 4);
         for (1..abi.max_apps + 1) |i| {
             const ports = abi.ports(@intCast(i));
             inline for (@typeInfo(abi.Ports).@"struct".field_names) |f| v.put(ports_base + i * 8 + @offsetOf(abi.Ports, f), std.mem.nativeToBig(u16, @field(ports, f)), 2);
@@ -110,7 +112,10 @@ const Vm = struct {
                             if (map == fd.state) break :blk state_value;
                             if (map == fd.existing) break :blk existing;
                             if (map == fd.lost) break :blk lost;
-                            if (map == fd.files) break :blk if (k == (259 << 20 | 2) and v.get(v.regs[2] + 8, 8) == 123456 and v.get(file_app, 4) != 0) @as(u64, file_app) else 0;
+                            if (map == fd.files) break :blk if (k == v.file_key.device and
+                                v.get(v.regs[2] + @offsetOf(abi.FileKey, "generation"), 4) == v.file_key.generation and
+                                v.get(v.regs[2] + @offsetOf(abi.FileKey, "inode"), 8) == v.file_key.inode and
+                                v.get(file_app, 4) != 0) @as(u64, file_app) else 0;
                             return error.UnknownMap;
                         },
                         .ringbuf_reserve => if (v.ring_full) @as(u64, 0) else event,
@@ -317,4 +322,43 @@ test "appfilter emitted exec fork exit and iterator obey lifecycle and PID reuse
     v.setTag(100, 2);
     _ = try v.run(&programs.tracing(.iterator, fd));
     try std.testing.expectEqual(@as(u64, 0), v.get(existing, 4));
+}
+
+test "appfilter exec and startup iterator reject a reused inode with a different generation" {
+    for ([_]programs.trace_events{ .exec, .iterator }) |hook| {
+        for ([_]u32{ 0, 1, 0x80000000, 0xffffffff }) |new_generation| {
+            var v = Vm.init();
+            v.put(ctx, parent, 8);
+            v.put(ctx + pin.bpf_iter__task_task, parent, 8);
+            v.put(ctx + 16, bprm, 8);
+            v.put(file_app, 2, 4);
+            v.file_key.generation = ~new_generation; // retained old (dev, ino) entry
+            v.put(inode + pin.inode_i_generation, new_generation, 4);
+            _ = try v.run(&programs.tracing(hook, fd));
+            try std.testing.expectEqual(@as(u32, 0), v.tag(100));
+            try std.testing.expectEqual(@as(u64, 0), v.get(existing, 4));
+
+            // A listed replacement is recognized only after registering its full new identity.
+            v.file_key.generation = new_generation;
+            _ = try v.run(&programs.tracing(hook, fd));
+            try std.testing.expectEqual(@as(u32, if (hook == .exec) 2 else 0), v.tag(100));
+            try std.testing.expectEqual(@as(u64, if (hook == .iterator) 2 else 0), v.get(existing, 4));
+        }
+    }
+}
+
+test "appfilter identity still requires both device and full inode alongside generation" {
+    for ([_]programs.trace_events{ .exec, .iterator }) |hook| {
+        for ([_]bool{ false, true }) |change_device| {
+            var v = Vm.init();
+            v.put(ctx, parent, 8);
+            v.put(ctx + pin.bpf_iter__task_task, parent, 8);
+            v.put(ctx + 16, bprm, 8);
+            v.put(file_app, 2, 4);
+            if (change_device) v.file_key.device ^= 1 else v.file_key.inode ^= 1 << 40;
+            _ = try v.run(&programs.tracing(hook, fd));
+            try std.testing.expectEqual(@as(u32, 0), v.tag(100));
+            try std.testing.expectEqual(@as(u64, 0), v.get(existing, 4));
+        }
+    }
 }

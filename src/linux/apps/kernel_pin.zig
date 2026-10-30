@@ -11,6 +11,7 @@ pub const mm_struct_exe_file: i16 = 1160;
 pub const file_f_inode: i16 = 40;
 pub const inode_i_ino: i16 = 64;
 pub const inode_i_sb: i16 = 40;
+pub const inode_i_generation: i16 = 124;
 pub const super_block_s_dev: i16 = 16;
 pub const linux_binprm_file: i16 = 64;
 pub const signal_struct_live: i16 = 4;

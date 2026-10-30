@@ -5,14 +5,15 @@ pub const pid_slots = 4194304;
 pub const ring_bytes = 65536;
 pub const first_port = 760;
 pub const last_port = 774;
-pub const FileKey = extern struct { device: u32, zero: u32 = 0, inode: u64 };
+pub const FileKey = extern struct { device: u32, generation: u32, inode: u64 };
+pub const state_version = 2; // FileKey now includes i_generation; old pinned identities cannot be reused.
 pub const Ports = extern struct { tls4: u16, http4: u16, tls6: u16, http6: u16 };
 pub const Phase = enum(u32) { maps = 1, cgroup, listeners, tracking, armed, stopping };
 pub const State = extern struct {
     phase: Phase,
     owner_uid: u32,
     app_count: u32,
-    version: u32 = 1,
+    version: u32 = state_version,
     policy_sha256: [32]u8,
 };
 pub const Reason = enum(u32) {
@@ -48,6 +49,8 @@ pub fn ports(app: u32) Ports {
 }
 test "appfilter fixed PID array cannot exhaust through forks and ports are privileged" {
     try std.testing.expectEqual(@as(usize, 16), @sizeOf(FileKey));
+    try std.testing.expectEqual(@as(usize, 4), @offsetOf(FileKey, "generation"));
+    try std.testing.expectEqual(@as(usize, 8), @offsetOf(FileKey, "inode"));
     try std.testing.expectEqual(@as(usize, 64), @sizeOf(Event));
     try std.testing.expectEqual(@as(usize, 16 * 1024 * 1024), pid_slots * @sizeOf(u32));
     try std.testing.expectEqual(@as(u16, 773), ports(max_apps).http6);

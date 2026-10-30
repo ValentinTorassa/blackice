@@ -84,9 +84,7 @@ pub const Loaded = struct {
     pub fn getState(f: *const Loaded) !abi.State {
         var state: abi.State = undefined;
         try bpf.map_lookup_elem(f.maps.state, std.mem.asBytes(&zero), std.mem.asBytes(&state));
-        // Decode the enum only after validating its raw discriminant.
-        const phase = std.mem.readInt(u32, std.mem.asBytes(&state)[0..4], .little);
-        if (phase < 1 or phase > @backingInt(abi.Phase.stopping) or state.version != 1 or state.app_count == 0 or state.app_count > abi.max_apps or state.owner_uid == 0) return error.InvalidPinnedState;
+        try validateState(&state);
         return state;
     }
     pub fn setState(f: *Loaded, state: abi.State) !void {
@@ -198,6 +196,19 @@ pub const Loaded = struct {
         f.* = .{};
     }
 };
+
+fn validateState(state: *const abi.State) !void {
+    // Decode the enum only after validating its raw discriminant.
+    const phase = std.mem.readInt(u32, std.mem.asBytes(state)[0..4], .little);
+    if (phase < 1 or phase > @backingInt(abi.Phase.stopping) or state.version != abi.state_version or state.app_count == 0 or state.app_count > abi.max_apps or state.owner_uid == 0) return error.InvalidPinnedState;
+}
+
+test "appfilter pinned state refuses the identity ABI without inode generation" {
+    var state: abi.State = .{ .phase = .maps, .owner_uid = 1000, .app_count = 1, .policy_sha256 = @splat(0) };
+    try validateState(&state);
+    state.version = 1;
+    try std.testing.expectError(error.InvalidPinnedState, validateState(&state));
+}
 
 fn load(code: *const a.Program, kind: bpf.ProgType, attach_type: bpf.AttachType, btf_id: u32, name: []const u8, verifier: []u8) !l.fd_t {
     try a.validate(code);
