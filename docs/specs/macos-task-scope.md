@@ -84,7 +84,9 @@ or addresses, only "any host" or "localhost", so every decision about names happ
     scope's proxy is kept from serving another, belong to [proxy](proxy.md) and are untested.
   - Inherited sockets (R7) are untested.
   - The pasteboard is shared: a command in a scope read a value copied outside it (`pbcopy`/`pbpaste`, a
-    synthetic value, reported by the lead on 58e73cc). blackice limits the network, not the clipboard.
+    synthetic value, reported by the lead on 58e73cc). Writing goes through the same service, which the profile
+    does not deny (not tested separately). The write side matters more: a scoped command can leave a crafted
+    command line on the clipboard for the owner to paste into a terminal outside any scope. A fix is planned.
   - Reading another process's environment from a scope was refused the two ways tried: `/bin/ps` (setuid)
     does not start inside a scope, and `sysctl` `KERN_PROCARGS2` returns the arguments without the
     environment, inside a scope and outside alike (lead's probe). Other paths, such as a debugger attach,
@@ -121,6 +123,7 @@ or addresses, only "any host" or "localhost", so every decision about names happ
 | Test name lookups through other system services, with fresh random names | lead | todo | |
 | docs/macos.md | lead | todo | |
 | Receipt reason `protected_path` for a refused hard link to a protected file (Seatbelt logs it as `forbidden-link-priv`), cffa0cd | lead | done | |
+| Deny the pasteboard's service lookup in task scopes, with a receipt (security Low on PR #7, after the demo) | lead | todo | |
 | Label the backend experimental in `blackice run --help`, the scope line and the `scope_start` receipt (R8): at 58b9491 they say `macos-seatbelt` only | lead | todo | |
 
 ## Evidence
