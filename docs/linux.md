@@ -173,7 +173,7 @@ unless it receives activation, successful cleanup, and an exit record from a suc
 Normal command exit, cancellation or supervisor death kills all remaining scope descendants before cgroup
 removal. BPF attachments are persistent cgroup attachments, not links whose close would detach policy.
 If the helper is killed, its direct child has a parent-death signal and surviving descendants retain BPF
-restrictions. Open proxy connections and the proxy's lifetime and reuse are handled by the core and the proxy;
+restrictions. The cgroup stays until the owner removes it with the teardown script. Open proxy connections and the proxy's lifetime and reuse are handled by the core and the proxy;
 this backend does not revoke TCP connections that are already open.
 
 ## Testing

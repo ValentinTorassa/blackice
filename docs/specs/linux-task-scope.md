@@ -114,7 +114,7 @@ the system resolver's sockets do not exist, so it cannot ask a system service to
 | Privileged helper: fork a paused child, hold it by pidfd, enroll it in the scope cgroup, release when armed | codex-linux | done | |
 | `blackice-linux-helper` build target in build.zig | codex-linux | done | |
 | cgroup eBPF programs on connect4, connect6, sendmsg4 and sendmsg6 | codex-linux | done | |
-| Ring buffer reader that reports refusals to the receipt writer, with a lost-event count | codex-linux | todo | |
+| Ring buffer reader that reports refusals to the receipt writer, with a lost-event count | codex-linux | done | |
 | Receipts for sockets the seccomp filter refuses (`ping`, SCTP, raw): deferred, declared as a limit in docs/linux.md | codex-linux | done | |
 | Command stdin set to `/dev/null` when the core asks for it | codex-linux | done | |
 | Private mount namespace that hides resolver and daemon sockets | codex-linux | done | |
