@@ -261,17 +261,19 @@ const Connection = struct {
         defer if (watchdog) |*f| f.cancel(c.io) catch {};
 
         const w = &c.writer.interface;
-        w.writeAll("HTTP/1.1 200 Connection Established\r\n\r\n") catch return c.canceled();
-        w.flush() catch return c.canceled();
+        const replied = if (w.writeAll("HTTP/1.1 200 Connection Established\r\n\r\n")) |_| (if (w.flush()) |_| true else |_| false) else |_| false;
 
         // Nothing flows in either direction until the first client bytes pass: TLS only, and for a name the
         // ClientHello must carry exactly that name. A shared front end picks the site by SNI (or, without
         // TLS, by Host header), so anything else could reach a site the policy never allowed.
-        const sni = c.checkSni(if (d.literal) null else d.host);
+        const sni: SniResult = if (replied) c.checkSni(if (d.literal) null else d.host) else .no_data;
         if (sni == .no_data) {
-            // The client left (or the scope ended) before sending a byte: nothing was refused and nothing
-            // reached the upstream. wait_ms shows whether the client gave up while the proxy was dialing.
-            const canceled_now = if (c.reader.err) |e| e == error.Canceled else false;
+            // The client left (or the scope ended) before sending a byte, or before the 200 could reach it:
+            // nothing was refused and nothing reached the upstream. wait_ms shows whether the client gave up
+            // while the proxy was dialing.
+            const canceled_now = for ([_]?anyerror{ c.reader.err, c.writer.err }) |e| {
+                if (e != null and e.? == error.Canceled) break true;
+            } else false;
             d.detail = if (canceled_now) "canceled" else "client_closed";
             d.wait_ms = wait_ms;
             c.writeReceipt(&d);
@@ -373,7 +375,7 @@ const Connection = struct {
         const g = d.grant orelse return null;
         const fail = builtin.is_test and test_fail_watchdog;
         if (!fail) {
-            if (c.io.concurrent(watchGrant, .{ c.p, g.id, g.deadline, c.client, upstream, d.event, d.host })) |f| return f else |_| {}
+            if (c.io.concurrent(watchGrant, .{ c.p, g.id, g.deadline, c.client, upstream, d.event, d.host, d.ip_buf[0..d.ip_len], d.port })) |f| return f else |_| {}
         }
         d.allowed = false;
         d.policy_denied = false;
@@ -664,13 +666,14 @@ pub const Dialed = union(enum) {
     failed: struct { err: anyerror, index: usize },
 };
 
-/// Happy Eyeballs over `addrs`, in the order given: attempt i+1 starts when attempt i fails or `delay` after
-/// the last attempt started, whichever is first; the first connection to open wins and the others are
-/// canceled (one that opens late is closed). Gives up after `budget`. (Zig 0.17's threaded Io has no connect
-/// timeout option, so the attempts race timers.)
+/// Happy Eyeballs over `addrs`, in the order given: the next attempt starts when an attempt fails or `delay`
+/// after the latest attempt started, whichever is first; the first connection to open wins and the others are
+/// canceled (one that opens late is closed). Gives up after `budget`. A dial that cannot get the threads for
+/// its deadline or first attempt fails at once (error.ConcurrencyUnavailable) rather than run without a
+/// budget. (Zig 0.17's threaded Io has no connect timeout option, so the attempts race timers.)
 pub fn dialRace(io: Io, addrs: []const net.IpAddress, delay: Io.Duration, budget: Io.Duration) Io.Cancelable!Dialed {
     std.debug.assert(addrs.len > 0 and addrs.len <= max_dial);
-    // Every task's result must fit: each attempt, each stagger timer (one runs at a time) and the deadline.
+    // Every task's result must fit: each attempt, each stagger timer (at most one per attempt) and the deadline.
     var buf: [2 * max_dial + 1]DialEvent = undefined;
     var sel: Io.Select(DialEvent) = .init(io, &buf);
     defer while (sel.cancel()) |late| switch (late) {
@@ -679,17 +682,9 @@ pub fn dialRace(io: Io, addrs: []const net.IpAddress, delay: Io.Duration, budget
     };
     var race: Race = .{ .sel = &sel, .io = io, .addrs = addrs, .delay = delay };
 
-    if (!race.startNext()) {
-        // No unit of concurrency to spare: one address at a time, bounded by the system's connect timeout.
-        for (addrs, 0..) |a, i| {
-            if (attempt(io, a, i).result) |s| return .{ .open = .{ .stream = s, .index = i } } else |err| {
-                if (err == error.Canceled) return error.Canceled;
-                race.last = .{ .failed = .{ .err = err, .index = i } };
-            }
-        }
-        return race.last;
-    }
-    sel.concurrent(.deadline, sleepFor, .{ io, budget }) catch {};
+    sel.concurrent(.deadline, sleepFor, .{ io, budget }) catch |err|
+        return .{ .failed = .{ .err = err, .index = 0 } };
+    if (!race.startNext()) return race.last;
     race.armStagger();
 
     while (true) {
@@ -699,12 +694,11 @@ pub fn dialRace(io: Io, addrs: []const net.IpAddress, delay: Io.Duration, budget
                 if (a.result) |s| return .{ .open = .{ .stream = s, .index = a.index } } else |err| {
                     race.last = .{ .failed = .{ .err = err, .index = a.index } };
                 }
-                // A failed attempt hands over at once.
-                _ = race.startNext();
+                // A failed attempt hands over at once, and the next delay counts from there.
+                if (race.startNext()) race.armStagger();
             },
-            .stagger => {
-                _ = race.startNext();
-                race.armStagger();
+            .stagger => |t| if (t.gen == race.gen) {
+                if (race.startNext()) race.armStagger();
             },
             // The first address has waited longest; the receipt names it.
             .deadline => return .{ .failed = .{ .err = error.Timeout, .index = 0 } },
@@ -715,9 +709,17 @@ pub fn dialRace(io: Io, addrs: []const net.IpAddress, delay: Io.Duration, budget
 
 const DialEvent = union(enum) {
     attempt: Attempt,
-    stagger: Io.Cancelable!void,
+    stagger: Stagger,
     deadline: Io.Cancelable!void,
 };
+
+/// A stagger timer's end. Only the latest timer (`gen`) starts an attempt; an older one was overtaken by a
+/// failure that started the next attempt early.
+const Stagger = struct { gen: usize, result: Io.Cancelable!void };
+
+fn staggerSleep(io: Io, d: Io.Duration, gen: usize) Stagger {
+    return .{ .gen = gen, .result = io.sleep(d, .awake) };
+}
 
 const Race = struct {
     sel: *Io.Select(DialEvent),
@@ -726,6 +728,8 @@ const Race = struct {
     delay: Io.Duration,
     next: usize = 0,
     running: usize = 0,
+    /// The generation of the latest stagger timer.
+    gen: usize = 0,
     last: Dialed = .{ .failed = .{ .err = error.Timeout, .index = 0 } },
 
     /// Starts the next address's attempt. False when no address is left or it could not start (that
@@ -742,10 +746,12 @@ const Race = struct {
         return true;
     }
 
-    /// Starts the timer that brings in the next address, while one is left. Without it, the next address
-    /// starts only when an attempt fails.
+    /// Starts a new stagger timer, which supersedes any older one, while an address is left. Without it, the
+    /// next address starts only when an attempt fails.
     fn armStagger(r: *Race) void {
-        if (r.next < r.addrs.len) r.sel.concurrent(.stagger, sleepFor, .{ r.io, r.delay }) catch {};
+        if (r.next == r.addrs.len) return;
+        r.gen += 1;
+        r.sel.concurrent(.stagger, staggerSleep, .{ r.io, r.delay, r.gen }) catch {};
     }
 };
 
@@ -784,7 +790,8 @@ fn sleepFor(io: Io, d: Io.Duration) Io.Cancelable!void {
 
 /// Closes a connection opened under a grant once the grant expires or is revoked, with a receipt. Follows
 /// extensions: the deadline is re-read from the grant table on every tick.
-fn watchGrant(p: *Proxy, id: u64, first_deadline: Io.Timestamp, client: net.Stream, upstream: net.Stream, event: []const u8, host: []const u8) Io.Cancelable!void {
+/// `ip` and `port` repeat the connection's own receipt, so each reset can be matched to its connection.
+fn watchGrant(p: *Proxy, id: u64, first_deadline: Io.Timestamp, client: net.Stream, upstream: net.Stream, event: []const u8, host: []const u8, ip: []const u8, port: u16) Io.Cancelable!void {
     const io = p.io;
     const g = p.config.grants.?;
     var deadline = first_deadline;
@@ -806,6 +813,8 @@ fn watchGrant(p: *Proxy, id: u64, first_deadline: Io.Timestamp, client: net.Stre
         .verdict = .deny,
         .reason = reason,
         .host = host,
+        .ip = if (ip.len > 0) ip else null,
+        .port = port,
         .detail = "connection_reset",
     });
     // A plain shutdown would still deliver what is queued in the socket buffers (on a loopback socket that can

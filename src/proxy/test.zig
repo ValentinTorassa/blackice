@@ -752,6 +752,9 @@ test "a grant allows a refused name until it expires, and expiry closes the tunn
     var r2 = try h.receiptAt(2);
     defer r2.deinit();
     try expectField(r2.value, "reason", "grant_expired");
+    // The reset names the connection it cut, as its connect receipt did.
+    try expectField(r2.value, "ip", "127.0.0.1");
+    try testing.expectEqual(r1.value.object.get("port").?.integer, r2.value.object.get("port").?.integer);
     var r3 = try h.receiptAt(3);
     defer r3.deinit();
     try expectField(r3.value, "verdict", "deny");
@@ -1128,4 +1131,36 @@ test "stopping the proxy mid-dial writes the refusal and does not go on to the n
     try testing.expect(std.mem.startsWith(u8, detail, "canceled wait_ms="));
     try testing.expectError(error.MissingReceipt, h.receiptAt(1));
     try testing.expectEqual(@as(u32, 0), up.accepted.load(.monotonic));
+}
+
+test "a client that resets before the 200 reaches it still gets a client_closed receipt" {
+    var up: TestServer = undefined;
+    try up.start(testing.io, .echo);
+    defer up.stop();
+    var hole: Hole = undefined;
+    try hole.open(testing.io, up.port);
+    defer hole.close();
+    var h: Harness = undefined;
+    var pbuf: [512]u8 = undefined;
+    try h.init(holePolicy(&pbuf, up.port));
+    defer h.deinit();
+    var c: Client = .{ .stream = try h.connect() };
+    c.init(h.io, c.stream);
+
+    // hole.test's first address drops connections, so the 200 comes one attempt delay (250 ms) later. By then
+    // the client has reset the connection (linger 0), and writing the 200 fails.
+    var req_buf: [128]u8 = undefined;
+    try c.send(try std.fmt.bufPrint(&req_buf, "CONNECT hole.test:{d} HTTP/1.1\r\n\r\n", .{up.port}));
+    const l: std.posix.linger = .{ .onoff = 1, .linger = 0 };
+    try std.posix.setsockopt(c.stream.socket.handle, std.posix.SOL.SOCKET, std.posix.SO.LINGER, std.mem.asBytes(&l));
+    c.stream.close(h.io);
+    try h.waitReceipts(1);
+
+    var r = try h.receiptAt(0);
+    defer r.deinit();
+    try expectField(r.value, "verdict", "allow");
+    try expectField(r.value, "ip", "127.0.0.1");
+    const detail = r.value.object.get("detail").?.string;
+    try testing.expect(std.mem.startsWith(u8, detail, "client_closed wait_ms="));
+    try testing.expectEqual(@as(usize, 0), up.received.load(.monotonic));
 }
