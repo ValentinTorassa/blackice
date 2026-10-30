@@ -98,7 +98,7 @@ def main():
         raise ValueError('this initial pin supports only the reviewed Debian x86_64 kernel')
     fields = {
         'task_struct': ['tgid', 'pid', 'group_leader', 'mm', 'signal', 'real_cred'],
-        'mm_struct': ['exe_file'], 'file': ['f_inode'], 'inode': ['i_ino', 'i_sb'],
+        'mm_struct': ['exe_file'], 'file': ['f_inode'], 'inode': ['i_ino', 'i_sb', 'i_generation'],
         'super_block': ['s_dev'], 'linux_binprm': ['file'], 'signal_struct': ['live'],
         'atomic_t': ['counter'], 'cred': ['uid'], 'kuid_t': ['val'], 'bpf_iter__task': ['task'],
     }

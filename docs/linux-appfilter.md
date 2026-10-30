@@ -31,7 +31,7 @@ These commands have not been run for this revision.
 
 ## Identity and decisions
 
-Three `tp_btf` programs tag an exec by its kernel `(device, inode)`, copy its tag at every fork, and clear it
+Three `tp_btf` programs tag an exec by its kernel `(device, inode, generation)`, copy its tag at every fork, and clear it
 only when the thread group dies. A 4,194,304-slot array covers every possible initial-namespace tgid; fork writes
 zero too, preventing PID reuse from keeping an old tag. The first listed application remains the identity across
 reexec and detached descendants. Only the authenticated owner's real UID acquires a new listed identity.
@@ -55,6 +55,8 @@ are no wildcard listeners. Arming reserves the entire 760–774 range and refuse
 that `ip_unprivileged_port_start` is greater than 774 before binding. The connect hooks treat 127/8, 0/8, ::1,
 ::, and mapped IPv4 equivalents as local for `listener_peer` checks. The unspecified-address cases matter
 because Linux can route them to loopback after the connect hook.
+The unspecified-address coverage and root guard were added after `978a65c`/`086aeac`.
+Those earlier demo builds do not support the coverage claim above, including for cron/at callers.
 
 The proxy checks exactly one TLS ClientHello SNI, or one HTTP Host header in an origin-form request. It resolves
 and dials that name using the existing policy and resolved-address checks, not the original destination IP.
@@ -123,8 +125,7 @@ not start an agent; authorization still requires an existing session agent. Regi
 cancel or the daemon's 15-second authorization timeout leave the filter armed. This follows the
 [pkttyagent contract](https://www.freedesktop.org/software/polkit/docs/latest/pkttyagent.1.html); real approve,
 wrong-password, Ctrl-C and timeout cases remain VM tests. Answer the prompt promptly; on timeout,
-run `app off` again. The service permits at most five starts in ten minutes to bound repeated crash
-recovery and receipt-file creation. Its pinned programs remain attached when that limit is reached.
+run `app off` again.
 
 This first candidate changes an active policy through an authorized `off`, then a fresh `on`; it refuses a
 different policy while armed. It does not silently reassign IDs held by existing descendants. In-place policy
@@ -135,6 +136,17 @@ Pins still disappear on reboot: **this build does not automatically re-arm befor
 the owner re-arms, status says `disarmed_by_reboot`; missing pins during the same boot say
 `disarmed_pins_missing`. Rearming another policy first requires authorized `off`, even after reboot.
 A partially completed off reports `stopping_partial` and retains its stopping phase until cleanup succeeds.
+
+The loopback listeners set `SO_REUSEADDR` before binding so a restart can reuse a port whose earlier
+connections remain in `TIME_WAIT`. They do not enable `SO_REUSEPORT`: an existing live listener must still
+make arming or recovery refuse. The dedicated IPv4/IPv6 socket test checks the options, observes server-side
+`TIME_WAIT`, rebinds immediately and rejects a competing live listener. It is compiled separately from the
+pure unit suite and runs only in a disposable QEMU VM; the full crash/restart check still belongs to the VM gate.
+
+The service restarts after a failure with a backoff, from 1 s up to 60 s over five steps, and keeps the pins while
+it is down. The start limit (60 starts in 10 minutes) is only a backstop: while the filter is off, every control
+request starts the service once, so a low limit would stop the socket. The pinned programs remain attached
+if that limit is reached.
 
 ## Limits to review before installation
 
@@ -147,14 +159,25 @@ A partially completed off reports `stopping_partial` and retains its stopping ph
   ancestors, on ext4 or xfs. Other filesystems, including btrfs and overlayfs, refuse arming because their
   statx device identity may differ from the kernel inode's superblock device. Errors name the executable.
   Symlinks and home-directory applications are refused. List the resolved installed binary.
-- File identity is not code integrity or a publisher signature. Scripts are identified by their interpreter;
-  listing it covers all scripts it runs. AppImages are unsupported.
+  `FS_IOC_GETVERSION` must supply the inode generation from that same open file; otherwise `on` or refresh
+  refuses with `ExecutableGenerationUnavailable`. The exec hook and startup iterator compare all three fields.
+- Only readable ELF executables may be listed. The service reads a four-byte prefix from the same pinned
+  inode used for identity: `#!` files refuse with `ScriptExecutableUnsupported`; empty, truncated and other
+  formats refuse with `UnsupportedExecutableFormat`. An unreadable file also refuses. Initial `on` validates
+  every file before creating kernel objects, and identity refresh repeats this check. The refusal receipt
+  names the executable. List the native binary behind a launcher script (for example Debian's Firefox wrapper),
+  not the script or a general interpreter. File identity is not code integrity or a publisher signature;
+  this prefix check does not validate the complete ELF or its contents. AppImages are unsupported.
 - Inotify adds replacement file identities and retains old entries. A launch before a replacement is noticed,
   including while the service is down, is not tagged. A descendant already started before arming and now running
   another file is not discoverable by the task iterator. Processes an app started before arming are not covered.
   New directory watches are installed before refreshing identities, so a concurrent replacement stays queued.
-  Retained old inode numbers can be reused by the filesystem and falsely tag an unrelated executable (L12);
-  this build does not yet include inode generation in its key.
+  A reused inode with a different generation does not match a retained entry. Generations are 32-bit filesystem
+  values, not cryptographic identities: collisions and privileged changes to an inode remain outside this guarantee.
+- The generation-aware identity map uses state ABI 2. Old pins are refused, never migrated or detached by
+  the new service. Before an approved upgrade, use the matching old installation's authorized `off` or
+  teardown flow, then install and arm the reviewed new version. Real verifier/identity checks for this change
+  remain part of its separate disposable-VM gate.
 - DNS through the stub is a full two-way data channel. Unix sockets, delegated work through D-Bus/systemd/portals
   or cron/at, rootless containers relayed by pasta/slirp4netns (including raw AF_PACKET traffic),
   sockets connected before arming and sockets inherited or received from an unlisted process are not fully
@@ -185,6 +208,8 @@ the archive directory's setgid bit is explicitly cleared.
 
 Before installation, record the existing cgroup programs, program list, nft ruleset, bpffs, groups, protected
 hardlinks/BPF/Yama/port sysctls and listeners in 760–774. Do not conflate this record with a passing load.
+The [pseudo-file audit and offline teardown checks](linux-appfilter-validation.md) document the kernel-release
+read fix and the mocked interruption tests; they do not replace the installed VM run.
 
 Implementation references: Linux 6.12 [`do_exit`](https://github.com/torvalds/linux/blob/v6.12/kernel/exit.c)
 decrements `signal->live` before the exit tracepoint; [`bpf_prog_calc_tag`](https://github.com/torvalds/linux/blob/v6.12/kernel/bpf/core.c)

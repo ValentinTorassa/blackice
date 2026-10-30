@@ -70,9 +70,53 @@ every new invocation of that setsid executable by the configured owner while act
 and isolated from other work. Switch policies only through authorized `app off`, then a fresh `app on`.
 
 [`linux-appfilter-probe.py`](../scripts/e2e/linux-appfilter-probe.py) prepares synthetic TCP/UDP IPv4/IPv6,
-mapped-IPv6, protocol-creation and double-fork checks. It requires an explicit runtime-test flag. Its network
-and fork paths have not been executed during preparation. Error codes alone are insufficient: correlate them
-with kernel receipts and before/after controls at a separate receiver. The receiver logs no peer addresses.
+mapped-IPv6, protocol-creation and double-fork checks. Every runtime mode requires an explicit runtime-test
+flag, the exact guest hostname through `--vm-hostname`, QEMU DMI, and a non-root UID. The guard runs before
+barriers, forks or sockets; these probes are for the disposable VM, never the host. Their network and fork
+paths have not been executed during preparation. Error codes alone are insufficient: correlate them with
+kernel receipts and controls at a separate receiver inside the VM's test network. The receiver logs no peer addresses.
+
+### Protocol controls for the separate security run
+
+This phase uses the evidence policy's listed launcher, not the two-app recording policy. Do it only in the
+security-authorized kernel run, without changing the policy during a recording. The first probe must come
+from an untagged process, with the same UID, capabilities and namespaces as the tagged probe. Retain that
+context with the logs. An unprivileged `raw4` failure is normally a control limit, not filter evidence.
+
+Inside the named VM, with `E` set to a fresh evidence directory and `VM_HOSTNAME` to its confirmed hostname:
+
+```sh
+python3 -I scripts/e2e/linux-appfilter-probe.py protocols --authorized-network-test \
+  --vm-hostname "$VM_HOSTNAME" --expect control --phase untagged > "$E/protocol-control.jsonl"
+/usr/bin/setsid --fork --wait python3 -I scripts/e2e/linux-appfilter-probe.py protocols \
+  --authorized-network-test --vm-hostname "$VM_HOSTNAME" --expect deny --phase tagged \
+  --control-log "$E/protocol-control.jsonl" > "$E/protocol-tagged.jsonl"
+```
+
+The deny probe requires a complete control log. It reports `PASS` only when the untagged socket opened and
+the tagged socket returns `EPERM`/`EACCES`; receipts still establish the enforcement point. If the untagged
+socket was already refused or unsupported, the case is `LIMIT`, with `passed: null`, even when the tagged
+socket also fails. An opened tagged socket or unrelated error is a failure. Summaries separate passed,
+limited and failed cases. Exit 0 means at least one comparable case passed and none failed; it does not
+turn limited cases into passes. Exit 2 means there were no usable controls. Keep unsupported protocols and
+control failures visible in the report, and capture command exit statuses separately from the JSONL.
+
+### H1 and M2/M3 kernel matrix for re-review
+
+The emitted-program unit test already covers every tag, port 760–774, and nine local/unspecified address
+forms for both the root and user guards. It is not a kernel runtime result. The separate
+[VM harness matrix at e91efdc](https://github.com/ValentinTorassa/blackice/blob/e91efdcb57ba7cfeacbff9e81872f38cae023bec/scripts/e2e/appfilter-vm/EXPECTED.md)
+contains the required runtime probes below. Network owns that run; do not run another installer or policy
+sequence in the same guest concurrently. These rows remain requirements until its actual logs are reviewed.
+
+| Finding | Kernel cases and required controls |
+|---|---|
+| H1(a), A08/A11–A14 | Untagged and tagged connects to every port 760–773, plus reserved 774, using `0.0.0.0`, `::`, `::ffff:0.0.0.0` and ordinary loopback spellings. Other apps' ports must refuse; tagged access may reach only its own listeners. Establish the caller's tag separately so a universal refusal cannot prove identity. |
+| H1(b), A01–A10 | Repeat the listener guard through cron, at, system services and another UID; retain each caller's cgroup. The cgroup-root guards must cover callers outside `user.slice`. |
+| M2, B01–B07 | Tagged listeners on `0.0.0.0`, `::`, and an autobound port accept nothing from a veth peer namespace. Equivalent untagged listeners must accept the control. Accepted tagged sockets retain `lo`. |
+| M2, C01–C03 | Tagged TCP/UDP sockets begin on `lo`; changing or clearing `SO_BINDTODEVICE`/`SO_BINDTOIFINDEX` refuses. `IP_PKTINFO`/`IPV6_PKTINFO` selecting the veth must deliver no tagged payload; the receiver must first observe an untagged control token. |
+| M3, D01–D04 | An untagged IPv6 type-4 routing header reaches the first hop. Tagged SRH connects on 443, 80 and a disallowed port fail and no tagged packet arrives. Preserve the receiver log, not only the client's errno. |
+| M2 regressions, E01–E03 | Stub DNS at `127.0.0.53` and its mapped spelling still answers; tagged HTTP/TLS redirects over v4/v6/mapped still work. Record receipts for allowed and refused requests. |
 
 Arming-phase recovery has only a userspace model test. The security gate still requires real crash/restart,
 kill-then-fork and kill-at-each-arming-phase checks; this demo preparation does not mark them passed.

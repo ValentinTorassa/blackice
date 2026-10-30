@@ -28,11 +28,12 @@ fn fileKey(p: *a.Program, bad: *Fixups) void {
     bad.add(p, I.jeq(.r1, 0, 0));
     p.emit(I.ldx(.double_word, .r0, .r1, pin.inode_i_ino));
     p.emit(I.stx(.double_word, .r10, -40, .r0));
+    p.emit(I.ldx(.word, .r0, .r1, pin.inode_i_generation));
+    p.emit(I.stx(.word, .r10, -44, .r0));
     p.emit(I.ldx(.double_word, .r1, .r1, pin.inode_i_sb));
     bad.add(p, I.jeq(.r1, 0, 0));
     p.emit(I.ldx(.word, .r0, .r1, pin.super_block_s_dev));
     p.emit(I.stx(.word, .r10, -48, .r0));
-    p.emit(I.st(.word, .r10, -44, 0));
 }
 
 // Key uses task->tgid in the initial PID namespace, including for namespace children.
