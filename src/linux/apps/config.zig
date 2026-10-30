@@ -4,9 +4,11 @@ const policy = @import("../../core/policy.zig");
 const abi = @import("types.zig");
 
 pub const max_bytes = 1024 * 1024;
+pub const max_generations = 256;
 pub const App = struct { executable: []const u8, network: policy.Policy };
 const Raw = struct {
     version: []const u8,
+    generation: ?std.json.Value = null,
     applications: []const struct { executable: []const u8, policy: std.json.Value },
 };
 
@@ -14,6 +16,8 @@ pub const Config = struct {
     arena: std.heap.ArenaAllocator,
     apps: []App,
     digest: [64]u8,
+    generation: u32,
+    explicit_generation: bool,
 
     pub fn parse(gpa: std.mem.Allocator, bytes: []const u8) !Config {
         if (bytes.len > max_bytes) return error.PolicyTooLarge;
@@ -27,6 +31,10 @@ pub const Config = struct {
             .ignore_unknown_fields = false,
         }) catch return error.InvalidAppPolicy;
         if (!std.mem.eql(u8, raw.version, "blackice.apps/v0")) return error.UnsupportedAppPolicy;
+        const generation: u32 = if (raw.generation) |value| switch (value) {
+            .integer => |n| if (n >= 1 and n <= max_generations) @intCast(n) else return error.InvalidGeneration,
+            else => return error.InvalidGeneration,
+        } else 1; // Existing initial-on files retain their generation-1 meaning.
         if (raw.applications.len == 0 or raw.applications.len > abi.max_apps) return error.InvalidAppCount;
         const apps = try alloc.alloc(App, raw.applications.len);
         var done: usize = 0;
@@ -43,7 +51,14 @@ pub const Config = struct {
         }
         var digest: [32]u8 = undefined;
         std.crypto.hash.sha2.Sha256.hash(bytes, &digest, .{});
-        return .{ .arena = arena, .apps = apps, .digest = std.fmt.bytesToHex(digest, .lower) };
+        return .{ .arena = arena, .apps = apps, .digest = std.fmt.bytesToHex(digest, .lower), .generation = generation, .explicit_generation = raw.generation != null };
+    }
+
+    pub fn parseReload(gpa: std.mem.Allocator, bytes: []const u8) !Config {
+        var c = try parse(gpa, bytes);
+        errdefer c.deinit();
+        if (!c.explicit_generation) return error.ReloadGenerationRequired;
+        return c;
     }
 
     pub fn deinit(c: *Config) void {
@@ -121,4 +136,21 @@ test "appfilter ambiguous executable paths and unsupported fields refuse before 
     try std.testing.expectError(error.InvalidAppCount, Config.parse(std.testing.allocator,
         \\{"version":"blackice.apps/v0","applications":[]}
     ));
+}
+
+test "appfilter reload requires an explicit bounded integer generation without changing network policy" {
+    const suffix = ",\"applications\":[{\"executable\":\"/usr/bin/curl\",\"policy\":{\"version\":\"blackice.policy/v0\",\"network\":{\"mode\":\"allowlist\",\"allow\":[\"example.com\"]}}}]}";
+    const legacy = "{\"version\":\"blackice.apps/v0\"" ++ suffix;
+    var first = try Config.parse(std.testing.allocator, legacy);
+    defer first.deinit();
+    try std.testing.expectEqual(@as(u32, 1), first.generation);
+    try std.testing.expectError(error.ReloadGenerationRequired, Config.parseReload(std.testing.allocator, legacy));
+    var next = try Config.parseReload(std.testing.allocator, "{\"version\":\"blackice.apps/v0\",\"generation\":2" ++ suffix);
+    defer next.deinit();
+    try std.testing.expectEqual(@as(u32, 2), next.generation);
+    try std.testing.expectEqualStrings(first.apps[0].network.id(), next.apps[0].network.id());
+    inline for (.{ "0", "257", "-1", "2.0", "true", "\"2\"" }) |invalid|
+        try std.testing.expectError(error.InvalidGeneration, Config.parseReload(std.testing.allocator, "{\"version\":\"blackice.apps/v0\",\"generation\":" ++ invalid ++ suffix));
+    try std.testing.expectError(error.ReloadGenerationRequired, Config.parseReload(std.testing.allocator, "{\"version\":\"blackice.apps/v0\",\"generation\":null" ++ suffix));
+    try std.testing.expectError(error.InvalidAppPolicy, Config.parseReload(std.testing.allocator, "{\"version\":\"blackice.apps/v0\",\"generation\":2,\"generation\":3" ++ suffix));
 }

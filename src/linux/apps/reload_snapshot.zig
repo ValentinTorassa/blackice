@@ -6,7 +6,7 @@ const abi = @import("types.zig");
 const config = @import("config.zig");
 const policy = @import("../../core/policy.zig");
 
-pub const max_generations = 256;
+pub const max_generations = config.max_generations;
 pub const Stamp = struct {
     generation: u32,
     digest: [32]u8,

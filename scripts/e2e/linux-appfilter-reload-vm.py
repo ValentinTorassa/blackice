@@ -144,9 +144,9 @@ def main():
     require(command(['systemd-detect-virt']).strip() in ('kvm', 'qemu'), 'disposable KVM/QEMU VM required')
     require(re.fullmatch('[0-9a-f]{64}', args.cli_sha256) is not None, 'invalid expected CLI hash')
     require(hashlib.sha256(args.cli.read_bytes()).hexdigest() == args.cli_sha256, 'CLI hash mismatch')
-    help_result = subprocess.run([str(args.cli), '--help'], capture_output=True, text=True)
-    if 'app reload' not in help_result.stdout + help_result.stderr:
-        print('NOT RUN: candidate CLI does not advertise app reload; no arm/reload/off attempted.')
+    help_result = subprocess.run([str(args.cli), 'app', 'reload', '--help'], capture_output=True, text=True)
+    if help_result.returncode != 0 or 'availability=ready' not in help_result.stdout.splitlines():
+        print('NOT RUN: candidate CLI does not advertise ready reload support; no arm/reload/off attempted.')
         return 77
     require(os.isatty(0), 'owner tty needed for real polkit authentication; no auth bypass is installed')
     require(shutil.which('bpftool') is not None, 'bpftool required')

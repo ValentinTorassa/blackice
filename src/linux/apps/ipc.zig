@@ -4,7 +4,7 @@ const sys = @import("../sys.zig");
 const l = sys.l;
 pub const socket_path = "/run/blackice-appfilter/control.sock";
 pub const max_policy = @import("config.zig").max_bytes;
-pub const Op = enum(u8) { on = 1, off = 2, status = 3 };
+pub const Op = enum(u8) { on = 1, off = 2, status = 3, reload = 4 };
 pub const Credentials = extern struct { pid: i32, uid: u32, gid: u32 };
 pub const Peer = struct {
     credentials: Credentials,
@@ -67,10 +67,12 @@ pub fn decodeHeader(bytes: *const [8]u8) !Header {
         1 => .on,
         2 => .off,
         3 => .status,
+        4 => .reload,
         else => return error.BadOperation,
     };
     const len = std.mem.readInt(u32, bytes[4..8], .little);
-    if (len > max_policy or (op != .on and len != 0) or (op == .on and len == 0)) return error.BadControlLength;
+    const has_policy = op == .on or op == .reload;
+    if (len > max_policy or (!has_policy and len != 0) or (has_policy and len == 0)) return error.BadControlLength;
     return .{ .op = op, .length = len };
 }
 pub fn encodeHeader(op: Op, len: u32) [8]u8 {
@@ -94,4 +96,13 @@ test "appfilter control rejects oversized and ambiguous frames" {
     var bad = encodeHeader(.status, 0);
     bad[3] = 255;
     try std.testing.expectError(error.BadOperation, decodeHeader(&bad));
+}
+
+test "appfilter reload framing requires bounded policy bytes and preserves previous operation numbers" {
+    try std.testing.expectEqual(@as(u8, 1), encodeHeader(.on, 1)[3]);
+    try std.testing.expectEqual(@as(u8, 2), encodeHeader(.off, 0)[3]);
+    try std.testing.expectEqual(@as(u8, 3), encodeHeader(.status, 0)[3]);
+    try std.testing.expectEqual(Op.reload, (try decodeHeader(&encodeHeader(.reload, max_policy))).op);
+    try std.testing.expectError(error.BadControlLength, decodeHeader(&encodeHeader(.reload, 0)));
+    try std.testing.expectError(error.BadControlLength, decodeHeader(&encodeHeader(.reload, max_policy + 1)));
 }

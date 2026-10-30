@@ -365,6 +365,7 @@ const Runtime = struct {
             r.cfg.?.deinit();
             r.cfg = null;
         };
+        if (r.cfg.?.generation != 1) return error.InitialGenerationMustBeOne;
         if (try intent.read(r.gpa, r.io)) |saved| {
             if (saved.armed and !std.mem.eql(u8, &saved.policy, &r.cfg.?.digest)) return error.PolicyChangeRequiresAuthorizedOff;
         }
@@ -424,7 +425,7 @@ const Runtime = struct {
                 const boot = try intent.bootId();
                 const label = if (r.stopping) "stopping_partial" else if (r.armed) "armed" else intent.absentPinsStatus(saved, &boot);
                 var response: [256]u8 = undefined;
-                try sys.writeAll(client, try std.fmt.bufPrint(&response, "OK {s} ring_dropped={d} write_dropped={d} receipt_file_limit=8388608\n", .{ label, r.reported_loss, r.writeLoss() }));
+                try sys.writeAll(client, try std.fmt.bufPrint(&response, "OK {s} ring_dropped={d} write_dropped={d} receipt_file_limit=8388608 reload=prepared_only\n", .{ label, r.reported_loss, r.writeLoss() }));
                 return r.armed or r.stopping;
             },
             .off => {
@@ -470,7 +471,30 @@ const Runtime = struct {
                 try sys.writeAll(client, "OK armed\n");
                 return true;
             },
+            .reload => {
+                return r.reloadRequest(client, peer, header.length) catch |err| {
+                    @import("reload_receipts.zig").refused(&r.service_log.?, if (r.cfg) |*cfg| .{ .policy = &cfg.digest, .generation = cfg.generation } else null, @errorName(err));
+                    return err;
+                };
+            },
         }
+    }
+    fn reloadRequest(r: *Runtime, client: l.fd_t, peer: ipc.Peer, length: u32) !bool {
+        if (r.stopping) return error.Stopping;
+        if (!r.armed) return error.NotArmed;
+        const bytes = try r.gpa.alloc(u8, length);
+        defer r.gpa.free(bytes);
+        try ipc.readExact(client, bytes, 5000);
+        try peer.live();
+        var candidate = try config.Config.parseReload(r.gpa, bytes);
+        defer candidate.deinit();
+        if (r.cfg.?.generation >= config.max_generations) return error.GenerationLimit;
+        if (candidate.generation != r.cfg.?.generation + 1) return error.ExpectedNextGeneration;
+        if (try r.loaded.?.tag(@intCast(peer.credentials.pid)) != 0) return error.TaggedCaller;
+        // This gate returns before any prompt, persisted intent, map write or
+        // child message. Never turn an authorized but unimplemented change into OK.
+        try @import("reload_control.zig").authorize(peer);
+        return error.ReloadNotReady;
     }
     fn drain(r: *Runtime) !void {
         if (r.ring) |*ring| {

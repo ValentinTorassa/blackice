@@ -5,6 +5,8 @@ const I = a.I;
 const bpf = a.bpf;
 const abi = @import("types.zig");
 const pin = @import("kernel_pin.zig");
+const epoch = @import("reload_kernel_types.zig");
+pub const Layout = enum { legacy, generations };
 pub const Fds = struct { files: i32, tags: i32, ports: i32, state: i32, ring: i32, lost: i32, existing: i32 };
 pub const trace_events = enum { exec, fork, exit, iterator };
 pub const hooks = [_]bpf.AttachType{ .cgroup_inet4_connect, .cgroup_inet6_connect, .cgroup_udp4_sendmsg, .cgroup_udp6_sendmsg, .cgroup_inet_sock_create };
@@ -22,7 +24,7 @@ const Fixups = struct {
 };
 
 // r1 is a file pointer. File identity key at fp-48; no path/argv/comm enters classification.
-fn fileKey(p: *a.Program, bad: *Fixups) void {
+fn fileKey(p: *a.Program, bad: *Fixups, comptime layout: Layout) void {
     bad.add(p, I.jeq(.r1, 0, 0));
     p.emit(I.ldx(.double_word, .r1, .r1, pin.file_f_inode));
     bad.add(p, I.jeq(.r1, 0, 0));
@@ -32,7 +34,10 @@ fn fileKey(p: *a.Program, bad: *Fixups) void {
     bad.add(p, I.jeq(.r1, 0, 0));
     p.emit(I.ldx(.word, .r0, .r1, pin.super_block_s_dev));
     p.emit(I.stx(.word, .r10, -48, .r0));
-    p.emit(I.st(.word, .r10, -44, 0));
+    if (layout == .generations) {
+        p.emit(I.ldx(.word, .r0, .r10, -56));
+        p.emit(I.stx(.word, .r10, -44, .r0));
+    } else p.emit(I.st(.word, .r10, -44, 0));
 }
 
 // Key uses task->tgid in the initial PID namespace, including for namespace children.
@@ -41,10 +46,17 @@ fn key(p: *a.Program, bad: *Fixups) void {
     p.emit(I.ldx(.word, .r0, .r7, pin.task_struct_tgid));
     p.emit(I.stx(.word, .r10, -16, .r0));
 }
-fn owner(p: *a.Program, fds: Fds, done: *Fixups) void {
+fn owner(p: *a.Program, fds: Fds, done: *Fixups, comptime layout: Layout) void {
     p.emit(I.st(.word, .r10, -52, 0));
     p.lookup(fds.state, -52);
     done.add(p, I.jeq(.r0, 0, 0));
+    if (layout == .generations) {
+        p.emit(I.ldx(.word, .r1, .r0, @offsetOf(abi.State, "version")));
+        done.add(p, I.jne(.r1, 2, 0));
+        p.emit(I.ldx(.word, .r1, .r0, @offsetOf(epoch.State, "generation")));
+        done.add(p, I.jeq(.r1, 0, 0));
+        p.emit(I.stx(.word, .r10, -56, .r1));
+    }
     p.emit(I.ldx(.word, .r8, .r0, @offsetOf(abi.State, "owner_uid")));
     p.emit(I.ldx(.double_word, .r1, .r7, pin.task_struct_real_cred));
     done.add(p, I.jeq(.r1, 0, 0));
@@ -57,6 +69,9 @@ fn storeTag(p: *a.Program, fds: Fds, done: *Fixups) void {
     p.emit(I.stx(.word, .r0, 0, .r9)); // array store: no allocation and no insertion failure
 }
 pub fn tracing(event: trace_events, fds: Fds) a.Program {
+    return tracingLayout(event, fds, .legacy);
+}
+pub fn tracingLayout(event: trace_events, fds: Fds, comptime layout: Layout) a.Program {
     var p: a.Program = .{};
     var done: Fixups = .{};
     p.emit(I.mov(.r6, .r1));
@@ -76,11 +91,11 @@ pub fn tracing(event: trace_events, fds: Fds) a.Program {
             done.add(&p, I.jeq(.r0, 0, 0));
             p.emit(I.ldx(.word, .r9, .r0, 0));
             done.add(&p, I.jne(.r9, 0, 0)); // first listed app wins across every exec
-            owner(&p, fds, &done);
+            owner(&p, fds, &done, layout);
             p.emit(I.ldx(.double_word, .r1, .r6, 16));
             done.add(&p, I.jeq(.r1, 0, 0));
             p.emit(I.ldx(.double_word, .r1, .r1, pin.linux_binprm_file));
-            fileKey(&p, &done);
+            fileKey(&p, &done, layout);
             p.lookup(fds.files, -48);
             done.add(&p, I.jeq(.r0, 0, 0));
             p.emit(I.ldx(.word, .r9, .r0, 0));
@@ -95,7 +110,7 @@ pub fn tracing(event: trace_events, fds: Fds) a.Program {
             storeTag(&p, fds, &done); // unconditional, including zero (ADR C1)
         },
         .iterator => {
-            owner(&p, fds, &done);
+            owner(&p, fds, &done, layout);
             p.lookup(fds.tags, -16);
             done.add(&p, I.jeq(.r0, 0, 0));
             p.emit(I.ldx(.word, .r0, .r0, 0));
@@ -103,7 +118,7 @@ pub fn tracing(event: trace_events, fds: Fds) a.Program {
             p.emit(I.ldx(.double_word, .r1, .r7, pin.task_struct_mm));
             done.add(&p, I.jeq(.r1, 0, 0));
             p.emit(I.ldx(.double_word, .r1, .r1, pin.mm_struct_exe_file));
-            fileKey(&p, &done);
+            fileKey(&p, &done, layout);
             p.lookup(fds.files, -48);
             done.add(&p, I.jeq(.r0, 0, 0));
             p.emit(I.ldx(.word, .r9, .r0, 0));
@@ -179,6 +194,9 @@ fn listenerPeer(p: *a.Program, v6: bool, allow: *Fixups, deny: *Fixups, root: bo
 
 /// Root-cgroup guard: only reserved local listener ports are restricted, across every cgroup.
 pub fn listenerGuard(hook: bpf.AttachType, fds: Fds) a.Program {
+    return listenerGuardLayout(hook, fds, .legacy);
+}
+pub fn listenerGuardLayout(hook: bpf.AttachType, fds: Fds, comptime layout: Layout) a.Program {
     std.debug.assert(hook == .cgroup_inet4_connect or hook == .cgroup_inet6_connect);
     var p: a.Program = .{};
     var allow: Fixups = .{};
@@ -186,6 +204,7 @@ pub fn listenerGuard(hook: bpf.AttachType, fds: Fds) a.Program {
     p.emit(I.mov(.r6, .r1));
     p.emit(I.mov(.r9, 0));
     p.emit(I.mov(.r8, @as(i32, @backingInt(abi.Reason.tag_missing))));
+    if (layout == .generations) captureEpoch(&p, fds);
     p.emit(I.call(.get_current_pid_tgid));
     p.emit(I.rsh(.r0, 32));
     p.emit(I.stx(.word, .r10, -16, .r0));
@@ -197,13 +216,16 @@ pub fn listenerGuard(hook: bpf.AttachType, fds: Fds) a.Program {
     const yes = p.len;
     p.ret(1);
     const no = p.len;
-    emitRefusal(&p, hook, fds);
+    emitRefusal(&p, hook, fds, layout);
     allow.patch(&p, yes);
     deny.patch(&p, no);
     return p;
 }
 
 pub fn admission(hook: bpf.AttachType, fds: Fds) a.Program {
+    return admissionLayout(hook, fds, .legacy);
+}
+pub fn admissionLayout(hook: bpf.AttachType, fds: Fds, comptime layout: Layout) a.Program {
     const create = hook == .cgroup_inet_sock_create;
     const v6 = hook == .cgroup_inet6_connect or hook == .cgroup_udp6_sendmsg;
     const send = hook == .cgroup_udp4_sendmsg or hook == .cgroup_udp6_sendmsg;
@@ -213,12 +235,14 @@ pub fn admission(hook: bpf.AttachType, fds: Fds) a.Program {
     p.emit(I.mov(.r6, .r1));
     p.emit(I.mov(.r9, 0));
     p.emit(I.mov(.r8, @as(i32, @backingInt(abi.Reason.tag_missing))));
+    if (layout == .generations) captureEpoch(&p, fds);
     p.emit(I.call(.get_current_pid_tgid));
     p.emit(I.rsh(.r0, 32));
     p.emit(I.stx(.word, .r10, -16, .r0));
     p.lookup(fds.tags, -16);
     deny.add(&p, I.jeq(.r0, 0, 0));
     p.emit(I.ldx(.word, .r9, .r0, 0));
+    if (layout == .generations) captureBinding(&p, fds, &deny);
     if (!create and !send) listenerPeer(&p, v6, &allow, &deny, false);
     allow.add(&p, I.jeq(.r9, 0, 0));
     p.emit(I.mov(.r8, @as(i32, @backingInt(abi.Reason.socket_protocol))));
@@ -268,6 +292,10 @@ pub fn admission(hook: bpf.AttachType, fds: Fds) a.Program {
             p.emit(I.mov(.r7, 0));
             const select = p.len;
             p.emit(I.stx(.word, .r10, -28, .r9));
+            if (layout == .generations) {
+                p.emit(I.ldx(.word, .r0, .r10, -56));
+                p.emit(I.stx(.word, .r10, -24, .r0));
+            }
             p.lookup(fds.ports, -28);
             p.emit(I.mov(.r8, @as(i32, @backingInt(abi.Reason.listener_missing))));
             deny.add(&p, I.jeq(.r0, 0, 0));
@@ -310,14 +338,14 @@ pub fn admission(hook: bpf.AttachType, fds: Fds) a.Program {
         }
     }
     const refusal = p.len;
-    emitRefusal(&p, hook, fds);
+    emitRefusal(&p, hook, fds, layout);
     const permitted = p.len;
     p.ret(1);
     deny.patch(&p, refusal);
     allow.patch(&p, permitted);
     return p;
 }
-fn emitRefusal(p: *a.Program, hook: bpf.AttachType, fds: Fds) void {
+fn emitRefusal(p: *a.Program, hook: bpf.AttachType, fds: Fds, comptime layout: Layout) void {
     const create = hook == .cgroup_inet_sock_create;
     const v6 = hook == .cgroup_inet6_connect or hook == .cgroup_udp6_sendmsg;
     p.map(.r1, fds.ring);
@@ -330,6 +358,10 @@ fn emitRefusal(p: *a.Program, hook: bpf.AttachType, fds: Fds) void {
     p.emit(I.stx(.double_word, .r7, 0, .r0));
     p.emit(I.ldx(.word, .r0, .r10, -16));
     p.emit(I.stx(.double_word, .r7, 8, .r0));
+    if (layout == .generations) {
+        p.emit(I.ldx(.word, .r0, .r10, -60));
+        p.emit(I.stx(.word, .r7, epoch.event_generation_offset, .r0));
+    }
     p.emit(I.mov(.r0, 0));
     p.emit(I.stx(.double_word, .r7, 16, .r0));
     p.emit(I.stx(.word, .r7, 24, .r9));
@@ -363,9 +395,53 @@ fn emitRefusal(p: *a.Program, hook: bpf.AttachType, fds: Fds) void {
     p.patch(absent, end);
 }
 
+// One active hash lookup per hook. Generation and fence are copied before any
+// other map lookup. Old rows remain available for a reader crossing publication.
+fn captureEpoch(p: *a.Program, fds: Fds) void {
+    p.emit(I.st(.word, .r10, -56, 0));
+    p.emit(I.st(.word, .r10, -60, 0));
+    p.emit(I.st(.word, .r10, -64, 1));
+    p.emit(I.st(.word, .r10, -52, 0));
+    p.lookup(fds.state, -52);
+    var missing: Fixups = .{};
+    missing.add(p, I.jeq(.r0, 0, 0));
+    p.emit(I.ldx(.word, .r1, .r0, @offsetOf(abi.State, "version")));
+    missing.add(p, I.jne(.r1, 2, 0));
+    p.emit(I.ldx(.word, .r1, .r0, @offsetOf(epoch.State, "generation")));
+    missing.add(p, I.jeq(.r1, 0, 0));
+    p.emit(I.stx(.word, .r10, -56, .r1));
+    p.emit(I.stx(.word, .r10, -60, .r1));
+    p.emit(I.ldx(.word, .r1, .r0, @offsetOf(epoch.State, "fenced")));
+    p.emit(I.stx(.word, .r10, -64, .r1));
+    const end = p.len;
+    p.emit(I.mov(.r0, 0));
+    missing.patch(p, end);
+}
+fn captureBinding(p: *a.Program, fds: Fds, deny: *Fixups) void {
+    const unlisted = p.add(I.jeq(.r9, 0, 0));
+    p.emit(I.mov(.r8, @as(i32, @backingInt(abi.Reason.generation_fenced))));
+    p.emit(I.ldx(.word, .r0, .r10, -64));
+    deny.add(p, I.jne(.r0, 0, 0));
+    p.emit(I.stx(.word, .r10, -28, .r9));
+    p.emit(I.ldx(.word, .r0, .r10, -56));
+    p.emit(I.stx(.word, .r10, -24, .r0));
+    p.lookup(fds.ports, -28);
+    p.emit(I.mov(.r8, @as(i32, @backingInt(abi.Reason.listener_missing))));
+    deny.add(p, I.jeq(.r0, 0, 0));
+    p.emit(I.ldx(.word, .r0, .r0, @offsetOf(epoch.PortValue, "decision_generation")));
+    deny.add(p, I.jeq(.r0, 0, 0));
+    p.emit(I.stx(.word, .r10, -60, .r0));
+    const end = p.len;
+    p.emit(I.mov(.r0, 0));
+    p.patch(unlisted, end);
+}
+
 pub const fixture_fds: Fds = .{ .files = 10, .tags = 11, .ports = 12, .state = 13, .ring = 14, .lost = 15, .existing = 16 };
 test "appfilter every emitted trace, iterator and admission instruction is reachable" {
     for (std.meta.tags(trace_events)) |event| try a.validate(&tracing(event, fixture_fds));
     for (hooks) |hook| try a.validate(&admission(hook, fixture_fds));
     for (hooks[0..2]) |hook| try a.validate(&listenerGuard(hook, fixture_fds));
+    for (std.meta.tags(trace_events)) |event| try a.validate(&tracingLayout(event, fixture_fds, .generations));
+    for (hooks) |hook| try a.validate(&admissionLayout(hook, fixture_fds, .generations));
+    for (hooks[0..2]) |hook| try a.validate(&listenerGuardLayout(hook, fixture_fds, .generations));
 }

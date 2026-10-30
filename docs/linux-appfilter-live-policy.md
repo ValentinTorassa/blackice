@@ -1,101 +1,152 @@
-# Linux app-filter reload: preparation, not a released feature
+# Linux app-filter reload: independent components, runtime unavailable
 
-`blackice app reload --policy FILE` is **not implemented in this branch**. Do not
-install this branch to obtain reload. The service, CLI, BPF programs and setup
-files are unchanged from the base. The new code is imported only by unit tests.
+`blackice app reload --policy FILE` is **not enabled**. This branch prepares its
+CLI, authorization action, receipt fields and kernel generation machinery. It
+cannot perform a live reload, and must not be installed as a reload-ready build.
+The separate proxy-child channel, its preopened receipt files, admission
+coordination and crash recovery still require implementation and review.
 
-The proposed operation is an owner-authorized replacement of the entire app
-configuration, with generation exactly N+1 and a maximum of 256 generations per
-arming. The existing SO_PEERCRED/SO_PEERPIDFD check, tagged-caller refusal and fresh
-polkit authorization must apply. Merely being an untagged process with the owner's
-UID is insufficient. A new pair of pre-fork pipes would carry bounded requests
-and fixed-size replies; it must add no capabilities to the proxy or loader.
+This command is local and read-only: it does not connect to the service or prompt:
 
-The included pieces are:
+```sh
+blackice app reload --help
+```
 
-- `reload_snapshot.zig`: immutable whole-generation snapshots and stable executable
-  slots. One atomic pointer covers all apps/listeners. A connection captures it
-  once for its port, name, address checks and receipt metadata. Paths, policies and
-  snapshots must remain allocated until the worker exits. Nothing frees an old
-  policy while an old connection can still refer to it.
-- `reload_protocol.zig`: a 52-byte request header with a bounded policy body, and
-  an exact 41-byte worker reply (generation, digest, status). Unknown values,
-  truncation, surplus bytes, stale replies, phase and digest mismatches are rejected.
-  Runtime transport still needs one five-second deadline for the entire exchange,
-  the existing depth check before JSON parsing, descriptor allowlisting and worker
-  death handling. Encoding tests do not establish those runtime properties.
-- `reload_transaction.zig`: a pure ordering model. It refuses publication before
-  kernel and proxy admission are fenced, and refuses to reopen admission until
-  durable intent, kernel state, service state and proxy snapshot agree. Its methods
-  represent effects a future runtime must actually verify; calling a method is not
-  proof that a kernel fence or authentication exists.
+It prints `availability=prepared_only`. A syntactically valid reload request
+returns exit 125 with `ReloadNotReady`, before starting a polkit agent or opening
+the control socket. The service also recognizes the bounded reload frame and
+refuses it; it never responds with success for a change it did not perform.
+`app status` reports `reload=prepared_only`.
 
-Proposed connection behavior: an already accepted connection retains its original
-policy and generation until it closes. A new connection after commit uses N+1.
-This deliberately does not revoke an existing allowed tunnel on narrowing. It is
-one of the supported design choices for this work, but differs from the separate
-reset-on-narrowing proposal and still requires security review. No running behavior
-has changed in this branch.
+The existing `on`, `off` and task-scope commands retain their behavior. Initial
+application files without `generation` retain their legacy generation-1 meaning.
+Reload requires an explicit integer `generation`, bounded to 1..256, and the
+service checks it is exactly current+1. A fresh `on` only accepts generation 1.
+Duplicate fields, non-integers and null/missing reload generations are refused.
+The embedded network policy is parsed by the unchanged network-policy parser.
 
-For membership changes, the planner keeps an app's slot when configuration order
-changes. A removed app's running tagged processes retain the old policy and
-generation; its slot is retired for the rest of that arming and never assigned to
-another executable. Future launches become unlisted only after a successful
-membership commit. A new app needs an unused slot, and a known already running
-untagged instance rejects the request with `CloseAddedAppsFirst`. Inode aliases,
-executable replacement, retired-path reuse and slot exhaustion also reject the
-plan without changing the previous snapshot. These are planner tests, not kernel
-evidence that live membership changes work.
+The prepared operation uses `org.blackice.appfilter.reload`, a distinct polkit
+`auth_admin` action with no retained authorization. The wire implementation uses
+the existing kernel-derived SO_PEERPIDFD subject. Only the configured owner can
+reach the service request; tagged callers are refused before authorization and
+checked again after reading the policy. There is no user-supplied UID or PID.
+Because reload is gated, no actual reload authorization is requested yet. Pure
+wire tests do not establish a successful or cancelled interactive-polkit test.
 
-The missing safety work is substantial. The existing loader replaces `files`
-entries individually and updates a mutable array `state` record, while the proxy
-is a separate process with no live input. A proxy-first update followed by map and
-intent updates has an interval with different generations visible in each layer.
-Adding a generation field to that array does not make the whole operation atomic.
-Linux documents atomic replacement of individual [hash-map elements](https://docs.kernel.org/bpf/map_hash.html)
-and synchronization requirements for [array values](https://docs.kernel.org/bpf/map_array.html);
-neither provides a transaction spanning two processes, multiple maps and disk.
+## Receipts
 
-Likewise, scanning for an added executable before inserting its `files` entry
-leaves an exec/fork race. A second scan and a warning can report some missed tasks,
-but cannot prove there was no unfiltered interval or recover a descendant that
-already execed a different file. This branch does not call that atomic coverage.
+The shared JSONL emitter accepts an optional paired decision context: policy hash
+and generation captured together. Delayed writers can use that context instead
+of a log's later defaults. Existing task receipts omit the new optional fields.
+Reload records use flat `old_policy` and `new_policy` fields, each bounded and
+cleaned like other receipt strings. The activation helper checks exact successor
+generation and two full lowercase SHA-256 values before writing
+`policy_activated` with the new `gen` and `policy`.
 
-Before enabling reload, implement and review an admission fence and generation
-publication scheme that covers those races. Stage all dependencies while admission
-is closed; retain every tag and the last safe policy on failure. Persist the new
-intent before publishing the candidate, and reconcile maps from that authoritative
-intent after a crash, including a crash between intent and pinned-state writes.
-Resume only when all three layers agree. A missing/malformed child reply must kill
-the child and retain the pins; it must not be treated as successful activation.
+No runtime activation record is emitted while reload is unavailable. A raw reload
+request that reaches the service's reload handler records
+`policy_change_refused` with the unchanged generation. Earlier peer/tag/header
+refusals use the existing generic control record. The CLI's local refusal does
+not invent a service receipt. UDP aggregation has a tested generation boundary:
+it refuses a mismatched event without changing the batch. Kernel generation decoding,
+historical per-app policy lookup and the batch-flush dispatch still need integration;
+queued old kernel records must never be relabeled with the current generation.
 
-Receipts must capture the decision's generation and policy at acceptance, instead
-of consulting a mutable log default later. `policy_activated` must carry the new
-generation and both configuration hashes. Kernel records need an event-time epoch;
-relabeling a queued old kernel event with the current generation is incorrect.
-The receipt and kernel ABI changes are not implemented here.
+## Candidate kernel generation scheme
 
-Run pure tests with `zig build linux-appfilter-test`. The prepared
-`scripts/e2e/linux-appfilter-reload-vm.py` runs inside a disposable VM with a
-reviewed installation, four generation fixtures, a listed launcher and an
-off-VM TCP receiver. It refuses to arm when the CLI does not advertise reload,
-which is the expected result for this branch. It is not run by builds or unit
-tests. Use VM3 for this work; the base-install tests own VM2.
+The current loader still selects the original v1 map ABI and programs. The
+candidate generation layout and map writer are separate, exercised by pure tests;
+no build or test loads, attaches, pins or switches a BPF program. Existing v1 pins
+must not be interpreted as the candidate ABI.
 
-That script captures state/ports/files and stable process tags, arms once, attempts
-three successive reloads, checks activation hashes and decision generations, and
-keeps a tagged direct-connect loop running throughout. A receiver-side log and
-out-of-scope controls must corroborate that no denied payload arrived. Finite
-sampling can show an observed gap; it cannot prove the absence of every possible
-gap without the implementation invariants. Its probe uses a fixed app membership
-and direct TCP denials; it does not exercise the proxy's per-app domain changes or
-the proposed preservation of already-open tunnels. Those need separate positive
-and negative TLS requests and a long-lived transfer across narrowing. Kernel fault injection, membership
-races, unauthorized control frames, worker timeouts and crash reconciliation
-remain additional mandatory VM cases. No live-reload, no-gap or host-readiness
-claim is made by the pure tests or by the prepared script.
+The candidate uses these maps, all created before dropping load capabilities:
 
-The analyzer's synthetic tests run separately with
-`PYTHONDONTWRITEBYTECODE=1 python3 scripts/e2e/test_linux_appfilter_reload_vm.py`.
-They verify that missing, duplicated, mismatched or lost observations cannot
-produce a passing report; they are not traffic or kernel evidence.
+| Map | Key | Value |
+| --- | --- | --- |
+| Active hash, one entry | zero | coherent state, generation, fence and configuration digest |
+| Files hash, at most 1,792 entries | device, generation, inode | stable app slot |
+| Ports hash, at most 1,792 entries | app slot, generation | four fixed listener ports and that slot's decision generation |
+| Tags | unchanged TGID | unchanged app slot |
+
+The sole writer stages a complete generation using insert-only entries. A failure
+leaves the old active record untouched; unreachable partial rows cannot be reused
+without explicit abort/crash reconciliation. The map writer validates generations,
+slot identities, fixed ports and inode uniqueness before the first write. Old
+published rows remain for the arming's lifetime, bounded by seven slots and 256
+generations. There are no new capabilities or per-reload map creations.
+
+A socket hook captures the active record once. Every subsequent lookup uses that
+captured generation. Exec classification likewise captures one generation before
+looking up the executable. Publishing the candidate replaces one hash element
+while keeping admission fenced; it never clears a tag. New tagged admissions in
+the application hook are refused while fenced, even with a full receipt ring.
+The root listener guard remains a listener guard; this does not implement
+deny-unlisted or close the documented system-slice gaps.
+
+Linux documents atomic replacement of individual [hash entries](https://docs.kernel.org/bpf/map_hash.html),
+while [array values](https://docs.kernel.org/bpf/map_array.html) need synchronization
+for concurrent in-place access. Generation-qualified immutable rows use that
+single-entry publication boundary for kernel decisions. This is **not** a
+transaction spanning the proxy, service and disk: the coordinator must fence the
+proxy, persist authoritative intent, publish coherent state and verify all layers
+before reopening admission. That coordinator is not implemented.
+
+The candidate stores event-time generation in the first previously reserved word
+of each 64-byte kernel event. Retired slots preserve their original decision
+generation in the ports row. This layout needs explicit ABI selection, pin
+verification and receipt-reader integration before any live run. The service's
+current v1 event reader has not been switched to it.
+
+## App membership and connection decisions
+
+The immutable snapshot planner preserves slots across configuration reordering.
+Removed apps keep their last policy and generation for already tagged processes;
+the candidate next-generation files map omits their identity, so future launches
+are unlisted. Retired slots are never reused within an arming in this preparation.
+They count toward the seven-slot bound. A new app gets an unused slot; a known
+running untagged instance refuses the plan with `CloseAddedAppsFirst`. Inode aliases,
+executable replacement and exhausted slots also refuse without changing the old
+snapshot.
+
+A scan is not sufficient to close a concurrent exec/fork race: an added executable
+can launch and fork a descendant that execs another file before the scan. A pure
+counterexample test preserves that limitation. Real running-file checks, a pinned
+iterator, identity-watch reconciliation and membership-commit coverage are still
+required. No live-add or live-remove safety claim follows from these tests.
+
+One immutable snapshot covers all app listeners and is captured once per
+connection decision. Old objects stay allocated while any worker can refer to
+them. Whether an already-open tunnel is reset when the new policy narrows access
+is a separate pending security decision; this preparation neither implements nor
+claims tunnel revocation. The worker protocol codec checks bounded 52-byte request
+headers and exact 41-byte phase/generation/digest-bound replies. No child pipes or
+new receipt descriptors have been added.
+
+## Validation and remaining runtime gates
+
+```sh
+zig build linux-appfilter-test test
+PYTHONDONTWRITEBYTECODE=1 python3 scripts/e2e/test_linux_appfilter_reload_vm.py
+```
+
+Tests execute the actual candidate BPF instructions in a userspace interpreter,
+including replacement immediately after the active-state lookup, retired slots,
+missing rows, fences and ring loss. The map writer's failure tests inject a fault
+at each staging write and publication. These are not Linux-verifier or kernel
+runtime results.
+
+`scripts/e2e/linux-appfilter-reload-vm.py` is a prepared guest driver. It requires
+an explicit `availability=ready` from the CLI before attempting to arm. This branch
+therefore exits 77 without prompting, connecting to the service or creating a run
+directory. Builds and unit tests never run its privileged/read-only bpftool calls
+or its on/reload/off sequence.
+
+When runtime integration is ready, that driver uses four fixed-membership
+fixtures, arms once and reloads three times while recording direct TCP denials,
+receipts, state, ports, files, stable tags and attachments. Off-VM receiver controls
+are separately mandatory. It does not test proxy allow-list changes or an open
+transfer; those need positive/negative TLS requests and a long-lived connection.
+Membership races, unauthorized requests, child timeout/death, pinned iterator
+reuse and every durable-intent crash boundary remain mandatory guest cases.
+Use VM3 for this work; base-install tests own VM2. No host readiness or no-gap
+runtime claim is made by this branch.

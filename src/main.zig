@@ -21,6 +21,7 @@ const usage =
     \\  blackice grant SCOPE HOST [--for 10m]
     \\  blackice revoke SCOPE HOST
     \\  blackice app on --policy APPS.json | off | status (Linux)
+    \\  blackice app reload --policy APPS.json (Linux; prepared only, unavailable)
     \\
 ;
 

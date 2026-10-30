@@ -1,10 +1,20 @@
-//! Minimal bounded D-Bus client for one polkit action. Sends the kernel peer pidfd via SCM_RIGHTS.
+//! Minimal bounded D-Bus client for fixed polkit actions. Sends the kernel peer pidfd via SCM_RIGHTS.
 //! No PID-number fallback and no retained authorization. Wire-code fixtures make no bus calls.
 const std = @import("std");
 const sys = @import("../sys.zig");
 const l = sys.l;
 const ipc = @import("ipc.zig");
 pub const action = "org.blackice.appfilter.change";
+pub const Action = enum {
+    change,
+    reload,
+    pub fn id(a: Action) []const u8 {
+        return switch (a) {
+            .change => action,
+            .reload => "org.blackice.appfilter.reload",
+        };
+    }
+};
 const authority = "org.freedesktop.PolicyKit1";
 const bus = "org.freedesktop.DBus";
 const Wire = struct {
@@ -65,7 +75,7 @@ const Wire = struct {
         std.mem.writeInt(u32, w.bytes[at..][0..4], @intCast(w.len - start), .little);
     }
 };
-fn authorizationBody(uid: u32) !Wire {
+fn authorizationBody(uid: u32, requested: Action) !Wire {
     var b: Wire = .{};
     try b.string("unix-process");
     const dict = try b.arrayStart();
@@ -78,7 +88,7 @@ fn authorizationBody(uid: u32) !Wire {
     try b.signature("h");
     try b.u32val(0); // first SCM_RIGHTS descriptor
     b.arrayEnd(dict);
-    try b.string(action);
+    try b.string(requested.id());
     const details = try b.arrayStart();
     b.arrayEnd(details);
     try b.u32val(1); // AllowUserInteraction, never cached *_keep authorization
@@ -194,6 +204,9 @@ fn sendWithFd(fd: l.fd_t, bytes: []const u8, pidfd: l.fd_t) !void {
     try sys.writeAll(fd, bytes[n..]);
 }
 pub fn authorize(peer: ipc.Peer) !void {
+    return authorizeAction(peer, .change);
+}
+pub fn authorizeAction(peer: ipc.Peer, requested: Action) !void {
     try peer.live();
     // One budget for authentication, bus discovery, queued signals and the interactive authorization.
     const deadline = try ipc.Deadline.after(15000);
@@ -231,7 +244,7 @@ pub fn authorize(peer: ipc.Peer) !void {
     if (owner.len == 0 or owner.len > ownerbuf.len or owner[0] != ':' or rr.pos != rr.data.len) return error.BadDbus;
     @memcpy(ownerbuf[0..owner.len], owner);
     const expected = ownerbuf[0..owner.len];
-    const body = try authorizationBody(peer.credentials.uid);
+    const body = try authorizationBody(peer.credentials.uid, requested);
     request = try message(3, expected, "/org/freedesktop/PolicyKit1/Authority", authority ++ ".Authority", "CheckAuthorization", "(sa{sv})sa{ss}us", body.bytes[0..body.len], true);
     try sendWithFd(fd, request.bytes[0..request.len], peer.pidfd);
     const answer = try readReply(fd, &buffer, 3, expected, deadline);
@@ -257,12 +270,23 @@ fn authorizationResult(signature: []const u8, body: []const u8) !void {
     if (authorized != 1 or challenge != 0) return error.OwnerAuthorizationRequired;
 }
 test "appfilter polkit uses a pidfd subject and an uncached admin action" {
-    const body = try authorizationBody(1000);
+    const body = try authorizationBody(1000, .change);
     try std.testing.expect(std.mem.find(u8, body.bytes[0..body.len], "pidfd") != null);
     try std.testing.expect(std.mem.find(u8, body.bytes[0..body.len], "start-time") == null);
     const req = try message(7, authority, "/org/freedesktop/PolicyKit1/Authority", authority ++ ".Authority", "CheckAuthorization", "(sa{sv})sa{ss}us", body.bytes[0..body.len], true);
     try std.testing.expectEqual(@as(u32, 7), std.mem.readInt(u32, req.bytes[8..12], .little));
     try std.testing.expectError(error.BadDbus, parseReply(req.bytes[0..req.len]));
+}
+
+test "appfilter reload has a distinct pidfd-bound polkit action without a cached grant" {
+    const body = try authorizationBody(1000, .reload);
+    const bytes = body.bytes[0..body.len];
+    try std.testing.expect(std.mem.find(u8, bytes, "org.blackice.appfilter.reload") != null);
+    try std.testing.expect(std.mem.find(u8, bytes, action) == null);
+    try std.testing.expect(std.mem.find(u8, bytes, "pidfd") != null);
+    try std.testing.expect(std.mem.find(u8, bytes, "start-time") == null);
+    // The final flags/string are AllowUserInteraction=1 and an empty cancellation ID.
+    try std.testing.expectEqualSlices(u8, &.{ 1, 0, 0, 0, 0, 0, 0, 0, 0 }, bytes[bytes.len - 9 ..]);
 }
 
 test "appfilter polkit never treats malformed, challenged or denied replies as approval" {

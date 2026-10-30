@@ -24,6 +24,7 @@ pub const Reason = enum(u32) {
     unsupported_family,
     tag_missing,
     udp_connect,
+    generation_fenced,
 };
 pub const Event = extern struct {
     timestamp_ns: u64,
