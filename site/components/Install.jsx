@@ -24,7 +24,7 @@ export default function Install() {
       </div>
       <div className="install-row">
         <p className="install-label">
-          Provenance <span>GitHub CLI</span>
+          Provenance <span>GitHub CLI 2.49 or later</span>
         </p>
         <CopyCommand command={RELEASE.provenance} />
       </div>
