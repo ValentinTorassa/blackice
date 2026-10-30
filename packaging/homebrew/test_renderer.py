@@ -15,7 +15,7 @@ def assets(version):
     return [
         f"blackice-{version}-{target}"
         for target in ("aarch64-macos", "x86_64-macos", "aarch64-linux", "x86_64-linux")
-    ] + [f"blackice-linux-helper-{version}-x86_64-linux", "linux-setup.sh", "linux-teardown.sh"]
+    ]
 
 
 def manifest(version="1.2.3"):
@@ -53,17 +53,21 @@ class RendererTests(unittest.TestCase):
         expected = {
             line.split()[1]: line.split()[0] for line in data.decode().splitlines()
         }
-        expected["SHA256SUMS"] = hashlib.sha256(data).hexdigest()
         self.assertEqual(pairs, expected)
         self.assertNotIn("@@", result.stdout)
         self.assertEqual(result.stdout, self.render(data).stdout)
 
-    def test_manifest_resource_hashes_exact_bytes(self):
+    def test_crlf_manifest_selects_the_same_cli_bytes(self):
         data = manifest().replace(b"\n", b"\r\n")
         result = self.render(data)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn(hashlib.sha256(data).hexdigest(), result.stdout)
-        self.assertNotIn(hashlib.sha256(manifest()).hexdigest(), result.stdout)
+        self.assertEqual(result.stdout, self.render(manifest()).stdout)
+
+    def test_current_release_manifest_does_not_require_scripts(self):
+        data = manifest() + b"a" * 64 + b"  blackice-linux-helper-1.2.3-x86_64-linux\n"
+        result = self.render(data)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, self.render(manifest()).stdout)
 
     def test_binary_marker_uppercase_hash_and_extra_asset(self):
         rows = manifest().decode().splitlines()
@@ -78,25 +82,33 @@ class RendererTests(unittest.TestCase):
             with self.subTest(version=version):
                 self.rejected(manifest(version), "version must be X.Y.Z", version)
 
-    def test_arm64_helper_is_never_selected(self):
-        extra = b"a" * 64 + b"  blackice-linux-helper-1.2.3-aarch64-linux\n"
+    def test_no_helper_or_setup_resource_is_selected(self):
+        extra = b"".join(b"a" * 64 + b"  " + name + b"\n" for name in [
+            b"blackice-linux-helper-1.2.3-aarch64-linux",
+            b"blackice-linux-helper-1.2.3-x86_64-linux",
+            b"linux-setup.sh", b"linux-teardown.sh",
+        ])
         for data in [manifest(), manifest() + extra]:
             result = self.render(data)
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertNotIn("/blackice-linux-helper-1.2.3-aarch64-linux", result.stdout)
+            self.assertNotRegex(result.stdout, r"(?m)^\s*resource\b")
+            self.assertEqual(result.stdout, self.render(manifest()).stdout)
 
-    def test_caveats_require_provenance_without_a_privileged_command(self):
+    def test_caveats_bind_manifest_to_tag_and_checkout_without_sudo(self):
         result = self.render()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertNotRegex(result.stdout, r"\bsudo\b")
         commands = [line.strip() for line in result.stdout.splitlines()
                     if line.strip().startswith("gh attestation verify ")]
-        self.assertEqual(len(commands), 3)
-        for command in commands:
-            self.assertTrue(command.endswith(
-                " --repo ValentinTorassa/blackice"
-                " --signer-workflow ValentinTorassa/blackice/.github/workflows/release.yml"
-            ))
+        self.assertEqual(commands, [
+            "gh attestation verify SHA256SUMS --repo ValentinTorassa/blackice"
+            " --signer-workflow ValentinTorassa/blackice/.github/workflows/release.yml"
+            ' --source-ref refs/tags/v1.2.3 --source-digest "$(git rev-parse HEAD)"'
+            " --deny-self-hosted-runners"
+        ])
+        self.assertIn("sha256sum -c SHA256SUMS", result.stdout)
+        self.assertIn("zig build -Doptimize=ReleaseSafe", result.stdout)
+        self.assertIn("blackice-linux-helper-1.2.3-x86_64-linux entry", result.stdout)
 
     def test_missing_each_required_asset(self):
         rows = manifest().splitlines(keepends=True)

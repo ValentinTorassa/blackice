@@ -28,46 +28,17 @@ class Blackice < Formula
       url "https://github.com/ValentinTorassa/blackice/releases/download/v@@VERSION@@/blackice-@@VERSION@@-x86_64-linux",
           using: :nounzip
       sha256 "@@LINUX_INTEL_SHA@@"
-
-      resource "linux-helper" do
-        url "https://github.com/ValentinTorassa/blackice/releases/download/v@@VERSION@@/blackice-linux-helper-@@VERSION@@-x86_64-linux",
-            using: :nounzip
-        sha256 "@@HELPER_INTEL_SHA@@"
-      end
-
-      resource "linux-setup" do
-        url "https://github.com/ValentinTorassa/blackice/releases/download/v@@VERSION@@/linux-setup.sh", using: :nounzip
-        sha256 "@@SETUP_SHA@@"
-      end
-      resource "linux-teardown" do
-        url "https://github.com/ValentinTorassa/blackice/releases/download/v@@VERSION@@/linux-teardown.sh", using: :nounzip
-        sha256 "@@TEARDOWN_SHA@@"
-      end
-      resource "checksums" do
-        url "https://github.com/ValentinTorassa/blackice/releases/download/v@@VERSION@@/SHA256SUMS", using: :nounzip
-        sha256 "@@MANIFEST_SHA@@"
-      end
     end
   end
 
-  # Keep the installed executables and setup data identical to the release bytes.
-  skip_clean "bin/blackice", "share/blackice/linux-setup"
+  # Keep the installed executable identical to the release bytes.
+  skip_clean "bin/blackice"
 
   def install
     arch = Hardware::CPU.arm? ? "aarch64" : "x86_64"
     os = OS.mac? ? "macos" : "linux"
     bin.install "blackice-@@VERSION@@-#{arch}-#{os}" => "blackice"
     (bin/"blackice").chmod 0755
-    return unless OS.linux? && Hardware::CPU.intel?
-
-    setup = share/"blackice/linux-setup"
-    resource("linux-helper").stage do
-      setup.install "blackice-linux-helper-@@VERSION@@-#{arch}-linux"
-    end
-    resource("linux-setup").stage { setup.install "linux-setup.sh" }
-    resource("linux-teardown").stage { setup.install "linux-teardown.sh" }
-    resource("checksums").stage { setup.install "SHA256SUMS" }
-    setup.children.each { |path| path.chmod 0644 }
   end
 
   def caveats
@@ -82,19 +53,23 @@ class Blackice < Formula
       EOS
     end
 
-    helper = resource("linux-helper")
-    setup = opt_share/"blackice/linux-setup"
     <<~EOS
-      The privileged Linux helper is a separate setup step, documented in docs/linux.md:
+      Homebrew installs only the CLI. Linux x86_64 task scopes require separate manual setup:
+        1. Clone tag v@@VERSION@@ from https://github.com/ValentinTorassa/blackice.git.
+        2. Download that tag's release files into a directory inside the checkout.
+           In that directory, verify the manifest against the tag and checkout commit:
+             gh attestation verify SHA256SUMS --repo ValentinTorassa/blackice --signer-workflow ValentinTorassa/blackice/.github/workflows/release.yml --source-ref refs/tags/v@@VERSION@@ --source-digest "$(git rev-parse HEAD)" --deny-self-hosted-runners
+             sha256sum -c SHA256SUMS
+        3. From the checkout, run zig build -Doptimize=ReleaseSafe using the tag's Zig version.
+           The SHA-256 of zig-out/bin/blackice-linux-helper must match the manifest's
+           blackice-linux-helper-@@VERSION@@-x86_64-linux entry. Stop on any failed check.
+        4. Review the checkout's scripts, then follow its two-argument linux-setup.sh
+           procedure with your user name and the verified helper digest.
+
+      Full procedure and Linux requirements:
+        https://github.com/ValentinTorassa/blackice/blob/v@@VERSION@@/packaging/homebrew/README.md
         https://github.com/ValentinTorassa/blackice/blob/v@@VERSION@@/docs/linux.md
-
-      Before using the helper or either script, verify their release workflow attestations:
-        gh attestation verify "#{setup}/#{File.basename(helper.url)}" --repo ValentinTorassa/blackice --signer-workflow ValentinTorassa/blackice/.github/workflows/release.yml
-        gh attestation verify "#{setup}/linux-setup.sh" --repo ValentinTorassa/blackice --signer-workflow ValentinTorassa/blackice/.github/workflows/release.yml
-        gh attestation verify "#{setup}/linux-teardown.sh" --repo ValentinTorassa/blackice --signer-workflow ValentinTorassa/blackice/.github/workflows/release.yml
-
-      Homebrew only copied the setup files as data; it did not configure the helper.
-      No setup command is provided until the helper-path interface is reviewed and pinned.
+      Setup and teardown scripts come from the tag checkout; they have no separate attestations.
     EOS
   end
 

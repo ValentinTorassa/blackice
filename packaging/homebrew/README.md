@@ -32,57 +32,72 @@ blackice-VERSION-aarch64-macos
 blackice-VERSION-x86_64-macos
 blackice-VERSION-aarch64-linux
 blackice-VERSION-x86_64-linux
-blackice-linux-helper-VERSION-x86_64-linux
-linux-setup.sh
-linux-teardown.sh
 ~~~
 
 Use the usual sha256sum format: 64 hexadecimal digits, a space, a space or
 asterisk, then a bare filename. Extra distinct entries are permitted. Missing,
 duplicate, malformed and path-containing entries fail before any formula is
-printed. SHA256SUMS must not include itself. Its resource digest is computed
-from the exact supplied bytes, including line endings; every other digest
-comes from an entry in that file.
+printed. SHA256SUMS must not include itself. The full release also contains
+blackice-linux-helper-VERSION-x86_64-linux and SHA256SUMS; the helper entry is
+accepted but unused by this CLI-only formula. A manifest containing only the
+four CLI entries also works. The manifest is an input to the renderer, not an
+installed resource. Setup and teardown scripts are not release assets.
 
 The renderer validates syntax and completeness, not provenance or review.
-Use the authenticated release manifest and the security-reviewed helper and
-setup script. Never substitute a development hash or a checksum from an
-unreviewed download to make a release formula render.
+Use the authenticated release manifest. Never substitute a development hash or
+a checksum from an unreviewed download to make a release formula render.
 
-## Linux setup contract
+## Manual Linux setup
 
-On Linux x86_64, the formula copies the versioned helper, linux-setup.sh,
-linux-teardown.sh and the unchanged SHA256SUMS into
-share/blackice/linux-setup/, all mode 0644. It preserves filenames so the bundle
-still matches the manifest. Only the launcher goes into bin/ as blackice, with
-mode 0755 explicitly set because its Homebrew cleanup is disabled.
+Homebrew installs only the CLI on every OS/CPU, as bin/blackice with mode 0755.
+No helper, setup script, teardown script or checksum bundle is downloaded or
+installed by the formula. There is no postinstall, service or package-manager
+sudo/setcap call. A Homebrew upgrade changes only the CLI, not any separately
+installed privileged helper.
 
 Linux arm64 ships only the CLI until an arm64 Linux run verifies task scopes.
-It downloads and installs no helper, setup scripts or manifest bundle. An arm64
-helper checksum is not required, and even if present in SHA256SUMS it is not
-used to select or distribute a helper.
+It must not use the x86_64 setup procedure below.
 
-The x86_64 caveats identify the privileged helper as a separate setup step and
-link to docs/linux.md at the release tag. They print these verification commands
-with the actual installed paths before any privileged operation is considered:
+On Linux x86_64, check out the matching tag and use the Zig version it requires.
+Verify the release's SHA256SUMS attestation against that tag and checkout commit,
+then verify the downloaded files. Build the helper in the checkout and compare
+its SHA-256 with the manifest's versioned x86_64 helper entry. Only after that
+match should the checkout's setup script run with that digest as its second
+argument. Review docs/linux.md and the checkout's scripts first.
+
+This example uses version 1.2.3; replace it with the formula's release version.
+It uses a fresh checkout and stops on a failed check. These are instructions for
+the corresponding published release, not a claim that 1.2.3 is already available.
+Homebrew never executes this block or prints a sudo command in its caveats:
 
 ~~~sh
-gh attestation verify "<setup-directory>/blackice-linux-helper-VERSION-x86_64-linux" --repo ValentinTorassa/blackice --signer-workflow ValentinTorassa/blackice/.github/workflows/release.yml
-gh attestation verify "<setup-directory>/linux-setup.sh" --repo ValentinTorassa/blackice --signer-workflow ValentinTorassa/blackice/.github/workflows/release.yml
-gh attestation verify "<setup-directory>/linux-teardown.sh" --repo ValentinTorassa/blackice --signer-workflow ValentinTorassa/blackice/.github/workflows/release.yml
+(
+  set -eu
+  test "$(uname -s)" = Linux
+  test "$(uname -m)" = x86_64
+  git clone --branch v1.2.3 --depth 1 https://github.com/ValentinTorassa/blackice.git blackice-v1.2.3
+  cd blackice-v1.2.3
+  release_dir="$PWD/out/release-v1.2.3"
+  mkdir -p "$release_dir"
+  gh release download v1.2.3 --repo ValentinTorassa/blackice --dir "$release_dir"
+  (
+    cd "$release_dir"
+    gh attestation verify SHA256SUMS --repo ValentinTorassa/blackice --signer-workflow ValentinTorassa/blackice/.github/workflows/release.yml --source-ref refs/tags/v1.2.3 --source-digest "$(git rev-parse HEAD)" --deny-self-hosted-runners
+    sha256sum -c SHA256SUMS
+  )
+  zig build -Doptimize=ReleaseSafe
+  helper_sha256="$(awk '$2 == "blackice-linux-helper-1.2.3-x86_64-linux" { print $1 }' "$release_dir/SHA256SUMS")"
+  test "${#helper_sha256}" -eq 64
+  printf '%s  zig-out/bin/blackice-linux-helper\n' "$helper_sha256" | sha256sum -c -
+  sudo ./scripts/linux-setup.sh "$USER" "$helper_sha256"
+)
 ~~~
 
-There is no sudo command in the caveats. The reviewed linux-setup.sh accepts
-exactly two arguments and reads the helper from ../zig-out/bin; it cannot use
-this bundle directly. A future helper-path interface must be implemented,
-security-reviewed and pinned before a setup command can be added. If that
-command is added later, these three attestation checks must remain before it.
-Packaging does not change the privileged script or bypass its checks.
-
-There is no postinstall, service or package-manager sudo/setcap call. An upgrade
-only replaces the unprivileged files; the owner reviews and repeats setup to
-replace the separately installed privileged helper. Teardown also remains a
-manual, reviewed operation.
+The setup digest comes from the independently verified release manifest, never
+from formula metadata. Scripts are neither flat release assets nor separately
+attested; their integrity comes from the matching tag checkout. The existing
+two-argument setup script uses that checkout's zig-out/bin/blackice-linux-helper.
+Teardown remains a manual, reviewed operation from the checkout.
 
 The macOS formula contains only the CLI; it does not ship or activate the
 unsigned Network Extension app filter.
@@ -110,11 +125,11 @@ separate authorized install. The formula's test block runs blackice version
 without starting a scope. Synthetic manifests can validate rendering and
 platform selection, but do not establish release provenance or runtime support.
 
-After an authorized release install, compare the installed launcher's bytes
-and Linux bundle against the release checksums on each OS/architecture.
-skip_clean preserves the shipped executable and setup data during Homebrew
+After an authorized release install, compare the installed CLI's bytes
+against the release checksums on each OS/architecture.
+skip_clean preserves the shipped executable during Homebrew
 cleaning; the release installation check still needs to verify the final bytes.
 
 References: [Formula Cookbook](https://docs.brew.sh/Formula-Cookbook)
-(platform blocks, resource staging and nounzip), and
+(platform blocks and nounzip), and
 [checksum requirements](https://docs.brew.sh/Checksum-Requirements).

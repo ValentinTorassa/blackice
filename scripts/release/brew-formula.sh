@@ -14,7 +14,6 @@ fi
 
 brew_script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
 exec python3 -I -c '
-import hashlib
 import re
 import sys
 from pathlib import Path
@@ -64,9 +63,6 @@ assets = {
     "MAC_INTEL_SHA": f"blackice-{version}-x86_64-macos",
     "LINUX_ARM_SHA": f"blackice-{version}-aarch64-linux",
     "LINUX_INTEL_SHA": f"blackice-{version}-x86_64-linux",
-    "HELPER_INTEL_SHA": f"blackice-linux-helper-{version}-x86_64-linux",
-    "SETUP_SHA": "linux-setup.sh",
-    "TEARDOWN_SHA": "linux-teardown.sh",
 }
 missing = [name for name in assets.values() if name not in checksums]
 if missing:
@@ -74,8 +70,6 @@ if missing:
 
 values = {key: checksums[name] for key, name in assets.items()}
 values["VERSION"] = version
-# Pin the exact manifest bytes too; its digest cannot be listed inside itself.
-values["MANIFEST_SHA"] = hashlib.sha256(raw).hexdigest()
 for key, value in values.items():
     token = "@@" + key + "@@"
     if token not in template:
