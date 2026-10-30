@@ -18,6 +18,32 @@ export function recordedCheckpoints() {
   return new Set(evidenceFiles().map((f) => f.slice(0, 5)));
 }
 
+// The evidence entries of each checkpoint, for links: P0-07 -> its two files, P0-08 -> its one. A link's text
+// comes from the file name: the platform when that alone tells a checkpoint's entries apart
+// (P0-02-real-deny-macos.md -> "macOS"), otherwise the rest of the name (P0-07-fx-real-model-macos.md ->
+// "fx real model, macOS"; P0-08-second-platform.md -> "second platform"). macOS first, then Linux, then the rest.
+const PLATFORMS = [['macos', 'macOS'], ['linux', 'Linux']];
+
+export function evidenceEntries() {
+  const byId = new Map();
+  for (const file of evidenceFiles()) {
+    const slug = file.slice(6, -3);
+    const at = PLATFORMS.findIndex(([key]) => slug === key || slug.endsWith(`-${key}`));
+    const platform = at >= 0 ? PLATFORMS[at][1] : null;
+    const rest = (at >= 0 ? slug.slice(0, -PLATFORMS[at][0].length) : slug).replace(/-+$/, '').replace(/-/g, ' ');
+    const id = file.slice(0, 5);
+    byId.set(id, [...(byId.get(id) || []), { file, platform, rest, rank: at >= 0 ? at : PLATFORMS.length }]);
+  }
+  for (const list of byId.values()) {
+    list.sort((a, b) => a.rank - b.rank || a.file.localeCompare(b.file));
+    for (const e of list) {
+      const shared = list.filter((o) => o.platform === e.platform).length > 1;
+      e.label = e.platform && !shared ? e.platform : [e.rest, e.platform].filter(Boolean).join(', ');
+    }
+  }
+  return byId;
+}
+
 // Code counts as built when its path exists and, for a cell with builtWhen, when that file matches it.
 function codeBuilt(cell) {
   if (!cell.code) return false;
