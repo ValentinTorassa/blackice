@@ -34,7 +34,11 @@ zero too, preventing PID reuse from keeping an old tag. The first listed applica
 reexec and detached descendants. Only the authenticated owner's real UID acquires a new listed identity.
 
 Five legacy cgroup programs attach at `/sys/fs/cgroup/user.slice`: connect4/6, UDP sendmsg4/6, and INET socket
-creation. Listed TCP 80/443 goes to the application's HTTP/TLS loopback listeners. IPv4, native IPv6 and mapped
+creation. This attach point includes other users' sessions, not just `user-<uid>.slice`: their socket operations
+also run these programs. New executable tags are assigned only for the configured owner's real UID; existing
+tags remain inherited across UID changes. The reserved-listener peer restriction applies to every process
+under `user.slice`, including otherwise unlisted processes belonging to other users.
+Listed TCP 80/443 goes to the application's HTTP/TLS loopback listeners. IPv4, native IPv6 and mapped
 IPv6 are handled explicitly. Other TCP ports, non-stub UDP, QUIC, raw INET sockets, ICMP/ping, SCTP, UDPLite and
 MPTCP are refused. UDP DNS to `127.0.0.53:53`, including its mapped IPv6 spelling, is allowed. TCP DNS is refused.
 Unlisted processes retain their network access, except that loopback listener ports require the matching app tag.
@@ -103,8 +107,9 @@ updates are a follow-up.
   contained. Connected sockets, protocols without these connect/sendmsg hooks, and sockets created outside
   user.slice can bypass the checks on later use.
 - Clipboard/session-socket access is not blocked by this app filter and has not been tested with real data.
-- Root, other privileged software, system services and other users are outside the application's identity
-  boundary. A system service can reach a proxy port and produce receipts attributed to that app.
+- Root and other privileged software are outside the application's trust boundary. Other users' sessions
+  traverse the hooks and reserved-listener peer checks, but acquire no new executable tags for this owner's
+  policy. System services outside `user.slice` can reach a proxy port and produce receipts attributed to that app.
 - IO_uring identity attribution, kernel verifier acceptance, post-capability-drop map updates, crash recovery,
   polkit interaction, protected-port rebinding and application traffic all still need the approved installed run.
   Restart receipts report lost events; exact downtime is not measured and is labeled unknown.
@@ -129,3 +134,6 @@ normalizes map-FD immediates before hashing; [`BPF syscalls`](https://github.com
 define link and ID-access behavior. Polkit 126's
 [subject decoding](https://github.com/polkit-org/polkit/blob/126/src/polkit/polkitsubject.c) accepts the passed pidfd
 and UID without the legacy PID/start-time fallback used by older clients.
+
+The [demo preparation](linux-appfilter-demo.md) supplies three executable policies, an evidence fixture and
+the claims that a future recorded run could support. It contains no passing app-filter evidence.
