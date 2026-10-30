@@ -26,7 +26,7 @@ out, so the key never enters the scope.
 |---|---|---|
 | fx-relay.R1 | blackice shall accept the gateway key only on standard input. It shall offer no flag, environment variable or file option for it, and the key shall not appear in the scope's environment, arguments, receipts or state directory. | P0-09 |
 | fx-relay.R2 | When the relay starts, it shall harden its process before it reads the key: not dumpable on Linux (`PR_SET_DUMPABLE`), debugger attachment refused on macOS (`PT_DENY_ATTACH`), so that core dumps and same-user debuggers cannot read the key from its memory. | P0-07 |
-| fx-relay.R3 | The relay shall listen only on `127.0.0.1` on a random port, and shall forward only `POST /v1/chat/completions` to the one configured gateway URL (`https`, or `http` only to loopback), adding the key; `GET /v1/models` is answered locally from the allow list. Any other method, path or target shall be refused with an error and a receipt. It shall also refuse a request that carries an `Origin` or `Sec-Fetch-Site` header, whose `Host` is not exactly `127.0.0.1:<port>`, or whose `Content-Type` is not `application/json`. | P0-07 |
+| fx-relay.R3 | The relay shall listen only on `127.0.0.1` on a random port, and shall forward only `POST /v1/chat/completions` to the one configured gateway URL (`https`, or `http` only to loopback), adding the key; `GET /v1/models` is answered locally from the allow list. Any other method, path or target shall be refused with an error and a receipt. It shall also refuse a request that carries an `Origin` or any `Sec-Fetch-*` header, whose `Host` is not exactly `127.0.0.1:<port>`, or whose `Content-Type` is not `application/json`. | P0-07 |
 | fx-relay.R4 | When a request names a model that is not on the scope's model allow list, the relay shall refuse it without contacting the gateway. | P0-07 |
 | fx-relay.R5 | If a request body is larger than the size cap, or the scope has used its request cap, the relay shall refuse it without contacting the gateway. | P0-07 |
 | fx-relay.R6 | The relay shall write one receipt per call with the scope, the model, the verdict, a reason code and the bytes sent and received. It shall never write prompt or response content or the key. | P0-09 |
@@ -60,7 +60,10 @@ key out of the scope; it does not decide what content may be sent to the model.
 - Relay (`src/relay/`): sends upstream only `Content-Type`, `Accept-Encoding: identity`, `User-Agent` and its
   own `Authorization`; the caller's headers are dropped and redirects are not followed. It keeps its own copy of
   `Bearer <key>` and zeroes it on stop. Limits: exact-match model allow list, body size cap, call cap and
-  connection cap; a request with a repeated `"model"` key is refused. Streamed answers (`stream: true`) pass
+  connection cap; a request with a repeated `"model"` key is refused, and so are gateway routing fields
+  (`providerOptions`, `models`, `provider`, `route`, `extra_body`) that could fall back to a model off the list.
+  Each call is cut at a response size cap and a time limit, enforced by a watchdog; if the watchdog cannot
+  start, the call is refused before anything goes upstream. Streamed answers (`stream: true`) pass
   through as they arrive. Receipts: `point: relay`, `event: relay_call`, with status, bytes in and out and
   whether it streamed in `detail`.
 - Gateway (L0): an OpenAI-compatible chat-completions endpoint, such as AI Gateway. The relay reads the key from
@@ -78,9 +81,8 @@ key out of the scope; it does not decide what content may be sent to the model.
   - Main mode: the hook is a patch, not an fx feature. Until fx offers a supported launch hook, each fx release
     needs the patch checked again.
   - L0: a tool inside the scope can call the relay too. It can send any content to the allowed model endpoint
-    and use up the scope's request cap. The cap counts calls; it does not bound the spend, because one call can
-    ask for a long answer and the relay has no output-size or time limit yet. A demo with a real key needs its
-    own budget set on the gateway key.
+    and use up the scope's caps. The caps limit the number of calls, the size of each answer and its time;
+    they are not a budget in money. A demo with a real key needs its own budget set on the gateway key.
   - L0: until the per-scope token (R16) lands, any local process can send requests to the relay port and spend
     the key: processes outside every scope, other users' processes, and a web page in the user's browser (a
     cross-origin POST with a `text/plain` body needs no preflight). The header checks in R3 close the browser
@@ -101,9 +103,9 @@ key out of the scope; it does not decide what content may be sent to the model.
 | Scrubbed environment for scopes started by the hook | lead | todo | |
 | Relay: loopback endpoint, key on stdin, forwarding to the gateway | network | done | |
 | Relay limits: model allow list, size cap, request cap, one receipt per call | network | done | |
-| Relay header checks (`Origin`, `Sec-Fetch-Site`, `Host`, `Content-Type`) | network | todo | |
-| Per-call output-size and time limits | network | todo | |
-| Refuse body fields that let the gateway pick a model off the allow list | network | todo | |
+| Relay header checks (`Origin`, `Sec-Fetch-*`, `Host`, `Content-Type`) | network | done | |
+| Per-call output-size and time limits | network | done | |
+| Refuse body fields that let the gateway pick a model off the allow list | network | done | |
 | Relay process hardening: not dumpable on Linux; `PT_DENY_ATTACH` on macOS | network | done | |
 | Start the relay from `blackice run`, and refuse to read the key if hardening fails | lead | todo | |
 | L0 fx setup for a scope: isolated home, configured provider, file modes | lead | todo | |

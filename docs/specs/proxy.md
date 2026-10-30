@@ -87,8 +87,8 @@ service by the program.
 | Bound header size and refuse unsupported requests | network | done | |
 | Tests: refused name, allowed name, private address behind an allowed name, IP literal | network | done | |
 | TLS server name must match the `CONNECT` host; non-TLS first bytes close the tunnel | network | done | |
-| Close the tunnel when the ClientHello has no server name | network | todo | |
-| Port check before any name work (`network.ports`) | network | doing | waits for: `Policy.checkPort` in the core |
+| Close the tunnel when the ClientHello has no server name | network | done | |
+| Port check before any name work (`network.ports`) | network | done | |
 | Wire the proxy into `blackice run` | lead | todo | |
 | Per-scope token so only the scope's own processes can use the proxy | network | todo | |
 | Scope end stops the proxy and closes its tunnels | lead | todo | |

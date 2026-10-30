@@ -57,15 +57,14 @@ the operating system rules, which keep allowing only the proxy and relay ports.
     enough to accept a grant from inside a scope.
 - The grant is held in memory by the proxy, as a name or `*.name`, never an IP literal. It never lifts a port or
   address refusal. Grants are not written to disk and do not survive the process.
-- At expiry the proxy closes the `CONNECT` tunnels opened under the grant (R5).
+- Lifetimes run on the boot clock, not the wall clock (R10). At expiry or on revoke, a watchdog closes the
+  `CONNECT` tunnels and plain HTTP exchanges opened under the grant (R5); if the watchdog cannot start, the
+  connection is refused instead of running without a time limit.
 - Receipts: `event: grant` with `point: control`, `verdict: allow`, `host`, and the expiry in `detail`; an
   expiry receipt when the time runs out (see [receipts](receipts.md)).
 - Owner in v0: any process of the same user that runs outside every scope. This is a declared limit, not a
   security boundary against the user's own software.
 - Limits:
-  - The first code measures grants on the wall clock and does not yet close plain HTTP requests at expiry,
-    and a failure to start the expiry timer lets the tunnel stay open. Each has a task below; until they are
-    done, R5 and R10 are not met.
   - No operating system authentication (Touch ID, polkit) yet.
   - A program inside the scope can still leave something behind, such as a script, that the owner later runs
     outside the scope. A grant cannot prevent that.
@@ -76,11 +75,11 @@ the operating system rules, which keep allowing only the proxy and relay ports.
 | Task | Owner | State | Blocked by |
 |---|---|---|---|
 | In-memory grants in the proxy (names only), with expiry that closes tunnels | network | done | |
-| Control socket: one-line JSON protocol, peer check, receipts (`src/control/`) | network | doing | |
-| Grants on a monotonic clock | network | todo | |
-| Refuse the connection when the expiry timer cannot start | network | todo | |
-| Close plain HTTP requests at grant expiry | network | todo | |
-| `blackice grant` command | lead | todo | |
+| Control socket: one-line JSON protocol, peer check, receipts (`src/control/`) | network | done | |
+| Grants on the boot clock | network | done | |
+| Refuse the connection when the expiry timer cannot start | network | done | |
+| Close plain HTTP requests at grant expiry or revoke | network | done | |
+| `blackice grant` command, on top of the control socket's client helpers | lead | todo | |
 | Grant, expiry and generation in receipts | lead | todo | |
 | Show on macOS that a scoped process cannot reach the control socket | lead | todo | |
 | Refuse Unix sockets inside Linux scopes (seccomp), so the control socket is out of reach | codex-linux | doing | |
@@ -89,7 +88,7 @@ the operating system rules, which keep allowing only the proxy and relay ports.
 
 | Covers | Kind | Link | Note |
 |---|---|---|---|
-| grant.R1, grant.R6 | test | `zig build test`, src/proxy/test.zig: "a grant allows a refused name until it expires, and expiry closes the tunnel" | 36/36 passed at dd44a0e (PR #4), Zig 0.17.0, Linux x86_64; only the proxy side, no control socket |
+| grant.R1, grant.R6 | test | `zig build test`, src/proxy/test.zig: "a grant allows a refused name until it expires, and expiry closes the tunnel" | 36/36 passed at dd44a0e (PR #4), Zig 0.17.0, Linux x86_64; only the proxy side. The control socket tests at 7cb5f02 are not counted yet: one of them hangs in about two runs out of three |
 
 ## Terms
 

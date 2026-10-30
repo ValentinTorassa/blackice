@@ -86,14 +86,14 @@ asked for, then every address that name resolves to. The second step stops an al
 | docs/policy.md for users | codex | done | |
 | Numeric names and `0x` names refused (R10) | lead | done | |
 | IPv4-embedded IPv6 judged by its IPv4 address, in requests and in policy subnets (R11) | lead | done | |
-| Repeated keys refused (R1) | lead | todo | |
+| Repeated keys refused (R1) | lead | done | |
 | Error messages keep their own copy of the rejected text, and a parsed policy owns all its strings | lead | done | |
 
 ## Evidence
 
 | Covers | Kind | Link | Note |
 |---|---|---|---|
-| policy.R1, policy.R2 | test | `zig build test`, src/core/policy.zig: "invalid policies fail closed" | 21/21 passed at 99e2f4e (PR #1), Zig 0.17.0, Linux x86_64. Repeated keys are not checked by a test yet |
+| policy.R1, policy.R2 | test | `zig build test`, src/core/policy.zig: "invalid policies fail closed" | 21/21 passed at 99e2f4e (PR #1), Zig 0.17.0, Linux x86_64; at 9426491 the same test also covers a repeated `mode` and a repeated `network` key (21/21) |
 | policy.R3 | test | `zig build test`, src/core/policy.zig: "deny-all and allow-all" | same run |
 | policy.R4 | test | `zig build test`, src/core/policy.zig: "allowlist: exact and wildcard names" | same run |
 | policy.R5 | test | `zig build test`, src/core/policy.zig: "resolved addresses: local and private are refused, subnets decide" | same run |
