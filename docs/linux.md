@@ -96,7 +96,8 @@ the [23.10 release notes](https://documentation.ubuntu.com/release-notes/23.10/#
 explicitly describe it as disabled by default. With that setting at `1` and no suitable AppArmor profile,
 scopes are expected to fail closed at `child_containment`: the helper's child drops its capabilities before
 `unshare` and counts as unprivileged, so the namespace's mount operations are denied. The namespace-mount
-failure was reproduced in Ubuntu 26.04 CI; an installed-helper run on Ubuntu remains unverified.
+failure was reproduced in Ubuntu 26.04 CI. CI sets `kernel.apparmor_restrict_unprivileged_userns=0`
+for these tests; an installed-helper run on Ubuntu remains unverified.
 An AppArmor profile installed by setup would be a separate privileged change requiring security review.
 Current setup does not install such a profile or change host sysctls.
 
