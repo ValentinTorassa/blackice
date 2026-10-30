@@ -50,7 +50,7 @@ means the code compiles and its tests pass, not that it was shown working.
 | | Agent tasks (task scopes) | Apps (app scopes) |
 |---|---|---|
 | **macOS** | Built, experimental: a Seatbelt sandbox profile plus the local proxy. Shown on one Mac in the entries above. Not shown yet: launches through `open` or Apple Events refused, fx with a real model. | Built, unsigned: a Network Extension filter. It has never been activated. Needs an Apple Developer ID, a signed Network Extension, tests on a live system, and receipts written through blackice. |
-| **Linux** | Built: cgroup v2 with eBPF socket programs, and a small helper installed once by a setup script run with sudo. Not shown yet: no evidence entry so far. | Not built. Identifying an app by its desktop or service group still has to be proven. |
+| **Linux** | Built: cgroup v2 with eBPF socket programs, and a small helper installed once by a setup script run with sudo. Not shown yet: no evidence entry so far. The first two real runs (30 Oct) failed closed before the command ran; the fixes are in review. | Not built. Identifying an app by its desktop or service group still has to be proven. |
 
 Windows is planned for after macOS and Linux. Nothing is built for it.
 
