@@ -22,21 +22,33 @@
 //! 4. An allowed name is resolved here, by the proxy, and every address is checked with
 //!    `Policy.checkResolved`. Only addresses that pass are dialed. The command's own resolution is never used.
 //!
+//! Dialing (Happy Eyeballs, RFC 8305): the checked addresses alternate between IPv6 and IPv4, starting with
+//! the family of the resolver's first answer. Each attempt starts `attempt_delay` after the previous one, or
+//! as soon as the previous one fails, without waiting for it to give up; the first connection that opens is
+//! used and the others are canceled. The whole dial has one `connect_timeout`. So an address whose packets
+//! are dropped costs one `attempt_delay`, not a timeout. The CONNECT reply (200) is sent only once the
+//! upstream connection is open.
+//!
 //! One receipt per decision (point "proxy"), event "connect" or "http". Besides the policy reason codes
 //! (policy.Reason), the proxy uses:
 //!   granted               allowed by an active grant (rule = the grant)
 //!   bad_request           the request could not be parsed (400)
 //!   resolve_failed        an allowed name did not resolve (502; rule = the allow entry)
-//!   upstream_unreachable  no checked address accepted the connection (502; rule = the allow entry)
+//!   upstream_unreachable  no checked address accepted the connection within `connect_timeout` (502; rule =
+//!                         the allow entry; detail = the last error, Timeout, or canceled when the scope ended
+//!                         during the dial; wait_ms = time spent resolving and dialing)
 //!   sni_mismatch          the TLS server name differs from the CONNECT host (tunnel closed)
 //!   tls_unparsed          the first bytes were a TLS handshake that could not be parsed (tunnel closed)
-//!   not_tls               the first bytes over CONNECT were not TLS, or there were none (tunnel closed)
+//!   not_tls               the first bytes over CONNECT were not TLS (tunnel closed)
 //!   sni_missing           a ClientHello for a name carried no server name (tunnel closed)
 //!   grant_expired         a connection opened under a grant was reset when the grant expired
 //!   grant_revoked         a connection opened under a grant was reset when the owner revoked it
 //!   (Both sides are reset, not closed: bytes still queued toward the client or the upstream are dropped, so
 //!   nothing moves through the proxy after the grant ends.)
 //!   grant_watchdog_failed the task that enforces a grant's lifetime could not start (503)
+//! A tunnel the client closes before sending a byte keeps its allow verdict and reason, with detail
+//! client_closed (or canceled when the scope ended first) and wait_ms, the time the client waited for the 200.
+//! Nothing reached the upstream. A client that gives up while the proxy is still dialing shows up this way.
 //!
 //! Declared limits (v0):
 //! - Only the destination name and port are decided. Content inside TLS is not inspected: a request to an
@@ -60,8 +72,10 @@ pub const Config = struct {
     max_connections: u32 = 256,
     /// Largest request head (request line and headers).
     max_head_bytes: usize = 16 * 1024,
-    /// Per-address dial timeout.
+    /// Time allowed for the whole dial, all addresses together.
     connect_timeout: Io.Duration = .fromSeconds(10),
+    /// How long an attempt runs before the next address is tried alongside it.
+    attempt_delay: Io.Duration = .fromMilliseconds(250),
     /// Addresses tried per name.
     max_addresses: usize = 8,
     /// Name resolution. `null` uses the system resolver (`std.Io.net.HostName.lookup`).
@@ -232,26 +246,42 @@ const Connection = struct {
         @memcpy(host_buf[0..target.host.len], target.host);
         const host_raw = host_buf[0..target.host.len];
 
+        const t0 = Io.Clock.awake.now(c.io);
         var d: Decision = .{ .event = "connect", .port = target.port };
-        var addrs_buf: [16]net.IpAddress = undefined;
+        var addrs_buf: [max_dial]net.IpAddress = undefined;
         const addrs = try c.decide(&d, host_raw, target.port, &addrs_buf);
         if (!d.allowed) return c.refuse(&d);
 
-        const upstream = c.dial(&d, addrs) orelse return c.refuse(&d);
+        const upstream = (try c.dial(&d, addrs, t0)) orelse return c.refuse(&d);
         defer upstream.close(c.io);
+        const wait_ms = t0.untilNow(c.io, .awake).toMilliseconds();
 
         // A grant's expiry or revocation closes the tunnel, not only new connections. No watchdog, no tunnel.
         var watchdog = c.armWatchdog(&d, upstream) catch return c.refuse(&d);
         defer if (watchdog) |*f| f.cancel(c.io) catch {};
 
         const w = &c.writer.interface;
-        w.writeAll("HTTP/1.1 200 Connection Established\r\n\r\n") catch return c.canceled();
-        w.flush() catch return c.canceled();
+        const replied = if (w.writeAll("HTTP/1.1 200 Connection Established\r\n\r\n")) |_| (if (w.flush()) |_| true else |_| false) else |_| false;
 
         // Nothing flows in either direction until the first client bytes pass: TLS only, and for a name the
         // ClientHello must carry exactly that name. A shared front end picks the site by SNI (or, without
         // TLS, by Host header), so anything else could reach a site the policy never allowed.
-        const refusal: ?[]const u8 = switch (c.checkSni(if (d.literal) null else d.host)) {
+        const sni: SniResult = if (replied) c.checkSni(if (d.literal) null else d.host) else .no_data;
+        if (sni == .no_data) {
+            // The client left (or the scope ended) before sending a byte, or before the 200 could reach it:
+            // nothing was refused and nothing reached the upstream. wait_ms shows whether the client gave up
+            // while the proxy was dialing.
+            const canceled_now = for ([_]?anyerror{ c.reader.err, c.writer.err }) |e| {
+                if (e != null and e.? == error.Canceled) break true;
+            } else false;
+            d.detail = if (canceled_now) "canceled" else "client_closed";
+            d.wait_ms = wait_ms;
+            c.writeReceipt(&d);
+            shutdownProtected(c.io, upstream, .both);
+            shutdownProtected(c.io, c.client, .both);
+            return c.canceled();
+        }
+        const refusal: ?[]const u8 = switch (sni) {
             .match => blk: {
                 d.detail = if (d.literal) "ip_literal" else "sni_match";
                 break :blk null;
@@ -261,10 +291,7 @@ const Connection = struct {
                 break :blk null;
             } else "sni_missing",
             .not_tls => "not_tls",
-            .no_data => blk: {
-                d.detail = "no_data";
-                break :blk "not_tls";
-            },
+            .no_data => unreachable,
             .mismatch => |name| blk: {
                 d.sni = name;
                 break :blk "sni_mismatch";
@@ -308,12 +335,13 @@ const Connection = struct {
             return c.badRequest("400 Bad Request", detail, "http");
         };
 
+        const t0 = Io.Clock.awake.now(c.io);
         var d: Decision = .{ .event = "http", .port = url.port, .method = @tagName(req.head.method) };
-        var addrs_buf: [16]net.IpAddress = undefined;
+        var addrs_buf: [max_dial]net.IpAddress = undefined;
         const addrs = try c.decide(&d, url.host, url.port, &addrs_buf);
         if (!d.allowed) return c.refuse(&d);
 
-        const upstream = c.dial(&d, addrs) orelse return c.refuse(&d);
+        const upstream = (try c.dial(&d, addrs, t0)) orelse return c.refuse(&d);
         defer upstream.close(c.io);
         var watchdog = c.armWatchdog(&d, upstream) catch return c.refuse(&d);
         defer if (watchdog) |*f| f.cancel(c.io) catch {};
@@ -347,7 +375,7 @@ const Connection = struct {
         const g = d.grant orelse return null;
         const fail = builtin.is_test and test_fail_watchdog;
         if (!fail) {
-            if (c.io.concurrent(watchGrant, .{ c.p, g.id, g.deadline, c.client, upstream, d.event, d.host })) |f| return f else |_| {}
+            if (c.io.concurrent(watchGrant, .{ c.p, g.id, g.deadline, c.client, upstream, d.event, d.host, d.ip_buf[0..d.ip_len], d.port })) |f| return f else |_| {}
         }
         d.allowed = false;
         d.policy_denied = false;
@@ -366,7 +394,7 @@ const Connection = struct {
     }
 
     /// Fills `d` with the policy decision and returns the addresses that may be dialed.
-    fn decide(c: *Connection, d: *Decision, host_raw: []const u8, port: u16, buf: *[16]net.IpAddress) Io.Cancelable![]net.IpAddress {
+    fn decide(c: *Connection, d: *Decision, host_raw: []const u8, port: u16, buf: *[max_dial]net.IpAddress) Io.Cancelable![]net.IpAddress {
         const pol = c.p.policy;
         const pv = pol.checkPort(port);
         if (!pv.allowed) {
@@ -466,22 +494,44 @@ const Connection = struct {
         return systemResolve(c.io, host, port, out);
     }
 
-    /// Dials the checked addresses in order. Returns null (and fills `d`) when none answers.
-    fn dial(c: *Connection, d: *Decision, addrs: []const net.IpAddress) ?net.Stream {
-        var last_err: anyerror = error.NoAddress;
-        for (addrs) |*a| {
-            const s = connectTimeout(c.io, a.*, c.p.config.connect_timeout) catch |err| {
-                last_err = err;
-                continue;
-            };
-            d.setIp(a.*);
-            return s;
+    /// Dials the checked addresses (see "Dialing" above). Returns null, with `d` filled as a refusal, when
+    /// none opens in time. When the task is canceled mid-dial, writes that refusal's receipt and returns
+    /// error.Canceled: a stopping proxy does not go on to the next address.
+    fn dial(c: *Connection, d: *Decision, addrs: []const net.IpAddress, t0: Io.Timestamp) Io.Cancelable!?net.Stream {
+        if (addrs.len == 0) {
+            d.allowed = false;
+            d.reason = "upstream_unreachable";
+            d.detail = "no_address";
+            return null;
         }
-        d.allowed = false;
-        d.reason = "upstream_unreachable";
-        d.detail = @errorName(last_err);
-        if (addrs.len > 0) d.setIp(addrs[addrs.len - 1]);
-        return null;
+        var order_buf: [max_dial]net.IpAddress = undefined;
+        const order = interleaveFamilies(&order_buf, addrs);
+        const cfg = c.p.config;
+        const result = dialRace(c.io, order, cfg.attempt_delay, cfg.connect_timeout) catch |err| switch (err) {
+            error.Canceled => {
+                d.allowed = false;
+                d.reason = "upstream_unreachable";
+                d.detail = "canceled";
+                d.wait_ms = t0.untilNow(c.io, .awake).toMilliseconds();
+                d.setIp(order[0]);
+                c.writeReceipt(d);
+                return error.Canceled;
+            },
+        };
+        switch (result) {
+            .open => |o| {
+                d.setIp(order[o.index]);
+                return o.stream;
+            },
+            .failed => |f| {
+                d.allowed = false;
+                d.reason = "upstream_unreachable";
+                d.detail = @errorName(f.err);
+                d.wait_ms = t0.untilNow(c.io, .awake).toMilliseconds();
+                d.setIp(order[f.index]);
+                return null;
+            },
+        }
     }
 
     const SniResult = union(enum) { match, no_sni, not_tls, no_data, unparsed, mismatch: []const u8 };
@@ -513,6 +563,10 @@ const Connection = struct {
             if (w.end > 0) w.writeByte(' ') catch {};
             w.writeAll(x) catch {};
         }
+        if (d.wait_ms) |ms| {
+            if (w.end > 0) w.writeByte(' ') catch {};
+            w.print("wait_ms={d}", .{ms}) catch {};
+        }
         if (d.sni) |s| {
             if (w.end > 0) w.writeByte(' ') catch {};
             w.writeAll("sni=") catch {};
@@ -523,6 +577,10 @@ const Connection = struct {
             if (w.end > 0) w.writeByte(' ') catch {};
             w.print("grant_until={s}", .{receipt.formatTimestamp(&ts_buf, e)}) catch {};
         }
+        // A cancelation that arrives during the write must neither drop the receipt nor be consumed by it:
+        // a swallowed cancelation would leave the connection waiting on its pumps while the proxy stops.
+        const old = c.io.swapCancelProtection(.blocked);
+        defer _ = c.io.swapCancelProtection(old);
         c.p.receipts.write(.{
             .event = d.event,
             .point = .proxy,
@@ -548,6 +606,8 @@ const Decision = struct {
     reason: []const u8 = "",
     rule: ?[]const u8 = null,
     detail: ?[]const u8 = null,
+    /// Milliseconds spent resolving and dialing; shown for failed dials and tunnels closed before any data.
+    wait_ms: ?i64 = null,
     sni: ?[]const u8 = null,
     /// Set when a grant allowed the connection: wall-clock expiry (display) and the grant to watch.
     expires: ?Io.Timestamp = null,
@@ -596,37 +656,132 @@ fn shutdownProtected(io: Io, stream: net.Stream, how: net.ShutdownHow) void {
     stream.shutdown(io, how) catch {};
 }
 
-/// `IpAddress.connect` with a timeout. (Zig 0.17's threaded Io does not implement the connect timeout
-/// option yet, so the dial races a timer.)
-pub fn connectTimeout(io: Io, addr: net.IpAddress, timeout: Io.Duration) (net.IpAddress.ConnectError || error{Timeout})!net.Stream {
-    const U = union(enum) {
-        conn: net.IpAddress.ConnectError!net.Stream,
-        timer: Io.Cancelable!void,
+/// Addresses dialed per name, at most.
+pub const max_dial = 16;
+
+pub const Dialed = union(enum) {
+    /// The first connection that opened, and the index of its address.
+    open: struct { stream: net.Stream, index: usize },
+    /// No connection opened: the last error (Timeout when the budget ran out) and the address it came from.
+    failed: struct { err: anyerror, index: usize },
+};
+
+/// Happy Eyeballs over `addrs`, in the order given: the next attempt starts when an attempt fails or `delay`
+/// after the latest attempt started, whichever is first; the first connection to open wins and the others are
+/// canceled (one that opens late is closed). Gives up after `budget`. A dial that cannot get the threads for
+/// its deadline or first attempt fails at once (error.ConcurrencyUnavailable) rather than run without a
+/// budget. (Zig 0.17's threaded Io has no connect timeout option, so the attempts race timers.)
+pub fn dialRace(io: Io, addrs: []const net.IpAddress, delay: Io.Duration, budget: Io.Duration) Io.Cancelable!Dialed {
+    std.debug.assert(addrs.len > 0 and addrs.len <= max_dial);
+    // Every task's result must fit: each attempt, each stagger timer (at most one per attempt) and the deadline.
+    var buf: [2 * max_dial + 1]DialEvent = undefined;
+    var sel: Io.Select(DialEvent) = .init(io, &buf);
+    defer while (sel.cancel()) |late| switch (late) {
+        .attempt => |a| if (a.result) |s| s.close(io) else |_| {},
+        .stagger, .deadline => {},
     };
-    var buf: [2]U = undefined;
-    var sel: Io.Select(U) = .init(io, &buf);
-    sel.concurrent(.conn, connectPlain, .{ addr, io }) catch return connectPlain(addr, io);
-    sel.concurrent(.timer, sleepFor, .{ io, timeout }) catch {};
-    const first = sel.await() catch |err| {
-        drainSelect(U, &sel, io);
-        return err;
-    };
-    drainSelect(U, &sel, io);
-    return switch (first) {
-        .conn => |r| r,
-        .timer => error.Timeout,
-    };
+    var race: Race = .{ .sel = &sel, .io = io, .addrs = addrs, .delay = delay };
+
+    sel.concurrent(.deadline, sleepFor, .{ io, budget }) catch |err|
+        return .{ .failed = .{ .err = err, .index = 0 } };
+    if (!race.startNext()) return race.last;
+    race.armStagger();
+
+    while (true) {
+        switch (try sel.await()) {
+            .attempt => |a| {
+                race.running -= 1;
+                if (a.result) |s| return .{ .open = .{ .stream = s, .index = a.index } } else |err| {
+                    race.last = .{ .failed = .{ .err = err, .index = a.index } };
+                }
+                // A failed attempt hands over at once, and the next delay counts from there.
+                if (race.startNext()) race.armStagger();
+            },
+            .stagger => |t| if (t.gen == race.gen) {
+                if (race.startNext()) race.armStagger();
+            },
+            // The first address has waited longest; the receipt names it.
+            .deadline => return .{ .failed = .{ .err = error.Timeout, .index = 0 } },
+        }
+        if (race.running == 0 and !race.startNext()) return race.last;
+    }
 }
 
-fn drainSelect(comptime U: type, sel: *Io.Select(U), io: Io) void {
-    while (sel.cancel()) |late| switch (late) {
-        .conn => |r| if (r) |s| s.close(io) else |_| {},
-        .timer => {},
-    };
+const DialEvent = union(enum) {
+    attempt: Attempt,
+    stagger: Stagger,
+    deadline: Io.Cancelable!void,
+};
+
+/// A stagger timer's end. Only the latest timer (`gen`) starts an attempt; an older one was overtaken by a
+/// failure that started the next attempt early.
+const Stagger = struct { gen: usize, result: Io.Cancelable!void };
+
+fn staggerSleep(io: Io, d: Io.Duration, gen: usize) Stagger {
+    return .{ .gen = gen, .result = io.sleep(d, .awake) };
 }
 
-fn connectPlain(addr: net.IpAddress, io: Io) net.IpAddress.ConnectError!net.Stream {
-    return addr.connect(io, .{ .mode = .stream });
+const Race = struct {
+    sel: *Io.Select(DialEvent),
+    io: Io,
+    addrs: []const net.IpAddress,
+    delay: Io.Duration,
+    next: usize = 0,
+    running: usize = 0,
+    /// The generation of the latest stagger timer.
+    gen: usize = 0,
+    last: Dialed = .{ .failed = .{ .err = error.Timeout, .index = 0 } },
+
+    /// Starts the next address's attempt. False when no address is left or it could not start (that
+    /// address then counts as failed).
+    fn startNext(r: *Race) bool {
+        if (r.next == r.addrs.len) return false;
+        const i = r.next;
+        r.next += 1;
+        r.sel.concurrent(.attempt, attempt, .{ r.io, r.addrs[i], i }) catch |err| {
+            r.last = .{ .failed = .{ .err = err, .index = i } };
+            return false;
+        };
+        r.running += 1;
+        return true;
+    }
+
+    /// Starts a new stagger timer, which supersedes any older one, while an address is left. Without it, the
+    /// next address starts only when an attempt fails.
+    fn armStagger(r: *Race) void {
+        if (r.next == r.addrs.len) return;
+        r.gen += 1;
+        r.sel.concurrent(.stagger, staggerSleep, .{ r.io, r.delay, r.gen }) catch {};
+    }
+};
+
+const Attempt = struct { index: usize, result: net.IpAddress.ConnectError!net.Stream };
+
+fn attempt(io: Io, addr: net.IpAddress, index: usize) Attempt {
+    return .{ .index = index, .result = addr.connect(io, .{ .mode = .stream }) };
+}
+
+/// Copies `addrs` into `out` with the address families alternating, starting with the family of the first
+/// address; the order within each family is kept (RFC 8305, section 4).
+pub fn interleaveFamilies(out: []net.IpAddress, addrs: []const net.IpAddress) []net.IpAddress {
+    std.debug.assert(out.len >= addrs.len);
+    if (addrs.len == 0) return out[0..0];
+    const first = std.meta.activeTag(addrs[0]);
+    var same: usize = 0; // next unused index of the first family
+    var other: usize = 0; // next unused index of the other family
+    var n: usize = 0;
+    var want_first = true;
+    while (n < addrs.len) {
+        const pick_first = want_first;
+        want_first = !want_first;
+        const cursor = if (pick_first) &same else &other;
+        while (cursor.* < addrs.len and (std.meta.activeTag(addrs[cursor.*]) == first) != pick_first) cursor.* += 1;
+        if (cursor.* == addrs.len) continue;
+        out[n] = addrs[cursor.*];
+        n += 1;
+        cursor.* += 1;
+    }
+    return out[0..n];
 }
 
 fn sleepFor(io: Io, d: Io.Duration) Io.Cancelable!void {
@@ -635,7 +790,8 @@ fn sleepFor(io: Io, d: Io.Duration) Io.Cancelable!void {
 
 /// Closes a connection opened under a grant once the grant expires or is revoked, with a receipt. Follows
 /// extensions: the deadline is re-read from the grant table on every tick.
-fn watchGrant(p: *Proxy, id: u64, first_deadline: Io.Timestamp, client: net.Stream, upstream: net.Stream, event: []const u8, host: []const u8) Io.Cancelable!void {
+/// `ip` and `port` repeat the connection's own receipt, so each reset can be matched to its connection.
+fn watchGrant(p: *Proxy, id: u64, first_deadline: Io.Timestamp, client: net.Stream, upstream: net.Stream, event: []const u8, host: []const u8, ip: []const u8, port: u16) Io.Cancelable!void {
     const io = p.io;
     const g = p.config.grants.?;
     var deadline = first_deadline;
@@ -657,6 +813,8 @@ fn watchGrant(p: *Proxy, id: u64, first_deadline: Io.Timestamp, client: net.Stre
         .verdict = .deny,
         .reason = reason,
         .host = host,
+        .ip = if (ip.len > 0) ip else null,
+        .port = port,
         .detail = "connection_reset",
     });
     // A plain shutdown would still deliver what is queued in the socket buffers (on a loopback socket that can
