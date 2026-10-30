@@ -29,9 +29,10 @@ zig build test        # unit tests
 zig build release     # stripped release binaries in zig-out/release/
 ```
 
-`zig build release` builds every target listed above with ReleaseSafe and stripped debug info. The same commit
-built with the same Zig gives the same bytes in any directory, which is what makes the third verification level
-below possible. `-Dmacos-min=13.0` sets the oldest macOS the binaries start on (13.0 by default).
+`zig build release` builds every target listed above with ReleaseSafe and stripped debug info. On one machine,
+the same commit built with the same Zig has given the same bytes in different directories; the third
+verification level below relies on that. Matching bytes across different machines is the goal, not yet shown
+(see level 3). `-Dmacos-min=13.0` sets the oldest macOS the binaries start on (13.0 by default).
 
 `zig build` alone gives a development build for this machine in `zig-out/bin/blackice`. It keeps debug
 information, so its bytes depend on where you built it.
@@ -105,8 +106,10 @@ shasum -a 256 zig-out/release/*     # Linux: sha256sum
 ```
 
 Each hash must equal the one in `SHA256SUMS`. If the release notes give a `-Dmacos-min` other than the default,
-pass the same value. The release workflow is to build every file twice, on a Linux runner and on a macOS runner,
-and fail unless both builds match. So the hashes should not depend on which kind of machine you rebuild on.
+pass the same value. The release workflow is planned to build every file twice, on a Linux runner and on a macOS
+runner, and to fail unless both builds match. Until it does, a rebuild on another machine is expected, not
+shown, to give the same bytes: every matching build so far came from one Linux machine. Please report a
+mismatch.
 
 ## Install
 
@@ -117,6 +120,19 @@ mkdir -p ~/.local/bin
 install -m 0755 blackice-aarch64-macos ~/.local/bin/blackice
 blackice version
 ```
+
+If another program will start blackice for you, for example an agent tool's launch hook, install it root-owned
+instead and point that program at this path. A binary in your home directory can be replaced by anything that
+runs as you outside a scope, such as the agent's own file-editing tools, and the next launch would then run
+whatever was put there. A root-owned copy cannot be changed without `sudo`:
+
+```sh
+sudo install -m 0755 -o root -g wheel blackice-aarch64-macos /usr/local/bin/blackice   # macOS
+sudo install -m 0755 -o root -g root blackice-x86_64-linux /usr/local/bin/blackice     # Linux
+```
+
+Give the policy file that program passes the same treatment (root-owned, mode 0644), and keep both outside the
+agent's workspace.
 
 ## macOS
 
@@ -163,7 +179,9 @@ bash scripts/linux-build-helper.sh     # as yourself, not root; prints the helpe
 ```
 
 Compare that hash with an independent build of the same commit, for example one made in another clone, or one a
-reviewer published for that commit. Then:
+reviewer published for that commit. The script pins the target and CPU (`-target <arch>-linux -mcpu=baseline`),
+so the helper does not depend on the build machine's processor. Builds on two different machines have not been
+compared yet. Then:
 
 ```sh
 sudo bash scripts/linux-setup.sh "$USER" <sha256 of the helper>
@@ -176,8 +194,8 @@ Use `bash`, not `sh`: the scripts need Bash.
 ### From a release (after the first release)
 
 1. Download the helper for your architecture, `linux-setup.sh`, `linux-teardown.sh` and `SHA256SUMS`.
-2. Verify all four (levels 1 and 2; level 3 for the helper is `bash scripts/linux-build-helper.sh` in a checkout
-   of the tag).
+2. Verify all four (levels 1 and 2). Level 3 for the helper is `bash scripts/linux-build-helper.sh` in a checkout
+   of the tag, with the same caveat as above: matching hashes across machines are expected, not yet shown.
 3. Read the helper's hash in `SHA256SUMS`, and pass that value yourself:
 
 ```sh
