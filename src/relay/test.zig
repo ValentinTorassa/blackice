@@ -87,7 +87,7 @@ const Upstream = struct {
             try req.respond("{\"error\":\"bad key\"}", .{ .status = .unauthorized });
             return;
         }
-        if (std.mem.find(u8, body_store[0..n], "\"slow\":true") != null) {
+        if (std.mem.find(u8, body_store[0..n], "\"user\":\"slow\"") != null) {
             try u.io.sleep(.fromSeconds(3), .awake);
         }
         if (std.mem.find(u8, body_store[0..n], "\"stream\":true") != null) {
@@ -161,6 +161,8 @@ const Harness = struct {
     };
 
     const CallOptions = struct {
+        /// null sends `Bearer <this relay's token>`; "" sends no Authorization header.
+        auth: ?[]const u8 = null,
         content_type: []const u8 = "application/json",
         host: ?[]const u8 = null,
         extra: []const http.Header = &.{.{ .name = "x-from-client", .value = "1" }},
@@ -176,6 +178,8 @@ const Harness = struct {
         defer client.deinit();
         var url_buf: [128]u8 = undefined;
         const url = try std.fmt.bufPrint(&url_buf, "http://127.0.0.1:{d}{s}", .{ h.r.port, path });
+        var auth_buf: [128]u8 = undefined;
+        const auth = o.auth orelse try std.fmt.bufPrint(&auth_buf, "Bearer {s}", .{h.r.token()});
         var aw: Io.Writer.Allocating = .init(testing.allocator);
         errdefer aw.deinit();
         const res = try client.fetch(.{
@@ -184,7 +188,7 @@ const Harness = struct {
             .payload = payload,
             .response_writer = &aw.writer,
             .headers = .{
-                .authorization = .{ .override = "Bearer client-supplied-junk" },
+                .authorization = if (auth.len == 0) .omit else .{ .override = auth },
                 .content_type = .{ .override = o.content_type },
                 .host = if (o.host) |x| .{ .override = x } else .default,
             },
@@ -215,6 +219,7 @@ test "an allowed model is forwarded with the relay's key, never the caller's hea
     defer testing.allocator.free(res.body);
     try testing.expectEqual(http.Status.ok, res.status);
     try testing.expect(std.mem.find(u8, res.body, "\"content\":\"hello\"") != null);
+    // The caller sent the relay token; upstream sees only the key.
     try testing.expectEqualStrings("Bearer " ++ test_key, h.up.auth());
     try testing.expect(!h.up.saw_client_header);
     try testing.expectEqual(@as(u32, 1), h.r.callCount());
@@ -232,6 +237,98 @@ test "an allowed model is forwarded with the relay's key, never the caller's hea
     const all = try h.receipts();
     defer testing.allocator.free(all);
     try testing.expect(std.mem.find(u8, all, test_key) == null);
+    try testing.expect(std.mem.find(u8, all, h.r.token()) == null);
+}
+
+/// Sends raw request bytes and returns the status line.
+fn rawStatus(io: Io, port: u16, request: []const u8, buf: []u8) ![]const u8 {
+    const addr: net.IpAddress = .{ .ip4 = .loopback(port) };
+    const stream = try addr.connect(io, .{ .mode = .stream });
+    defer stream.close(io);
+    var wbuf: [512]u8 = undefined;
+    var w = stream.writer(io, &wbuf);
+    try w.interface.writeAll(request);
+    try w.interface.flush();
+    var r = stream.reader(io, buf);
+    return std.mem.trimEnd(u8, try r.interface.takeDelimiterExclusive('\n'), "\r");
+}
+
+test "calls without this relay's token are refused before anything else" {
+    var h: Harness = undefined;
+    try h.init(.{ .models = &models });
+    defer h.deinit();
+    const body =
+        \\{"model":"test/allowed-model","messages":[]}
+    ;
+    try testing.expectEqual(@as(usize, relay.Relay.token_len), h.r.token().len);
+    for (h.r.token()) |ch| try testing.expect(std.ascii.isDigit(ch) or (ch >= 'a' and ch <= 'f'));
+
+    var near: [relay.Relay.token_len]u8 = h.r.token()[0..relay.Relay.token_len].*;
+    near[near.len - 1] = if (near[near.len - 1] == '0') '1' else '0';
+    var near_buf: [80]u8 = undefined;
+    var long_buf: [80]u8 = undefined;
+    const cases = [_]struct { []const u8, []const u8 }{
+        .{ "", "missing" },
+        .{ try std.fmt.bufPrint(&near_buf, "Bearer {s}", .{&near}), "mismatch" },
+        .{ try std.fmt.bufPrint(&long_buf, "Bearer {s}0", .{h.r.token()}), "mismatch" },
+        .{ "Bearer " ++ test_key, "mismatch" },
+        .{ "Basic dXNlcjpwYXNz", "mismatch" },
+    };
+    for (cases, 0..) |c, i| {
+        const res = try h.callWith(.POST, "/v1/chat/completions", body, .{ .auth = c[0] });
+        defer testing.allocator.free(res.body);
+        try testing.expectEqual(http.Status.unauthorized, res.status);
+        try testing.expect(std.mem.find(u8, res.body, "bad_relay_token") != null);
+        var r = try h.receiptAt(i);
+        defer r.deinit();
+        try expectField(r.value, "verdict", "deny");
+        try expectField(r.value, "reason", "bad_relay_token");
+        try testing.expect(std.mem.startsWith(u8, r.value.object.get("detail").?.string, c[1]));
+    }
+    {
+        const res = try h.callWith(.GET, "/v1/models", null, .{ .auth = "" });
+        defer testing.allocator.free(res.body);
+        try testing.expectEqual(http.Status.unauthorized, res.status);
+    }
+    {
+        // Two Authorization headers, the second one right: refused, so a front end and the relay cannot
+        // read different values.
+        var req_buf: [512]u8 = undefined;
+        const req = try std.fmt.bufPrint(&req_buf, "GET /v1/models HTTP/1.1\r\nhost: 127.0.0.1:{d}\r\n" ++
+            "authorization: Bearer x\r\nauthorization: Bearer {s}\r\n\r\n", .{ h.r.port, h.r.token() });
+        var rbuf: [512]u8 = undefined;
+        try testing.expectEqualStrings("HTTP/1.1 401 Unauthorized", try rawStatus(h.io, h.r.port, req, &rbuf));
+        var r = try h.receiptAt(cases.len + 1);
+        defer r.deinit();
+        try testing.expect(std.mem.startsWith(u8, r.value.object.get("detail").?.string, "repeated"));
+    }
+    {
+        // The scheme is case-insensitive.
+        var auth_buf: [80]u8 = undefined;
+        const res = try h.callWith(.POST, "/v1/chat/completions", body, .{ .auth = try std.fmt.bufPrint(&auth_buf, "bearer {s}", .{h.r.token()}) });
+        defer testing.allocator.free(res.body);
+        try testing.expectEqual(http.Status.ok, res.status);
+    }
+    try testing.expectEqual(@as(u32, 1), h.r.callCount());
+    try testing.expectEqual(@as(u32, 1), h.up.calls);
+
+    const all = try h.receipts();
+    defer testing.allocator.free(all);
+    try testing.expect(std.mem.find(u8, all, h.r.token()) == null);
+}
+
+test "two relays get different tokens" {
+    var a: Harness = undefined;
+    try a.init(.{ .models = &models });
+    defer a.deinit();
+    var b: Harness = undefined;
+    try b.init(.{ .models = &models });
+    defer b.deinit();
+    try testing.expect(!std.mem.eql(u8, a.r.token(), b.r.token()));
+    var auth_buf: [80]u8 = undefined;
+    const res = try a.callWith(.GET, "/v1/models", null, .{ .auth = try std.fmt.bufPrint(&auth_buf, "Bearer {s}", .{b.r.token()}) });
+    defer testing.allocator.free(res.body);
+    try testing.expectEqual(http.Status.unauthorized, res.status);
 }
 
 test "streamed responses pass through as server-sent events" {
@@ -334,6 +431,57 @@ test "browser pages, foreign Host headers, non-JSON bodies and routing fields ar
     try expectField(r4.value, "detail", "providerOptions");
 }
 
+test "only standard chat-completion fields pass the relay" {
+    var h: Harness = undefined;
+    try h.init(.{ .models = &models });
+    defer h.deinit();
+    const full = try h.call(.POST, "/v1/chat/completions",
+        \\{"model":"test/allowed-model","messages":[{"role":"user","content":"hi","name":"x"}],"tools":[],
+        \\ "tool_choice":"auto","stream":false,"stream_options":null,"temperature":0.2,"top_p":1,"max_tokens":50,
+        \\ "max_completion_tokens":50,"response_format":{"type":"text"},"stop":["\\n"],"seed":1,"n":1,"user":"u",
+        \\ "parallel_tool_calls":true,"reasoning_effort":"low"}
+    );
+    defer testing.allocator.free(full.body);
+    try testing.expectEqual(http.Status.ok, full.status);
+    const unknown = [_][]const u8{
+        \\{"model":"test/allowed-model","messages":[],"models":["test/expensive-model"]}
+        ,
+        \\{"model":"test/allowed-model","messages":[],"order":["openai"]}
+        ,
+        \\{"model":"test/allowed-model","messages":[],"\u0070roviderOptions":{}}
+        ,
+    };
+    for (unknown) |body| {
+        const res = try h.call(.POST, "/v1/chat/completions", body);
+        defer testing.allocator.free(res.body);
+        try testing.expectEqual(http.Status.forbidden, res.status);
+    }
+    try testing.expectEqual(@as(u32, 1), h.up.calls);
+    var r = try h.receiptAt(3);
+    defer r.deinit();
+    try expectField(r.value, "reason", "routing_not_allowed");
+    try expectField(r.value, "detail", "providerOptions");
+
+    // "n" multiplies the generations billed for one counted call, so only 1 passes.
+    const many = [_][]const u8{
+        \\{"model":"test/allowed-model","messages":[],"n":8}
+        ,
+        \\{"model":"test/allowed-model","messages":[],"n":1.0}
+        ,
+        \\{"model":"test/allowed-model","messages":[],"n":"2"}
+        ,
+    };
+    for (many, 0..) |body, i| {
+        const res = try h.call(.POST, "/v1/chat/completions", body);
+        defer testing.allocator.free(res.body);
+        try testing.expectEqual(http.Status.forbidden, res.status);
+        var rn = try h.receiptAt(4 + i);
+        defer rn.deinit();
+        try expectField(rn.value, "reason", "n_not_allowed");
+    }
+    try testing.expectEqual(@as(u32, 1), h.up.calls);
+}
+
 test "the response cap and the call time limit cut a call" {
     var h: Harness = undefined;
     try h.init(.{ .models = &models, .max_response_bytes = 16, .call_timeout = .fromMilliseconds(300) });
@@ -345,7 +493,7 @@ test "the response cap and the call time limit cut a call" {
         try testing.expect(res.body.len <= 16);
     } else |_| {}
     if (h.call(.POST, "/v1/chat/completions",
-        \\{"model":"test/allowed-model","slow":true}
+        \\{"model":"test/allowed-model","user":"slow"}
     )) |res| {
         defer testing.allocator.free(res.body);
         try testing.expect(res.status != .ok);
@@ -428,13 +576,17 @@ test "an unreachable upstream gives 502 and a receipt" {
     var client: http.Client = .{ .allocator = testing.allocator, .io = io };
     defer client.deinit();
     var call_url: [64]u8 = undefined;
+    var auth_buf: [80]u8 = undefined;
     var aw: Io.Writer.Allocating = .init(testing.allocator);
     defer aw.deinit();
     const res = try client.fetch(.{
         .location = .{ .url = try std.fmt.bufPrint(&call_url, "http://127.0.0.1:{d}/v1/chat/completions", .{r.port}) },
         .payload = "{\"model\":\"test/allowed-model\"}",
         .response_writer = &aw.writer,
-        .headers = .{ .content_type = .{ .override = "application/json" } },
+        .headers = .{
+            .content_type = .{ .override = "application/json" },
+            .authorization = .{ .override = try std.fmt.bufPrint(&auth_buf, "Bearer {s}", .{r.token()}) },
+        },
     });
     try testing.expectEqual(http.Status.bad_gateway, res.status);
     const bytes = try tmp.dir.readFileAlloc(io, "r.jsonl", testing.allocator, .limited(1 << 16));
@@ -489,4 +641,64 @@ test "hardenProcess compiles for this target" {
     // Not called: it would change the test runner itself. Referencing it makes the compiler check the
     // Linux (prctl) and macOS (ptrace) paths when the tests are built for each target.
     _ = &relay.hardenProcess;
+}
+
+const fake_model = @import("fake_model.zig");
+
+fn postJson(io: Io, port: u16, token: []const u8, body: []const u8) ![]u8 {
+    var client: http.Client = .{ .allocator = testing.allocator, .io = io };
+    defer client.deinit();
+    var url_buf: [64]u8 = undefined;
+    var auth_buf: [80]u8 = undefined;
+    var aw: Io.Writer.Allocating = .init(testing.allocator);
+    errdefer aw.deinit();
+    const res = try client.fetch(.{
+        .location = .{ .url = try std.fmt.bufPrint(&url_buf, "http://127.0.0.1:{d}/v1/chat/completions", .{port}) },
+        .payload = body,
+        .response_writer = &aw.writer,
+        .headers = .{
+            .content_type = .{ .override = "application/json" },
+            .authorization = .{ .override = try std.fmt.bufPrint(&auth_buf, "Bearer {s}", .{token}) },
+        },
+    });
+    try testing.expectEqual(http.Status.ok, res.status);
+    return aw.toOwnedSlice();
+}
+
+test "end to end with the scripted model: tool calls stream through the relay" {
+    const io = testing.io;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var log = try receipt.Log.open(io, tmp.dir, "r.jsonl", "s-test0008", "000000000000");
+    defer log.close();
+    const steps = [_][]const u8{ "echo one", "echo two" };
+    const m = try fake_model.FakeModel.start(testing.allocator, io, 0, &steps, null);
+    defer m.stop();
+    var url_buf: [64]u8 = undefined;
+    const allowed = [_][]const u8{fake_model.model_id};
+    const r = try relay.Relay.start(testing.allocator, io, .{
+        .models = &allowed,
+        .upstream = try std.fmt.bufPrint(&url_buf, "http://127.0.0.1:{d}/v1", .{m.port}),
+    }, test_key, &log);
+    defer r.stop();
+
+    const first = try postJson(io, r.port, r.token(),
+        \\{"model":"blackice-test/scripted","stream":true,"messages":[{"role":"user","content":"go"}],
+        \\ "tools":[{"type":"function","function":{"name":"shell","parameters":{}}}]}
+    );
+    defer testing.allocator.free(first);
+    try testing.expect(std.mem.find(u8, first, "\"tool_calls\"") != null);
+    try testing.expect(std.mem.find(u8, first, "echo one") != null);
+    try testing.expect(std.mem.find(u8, first, "\"delta\":{},\"finish_reason\":\"tool_calls\"") != null);
+    try testing.expect(std.mem.endsWith(u8, first, "data: [DONE]\n\n"));
+
+    const last = try postJson(io, r.port, r.token(),
+        \\{"model":"blackice-test/scripted","messages":[{"role":"user","content":"go"},
+        \\ {"role":"tool","tool_call_id":"call_1","content":"one\n"},{"role":"tool","tool_call_id":"call_2","content":"two\n"}],
+        \\ "tools":[{"type":"function","function":{"name":"shell","parameters":{}}}]}
+    );
+    defer testing.allocator.free(last);
+    try testing.expect(std.mem.find(u8, last, "SCRIPTED TEST MODEL (not a real model). Tool results: one | two") != null);
+    try testing.expectEqual(@as(u32, 2), m.calls.load(.monotonic));
+    try testing.expectEqual(@as(u32, 2), r.callCount());
 }

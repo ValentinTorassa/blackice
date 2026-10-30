@@ -58,12 +58,14 @@ pub fn profile(gpa: std.mem.Allocator, ports: []const u16, ancestor_count: usize
     return p.toOwnedSlice(gpa);
 }
 
-/// The ancestors of an absolute path, outermost first, without "/": "/a/b/c" gives "/a", "/a/b".
-pub fn ancestors(path: []const u8, out: [][]const u8) [][]const u8 {
+/// The ancestors of an absolute path, outermost first, without "/": "/a/b/c" gives "/a", "/a/b". Null when
+/// there are more than `out` can hold, so a deep path is refused rather than partly protected.
+pub fn ancestors(path: []const u8, out: [][]const u8) ?[][]const u8 {
     var n: usize = 0;
     var i: usize = 1;
     while (i < path.len) : (i += 1) {
-        if (path[i] == '/' and n < out.len) {
+        if (path[i] == '/') {
+            if (n == out.len) return null;
             out[n] = path[0..i];
             n += 1;
         }
@@ -78,7 +80,10 @@ pub fn launch(gpa: std.mem.Allocator, io: Io, spec: backend.LaunchSpec) backend.
         return error.SpawnFailed;
     }
     var anc_buf: [64][]const u8 = undefined;
-    const anc = ancestors(root, &anc_buf);
+    const anc = ancestors(root, &anc_buf) orelse {
+        spec.receipts.write(.{ .event = "warning", .point = .control, .reason = "invalid_state_dir", .detail = "state root nested too deep" });
+        return error.SpawnFailed;
+    };
     const prof = try profile(gpa, spec.allowed_loopback_ports, anc.len);
     defer gpa.free(prof);
 
@@ -113,11 +118,13 @@ pub fn launch(gpa: std.mem.Allocator, io: Io, spec: backend.LaunchSpec) backend.
 
 test ancestors {
     var buf: [8][]const u8 = undefined;
-    const a = ancestors("/Users/u/.local/state/blackice", &buf);
+    const a = ancestors("/Users/u/.local/state/blackice", &buf).?;
     try std.testing.expectEqual(@as(usize, 4), a.len);
     try std.testing.expectEqualStrings("/Users", a[0]);
     try std.testing.expectEqualStrings("/Users/u/.local/state", a[3]);
-    try std.testing.expectEqual(@as(usize, 0), ancestors("/blackice", &buf).len);
+    try std.testing.expectEqual(@as(usize, 0), ancestors("/blackice", &buf).?.len);
+    var small: [2][]const u8 = undefined;
+    try std.testing.expect(ancestors("/a/b/c/d", &small) == null);
 }
 
 test profile {
