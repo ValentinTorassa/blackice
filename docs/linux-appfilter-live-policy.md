@@ -1,10 +1,13 @@
 # Linux application policy reload (experimental VM build)
 
 `blackice app reload --policy FILE` replaces an armed application configuration
-without restarting the listed applications. This branch is for isolated VM
-validation and security review. It is not cleared for a host installation and is
-not part of the task-scope 0.1.0 release. `app reload --help` and `app status`
-explicitly report `experimental_vm_only`.
+without restarting the listed applications.
+
+**Status: NOT READY for host use.** This branch is for isolated VM validation.
+Security review of the admission fence, generation publication and restart
+protocol remains pending; passing VM tests does not clear that gate. It is not
+part of the task-scope 0.1.0 release. `app reload --help` and `app status` explicitly
+report `experimental_vm_only`.
 
 Use a complete `blackice.apps/v0` configuration with `generation` equal to the
 current generation plus one. Initial `app on --policy FILE` accepts generation 1
