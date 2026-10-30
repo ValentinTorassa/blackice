@@ -39,3 +39,5 @@ The Linux entries and failed-run records also name builds that are not on main. 
 failed runs' helper commits 35ae1f8 and c962271 are kept on the branch `codex/linux-verifier-fix` (020f389 and
 35ae1f8 also on `codex/linux-demo-020f389`), and can be fetched with `git fetch origin codex/linux-verifier-fix`.
 Helper commit 7c3bcff, used in the passing runs, can be fetched with `git fetch origin pull/6/head`.
+The Linux P0-03 to P0-05 entries also compare `scripts/e2e/` with commit 7cc5697, which is kept on the branch
+`claude/pasteboard`. The same scripts are on main.
