@@ -8,7 +8,8 @@ connection. Checkpoint P0-03.
 
 **Build.** `claude/run` at 58e73cc, `zig build release` with Zig 0.17.0 (cross-compiled on Linux; default
 `-Dmacos-min=13.0`). Binary `blackice-aarch64-macos`, sha256
-`6b6dac302c55c94e875d2803dcd03189ab21d15fa9ff2a8526b99f10f17619f3`, checked on the Mac before the run.
+`6b6dac302c55c94e875d2803dcd03189ab21d15fa9ff2a8526b99f10f17619f3`, checked on the Mac before the run; `blackice
+version` prints `blackice 0.0.0-poc`. Rebuilding 58e73cc with `zig build release` gives the same sha256.
 
 **Policy.** `policy.json`, id `b0aa1758b9c7`:
 
