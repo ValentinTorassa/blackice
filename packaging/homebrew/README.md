@@ -1,7 +1,7 @@
 # Homebrew formula preparation
 
 This directory prepares a binary formula for the future
-ValentinTorassa/homebrew-blackice tap. It does not create that repository or
+ValentinTorassa/homebrew-tap tap. It does not create that repository or
 publish a release. The template is not an installable formula until rendered
 with the checksums of a reviewed release.
 
@@ -15,7 +15,7 @@ Review the output before copying it to Formula/blackice.rb in the tap that the
 owner creates. The intended install command after publication is:
 
 ~~~sh
-brew install valentintorassa/blackice/blackice
+brew install valentintorassa/tap/blackice
 ~~~
 
 The version must be X.Y.Z with no leading v, prerelease or build metadata,
@@ -117,7 +117,7 @@ or the formula just to run these checks. Current Homebrew requires a formula
 name for audit, so after the owner creates and populates the tap, run:
 
 ~~~sh
-brew audit --strict --formula valentintorassa/blackice/blackice
+brew audit --strict --formula valentintorassa/tap/blackice
 ~~~
 
 Online audits and brew test remain release gates with published assets and a
