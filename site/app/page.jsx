@@ -14,20 +14,16 @@ import DemoVideo from '../components/DemoVideo';
 import { IsoScope, IsoPolicy, IsoReceipt } from '../components/Iso';
 import {
   Logo,
-  IconArrowInto,
   IconArrowRight,
   IconBook,
   IconCommand,
   IconGitHub,
-  IconLines,
-  IconNarrow,
   IconNested,
   IconPenguin,
   IconPolicy,
   IconReceipt,
   IconScale,
   IconTerminal,
-  IconWrap,
 } from '../components/Icons';
 import { SITE } from '../content/site';
 import { CHECKPOINTS } from '../content/status';
@@ -46,27 +42,20 @@ const NOUNS = [
     name: 'Scope',
     Icon: IconNested,
     Art: IsoScope,
-    text: 'Where a policy applies: a task and every process it starts, an app on the machine, or the host.',
+    text: 'What a policy applies to: one command and everything it starts, an app on the machine, or the whole host.',
   },
   {
     name: 'Policy',
     Icon: IconPolicy,
     Art: IsoPolicy,
-    text: 'Deny by default, with allow lists for names, subnets and ports. Every resolved address is checked again.',
+    text: 'A JSON file. Anything it doesn\'t allow by name, subnet or port is refused, and every address a name resolves to is checked too.',
   },
   {
     name: 'Receipt',
     Icon: IconReceipt,
     Art: IsoReceipt,
-    text: 'One flat JSON line per decision: the scope, the policy and its generation, where it was enforced, and why.',
+    text: 'One JSON line per decision: which scope, which version of the policy, where it was enforced, and why. tail, grep and jq work on them.',
   },
-];
-
-const PRINCIPLES = [
-  { name: 'Born inside', Icon: IconArrowInto, text: 'The policy attaches before exec, like chroot. The first connection already runs inside it.' },
-  { name: 'Only narrows', Icon: IconNarrow, text: 'Anything can tighten a scope. Widening comes from the owner, outside the task, for a set time.' },
-  { name: 'Wraps any command', Icon: IconWrap, text: 'Goes in front of a command, like nice or timeout. Wrapping fx needs no changes to it.' },
-  { name: 'Plain text out', Icon: IconLines, text: 'Receipts are JSON lines, so tail, grep and jq just work.' },
 ];
 
 const SESSION = [
@@ -93,7 +82,7 @@ export default function Home() {
           <div className="container hero-inner">
             <Link href="/docs/status/" className="pill">
               <span className="pill-dot" aria-hidden="true" />
-              v0 · macOS and Linux
+              v0 · Status
               <IconArrowRight size={13} className="pill-arrow" />
             </Link>
             <h1>
@@ -101,8 +90,12 @@ export default function Home() {
               for apps and tasks.
             </h1>
             <p className="lede">
-              A native, headless policy that attaches before a task starts. Every child process inherits it. A process
-              inside can&apos;t grant itself more access.
+              blackice decides which hosts a command can reach, along with every process it starts. The rules are in
+              place before the command runs, and nothing inside can loosen them.
+            </p>
+            <p className="hero-status">
+              Task scopes work today on macOS and on Debian 13 (x86_64). The macOS app filter is built in its pull
+              request and needs Developer ID signing to run. The Linux app filter is in design.
             </p>
             <CopyCommand command={SITE.command} />
             <div className="actions">
@@ -138,12 +131,11 @@ export default function Home() {
 
         {DEMO.length ? (
           <section className="container demo-section" id="demo" aria-labelledby="demo-title">
-            <p className="eyebrow">Demo</p>
             <h2 className="h2" id="demo-title">
-              fx, with blackice in front of every shell command.
+              Demo
             </h2>
             <DemoVideo sources={DEMO} poster={DEMO_POSTER} />
-            <p className="caption">v0. Labels on screen mark what is scripted and what is not verified.</p>
+            <p className="caption">Recorded on macOS. Labels on screen mark what is not verified.</p>
           </section>
         ) : null}
 
@@ -180,9 +172,8 @@ export default function Home() {
         </section>
 
         <section className="container section">
-          <p className="eyebrow">Model</p>
-          <h2 className="h2">Three nouns.</h2>
-          <p className="sub">The same model covers a command an agent runs and an app already on the machine.</p>
+          <h2 className="h2">How it works</h2>
+          <p className="sub">Tasks and apps use the same model: a scope, a policy and receipts.</p>
           <Spotlight className="nouns" tilt>
             {NOUNS.map(({ name, Icon, Art, text }, i) => (
               <article className="noun spot" key={name}>
@@ -204,57 +195,34 @@ export default function Home() {
 
         <section className="container section">
           <div className="head-row">
-            <div>
-              <p className="eyebrow">Design</p>
-              <h2 className="h2">Where a connection is decided.</h2>
-            </div>
-            <span className="badge">Proposed for v0 · not verified</span>
+            <h2 className="h2">Design</h2>
+            <span className="badge">v0 design · verified for task scopes on macOS and Debian 13 (x86_64)</span>
           </div>
           <p className="sub">
-            Every connection passes the same layers. The first one that refuses it is where it stops, and the decision
+            Each connection passes these layers in order and stops at the first one that refuses it. Every decision
             leaves a receipt.
           </p>
           <Layers />
         </section>
 
         <section className="container section">
-          <p className="eyebrow">Session</p>
-          <h2 className="h2">One command in front of anything.</h2>
+          <h2 className="h2">A shell inside a scope</h2>
           <p className="sub">
-            A shell, a test run or fx. Everything started inside stays in the scope. Wider access comes from outside,
-            from the owner, and ends on its own.
+            Put blackice in front of a shell, a test run or fx. Everything started inside stays in the scope. Only the
+            owner, from another terminal, can allow more, and that access expires on its own.
           </p>
-          <TypedTerminal lines={SESSION} title="~/project" badge="Illustrative · CLI not frozen" />
-        </section>
-
-        <section className="container section">
-          <p className="eyebrow">Principles</p>
-          <h2 className="h2">Old Unix rules, applied to the network.</h2>
-          <Spotlight className="grid4">
-            {PRINCIPLES.map(({ name, Icon, text }) => (
-              <div className="cell spot" key={name}>
-                <span className="cell-icon">
-                  <Icon size={18} />
-                </span>
-                <h3>{name}</h3>
-                <p>{text}</p>
-              </div>
-            ))}
-            <Corners />
-          </Spotlight>
+          <TypedTerminal lines={SESSION} title="~/project" badge="Example · the CLI may change" />
         </section>
 
         <section className="container section">
           <div className="head-row">
-            <div>
-              <p className="eyebrow">Status</p>
-              <h2 className="h2">Nothing counts as working without a recorded run.</h2>
-            </div>
+            <h2 className="h2">What works today</h2>
             <Link className="link" href="/docs/status/">
               Status page
               <IconArrowRight size={14} />
             </Link>
           </div>
+          <p className="sub">A part is marked Verified only when a recorded run in the repository backs it.</p>
           <div className="progress">
             <p className="progress-top">
               <span className="progress-count">
@@ -267,11 +235,11 @@ export default function Home() {
               {CHECKPOINTS.map(([id, name]) => {
                 const on = recorded.has(id);
                 return (
-                  <li key={id} className={on ? 'on' : undefined} title={`${id} · ${name} · ${on ? 'recorded' : 'not run'}`}>
+                  <li key={id} className={on ? 'on' : undefined} title={`${id} · ${name} · ${on ? 'recorded' : 'no entry yet'}`}>
                     <span className="seg" />
                     <span className="seg-id">{id.slice(3)}</span>
                     <span className="sr-only">
-                      {id} {name}: {on ? 'recorded' : 'not run'}
+                      {id} {name}: {on ? 'recorded' : 'no entry yet'}
                     </span>
                   </li>
                 );
@@ -284,11 +252,8 @@ export default function Home() {
         <section className="container section">
           <div className="cta">
             <CubeMark />
-            <h2 className="h2">Follow the proof.</h2>
-            <p className="sub">
-              The design, its limits and every checkpoint are public. Evidence lands in the repository as each run is
-              recorded.
-            </p>
+            <h2 className="h2">Read the code and the evidence</h2>
+            <p className="sub">The design, its limits and the evidence for each checkpoint are in the repository.</p>
             <div className="actions">
               <Link className="btn btn-primary" href="/docs/">
                 <IconBook size={16} />

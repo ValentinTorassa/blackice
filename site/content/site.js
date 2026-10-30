@@ -2,8 +2,8 @@ export const SITE = {
   name: 'blackice',
   headline: 'Network permissions for apps and tasks.',
   description:
-    'A native, headless network policy for macOS and Linux. It attaches before a task starts, every child process inherits it, and a process inside cannot grant itself more access.',
+    'blackice decides which hosts a command, and every process it starts, can reach. Native and headless. v0: task scopes work on macOS and Debian 13 (x86_64).',
   repo: 'https://github.com/ValentinTorassa/blackice',
   author: 'Valen Torassa',
-  command: 'blackice run --policy policy.json -- fx',
+  command: 'blackice run --policy policy.json -- npm ci',
 };

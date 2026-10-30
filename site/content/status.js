@@ -8,20 +8,20 @@ export const MATRIX = [
       base: 'pending',
       code: 'macos',
       builtAs: 'unsigned',
-      how: 'A Network Extension filter that decides per app, by code-signing identity, and per destination, with the same policy and receipts. It cannot run until it is signed with a Developer ID.',
+      how: 'A Network Extension filter that decides per app, by code signature, and per destination, with the same policies and receipts. It can\'t run until it is signed with an Apple Developer ID.',
     },
     tasks: {
       base: 'designed',
       code: 'src/macos',
       evidence: /^P0-02-.*macos/i,
-      how: 'Experimental session mode: the built-in sandbox lets the command reach only a local proxy, which applies the policy.',
+      how: 'Experimental. The built-in macOS sandbox lets the command reach only a local proxy, which applies the policy.',
     },
   },
   {
     os: 'Linux',
     apps: {
       base: 'pending',
-      how: 'Host-wide control with trustworthy process attribution. The mechanism will be chosen after a spike.',
+      how: 'Per-app control across the whole machine, which needs a reliable way to tell which app opened each connection. Not built yet.',
     },
     tasks: {
       base: 'designed',
@@ -30,6 +30,7 @@ export const MATRIX = [
       builtWhen: /^pub const available = true;/m,
       evidence: /^P0-02-.*linux/i,
       how: 'A cgroup v2 per task, with eBPF programs that let the command reach only a local proxy, which applies the policy.',
+      note: 'Tested on Debian 13 (kernel 6.12). On Ubuntu 24.04 and later, where kernel.apparmor_restrict_unprivileged_userns=1 is the default, scopes are expected to fail closed (not tested on Ubuntu).',
     },
   },
 ];
