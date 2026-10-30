@@ -53,7 +53,9 @@ mkfifo "$W/owner" || die "mkfifo failed"
 exec 3<> "$W/owner"
 echo
 echo "\$ blackice run --policy agent.json -- /bin/bash -c INNER inner ./blackice-copy   (stdin: the owner's FIFO)"
-"$B" run --policy "$POLICY" -- /bin/bash -c "$INNER" inner "$W/blackice-copy" < "$W/owner" > "$LOG" 2>&1 &
+# Through a pipe, not straight into the file (some builds write their own lines at fixed file offsets).
+# RUN is the pipe's reader, which ends when the run does; the run's exit status goes to a file.
+{ "$B" run --policy "$POLICY" -- /bin/bash -c "$INNER" inner "$W/blackice-copy" < "$W/owner" 2>&1; echo $? > "$W/out/grant-run.rc"; } | cat > "$LOG" &
 RUN=$!
 
 # wait_for TEXT: waits up to 60 s for a line in the run's output.
@@ -86,7 +88,7 @@ REVOKE_RC=$?
 echo "  | $REVOKE_OUT"
 echo go >&3
 wait "$RUN"
-RC=$?
+RC=$(cat "$W/out/grant-run.rc" 2> /dev/null || echo 255)
 exec 3>&-
 echo
 echo "== scoped command output"
