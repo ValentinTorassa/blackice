@@ -651,6 +651,8 @@ const Runtime = struct {
             };
         };
         const previous = r.history.head.load(.acquire).?;
+        var activation_detail: [16384]u8 = undefined;
+        const detail = try @import("reload_receipts.zig").activationDetail(&activation_detail, &previous.snapshot, &next.snapshot);
         try r.loaded.?.clearChecks();
         for (next.snapshot.slots, 0..) |slot, i| if (slot) |b| {
             if (b.active) try r.loaded.?.checkFile(b.identity, @intCast(i + 1));
@@ -691,7 +693,7 @@ const Runtime = struct {
         r.cfg = &next.cfg;
         r.service_log.?.policy_id = &next.cfg.digest;
         r.service_log.?.generation = next.cfg.generation;
-        try @import("reload_receipts.zig").activated(&r.service_log.?, .{ .policy = &previous.cfg.digest, .generation = previous.cfg.generation }, .{ .policy = &next.cfg.digest, .generation = next.cfg.generation }, "tags_retained; newly_refused_connections_reset_within_200ms");
+        try @import("reload_receipts.zig").activated(&r.service_log.?, .{ .policy = &previous.cfg.digest, .generation = previous.cfg.generation }, .{ .policy = &next.cfg.digest, .generation = next.cfg.generation }, detail);
         try channel.exchange(r.policy_write, r.policy_read, deadline, .{ .command = .resume_admission, .stamp = stamp, .length = 0 }, "", .resumed);
         active = try r.loaded.?.getEpoch();
         active.fenced = 0;

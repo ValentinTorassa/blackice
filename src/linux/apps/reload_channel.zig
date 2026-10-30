@@ -14,14 +14,17 @@ pub const Deadline = struct {
         return .{ .at = try now() + wire.deadline_ms };
     }
     fn ready(d: Deadline, fd: l.fd_t, event: i16) !void {
-        const left = d.at - try now();
-        if (left <= 0) return error.ReloadTimeout;
-        var fds = [_]l.pollfd{.{ .fd = fd, .events = event, .revents = 0 }};
-        // A signal does not renew the budget.
-        const rc = l.poll(&fds, 1, @intCast(left));
-        if (l.errno(rc) == .INTR) return d.ready(fd, event);
-        if (try sys.check(rc) == 0) return error.ReloadTimeout;
-        if (fds[0].revents & (l.POLL.ERR | l.POLL.NVAL) != 0) return error.ReloadPipeFailed;
+        while (true) {
+            const left = d.at - try now();
+            if (left <= 0) return error.ReloadTimeout;
+            var fds = [_]l.pollfd{.{ .fd = fd, .events = event, .revents = 0 }};
+            // A signal does not renew the budget.
+            const rc = l.poll(&fds, 1, @intCast(left));
+            if (l.errno(rc) == .INTR) continue;
+            if (try sys.check(rc) == 0) return error.ReloadTimeout;
+            if (fds[0].revents & (l.POLL.ERR | l.POLL.NVAL) != 0) return error.ReloadPipeFailed;
+            return;
+        }
     }
     pub fn read(d: Deadline, fd: l.fd_t, bytes: []u8) !void {
         var n: usize = 0;

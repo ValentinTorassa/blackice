@@ -44,10 +44,11 @@ rows, with this commit order:
 1. Validate the complete configuration and canonical root-owned ELF identities.
    Reject inode aliases, exhausted slots, and an added executable already running
    untagged. The check reads the iterator link pinned at arming.
-2. Persist the original configuration bytes under their SHA-256. The child parses
+2. Persist the original configuration bytes under their SHA-256 and record the
+   pending change. The child parses
    the bounded candidate and acknowledges preparation. A valid frame containing
    invalid policy JSON is refused while the old generation keeps serving.
-3. Record the pending change, stage unreachable next-generation file/port rows,
+3. Stage unreachable next-generation file/port rows,
    then fence new tagged kernel admissions and pause proxy admission.
 4. Atomically persist and fsync authoritative intent, including ordered policy
    digests and retired slots. Publish the complete kernel epoch, then the child's
@@ -124,7 +125,10 @@ does not inspect encrypted HTTP content or eliminate domain fronting.
 ## Receipts and bounds
 
 Service `policy_activated` carries the new `gen`, configuration `policy`, and full
-`old_policy` / `new_policy` hashes. Each assigned app's proxy file receives
+`old_policy` / `new_policy` hashes. The bounded activation detail lists added,
+removed, retired and changed paths.
+Long summaries are truncated by the existing field cap; per-slot records retain
+the corresponding executable independently. Each assigned app's proxy file receives
 `policy_changed` with its old/new network-policy hashes and new generation.
 Per-flow receipts carry an immutable policy/generation pair and executable.
 Retired flows retain their previous pair. Kernel events carry their decision-time
@@ -163,6 +167,12 @@ receiver, and a fresh output directory. An outside-scope control marker must rea
 the receiver; the scoped marker must not. It never supplies passwords or installs
 a polkit bypass. This fixed-membership driver is one acceptance test, not the
 whole security gate.
+
+`scripts/e2e/linux-appfilter-reload-refusals-vm.py` checks an already armed VM
+without a password: stale/invalid policies, raw unauthenticated owner, concurrent
+request, root non-owner, tagged curl and a real terminal prompt cancelled with
+Ctrl-C. It verifies unchanged kernel state and service PID plus refusal receipts.
+It neither installs an auth rule nor exercises a successful reload.
 
 Before host use, evidence must also cover add/remove membership and its race,
 slow allowed/revoked transfers, stale/malformed/oversized input, cancelled and
