@@ -84,14 +84,14 @@ loopback ports; names and addresses are then decided by the proxy.
 | Proxy variables in the command's environment | lead | todo | |
 | `scope_start` and `scope_end` receipts, with the failed-write count | lead | todo | |
 | Decide and document what happens to processes left running after CMD exits | lead | todo | |
-| Create each scope's state directory exclusively, never reusing an existing path | lead | todo | |
+| Create each scope's state directory exclusively (0700), with a new id on a clash | lead | done | |
 | Linux enforcing backend behind the same contract | codex-linux | todo | |
 
 ## Evidence
 
 | Covers | Kind | Link | Note |
 |---|---|---|---|
-| scope-core.R4 | test | `zig build test`, src/core/scope.zig: "newId" | Covers the identifier format only. 11/11 passed at 0c43c6f, Zig 0.17.0, Linux x86_64 |
+| scope-core.R4 | test | `zig build test`, src/core/scope.zig: "newId", "create" | Identifier format, and a new owner-only directory per scope. 21/21 passed at 99e2f4e (PR #1), Zig 0.17.0, Linux x86_64 |
 
 ## Terms
 

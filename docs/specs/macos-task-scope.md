@@ -33,7 +33,7 @@ control that a signed Network Extension will provide later (see [app-scopes](app
 | macos-task-scope.R8 | blackice shall label this backend as experimental wherever it reports the backend: CLI help, the scope start receipt and the docs. | P0-10 |
 | macos-task-scope.R9 | When the same policy and the same test destinations run in a macOS and a Linux task scope, blackice shall reach the same verdict for each destination. The receipts may differ only in the enforcement point. | P0-08 |
 | macos-task-scope.R10 | A process inside a macOS task scope shall not be able to write the blackice state directory: receipts, the policy copy or the control socket. | P0-04 |
-| macos-task-scope.R11 | A process inside a macOS task scope shall not be able to bind or accept connections on any address other than loopback. | P0-02 |
+| macos-task-scope.R11 | A process inside a macOS task scope shall not be able to bind a socket or accept a connection on any address, loopback included: task scopes are clients only. | P0-02 |
 
 ## Design
 
@@ -55,10 +55,13 @@ or addresses, only "any host" or "localhost", so every decision about names happ
   (allow network-outbound (remote ip "localhost:18781"))
   ```
 
-  The profile also always denies `job-creation`, `lsopen` and `appleevent-send` (R6), writes under the blackice
-  state directory (`(deny file-write* (subpath (param "STATE_ROOT")))`, R10), and binding or accepting
-  connections on any address other than loopback (R11). These rules are being added with the core; each needs
-  its own test.
+  Then, always: `(deny network-bind)`, `(deny network-inbound)` (R11),
+  `(deny file-write* (subpath (param "STATE_ROOT")))` (R10), `(deny job-creation)`, `(deny lsopen)` and
+  `(deny appleevent-send)` (R6). `STATE_ROOT` is the real path of the blackice state root, passed with
+  `sandbox-exec -D STATE_ROOT=<path>`.
+- Why no loopback listeners: Seatbelt cannot limit a listener to loopback. An allow for `local ip
+  "localhost:*"` also admitted `0.0.0.0` and connections from the local network, so the profile refuses every
+  bind, as the Linux backend does.
 - Launch: `/usr/bin/sandbox-exec -p <profile> <command...>` with the environment the core prepared
   (`HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY` and lowercase forms point at the proxy). The backend contract is
   `src/core/backend.zig` (`LaunchSpec`, `launch`).
@@ -72,8 +75,9 @@ or addresses, only "any host" or "localhost", so every decision about names happ
 - Limits until tested:
   - Mach and XPC services: a process can still ask a system service to connect on its behalf. Such
     connections run outside the scope.
-  - Processes started through launchd, `open` or `osascript` run outside the sandbox until the deny rules for
-    them (R6) are tested.
+  - Processes started through `open` or `osascript`: the deny rules are in the profile, but their tests open
+    windows and have not run yet.
+  - No command inside a scope can run a local server, even on loopback.
   - Name lookups through other system services (for example Directory Services) are untested.
   - The proxy port: what happens if the proxy restarts or another local process takes its port, and how one
     scope's proxy is kept from serving another, belong to [proxy](proxy.md) and are untested.
@@ -87,7 +91,8 @@ or addresses, only "any host" or "localhost", so every decision about names happ
 | Wire `blackice run` on macOS: scope, proxy, receipts, launch | lead | doing | |
 | Cross-build for aarch64-macos | lead | done | |
 | End-to-end run on the Mac with SIP on, with receipts, an off-host receiver that sees nothing, and an evidence entry | lead | todo | |
-| Test hardening against launchd job creation (no window opens) | lead | todo | |
+| Test hardening against launchd job creation (no window opens) | lead | done | |
+| State-directory write deny and bind/inbound deny in the profile | lead | done | |
 | Test hardening against `open` and `osascript` | lead | blocked | Valen's OK: these tests open windows, so not while recording |
 | Test inherited sockets, proxy restart and port takeover | lead | todo | |
 | Test name lookups through other system services, with fresh random names | lead | todo | |
@@ -97,7 +102,8 @@ or addresses, only "any host" or "localhost", so every decision about names happ
 
 | Covers | Kind | Link | Note |
 |---|---|---|---|
-| macos-task-scope.R2 | test | `zig build test`, src/macos/seatbelt.zig: "profile" | Passed at 0c43c6f, Zig 0.17.0, run on Linux x86_64. Checks the profile text only, not enforcement |
+| macos-task-scope.R2, macos-task-scope.R6, macos-task-scope.R10, macos-task-scope.R11 | test | `zig build test`, src/macos/seatbelt.zig: "profile" | 21/21 passed at 99e2f4e (PR #1), Zig 0.17.0, Linux x86_64. Checks the profile text only, not enforcement |
+| macos-task-scope.R6, macos-task-scope.R10, macos-task-scope.R11 | probe | Reported by the lead: the exact profile on macOS 27.0.1, SIP on | Binds and listeners refused (8 address variants), writes under `STATE_ROOT` refused, launchd job creation refused; `git`, `swift` and fx still ran. `open` and `osascript` not exercised. No evidence entry yet |
 | macos-task-scope.R2 | probe | Sandbox probe on macOS 27.0.1 (26A434), Apple M4, SIP on, without blackice code | With only localhost allowed, a connection to a raw IP failed at once; with one loopback port allowed, another loopback port was blocked; a stand-in proxy on the allowed port received `CONNECT example.com:443` |
 | macos-task-scope.R3 | probe | Same probe | With all outbound network denied, `curl https://example.com` failed with "Could not resolve host" |
 | macos-task-scope.R4 | probe | Same probe | A background child, orphaned and adopted by launchd (parent PID 1), was still blocked |

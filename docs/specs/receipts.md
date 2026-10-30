@@ -25,12 +25,12 @@ them does not leak what a program sent.
 | receipts.R1 | blackice shall write each receipt as one JSON object on its own line, appended to the scope's `receipts.jsonl`, and never rewrite an earlier line. | P0-09 |
 | receipts.R2 | Every receipt shall carry `ts` (UTC, RFC 3339 with milliseconds), `scope`, `policy` (the policy identifier), `gen` (the policy generation), `point` and `event`. Fields that do not apply shall be omitted, never written as null. | P0-09 |
 | receipts.R3 | When the proxy, the kernel rules or the relay allows or refuses a connection, blackice shall write exactly one receipt for that decision, with `verdict`, `reason`, the policy `rule` when one decided, and the destination it saw (`host`, `ip`, `port`). | P0-02, P0-03 |
-| receipts.R4 | Every receipt shall name its enforcement point as one of `proxy`, `kernel`, `relay` or `control`. | P0-02 |
+| receipts.R4 | Every receipt shall name its enforcement point as one of `proxy`, `kernel`, `relay`, `control` or `app_filter` (the macOS Network Extension, for app scopes). | P0-02 |
 | receipts.R5 | blackice shall have a single writer per scope, the `blackice` process; backends shall pass their events to it, so lines never interleave. | P0-09 |
 | receipts.R6 | If a receipt cannot be written, blackice shall leave the verdict unchanged, count the failure, and report the count in the scope's `scope_end` receipt. | P0-09 |
 | receipts.R7 | Receipts shall hold metadata only: no request or response bodies, no TLS content, no headers or credentials, no URL paths or query strings, no environment variables and no full command arguments. | P0-09 |
 | receipts.R8 | blackice shall keep reason codes stable; renaming or removing one is a recorded contract change. | P0-09 |
-| receipts.R9 | A decision receipt shall always be written: when a field is too long or not valid UTF-8, blackice shall shorten or replace it and mark the line `truncated`, instead of dropping the line. | P0-02 |
+| receipts.R9 | A decision receipt shall always be written: blackice shall replace control and invisible characters in each field and cut a field that is too long, ending it in `...`, instead of dropping the line. | P0-02 |
 
 ## Design
 
@@ -54,17 +54,19 @@ and `jq` are enough to read it.
 - `reason`: a policy reason code (see [policy](policy.md)) or a short error name for `warning` events.
 - `policy`: the first 12 hex digits of the SHA-256 of the policy file. `gen` starts at 1 and goes up by one
   with each accepted grant or expiry ([grant](grant.md)).
-- Writer: `receipt.Log` serialises each line into a fixed 4 KiB buffer and appends it under a lock. Long string
-  fields are shortened and invalid UTF-8 is replaced, and the line is marked `truncated`, so a decision line is
-  always written (R9); only a failed write increments `failures`. The first version dropped a line that did not
-  fit, which would let a workload hide its own refusals behind long names.
+- Writer: `receipt.Log` serialises each line into a fixed 4 KiB buffer and appends it under a lock. Control
+  characters, zero-width and bidirectional marks become `?`, and each field is cut at a character boundary to a
+  fixed size, ending in `...`, so a decision line always fits (R9). Lines that still cannot be written are
+  counted and reported as `dropped` in `scope_end`. The first version dropped a line that did not fit, which
+  would have let a workload hide its own refusals behind long names.
+- File: `receipts.jsonl` is created exclusively with mode 0600, in a scope directory with mode 0700.
 - Linux kernel drops reach the log through the `blackice` process, never by a second writer
   ([linux-task-scope](linux-task-scope.md)).
 - Limits:
   - Receipts are not tamper-proof against the user's other processes outside the scope. The scoped command
     itself cannot write them: on macOS a Seatbelt rule denies writes to the state directory, and on Linux the
     state directory is read-only inside the scope.
-  - v0 has no per-line sequence number, so a gap inside the file is visible only through the failure count.
+  - v0 has no per-line sequence number, so a gap inside the file is visible only through `dropped`.
   - No size or time limit on the file yet.
   - A receipt explains a decision; it does not say whether traffic sent to an allowed destination was
     harmful.
@@ -75,18 +77,19 @@ and `jq` are enough to read it.
 |---|---|---|---|
 | Receipt line format and single writer | lead | done | |
 | Count failed writes | lead | done | |
-| Report the failed-write count in `scope_end` | lead | todo | |
+| Report the failed-write count in `scope_end` (`dropped`) | lead | done | |
 | Proxy decisions write receipts | network | done | |
 | Relay calls and grants write receipts | network | doing | |
-| Shorten long fields and mark the line `truncated` instead of dropping it | lead | todo | |
+| Clean and cut long fields instead of dropping the line | lead | done | |
 | Linux kernel refusals (ring buffer) passed to the `blackice` process as receipts | codex-linux | todo | |
 
 ## Evidence
 
 | Covers | Kind | Link | Note |
 |---|---|---|---|
-| receipts.R1, receipts.R2 | test | `zig build test`, src/core/receipt.zig: "receipt lines are JSON with nulls omitted" | One line per receipt, escaping, nulls omitted. 11/11 passed at 0c43c6f, Zig 0.17.0, Linux x86_64 |
+| receipts.R1, receipts.R2 | test | `zig build test`, src/core/receipt.zig: "receipt lines are JSON with nulls omitted" | One line per receipt, escaping, nulls omitted. 21/21 passed at 99e2f4e (PR #1), Zig 0.17.0, Linux x86_64 |
 | receipts.R2 | test | `zig build test`, src/core/receipt.zig: "formatTimestamp" | Timestamp format. Same run |
+| receipts.R9 | test | `zig build test`, src/core/receipt.zig: "long and malformed fields cannot drop a receipt", "clean" | Same run |
 
 ## Terms
 

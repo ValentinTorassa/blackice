@@ -32,7 +32,7 @@ names the rule that made it, so a person can see why a connection was allowed or
 | policy.R8 | blackice shall identify each loaded policy by a digest of its exact bytes, and carry that identifier in every receipt of the scope. | P0-09 |
 | policy.R9 | When a destination port is not in `network.ports` (80 and 443 when the field is absent), blackice shall refuse it with reason `port_not_allowed`, even if the host is allowed. | P0-03 |
 | policy.R10 | If a host name, in the policy or in a request, has a last label that is all digits or a `0x` number (for example `127.1`, `2130706433`, `0x7f000001`), blackice shall treat it as invalid (`invalid_host`), because the system resolver would turn it into an address. | P0-02 |
-| policy.R11 | When an IPv6 address carries an IPv4 address (`::ffff:0:0/96`, `64:ff9b::/96`, `::/96`), blackice shall judge it by that IPv4 address; `64:ff9b:1::/48` and `2002::/16` count as local unless an allowed subnet covers them. | P0-02 |
+| policy.R11 | When an IPv6 address carries an IPv4 address, blackice shall judge it by that IPv4 address too: IPv4-mapped (`::ffff:0:0/96`) only as IPv4, NAT64 (`64:ff9b::/96`) as both, and an IPv4-mapped subnet in the policy as an IPv4 subnet. Other transition addresses (6to4 `2002::/16`, Teredo `2001::/32`, IPv4-compatible and IPv4-translated) shall be refused with `transition_address` unless an allowed subnet covers them; `64:ff9b:1::/48` counts as local. | P0-02 |
 
 ## Design
 
@@ -64,9 +64,10 @@ asked for, then every address that name resolves to. The second step stops an al
   name resolves to, `checkLiteral` for a destination written as an address, and `checkPort` for every
   destination port. Order inside `checkResolved` and
   `checkLiteral`: denied subnet, then allowed subnet, then the local/private test.
-- Reason codes: `allowed_by_rule`, `allowed_by_mode`, `allowed_subnet`, `public_address`,
+- Reason codes: `allowed_by_rule`, `allowed_by_mode`, `allowed_subnet`, `allowed_port`, `public_address`,
   `no_matching_rule`, `mode_deny_all`, `ip_literal_needs_subnet`, `denied_subnet`,
-  `local_or_private_address`, `port_not_allowed`, `invalid_host`. Renaming one is a contract change.
+  `local_or_private_address`, `transition_address`, `port_not_allowed`, `invalid_host`. Renaming one is a
+  contract change.
 - Policy identifier: the first 12 hex digits of the SHA-256 of the file bytes.
 - `blackice policy check FILE` loads a policy and prints its mode, counts and identifier.
 - Not in v0: protocols as a policy dimension, nested scopes and a host ceiling (a child scope can
@@ -80,23 +81,26 @@ asked for, then every address that name resolves to. The second step stops an al
 | Parse policy v0 and reject unknown fields, versions and modes | lead | done | |
 | Name, resolved-address and IP-literal checks with reason codes | lead | done | |
 | `blackice policy check FILE` | lead | done | |
-| `network.ports` (default 80 and 443) and `checkPort` | lead | todo | |
+| `network.ports` (default 80 and 443) and `checkPort` | lead | done | |
 | Shared test vectors that every enforcement point runs against the same verdicts | codex | todo | |
 | docs/policy.md for users | codex | done | |
-| Numeric names and `0x` names refused (R10) | lead | todo | |
-| IPv4-embedded IPv6 judged by its IPv4 address, in requests and in policy subnets (R11) | lead | todo | |
+| Numeric names and `0x` names refused (R10) | lead | done | |
+| IPv4-embedded IPv6 judged by its IPv4 address, in requests and in policy subnets (R11) | lead | done | |
 | Repeated keys refused (R1) | lead | todo | |
-| Error messages keep their own copy of the rejected text, and a parsed policy owns all its strings | lead | todo | |
+| Error messages keep their own copy of the rejected text, and a parsed policy owns all its strings | lead | done | |
 
 ## Evidence
 
 | Covers | Kind | Link | Note |
 |---|---|---|---|
-| policy.R1, policy.R2 | test | `zig build test`, src/core/policy.zig: "invalid policies fail closed" | 11/11 passed at 0c43c6f, Zig 0.17.0, Linux x86_64. Repeated keys are not in this test yet |
+| policy.R1, policy.R2 | test | `zig build test`, src/core/policy.zig: "invalid policies fail closed" | 21/21 passed at 99e2f4e (PR #1), Zig 0.17.0, Linux x86_64. Repeated keys are not checked by a test yet |
 | policy.R3 | test | `zig build test`, src/core/policy.zig: "deny-all and allow-all" | same run |
 | policy.R4 | test | `zig build test`, src/core/policy.zig: "allowlist: exact and wildcard names" | same run |
 | policy.R5 | test | `zig build test`, src/core/policy.zig: "resolved addresses: local and private are refused, subnets decide" | same run |
 | policy.R6 | test | `zig build test`, src/core/policy.zig: "IP literals need an allowed subnet in allowlist mode" | same run |
+| policy.R9 | test | `zig build test`, src/core/policy.zig: "ports: default 80 and 443, explicit list, every mode" | same run |
+| policy.R10 | test | `zig build test`, src/core/policy.zig: "numeric names are not names" | same run |
+| policy.R11 | test | `zig build test`, src/core/policy.zig: "IPv6 forms of IPv4 addresses are checked as IPv4", "transition addresses are refused unless a subnet allows them", "IPv6 subnets do not cover IPv4 addresses" | same run |
 
 ## Terms
 
