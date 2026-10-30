@@ -169,6 +169,13 @@ h1 {
 .tag-allow { color: #4ade80; }
 .tag-deny { color: #ff6b70; }
 .caption { margin: 12px 0 0; font: 12px var(--mono); color: var(--fg-3); }
+.demo-section { padding-top: 96px; padding-bottom: 96px; }
+.demo { margin: 32px 0 0; }
+.demo-video { display: block; width: 100%; max-width: 100%; aspect-ratio: 16 / 9; background: #000; }
+.demo-langs { display: inline-flex; gap: 4px; }
+.demo-lang { padding: 5px 9px; border: 1px solid var(--line); border-radius: 999px; background: transparent; color: var(--fg-3); font: 11px/1 var(--mono); cursor: pointer; }
+.demo-lang:hover { color: var(--fg); }
+.demo-lang[aria-pressed='true'] { color: var(--fg); border-color: var(--line-3); background: var(--bg-1); }
 
 /* Sections */
 .section { padding-top: 136px; }
