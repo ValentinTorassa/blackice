@@ -816,6 +816,21 @@ def unit_props(unit, props):
     return dict(line.split("=", 1) for line in out.splitlines() if "=" in line)
 
 
+def seconds_of(text, default):
+    """systemd's time spans as `systemctl show` prints them: 2s, 500ms, 1min, 1min 30s."""
+    total, found = 0.0, False
+    for value, unit in re.findall(r"(\d+(?:\.\d+)?)(min|ms|us|s)\b", text or ""):
+        total += float(value) * {"min": 60, "s": 1, "ms": 0.001, "us": 0.000001}[unit]
+        found = True
+    return total if found else default
+
+
+def socket_window():
+    """The socket's TriggerLimitIntervalSec: after a trigger-limit hit, restarting the socket inside this window is
+    refused again on the next connection (8ba8cca run)."""
+    return seconds_of(unit_props(SOCKET_UNIT, "TriggerLimitIntervalUSec").get("TriggerLimitIntervalUSec"), 2.0)
+
+
 def harness_reset(case):
     """Before each case: `systemctl reset-failed` on the service and its socket, and start the socket if it is not
     listening. One failure (a start limit hit, finding A3-R1 on 63a38cc) then cannot cascade into later cases. The
@@ -828,6 +843,8 @@ def harness_reset(case):
     run(["systemctl", "reset-failed", UNIT, SOCKET_UNIT], timeout=15, quiet=True)
     started = sock.get("ActiveState") != "active"
     if started:
+        if sock.get("Result") == "trigger-limit-hit":
+            time.sleep(socket_window() + 1)
         run(["systemctl", "start", SOCKET_UNIT], timeout=30, quiet=True)
     case.write(f"# harness reset-failed before the case: service {svc}, socket {sock}{'; socket started' if started else ''}\n")
     if svc.get("ActiveState") == "failed" or started:
@@ -2027,6 +2044,9 @@ def phase_startlimit(_args):
                     "systemd": [l for l in text.splitlines() if "repeated too quickly" in l or "start-limit" in l]}, "OBSERVE")
             rc, out, err = cli("on", "--policy", POLICY)
             record("A3R1a.owner-cannot-arm", "A3-R1", "the owner's `app on` while locked out", [rc, (out + err).strip()[:200]], "OBSERVE")
+            wait = socket_window() + 1 if sock.get("Result") == "trigger-limit-hit" else 0
+            record("A3R1a.recovery-wait", "A3-R1", "root waits out the socket's TriggerLimitIntervalSec before restarting it (0 for a service start limit)", wait, "OBSERVE")
+            time.sleep(wait)
             run(["systemctl", "reset-failed", UNIT, SOCKET_UNIT], timeout=15)
             run(["systemctl", "start", SOCKET_UNIT], timeout=30)
             status = cli_status()
@@ -2052,6 +2072,24 @@ def phase_startlimit(_args):
               {"service": svc, "socket": sock}, "start-limit" not in text_j and svc.get("ActiveState") != "failed" and sock.get("ActiveState") == "active")
         status = cli_status()
         check("A3R1b.socket-answers", "A3-R1", "status answers OK off", status, status_label(status) == "off")
+        ok &= not case.failed
+    with Case("A3R1c-paced-status-calls", "30 `app status` calls by the owner while off, 2 s apart (30 in 60 s)", "A3-R1") as case:
+        since, calls, t0 = time.time(), [], time.time()
+        for n in range(1, 31):
+            while time.time() < t0 + (n - 1) * 2.0:
+                time.sleep(0.05)
+            rc, out, err = cli("status")
+            calls.append({"n": n, "rc": rc, "out": (out + err).strip()[:160], "t": round(time.time() - t0, 2)})
+        with open(f"{case.dir}/calls.json", "w") as f:
+            json.dump(calls, f, indent=1)
+        bad = [c for c in calls if c["rc"] != 0 or not c["out"].startswith("OK ")]
+        svc, sock = unit_props(UNIT, "ActiveState,Result,NRestarts"), unit_props(SOCKET_UNIT, "ActiveState,Result")
+        text = journal("paced-calls", since)
+        check("A3R1c.thirty-calls", "A3-R1", "30 status calls in 60 s by the owner while off all answer OK",
+              {"first_failure": bad[0]["n"] if bad else None, "failed_calls": len(bad), "seconds": calls[-1]["t"], "service": svc, "socket": sock,
+               "starts_in_journal": text.count("Started blackice-appfilter.service")}, not bad)
+        check("A3R1c.no-limit", "A3-R1", "no start-limit or trigger-limit line; socket listening",
+              [l for l in text.splitlines() if "limit" in l.lower()][:4], "limit hit" not in text.lower() and "limit-hit" not in text.lower() and "repeated too quickly" not in text and sock.get("ActiveState") == "active")
         ok &= not case.failed
     return ok
 

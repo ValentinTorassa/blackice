@@ -101,10 +101,14 @@ request is a start that counts against `StartLimitBurst`.
 - A3R1a: 30 `blackice app status` calls by the owner, with no reset-failed first (the state before and the
   number of service starts this boot are recorded). All 30 must answer `OK ...`. On a failure the first failing
   call, both units' `Result` and systemd's lines are recorded, then the owner's `app on`, and then root's
-  `reset-failed` plus starting the socket must bring status back to `OK off`.
+  `reset-failed` plus starting the socket must bring status back to `OK off`. After a socket trigger-limit hit
+  (8ba8cca: systemd's default 20 activations per 2 s), root first waits out `TriggerLimitIntervalSec` plus 1 s:
+  a restart inside the window is refused again on the next connection. The wait is recorded.
 - A3R1b: root holds `127.0.0.1:765` and the owner runs `app on`: refused with `ListenerPortOccupied`. In the
   journal from that moment on: at most one automatic restart, no start-limit line, the service not failed and
   the socket listening, and status answers `OK off`.
+- A3R1c: 30 `app status` calls by the owner, 2 s apart (30 in 60 s, security's criterion). All answer `OK ...`,
+  and the journal has no start-limit or trigger-limit line.
 
 ### A: the root-cgroup listener guard (H1)
 
