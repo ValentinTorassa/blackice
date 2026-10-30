@@ -27,10 +27,14 @@ Neither nftables rules nor unrelated host networking configuration is modified.
 The setup grants `CAP_CHOWN`, `CAP_DAC_OVERRIDE`, `CAP_NET_ADMIN` and `CAP_BPF` only to a small, static,
 stripped helper. The workload and `blackice` receive no file capabilities. The helper creates its own child;
 there is no arbitrary-PID attach API. It pins process lifetimes with pidfds, verifies enrollment and all four
-attachments, and holds the child behind a two-stage pipe handshake until containment is armed.
+attachments, and holds the child behind a pipe handshake until containment is armed.
 
 Before exec, the child closes all unexpected descriptors, drops host capabilities, creates private user/mount
-namespaces, and masks `/run`, `/var/run`, `/tmp` and `/var/tmp`. The caller's numeric uid/gid and working
+namespaces, and waits while its parent writes the one-ID uid/gid maps through that child's proc directory.
+The child stays non-dumpable throughout: its own mapping files become root-owned, so the parent uses its
+existing `CAP_DAC_OVERRIDE` to open them. The PID comes only from the helper's own fork, remains unreaped
+and pidfd-pinned, and the mapping values are the caller's uid/gid. A failed or partial mapping never releases
+the child. It then masks `/run`, `/var/run`, `/tmp` and `/var/tmp`. The caller's numeric uid/gid and working
 directory are preserved, reopening cwd through the new mounts. When cwd is below `/tmp` or `/var/tmp`, only
 that directory and its descendants are restored from a pinned descriptor. Explicitly protected objects and
 the state root outside cwd are also restored at their own paths; unrelated temporary siblings and parent

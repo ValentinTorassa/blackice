@@ -6,6 +6,11 @@ const l = sys.l;
 const protection = @import("protection.zig");
 
 pub fn namespaces(uid: u32, gid: u32, state: [:0]const u8, protected: []const [:0]const u8) !void {
+    try isolate(uid, gid);
+    try namespaceMounts(state, protected);
+}
+
+fn namespaceMounts(state: [:0]const u8, protected: []const [:0]const u8) !void {
     var cwd_buf: [4096]u8 = undefined;
     const cwd_len = try sys.check(l.getcwd(&cwd_buf, cwd_buf.len));
     if (cwd_len < 2) return error.WorkingDirectoryUnavailable;
@@ -17,7 +22,6 @@ pub fn namespaces(uid: u32, gid: u32, state: [:0]const u8, protected: []const [:
         if (std.mem.eql(u8, cwd, root)) return error.WorkingDirectoryAtTemporaryRoot;
         if (std.mem.startsWith(u8, cwd, root) and cwd.len > root.len and cwd[root.len] == '/') temporary_root = root;
     }
-    try isolate(uid, gid);
     var guarded = try protection.Prepared.init(state, protected);
     defer guarded.close();
     try guarded.protectState();
@@ -42,14 +46,34 @@ pub fn namespaces(uid: u32, gid: u32, state: [:0]const u8, protected: []const [:
 }
 
 pub fn isolate(uid: u32, gid: u32) !void {
+    try createNamespaces();
+    // Rootless fixtures can map themselves. The non-dumpable capability helper uses its parent.
+    const dir = try sys.fd(l.open("/proc/self", .{ .DIRECTORY = true, .CLOEXEC = true }, 0));
+    defer sys.close(dir);
+    try mapIds(dir, uid, gid);
+    _ = try sys.check(l.mount(null, "/", null, l.MS.REC | l.MS.PRIVATE, 0));
+}
+
+pub fn createNamespaces() !void {
     try sys.dropCapabilities();
     // Retain the caller's numeric IDs. Only this uid/gid is mapped in the private user namespace.
     _ = try sys.check(l.unshare(l.CLONE.NEWUSER | l.CLONE.NEWNS));
+}
+
+/// Only the helper's own unreaped, pidfd-pinned child is passed here, after its namespace-ready message.
+pub fn mapChild(child: l.pid_t, uid: u32, gid: u32) !void {
+    var path: [64]u8 = undefined;
+    const name = try std.fmt.bufPrintSentinel(&path, "/proc/{d}", .{child}, 0);
+    const dir = try sys.fd(l.open(name, .{ .DIRECTORY = true, .CLOEXEC = true, .NOFOLLOW = true }, 0));
+    defer sys.close(dir);
+    try mapIds(dir, uid, gid);
+}
+
+fn mapIds(dir: l.fd_t, uid: u32, gid: u32) !void {
     var buf: [80]u8 = undefined;
-    try sys.writeFileAt(l.AT.FDCWD, "/proc/self/setgroups", "deny\n");
-    try sys.writeFileAt(l.AT.FDCWD, "/proc/self/uid_map", try std.fmt.bufPrint(&buf, "{d} {d} 1\n", .{ uid, uid }));
-    try sys.writeFileAt(l.AT.FDCWD, "/proc/self/gid_map", try std.fmt.bufPrint(&buf, "{d} {d} 1\n", .{ gid, gid }));
-    _ = try sys.check(l.mount(null, "/", null, l.MS.REC | l.MS.PRIVATE, 0));
+    try sys.writeFileAt(dir, "setgroups", "deny\n");
+    try sys.writeFileAt(dir, "uid_map", try std.fmt.bufPrint(&buf, "{d} {d} 1\n", .{ uid, uid }));
+    try sys.writeFileAt(dir, "gid_map", try std.fmt.bufPrint(&buf, "{d} {d} 1\n", .{ gid, gid }));
 }
 
 fn restoreProject(project: l.fd_t, cwd: [:0]const u8, root_len: usize) !void {
@@ -174,11 +198,98 @@ pub fn seccomp() !void {
 }
 
 pub fn arm(uid: u32, gid: u32, state: [:0]const u8, protected: []const [:0]const u8) !void {
-    try namespaces(uid, gid, state, protected);
+    try isolate(uid, gid);
+    try armMapped(state, protected);
+}
+
+/// The helper's child reaches this only after its parent completed the one-ID maps.
+pub fn armMapped(state: [:0]const u8, protected: []const [:0]const u8) !void {
+    _ = try sys.check(l.mount(null, "/", null, l.MS.REC | l.MS.PRIVATE, 0));
+    try namespaceMounts(state, protected);
     try landlock();
     try sys.dropCapabilities();
     try sys.nonDumpable();
     try seccomp();
+}
+
+test "parent supplies one-ID maps to its waiting namespace child" {
+    const gate = try sys.pipe();
+    defer sys.close(gate[1]);
+    const report = try sys.pipe();
+    defer sys.close(report[0]);
+    const uid = l.getuid();
+    const gid = l.getgid();
+    const child: l.pid_t = @intCast(try sys.check(l.fork()));
+    if (child == 0) {
+        sys.close(gate[1]);
+        sys.close(report[0]);
+        createNamespaces() catch l.exit_group(1);
+        sys.writeAll(report[1], "U") catch l.exit_group(2);
+        var ack: [1]u8 = undefined;
+        if (!(sys.readFull(gate[0], &ack) catch false) or ack[0] != 'M') l.exit_group(3);
+        if (l.getuid() != uid or l.getgid() != gid) l.exit_group(4);
+        // The one-ID maps cannot be changed after the parent installs them.
+        mapChild(l.getpid(), uid, gid) catch l.exit_group(0);
+        l.exit_group(5);
+    }
+    sys.close(gate[0]);
+    sys.close(report[1]);
+    var reaped = false;
+    defer if (!reaped) {
+        _ = l.kill(child, .KILL);
+        _ = sys.wait(child) catch 0;
+    };
+    const pidfd = try sys.fd(l.pidfd_open(child, 0));
+    defer sys.close(pidfd);
+    var ready = [_]l.pollfd{.{ .fd = report[0], .events = l.POLL.IN, .revents = 0 }};
+    try std.testing.expect(try sys.poll(&ready, 5000) != 0);
+    var ack: [1]u8 = undefined;
+    try std.testing.expect(try sys.readFull(report[0], &ack));
+    try std.testing.expectEqual(@as(u8, 'U'), ack[0]);
+    try mapChild(child, uid, gid);
+    try sys.writeAll(gate[1], "M");
+    const status = try sys.wait(child);
+    reaped = true;
+    try std.testing.expectEqual(@as(u32, 0), status);
+}
+
+test "mapped non-dumpable child completes containment without a dumpability window" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buf: [4096]u8 = undefined;
+    const n = try tmp.dir.realPath(std.testing.io, &path_buf);
+    path_buf[n] = 0;
+    const state = path_buf[0..n :0];
+    const file = try tmp.dir.createFile(std.testing.io, "state", .{});
+    file.close(std.testing.io);
+    const uid = l.getuid();
+    const gid = l.getgid();
+    const child: l.pid_t = @intCast(try sys.check(l.fork()));
+    if (child == 0) {
+        // No file capabilities in the test runner: make the maps first, then reproduce the
+        // helper child's non-dumpable state for every remaining confinement operation.
+        isolate(uid, gid) catch l.exit_group(1);
+        sys.nonDumpable() catch l.exit_group(2);
+        armMapped(state, &.{}) catch l.exit_group(3);
+        if (l.prctl(@backingInt(l.PR.GET_DUMPABLE), 0, 0, 0, 0) != 0) l.exit_group(4);
+        if (l.getuid() != uid or l.getgid() != gid) l.exit_group(5);
+        const dir = sys.fd(l.open(state, .{ .DIRECTORY = true, .CLOEXEC = true }, 0)) catch l.exit_group(6);
+        if (l.errno(l.openat(dir, "state", .{ .ACCMODE = .WRONLY }, 0)) != .ROFS) l.exit_group(7);
+        l.exit_group(0);
+    }
+    try std.testing.expectEqual(@as(u32, 0), try sys.wait(child));
+}
+
+test "non-dumpable unmapped child cannot open its own ID maps" {
+    const child: l.pid_t = @intCast(try sys.check(l.fork()));
+    if (child == 0) {
+        sys.nonDumpable() catch l.exit_group(1);
+        createNamespaces() catch l.exit_group(2);
+        if (l.errno(l.open("/proc/self/uid_map", .{ .ACCMODE = .WRONLY }, 0)) != .ACCES) l.exit_group(3);
+        if (l.prctl(@backingInt(l.PR.GET_DUMPABLE), 0, 0, 0, 0) != 0) l.exit_group(4);
+        l.exit_group(0);
+    }
+    try std.testing.expectEqual(@as(u32, 0), try sys.wait(child));
 }
 
 test "private mounts preserve uid and cwd, hide daemon paths, and protect state before exec" {

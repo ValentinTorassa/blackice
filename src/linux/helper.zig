@@ -142,23 +142,20 @@ fn run(init: std.process.Init, out: *Output, stage: *[]const u8) !void {
     stage.* = "enrollment";
     try scope.enroll(child);
     try sys.writeAll(gate[1], "A");
+    stage.* = "child_user_namespace";
+    if (try childReady(report[0], parentfd, out) != 'U') return error.ChildContainmentFailed;
+    // The child stays non-dumpable. Its proc mapping files therefore need our existing DAC capability.
+    stage.* = "child_id_mapping";
+    try confinement.mapChild(child, uid, gid);
+    try sys.writeAll(gate[1], "M");
     stage.* = "child_containment";
-    var ready = [_]l.pollfd{ .{ .fd = report[0], .events = l.POLL.IN, .revents = 0 }, .{ .fd = parentfd, .events = l.POLL.IN, .revents = 0 } };
-    if (try sys.poll(&ready, 10000) == 0 or ready[1].revents != 0) return error.LaunchTimeout;
-    var ack: [1]u8 = undefined;
-    if (try sys.read(report[0], &ack) != 1) return error.ChildContainmentFailed;
-    if (ack[0] == 'E') {
-        var detail: [80]u8 = undefined;
-        if (try sys.readFull(report[0], &detail)) try out.send(wire.Event.init(.failure, std.mem.sliceTo(&detail, 0)), true);
-        return error.ChildContainmentFailed;
-    }
-    if (ack[0] != 'R') return error.ChildContainmentFailed;
+    if (try childReady(report[0], parentfd, out) != 'R') return error.ChildContainmentFailed;
     try out.send(wire.Event.init(.armed, "cgroup_sock_addr; landlock_abi6; seccomp; protected_paths; private_mounts"), true);
     stage.* = "exec";
     try sys.writeAll(gate[1], "G");
     // report[1] is CLOEXEC: EOF acknowledges successful exec; an error writes E instead.
-    ready[0].revents = 0;
-    ready[1].revents = 0;
+    var ready = [_]l.pollfd{ .{ .fd = report[0], .events = l.POLL.IN, .revents = 0 }, .{ .fd = parentfd, .events = l.POLL.IN, .revents = 0 } };
+    var ack: [1]u8 = undefined;
     if (try sys.poll(&ready, 10000) == 0 or ready[1].revents != 0) return error.ExecTimeout;
     if (try sys.read(report[0], &ack) != 0) return error.CommandExecFailed;
     stage.* = "running";
@@ -195,6 +192,19 @@ fn run(init: std.process.Init, out: *Output, stage: *[]const u8) !void {
     try out.send(event, true);
 }
 
+fn childReady(report: l.fd_t, parent: l.fd_t, out: *Output) !u8 {
+    var ready = [_]l.pollfd{ .{ .fd = report, .events = l.POLL.IN, .revents = 0 }, .{ .fd = parent, .events = l.POLL.IN, .revents = 0 } };
+    if (try sys.poll(&ready, 10000) == 0 or ready[1].revents != 0) return error.LaunchTimeout;
+    var ack: [1]u8 = undefined;
+    if (try sys.read(report, &ack) != 1) return error.ChildContainmentFailed;
+    if (ack[0] == 'E') {
+        var detail: [80]u8 = undefined;
+        if (try sys.readFull(report, &detail)) try out.send(wire.Event.init(.failure, std.mem.sliceTo(&detail, 0)), true);
+        return error.ChildContainmentFailed;
+    }
+    return ack[0];
+}
+
 fn childMain(gate: [2]l.fd_t, report: [2]l.fd_t, parent: l.pid_t, uid: u32, gid: u32, state: [:0]const u8, protected: []const [:0]const u8, exe: [:0]const u8, argv: [:null]?[*:0]const u8, env: [:null]const ?[*:0]const u8) noreturn {
     sys.close(gate[1]);
     sys.close(report[0]);
@@ -227,7 +237,11 @@ fn childSetup(gate: l.fd_t, report: l.fd_t, parent: l.pid_t, uid: u32, gid: u32,
     _ = try sys.check(l.sigprocmask(l.SIG.SETMASK, &empty, null));
     var ack: [1]u8 = undefined;
     if (!try sys.readFull(4, &ack) or ack[0] != 'A') return error.EnrollmentMissing;
-    try confinement.arm(uid, gid, state, protected);
+    try confinement.createNamespaces();
+    try sys.writeAll(5, "U");
+    if (!try sys.readFull(4, &ack) or ack[0] != 'M') return error.NamespaceMappingMissing;
+    if (l.getuid() != uid or l.getgid() != gid) return error.NamespaceMappingMismatch;
+    try confinement.armMapped(state, protected);
     _ = try sys.check(l.prctl(@backingInt(l.PR.SET_PDEATHSIG), @backingInt(l.SIG.KILL), 0, 0, 0));
     if (l.getppid() != parent) return error.ParentMissing;
     try sys.writeAll(5, "R");
