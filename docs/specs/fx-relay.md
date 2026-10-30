@@ -83,9 +83,10 @@ key out of the scope; it does not decide what content may be sent to the model.
   traffic must reach a loopback endpoint directly.
 - Tested target: fx v0.0.16. Every evidence entry names the fx release tag and commit used, and the mode.
 - Limits:
-  - Main mode: fx itself is not confined: its model traffic and its own reads run outside every scope. The hook
-    confines the commands fx launches through its shell tool, and blocks fx's other tools, including its network
-    tools (R17), and its MCP servers (R22).
+  - Main mode: fx itself is not confined: its model traffic, its own reads and its writes inside the workspace run
+    outside every scope. The hook confines the commands fx launches through its shell tool, keeps fx's own writes
+    inside the workspace (R21), and blocks the tools not on its list, including its network tools (R17), and its
+    MCP servers (R22). The P0-07 entry tried `web_fetch` only.
   - Main mode, fx's own permission modes: the hook runs before fx's permission check, so fx judges the
     rewritten `blackice run ...` command. In `auto` mode no rewritten command is on fx's short no-review list,
     so each one goes to fx's model reviewer. The reviewer sees the command text, the user's request and short
