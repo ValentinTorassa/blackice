@@ -8,18 +8,21 @@
 #
 #   run.sh --vm DIR --commit SHA --binary-sha SHA256 --bundle-sha SHA256 [--cli-sha SHA256] \
 #          --label dry-run|evidence --results DIR [--agent yes|no] [--extra] [--skip phase,...] \
-#          [--secret-dir DIR] [--only interactive|reboot|teardown,...] [--targeted] [--bcases "B1 B9a ..."]
+#          [--secret-dir DIR] [--only interactive|reboot|teardown,...] [--targeted] [--bcases "B1 B9a ..."] \
+#          [--listener-test FILE --listener-test-sha SHA256]
 #
 # --agent yes: the commit's CLI starts pkttyagent for `app off` on a tty. --agent no: it does not (before c592f6e).
 # --only:      re-run blocks against the kit already installed in the VM (after a harness fix); no build.
 # --targeted:  a fresh build and install of a new SHA, then only P0-P4, the restart phase (F01, F02, F02b,
 #              F02c), the interactive B1 and B9a-c, and the root teardown.
+# --listener-test: the commit's VM socket test (V1-a), compiled beforehand with `zig test ... --test-no-exec` and
+#              never run on this host. It is checked against the reviewed hash, copied into the VM, and run there.
 set -euo pipefail
 PINNED_KERNEL=6.12.113+deb13-amd64
 here=$(cd -- "$(dirname -- "$(readlink -f -- "$0")")" && pwd)
 repo=$(git -C "$here" rev-parse --show-toplevel)
 
-vm= commit= binary_sha= bundle_sha= cli_sha= label= results= agent=yes extra=0 skip= secret_dir= only= targeted=0 bcases=
+vm= commit= binary_sha= bundle_sha= cli_sha= label= results= agent=yes extra=0 skip= secret_dir= only= targeted=0 bcases= listener_test= listener_test_sha=
 while [[ $# -gt 0 ]]; do
     case $1 in
         --vm) vm=$2; shift 2 ;;
@@ -36,6 +39,8 @@ while [[ $# -gt 0 ]]; do
         --only) only=,$2,; shift 2 ;;
         --targeted) targeted=1; shift ;;
         --bcases) bcases=$2; shift 2 ;;
+        --listener-test) listener_test=$2; shift 2 ;;
+        --listener-test-sha) listener_test_sha=$2; shift 2 ;;
         *) echo "unknown argument: $1" >&2; exit 2 ;;
     esac
 done
@@ -44,6 +49,10 @@ done
 [[ -z $cli_sha || $cli_sha =~ ^[0-9a-f]{64}$ ]] || { echo 'bad --cli-sha' >&2; exit 2; }
 [[ $label == dry-run || $label == evidence ]] || { echo 'label: dry-run or evidence' >&2; exit 2; }
 [[ $agent == yes || $agent == no ]] || { echo 'agent: yes or no' >&2; exit 2; }
+if [[ -n $listener_test ]]; then
+    [[ $listener_test_sha =~ ^[0-9a-f]{64}$ ]] || { echo '--listener-test needs --listener-test-sha' >&2; exit 2; }
+    [[ $(sha256sum "$listener_test" | cut -d' ' -f1) == "$listener_test_sha" ]] || { echo 'listener test hash differs from the reviewed hash' >&2; exit 1; }
+fi
 
 # Nothing may run on this host: only a test VM's wrapper (never the demo VM's /var/tmp/blackice-vm), whose only
 # command execs ssh, and a VM that answers hostname with test-vm.
@@ -158,6 +167,10 @@ build_and_install() {
         echo "cli:         $cli zig-out/release/blackice-x86_64-linux (zig build release)"
         echo "  expected:  ${cli_sha:-(not given)}"
         echo "uringprobe:  $uring (test tool, not product)"
+        if [[ -n $listener_test ]]; then
+            echo "listener-vm-test: $(sha256sum "$listener_test" | cut -d' ' -f1) (V1-a, compiled on the host with --test-no-exec, run only in the VM)"
+            echo "  expected:  $listener_test_sha"
+        fi
         echo "aftest.py:   $(sha256sum "$here/vm/aftest.py" | cut -d' ' -f1)"
         echo "harness:     $(git -C "$repo" rev-parse HEAD), $(git -C "$repo" status --porcelain -- "$here" | wc -l) uncommitted harness files"
     } | tee -a "$out/provenance.txt"
@@ -179,6 +192,10 @@ build_and_install() {
      && sudo install -o root -g root -m 0755 $src/scripts/linux-appfilter-setup.sh $src/scripts/linux-appfilter-teardown.sh /opt/aftest/candidate/scripts/ \
      && sudo install -o root -g root -m 0644 $src/zig-out/blackice-linux-appfilter-install.tar /opt/aftest/candidate/zig-out/"
     v 'sudo tee /opt/aftest/aftest.py >/dev/null && sudo chmod 0644 /opt/aftest/aftest.py' < "$here/vm/aftest.py"
+    if [[ -n $listener_test ]]; then
+        v 'sudo tee /opt/aftest/bin/listener-vm-test >/dev/null && sudo chmod 0755 /opt/aftest/bin/listener-vm-test' < "$listener_test"
+        [[ $(v sha256sum /opt/aftest/bin/listener-vm-test | cut -d' ' -f1) == "$listener_test_sha" ]] || { echo 'listener test changed in transit: stopping' >&2; exit 1; }
+    fi
     v 'sudo tee /opt/aftest/b9/49-blackice-appfilter-admin.rules.test >/dev/null && sudo chmod 0644 /opt/aftest/b9/49-blackice-appfilter-admin.rules.test' \
         < "$here/vm/49-blackice-appfilter-admin.rules.test"
     printf 'BUNDLE_SHA256=%s\nBINARY_SHA256=%s\n' "$bundle_sha" "$binary_sha" | v 'sudo tee /opt/aftest/candidate/hashes.env >/dev/null'
@@ -280,6 +297,7 @@ phase dns-redirect || true
 phase service || true
 if [[ $extra == 1 ]]; then phase extra-uring || true; phase extra-flood || true; fi
 phase restart || true
+phase v1 || true
 phase kill-fork || true
 phase off || true
 phase kill-phases || true

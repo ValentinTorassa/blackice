@@ -24,6 +24,11 @@ PROMPT = re.compile(rb"password[^\n]*:\s*$", re.I)
 IDENTITY = re.compile(rb"Choose identity to authenticate as \(1-(\d+)\):\s*$")
 IDENTITY_ROW = re.compile(rb"^\s*(\d+)\.\s+(.*?)\s*$", re.M)
 CSI = re.compile(rb"\x1b\[[0-9;?]*[A-Za-z]")
+# The shell prompt is set to a marker whose typed form (`AFTEST-P''S1`) differs from its output, so the exit status
+# can be asked for on its own line once the prompt is back: bash drops the rest of a typed `cmd; echo $?` list when
+# the command dies of the SIGINT that Ctrl-C sends.
+PS1_TYPED = "PS1='AFTEST-P''S1> '"
+PS1_OUT = re.compile(rb"AFTEST-PS1> ")
 # The typed form of every marker differs from its output (`ST""TY` prints `STTY`), so the terminal's echo of a
 # typed line, even when it wraps, can never match an output line.
 STTY = "stty -a | tr ' ;' '\\n\\n' | grep -x -e echo -e -echo | sed \"s/^/{head}\"\"{tail}=/\""
@@ -130,26 +135,34 @@ def no_tty(args):
 def interactive(args, password, wrong):
     tok = "AFTEST-T-" + secrets.token_hex(6)
     s = Pty([args.vssh, "-t"])  # an interactive login shell, as a person would get
-    s.send(("export LC_ALL=C; " + stty_cmd("AFTEST-STTY0") + f"; echo {typed('AFTEST-READY')}\n").encode())
-    ready = s.until(line("AFTEST-READY"), 0, 30)
+    s.send((f"export LC_ALL=C; {PS1_TYPED}; " + stty_cmd("AFTEST-STTY0") + f"; echo {typed('AFTEST-READY')}\n").encode())
+    ready = s.until(re.compile(rb"(?:^|[\r\n])AFTEST-READY\r?\n[\s\S]*?AFTEST-PS1> "), 0, 30)
     events, sent, prompts, probe, probe_thread = [], [], 0, {}, None
     if not ready:
         events.append({"event": "shell not ready"})
     mark = len(s.buf)
     target = "pkexec true" if args.attempt == "pkexec" else f"{args.prefix}{args.cli} app off"
-    command = f"{target}; echo {typed('AFTEST-RC')}=$?"
-    s.send((command + "\n").encode())
+    command = f"{target}, then at the next prompt: echo AFTEST-RC=$?"
+    s.send((target + "\n").encode())
     t_cmd = time.time()
     rc_re = line("AFTEST-RC", rb"\d+")
-    rc = None
+    rc, t_done, rc_mark = None, None, None
     while time.time() - t_cmd < args.limit and not s.eof:
-        m = rc_re.search(clean(s.buf[mark:]))
-        if m:
-            rc = int(m.group(1))
-            break
+        if rc_mark is not None:
+            m = rc_re.search(clean(s.buf[rc_mark:]))
+            if m:
+                rc = int(m.group(1))
+                break
         s.pump(0.3)
         tail = s.buf[mark:]
-        if IDENTITY.search(tail):
+        if rc_mark is not None:
+            continue
+        if PS1_OUT.search(clean(tail)):
+            t_done = time.time()
+            events.append({"t": round(t_done - t_cmd, 2), "event": "shell prompt back"})
+            rc_mark = len(s.buf)
+            s.send(f"echo {typed('AFTEST-RC')}=$?\n".encode())
+        elif IDENTITY.search(tail):
             rows = {int(n): name.decode(errors="replace") for n, name in IDENTITY_ROW.findall(tail)}
             choice = next((n for n, name in rows.items() if args.owner in name.split()), 1)
             events.append({"t": round(time.time() - t_cmd, 2), "event": "identity-prompt", "rows": rows, "chose": choice})
@@ -181,7 +194,7 @@ def interactive(args, password, wrong):
                         status_probe(args.vssh, args.cli, probe)
                     probe_thread = threading.Thread(target=later, daemon=True)
                     probe_thread.start()
-    seconds = round(time.time() - t_cmd, 2)
+    seconds = round((t_done or time.time()) - t_cmd, 2)
     if rc is None:
         events.append({"t": seconds, "event": f"no AFTEST-RC within {args.limit} s; sending Ctrl-C to reach the shell"})
         s.send(b"\x03")

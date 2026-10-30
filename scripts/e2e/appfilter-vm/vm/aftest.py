@@ -973,14 +973,27 @@ def authorized_off():
     write_polkit_rule()
     with open(POLKIT_RULE, "rb") as f:
         sha = hashlib.sha256(f.read()).hexdigest()
+    cid = CURRENT.cid if CURRENT else "-"
+    polkit_before = run(["systemctl", "is-active", "polkit"], timeout=10, quiet=True)[1].strip()
     try:
         rc, out, err = cli("off")
+        if rc != 0 and "PolkitUnavailable" in out + err:
+            # polkit.service is D-Bus activated and the service's CheckAuthorization does not start it (c592f6e's
+            # run: inactive until pkttyagent activated it). Record it, start polkit, and retry once.
+            polkit_now = run(["systemctl", "is-active", "polkit"], timeout=10, quiet=True)[1].strip()
+            run(["systemctl", "start", "polkit"], timeout=30)
+            time.sleep(1)
+            first = [rc, (out + err).strip()[-300:]]
+            rc, out, err = cli("off")
+            record(f"{cid}.polkit-unavailable", "L10", "PolkitUnavailable with polkit.service inactive; started it and retried once",
+                   {"polkit_before": polkit_before, "polkit_at_failure": polkit_now, "first": first, "retry": [rc, (out + err).strip()[-300:]]},
+                   "OBSERVE")
     finally:
         os.remove(POLKIT_RULE)
         time.sleep(2)
-    check(f"{CURRENT.cid if CURRENT else '-'}.polkit-rule-removed", "L10", "rule present only for this request",
+    check(f"{cid}.polkit-rule-removed", "L10", "rule present only for this request",
           {"sha256_while_present": sha, "present_now": os.path.exists(POLKIT_RULE)}, not os.path.exists(POLKIT_RULE),
-          rules_d_before=before, rules_d_after=rules_listing())
+          rules_d_before=before, rules_d_after=rules_listing(), polkit_before=polkit_before)
     return rc, (out + err).strip()
 
 
@@ -1225,6 +1238,17 @@ def phase_arm(_args):
         os.makedirs(ROOT + "/policies", exist_ok=True)
         write_policy(POLICY, [(exe, host) for _, exe, _, host in APPS])
         write_policy(POLICY_HOST, [("/usr/bin/curl", "example.com")])
+        # V1 precondition (security): arm only when no TIME_WAIT is left on 760-774 (from any earlier install), so
+        # TIME_WAIT seen later comes from this build's own traffic.
+        tw, waited = time_wait_on_listener_ports(), 0
+        while tw and waited < 90:
+            time.sleep(5)
+            waited += 5
+            tw = time_wait_on_listener_ports()
+        save("P4-time-wait-precondition.txt", "ss -tanH state time-wait '( sport >= :760 and sport <= :774 )'\n"
+             f"waited {waited} s\n" + "\n".join(tw) + "\n")
+        if not check("P4.time-wait-precondition", "V1", "no TIME_WAIT on 760-774 before the first arm", {"waited_s": waited, "rows": tw}, not tw):
+            return False
         rc, text = arm("arm")
         if not check("P4.arm", "test1", "OK armed", text, rc == 0 and text.startswith("OK armed")):
             return False
@@ -1553,9 +1577,14 @@ def phase_restart(_args):
             time.sleep(0.5)
         result = run(["systemctl", "show", UNIT, "-p", "ActiveState", "-p", "Result", "-p", "NRestarts"], timeout=10)[1].split()
         socket_state = run(["systemctl", "show", "blackice-appfilter.socket", "-p", "ActiveState", "-p", "Result"], timeout=10)[1].split()
-        check("F02c.unit-failed", "A3", f"after {burst} restarts the next start is refused: failed, start-limit-hit",
-              {"kills": kills, "unit": result, "socket": socket_state}, "ActiveState=failed" in result and "Result=start-limit-hit" in result,
+        # The service's own Result is the reason of its last exit (signal); the refused start shows on the socket
+        # (service-start-limit-hit) or, without socket activation, on the unit (start-limit-hit).
+        refused = "Result=start-limit-hit" in result or "Result=service-start-limit-hit" in socket_state
+        check("F02c.unit-failed", "A3", f"after {burst} restarts the next start is refused: unit failed, start-limit-hit on the unit or socket",
+              {"kills": kills, "unit": result, "socket": socket_state}, "ActiveState=failed" in result and refused,
               limits=limits)
+        check("F02c.restart-count", "A3", f"{burst} restarts before the refusal", [k["outcome"] for k in kills],
+              sum(1 for k in kills if k["outcome"] == "restarted") == burst)
         down = cgroup_attachments()
         check("F02c.pins-hold", "A3", "same seven attachment ids", sorted(r["id"] for r in ours(down)),
               sorted(r["id"] for r in ours(down)) == sorted(r["id"] for r in ours(before)) and len(ours(down)) == 7)
@@ -1569,6 +1598,152 @@ def phase_restart(_args):
         rc, out, _ = run(as_user(OWNER, CURL + ["https://example.com/"]), timeout=40)
         check("F02c.works", "A3", "curl 200 after the recovery", [rc, out.strip()], rc == 0 and out.strip() == "200")
         journal("start-limit", since)
+        ok &= not case.failed
+    return ok
+
+
+LISTENER_TEST = ROOT + "/bin/listener-vm-test"  # Codex's VM socket test (63a38cc), built on the host without running it
+
+
+def traffic(n=6):
+    """Proxied TCP so the listener ports hold TIME_WAIT: n allowed requests and one refused name."""
+    out = []
+    for _ in range(n):
+        rc, o, _ = run(as_user(OWNER, CURL + ["https://example.com/"]), timeout=40, quiet=True)
+        out.append([rc, o.strip()])
+    rc, o, _ = run(as_user(OWNER, CURL + ["https://example.org/"]), timeout=40, quiet=True)
+    out.append([rc, o.strip()])
+    return out
+
+
+def listener_errors(since):
+    text = journal("v1", since)
+    return [l for l in text.splitlines() if "ListenerPortOccupied" in l or "listener_unavailable" in l or "Start request repeated" in l][:8]
+
+
+def restart_under_load(cid, title, how):
+    with Case(cid, title, "V1") as case:
+        ensure_service(cid)
+        reset_start_limit()
+        made = traffic()
+        tw_before = time_wait_on_listener_ports()
+        save(f"cases/{cid}/time-wait-before.txt", "\n".join(tw_before) + "\n")
+        check(f"{cid}.time-wait-present", "V1", "TIME_WAIT on 760-774 before the restart (else the case proves nothing)",
+              len(tw_before), bool(tw_before), traffic=made)
+        restarts, receipts0, since, main = int(unit_show().get("NRestarts", "0")), count_receipts(event="app_filter_restart"), time.time(), main_pid()
+        if how == "proxy-child":
+            child, kids = proxy_child()
+            run(["/usr/bin/kill", "-9", str(child)])
+        elif how == "loader":
+            run(["/usr/bin/kill", "-9", str(main)])
+        else:
+            run(["systemctl", "restart", UNIT], timeout=60)
+        active = wait_active()
+        tw_rearm = time_wait_on_listener_ports()
+        save(f"cases/{cid}/time-wait-at-rearm.txt", "\n".join(tw_rearm) + "\n")
+        time.sleep(2)
+        unit = unit_show()
+        check(f"{cid}.time-wait-at-rearm", "V1", "ss state time-wait on 760-774 non-empty when it re-armed (saved)", len(tw_rearm), bool(tw_rearm))
+        if how == "systemctl":
+            check(f"{cid}.restarted", "V1", "active again with a new MainPID", [unit.get("ActiveState"), main, unit.get("MainPID")],
+                  active and unit.get("MainPID") not in ("0", str(main)))
+        else:
+            check(f"{cid}.restarted", "V1", "active and NRestarts+1", [unit.get("ActiveState"), unit.get("NRestarts")],
+                  active and int(unit.get("NRestarts", "0")) == restarts + 1)
+        armed_check(cid)
+        check(f"{cid}.restart-receipt", "V1", "one more app_filter_restart receipt", [receipts0, count_receipts(event="app_filter_restart")],
+              count_receipts(event="app_filter_restart") >= receipts0 + 1)
+        errors = listener_errors(since)
+        check(f"{cid}.no-listener-errors", "V1", "no ListenerPortOccupied / listener_unavailable / start-limit in the journal", errors, not errors)
+        curl_pair(cid, filtered=True)
+        return not case.failed
+
+
+def listener_table():
+    rows = run(["/usr/bin/ss", "-ltnpH", "( sport >= :760 and sport <= :774 )"], timeout=10)[1].strip().splitlines()
+    table = []
+    for line in rows:
+        parts = line.split()
+        local = parts[3]
+        addr, port = local.rsplit(":", 1)
+        pids = re.findall(r"pid=(\d+)", line)
+        table.append({"addr": addr, "port": int(port), "pids": pids, "line": line})
+    return table
+
+
+def phase_v1(_args):
+    ok = True
+    with Case("V1a-socket-test", "Codex's VM socket test: IPv4/IPv6 TIME_WAIT rebind and live-collision refusal (expects 2/2)", "V1") as case:
+        if check("V1a.present", "harness", "listener-vm-test installed (built on the host from 63a38cc, sha recorded in provenance)",
+                 os.path.exists(LISTENER_TEST), os.path.exists(LISTENER_TEST)):
+            with open(LISTENER_TEST, "rb") as f:
+                record("V1a.sha256", "V1", "ef9cebf2... (Codex's reproduced build)", hashlib.sha256(f.read()).hexdigest(), "OBSERVE")
+            record("V1a.sys-vendor", "V1", "QEMU (the test refuses to run elsewhere)", open("/sys/class/dmi/id/sys_vendor").read().strip(), "OBSERVE")
+            rc, out, err = run(as_user(OWNER, [LISTENER_TEST]), timeout=120)
+            text = out + err
+            check("V1a.result", "V1", "exit 0, 2 of 2 tests passed", [rc, text.strip()[-400:]], rc == 0 and ("2 passed" in text or "All 2 tests passed" in text))
+        ok &= not case.failed
+    ok &= restart_under_load("V1b1-proxy-kill-under-load", "kill the proxy child after TCP traffic: it re-arms with TIME_WAIT present", "proxy-child")
+    ok &= restart_under_load("V1b2-loader-kill-under-load", "kill the loader after TCP traffic: it re-arms with TIME_WAIT present", "loader")
+    ok &= restart_under_load("V1b3-systemctl-restart-under-load", "systemctl restart after TCP traffic: it re-arms with TIME_WAIT present", "systemctl")
+    with Case("V1e-off-rearm-after-traffic", "authorized off right after TCP traffic, then arm again at once", "V1") as case:
+        ensure_service("V1e")
+        made = traffic()
+        rc, text = authorized_off()
+        check("V1e.off", "L10", "OK off", text, rc == 0 and text == "OK off")
+        tw = time_wait_on_listener_ports()
+        save("cases/V1e-off-rearm-after-traffic/time-wait-at-rearm.txt", "\n".join(tw) + "\n")
+        check("V1e.time-wait-at-rearm", "V1", "TIME_WAIT on 760-774 when arming again (saved)", len(tw), bool(tw), traffic=made)
+        since = time.time()
+        rc, text = arm("v1e-rearm")
+        check("V1e.rearm", "V1", "OK armed at once, no ListenerPortOccupied", text, rc == 0 and text.startswith("OK armed"))
+        check("V1e.no-listener-errors", "V1", "no listener errors in the journal", listener_errors(since), not listener_errors(since))
+        armed_check("V1e")
+        curl_pair("V1e", filtered=True)
+        ok &= not case.failed
+    for fam, addr in (("v4", "127.0.0.1"), ("v6", "::1")):
+        cid = f"V1c-live-collision-{fam}"
+        with Case(cid, f"a live listener on {addr} port 765 still makes arming fail, fully rolled back", "V1") as case:
+            ensure_service(cid)
+            if status_label() == "armed":
+                rc, text = authorized_off()
+                check(f"{cid}.off", "L10", "OK off", text, rc == 0 and text == "OK off")
+            _, before = trees()
+            holder = subprocess.Popen(["/usr/bin/python3", "-I", "-c",
+                "import socket,sys,time; f=socket.AF_INET6 if ':' in sys.argv[1] else socket.AF_INET; s=socket.socket(f); "
+                "s.bind((sys.argv[1], 765)); s.listen(4); print('listening', flush=True); time.sleep(120)", addr],
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+            first = holder.stdout.readline().strip()
+            check(f"{cid}.holder", "harness", f"root holds {addr}:765", first, first == "listening")
+            failed0, since = count_receipts(event="app_filter_on_failed"), time.time()
+            rc, text = arm(f"{cid}-arm")
+            holder.kill()
+            holder.wait()
+            check(f"{cid}.refused", "V1", "app on refused", [rc, text], rc != 0 and not text.startswith("OK armed"))
+            rows = [r for r in receipts() if r.get("event") == "app_filter_on_failed"][failed0:]
+            check(f"{cid}.reason", "V1", "app_filter_on_failed with reason listener_unavailable", rows[-3:],
+                  any(r.get("reason") == "listener_unavailable" for r in rows))
+            status = cli_status()
+            check(f"{cid}.status", "V1", "OK off", status, status_label(status) == "off")
+            clean_check(cid)
+            _, after = trees()
+            check(f"{cid}.tree-unchanged", "V1", "bpftool cgroup tree equals the picture before `app on`",
+                  {"before": foreign(before["cgroup_tree"]), "after": foreign(after["cgroup_tree"])},
+                  foreign(after["cgroup_tree"]) == foreign(before["cgroup_tree"]) and not ours(after["cgroup_tree"]))
+            ok &= not case.failed
+    with Case("V1d-listener-count", "after arming again: one listener per port and family (30), all the service's", "V1") as case:
+        rc, text = arm("v1d-arm")
+        check("V1d.arm", "V1", "OK armed", text, rc == 0 and text.startswith("OK armed"))
+        table = listener_table()
+        save("cases/V1d-listener-count/ss-ltnp.txt", "\n".join(r["line"] for r in table) + "\n")
+        service = set(open(f"/sys/fs/cgroup/system.slice/{UNIT}/cgroup.procs").read().split())
+        keys = sorted((r["port"], "v6" if r["addr"].startswith("[") or ":" in r["addr"] else "v4") for r in table)
+        want = sorted((p, f) for p in range(FIRST_PORT, LAST_PORT + 1) for f in ("v4", "v6"))
+        check("V1d.count", "V1", "30 listeners, exactly one per port and family (no SO_REUSEPORT duplicates)",
+              {"total": len(table), "duplicates": len(keys) - len(set(keys))}, keys == want)
+        owners = sorted({p for r in table for p in r["pids"]})
+        check("V1d.owners", "V1", "every listener owned by a process of the service", {"owners": owners, "service": sorted(service)},
+              bool(owners) and all(p in service for p in owners) and all(r["pids"] for r in table))
         ok &= not case.failed
     return ok
 
@@ -1830,6 +2005,9 @@ INTERACTIVE = {
 }
 
 
+GPASSWD = "/usr/bin/gpasswd"  # Debian's passwd package; /usr/sbin/gpasswd does not exist
+
+
 def agent_processes():
     return run(["/usr/bin/pgrep", "-a", "-u", OWNER, "pkttyagent"], timeout=10, quiet=True)[1].strip().splitlines()
 
@@ -1882,14 +2060,14 @@ def phase_interactive_pre(args):
                    pre["root_password_state"], "OBSERVE")
         if cid == "B8-off-owner-not-admin":
             pre["sudo_group_before"] = sudo_group()
-            run(["/usr/sbin/gpasswd", "-d", OWNER, "sudo"], timeout=10)
+            run([GPASSWD, "-d", OWNER, "sudo"], timeout=10)
             pre["sudo_group_after"] = sudo_group()
             check(f"{cid}.owner-not-in-sudo", "L10", "getent group sudo has no owner", pre,
                   OWNER not in pre["sudo_group_after"].split(":")[-1].split(","))
         if cid == "B9a-admin-rule-correct":
             if OWNER in sudo_group().split(":")[-1].split(","):  # B8 did not run (targeted re-run)
                 pre["sudo_group_before"] = sudo_group()
-                run(["/usr/sbin/gpasswd", "-d", OWNER, "sudo"], timeout=10)
+                run([GPASSWD, "-d", OWNER, "sudo"], timeout=10)
                 pre["sudo_group_after"] = sudo_group()
             pre["rules_d_before"] = rules_listing()
             pre["rule_source"] = file_facts(ADMIN_RULE_SRC)
@@ -1902,6 +2080,10 @@ def phase_interactive_pre(args):
                                             "sha256": "0b9432442412bac510fe4e56fc6d14964c179c00c6c932a57a89ef399b228cac"})
             check(f"{cid}.owner-not-in-sudo", "L10", "the owner is not in group sudo", sudo_group(), OWNER not in sudo_group().split(":")[-1].split(","))
         if status_label() != "armed":
+            # An `off` right before leaves TIME_WAIT on 760-774. Since 63a38cc arming must work through it (V1),
+            # so the harness does not wait; it records how many there were when it armed.
+            tw = time_wait_on_listener_ports()
+            record(f"{cid}.time-wait-at-arm", "V1", "TIME_WAIT sockets on 760-774 when re-arming for this case", len(tw), "OBSERVE")
             rc, text = arm(f"{cid}-arm", POLICY_HOST)
             check(f"{cid}.arm", "host-like", "OK armed (curl-only policy)", text, rc == 0 and text.startswith("OK armed"))
         armed_check(f"{cid}.pre")
@@ -1975,15 +2157,25 @@ def phase_interactive_post(args):
         agents = agent_processes()
         check(f"{cid}.no-agent-left", "L10", "pgrep -a -u owner pkttyagent: nothing after the session", {"before": pre.get("agents_before"), "after": agents}, not agents)
         unit = unit_show()
-        check(f"{cid}.service-kept-serving", "L10", "same MainPID and NRestarts as before the session",
-              [pre["main_pid"], unit.get("MainPID"), pre["restarts"], unit.get("NRestarts")],
-              unit.get("MainPID") == pre["main_pid"] and unit.get("NRestarts") == pre["restarts"])
+        served = [pre["main_pid"], unit.get("MainPID"), pre["restarts"], unit.get("NRestarts")]
+        if expect == "off" and kind != "pkexec":
+            # A successful off stops the service (MainPID 0); only a restart would be a finding here.
+            record(f"{cid}.service-kept-serving", "L10", "off stops the service; NRestarts unchanged ([pre MainPID, MainPID, pre NRestarts, NRestarts])",
+                   served, "OBSERVE")
+            check(f"{cid}.no-restart", "L10", "NRestarts unchanged", [pre["restarts"], unit.get("NRestarts")], unit.get("NRestarts") == pre["restarts"])
+        else:
+            check(f"{cid}.service-kept-serving", "L10", "same MainPID and NRestarts as before the session", served,
+                  unit.get("MainPID") == pre["main_pid"] and unit.get("NRestarts") == pre["restarts"])
+        if cid == "B8b-off-root-wrong" and OWNER not in sudo_group().split(":")[-1].split(","):
+            before = sudo_group()
+            run([GPASSWD, "-a", OWNER, "sudo"], timeout=10)
+            record(f"{cid}.sudo-restored", "harness", "owner put back in group sudo after the B8 cases", {"before": before, "after": sudo_group()}, "OBSERVE")
         if cid == "B9c-admin-rule-pkexec":
             os.remove(ADMIN_RULE)
             time.sleep(2)
             check(f"{cid}.rule-removed", "L10", "admin rule removed", rules_listing(), not os.path.exists(ADMIN_RULE))
             before = sudo_group()
-            run(["/usr/sbin/gpasswd", "-a", OWNER, "sudo"], timeout=10)
+            run([GPASSWD, "-a", OWNER, "sudo"], timeout=10)
             record(f"{cid}.sudo-restored", "harness", "owner put back in group sudo for the rest of the run", {"before": before, "after": sudo_group()}, "OBSERVE")
         journal(cid, pre["t"])
         polkit_log = run(["journalctl", "--no-pager", "-o", "short-iso-precise", "--since", f"@{int(pre['t'])}", "-u", "polkit"], timeout=30, quiet=True)[1]
@@ -2332,7 +2524,7 @@ PHASES = {
     "preflight": phase_preflight, "provision": phase_provision, "baseline": phase_baseline, "setup": phase_setup,
     "arm": phase_arm, "guard": phase_guard, "inbound": phase_inbound, "bind": phase_bind, "srh": phase_srh,
     "dns-redirect": phase_dns_redirect, "restart": phase_restart, "kill-fork": phase_kill_fork, "off": phase_off,
-    "kill-phases": phase_kill_phases, "host-like": phase_host_like, "teardown": phase_teardown, "summary": phase_summary,
+    "kill-phases": phase_kill_phases, "v1": phase_v1, "host-like": phase_host_like, "teardown": phase_teardown, "summary": phase_summary,
     "interactive-setup": phase_interactive_setup, "interactive-pre": phase_interactive_pre, "interactive-post": phase_interactive_post,
     "service": phase_service, "reboot-check": phase_reboot_check,
     "extra-m4": phase_extra_m4, "extra-uring": phase_extra_uring, "extra-flood": phase_extra_flood,

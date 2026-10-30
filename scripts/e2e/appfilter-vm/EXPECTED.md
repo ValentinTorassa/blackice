@@ -85,6 +85,9 @@ result pass.
 - **P3 setup.** The reviewed setup script with the reviewed hashes exits 0. The service binary has no file
   capabilities, the socket unit is active, and no BPF is loaded at setup.
 - **P4 arm.** `app on` with the six-app policy prints `OK armed`.
+  - Precondition (V1): `ss -tan state time-wait '( sport >= :760 and sport <= :774 )'` is saved as
+    `P4-time-wait-precondition.txt`, and the first arm waits (up to 90 s) until it is empty. Any TIME_WAIT seen
+    later then comes from this build's own traffic.
   - All seven hooks are attached: `bi_af_conn4/conn6/send4/send6/create` at `user.slice`, and
     `bi_af_peer4/peer6` at the cgroup root.
   - `ProtectControlGroups=yes` is in effect, and an `app_filter_on` receipt is written.
@@ -207,12 +210,33 @@ case that caused it.
   - The TIME_WAIT sockets on 760–774 at the kill are recorded (F01 too). On 6c849ec a restart right after
     proxied traffic failed with `ListenerPortOccupied` until the start limit was hit.
 - **F02c (A3), start limit.**
-  - Kill the service repeatedly with no traffic in between. After `StartLimitBurst` restarts, the next start is
-    refused: the unit is `failed` with `Result=start-limit-hit`, and the socket unit's state is recorded.
+  - Kill the service repeatedly with no traffic in between. After exactly `StartLimitBurst` restarts, the next
+    start is refused: the unit is `failed`, and `start-limit-hit` shows on the unit (`Result=start-limit-hit`)
+    or, with socket activation, on the socket (`Result=service-start-limit-hit`). The service's own `Result` is
+    the reason of its last exit (`signal`). Both units' states are recorded.
   - The seven attachment ids are unchanged, a tagged curl fails, and an untagged connect to `127.0.0.1:760`
     still gets EPERM.
   - `systemctl reset-failed` on both units, starting the socket and an `app status` bring it back armed, and
     curl gets 200 again.
+- **V1 (63a38cc on): listeners through TIME_WAIT.**
+  - V1a: Codex's VM socket test (`src/linux_appfilter_listener_test.zig`), compiled on the host with
+    `zig test ... --test-filter 'VM listener' --test-no-exec -target x86_64-linux -mcpu baseline -O ReleaseSafe
+    -fstrip`, never run there, and checked against the reviewed sha256 before it is copied in (run.sh
+    `--listener-test`). In the VM it runs as the owner and must pass 2 of 2 (IPv4 and IPv6: `SO_REUSEADDR` 1,
+    `SO_REUSEPORT` 0, server-side TIME_WAIT observed, immediate rebind, a live second listener refused). Its
+    sha256 and `sys_vendor` (QEMU) are recorded.
+  - V1b1/V1b2/V1b3: after proxied TCP traffic (six allowed requests and one refused name), kill the proxy
+    child, kill the loader, or `systemctl restart`. TIME_WAIT on 760–774 must be present before the restart and
+    when it re-arms (both saved). It comes back active (NRestarts+1, or a new MainPID for `systemctl restart`),
+    armed, with one more `app_filter_restart` receipt, no `ListenerPortOccupied` / `listener_unavailable` /
+    start-limit line in the journal, and curl filtered as before.
+  - V1e: an authorized off right after traffic, then `app on` at once with TIME_WAIT present: `OK armed`, no
+    listener errors.
+  - V1c (IPv4 and IPv6): root holds a live listener on `127.0.0.1:765` or `[::1]:765`. `app on` is refused,
+    with an `app_filter_on_failed` receipt with reason `listener_unavailable`, status `OK off`, a clean tree,
+    and the cgroup tree equal to the picture before `app on`.
+  - V1d: armed again, `ss -ltnp` shows 30 listeners, exactly one per port and family (no `SO_REUSEPORT`
+    duplicates), all owned by processes in the service's cgroup.
 - **G01 kill-then-fork.** A tagged forker process stays alive while the service is SIGKILLed and stopped (the
   automatic restart is cancelled).
   - A fork while the service is down is still tagged: EPERM to the netns, ECONNREFUSED on its own port.
@@ -253,8 +277,9 @@ case that caused it.
     random per run, set with `chpasswd` from stdin, kept in a 0600 file outside the results, scrubbed from
     transcripts, and locked again afterwards.
   - Each case opens a fresh interactive login shell with `ssh -t`, as the owner, with no desktop, under a pty on
-    the host (`interactive_off.py`). It types `blackice app off; echo AFTEST-RC=$?` and answers the agent the way
-    a person would. Afterwards the same shell records `stty` and types a random token, which shows whether
+    the host (`interactive_off.py`). It sets a marker prompt, types `blackice app off` and answers the agent the
+    way a person would. When the prompt comes back it types `echo AFTEST-RC=$?` on its own line: bash drops the
+    rest of a typed `cmd; echo $?` list when the command dies of Ctrl-C's SIGINT. Afterwards the same shell records `stty` and types a random token, which shows whether
     terminal echo came back. The VM side records the state before, the transcript, and the state after, with
     the before/after trees.
   - Cases:
@@ -270,9 +295,13 @@ case that caused it.
       `strace -f -e trace=connect,execve`. It fails with no prompt and stays armed, and the trace has no
       `connect()` to `/run/blackice-appfilter/control.sock`: it failed before contacting the service. The
       file is moved back and must have the same sha256, owner and mode.
-    - B8: root removes the owner from group `sudo`, as on valendebian, where the group is empty. `app off` is
-      refused and the filter stays armed. Whatever the agent shows is recorded (no prompt, or a prompt for
-      another identity, which is answered with the owner's password).
+    - B8: root removes the owner from group `sudo` (`/usr/bin/gpasswd`), as on valendebian, where the group is
+      empty. polkitd then falls back to uid 0 and asks for root's password. Answered with the owner's password,
+      `app off` is refused and the filter stays armed.
+    - B8a: root gets a random password (`chpasswd` from stdin, kept like the owner's). Answered with root's
+      password, the filter turns off. This is what the admin fallback allows on a host whose admin group is
+      empty.
+    - B8b: re-armed, a wrong root password is refused and it stays armed. The owner then goes back into `sudo`.
     - B9: security's reviewed admin rule, with valen→test (sha256 0b943244…), is installed root:root 0644 as
       `/etc/polkit-1/rules.d/49-blackice-appfilter-admin.rules`, and the owner is still outside `sudo`.
       - B9a: the owner's own password turns the filter off.
@@ -283,7 +312,8 @@ case that caused it.
   - Every case except B5:
     - terminal echo is on afterwards (`stty` shows `echo`, and the typed token appears);
     - no `pkttyagent` of the owner is left (`pgrep -a -u test pkttyagent`, security's B6);
-    - the service kept the same MainPID and NRestarts.
+    - the service kept the same MainPID and NRestarts. In a case that turns the filter off, the service stops
+      (MainPID 0): the pair is recorded (OBSERVE) and only NRestarts must be unchanged.
   - With `--agent no` (a commit whose CLI starts no agent), every case expects "no prompt, refused, still
     armed".
 - **R01 (M6), after a VM reboot.** run.sh reboots the VM and checks the kernel again.
@@ -308,6 +338,10 @@ proves L10: without the action's owner annotation, polkitd refuses the service's
 process, whatever the rules say.
 
 The rule exists only for a single request: `authorized_off()` writes it, sends one `app off`, and removes it.
+`polkit.service` is D-Bus activated. In c592f6e's run it was inactive and the service's CheckAuthorization did
+not start it, so `app off` failed with `PolkitUnavailable`. `authorized_off()` records polkit's state before the
+request. On `PolkitUnavailable` it records the state, starts polkit, retries once, and records both answers
+(`<case>.polkit-unavailable`, OBSERVE).
 Each case log keeps the rule's sha256 while it was present and `ls -la /etc/polkit-1/rules.d/` from before
 and after. It never leaves the VM.
 
