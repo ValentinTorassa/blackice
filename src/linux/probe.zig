@@ -24,11 +24,14 @@ pub fn main(init: std.process.Init) !u8 {
     const id = core.scope.newId(init.io, &id_buf);
     var receipts = try core.receipt.Log.open(init.io, .cwd(), args[2], id, "linux-backend-probe");
     defer receipts.close();
+    const state = try std.Io.Dir.cwd().realPathFileAlloc(init.io, std.fs.path.dirname(args[2]) orelse ".", init.gpa);
+    defer init.gpa.free(state);
     const exit = core.backend.launch(init.gpa, init.io, .{
         .scope_id = id,
         .argv = args[4..],
         .environ = init.environ_map,
         .allowed_loopback_ports = ports,
+        .state_dir = state,
         .receipts = &receipts,
     }) catch return 125;
     return exit.status();
@@ -47,6 +50,7 @@ test "the core resolves a Linux backend; invalid scope is refused before launch"
         .argv = &.{"/bin/false"},
         .environ = &env,
         .allowed_loopback_ports = &.{},
+        .state_dir = "/invalid",
         .receipts = &log,
     }));
 }

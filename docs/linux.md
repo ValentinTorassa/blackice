@@ -32,14 +32,14 @@ attachments, and holds the child behind a two-stage pipe handshake until contain
 Before exec, the child closes all unexpected descriptors, drops host capabilities, creates private user/mount
 namespaces, and masks `/run`, `/var/run`, `/tmp` and `/var/tmp`. The caller's numeric uid/gid and working
 directory are preserved, reopening cwd through the new mounts. A working directory or executable inside a
-masked path may therefore be unavailable. The scope state directory is recursively mounted read-only.
+masked path may therefore be unavailable. The complete blackice state root, including every scope's
+receipts, policy copies and control sockets, is recursively mounted read-only.
 Landlock ABI 6 scopes abstract Unix sockets and signals. Finally, all capabilities are dropped and an
 inherited seccomp filter and `no_new_privs` prevent reacquiring privilege. Socket-backed standard input,
 output or error is rejected rather than inheriting an outside socket's cgroup attribution.
 
-The core contract now includes `state_dir`. During integration with the earlier contract, the backend derives
-the canonical state directory from the open receipt descriptor. It never substitutes an unprotected state
-directory when this lookup fails.
+The core supplies the canonical absolute state root through `LaunchSpec.state_dir`; a missing or invalid
+path refuses launch. The standalone receiver probe protects its receipt directory instead.
 
 ## Build and install
 
