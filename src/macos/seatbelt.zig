@@ -22,8 +22,10 @@
 //! Verified primitives (macOS 27.0.1, SIP on and off): a deny rule blocks DNS through mDNSResponder, raw IP
 //! connections, other loopback ports and Unix-socket connects; children and orphaned children inherit the
 //! profile. Verified for this exact profile (macOS 27.0.1, SIP on): binds and listeners refused, writes,
-//! truncation, deletion, renames, hard links and symlinked writes into the state root refused,
-//! `launchctl submit` refused, the control socket unreachable from inside, and git, swift and fx still run.
+//! truncation, deletion, renames, hard links and symlinked writes into the state root refused, hard links
+//! made outside to a protected file or a receipts file refused (Seatbelt's own forbidden-link-priv rule: a
+//! link to a file the profile forbids writing counts as a write), `launchctl submit` refused, the control
+//! socket unreachable from inside, and git, swift and fx still run.
 //! The lsopen and appleevent-send rules are not exercised yet (those tests open windows).
 //!
 //! Seatbelt cannot name remote hosts or IPs ("host must be * or localhost"), so names are decided by the
