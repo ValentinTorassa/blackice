@@ -29,6 +29,7 @@ other OS.
 Rules for every workflow in this repository:
 
 - The token is read-only (`permissions: contents: read`), and checkout does not keep it (`persist-credentials: false`).
+  The only exceptions are the release workflow's attest and release jobs, listed under [Releases](#releases).
 - No secrets and no `pull_request_target`.
 - Actions are pinned to full commit SHAs, with the tag in a comment.
 - Values from the event (titles, branch names, bodies) never go straight into a `run:` script. Steps read them
@@ -50,3 +51,50 @@ Rules for every workflow in this repository:
 
 Get the commit of the new tag (`gh api repos/<owner>/<repo>/git/ref/tags/<tag>`; if the object is an annotated
 tag, follow it to its commit), replace the SHA and update the tag in the comment.
+
+## Releases
+
+`.github/workflows/release.yml` runs only when a tag starting with `v` is pushed. It ends with a draft release;
+publishing it is a manual step.
+
+1. **tag** checks that the tag is `vX.Y.Z` and that its commit is on `main`.
+2. **build** runs twice, on `ubuntu-latest` and on `macos-latest`. Each builder runs
+   `zig build release -Dmacos-min=13.0` for the four CLI targets and builds the Linux helper with the same
+   command and flags as `scripts/linux-build-helper.sh`. The Linux builder also runs that script and checks
+   that both helpers are byte-identical. It then checks that `blackice version` prints the tag's version.
+3. **compare** fails unless both builders produced the same set of files with the same bytes. It writes
+   `SHA256SUMS`.
+4. **attest** creates one build provenance attestation per release file (`actions/attest-build-provenance`).
+   Only this job gets `id-token: write` and `attestations: write`.
+5. **release** creates the draft release with the files and `SHA256SUMS`. Only this job gets
+   `contents: write`.
+
+Release files: `blackice-X.Y.Z-{x86_64-linux,aarch64-linux,aarch64-macos,x86_64-macos}`,
+`blackice-linux-helper-X.Y.Z-x86_64-linux`, `linux-setup.sh`, `linux-teardown.sh` and `SHA256SUMS`.
+
+Checking a release file before running it:
+
+```sh
+sha256sum -c SHA256SUMS --ignore-missing           # macOS: shasum -a 256 -c SHA256SUMS --ignore-missing
+gh attestation verify blackice-X.Y.Z-aarch64-macos --repo ValentinTorassa/blackice \
+  --signer-workflow ValentinTorassa/blackice/.github/workflows/release.yml
+```
+
+To check a release without trusting GitHub at all, build the tag with Zig 0.17.0
+(`zig build release -Dmacos-min=13.0` and `scripts/linux-build-helper.sh`) and compare the hashes.
+
+What the workflow assumes. These are repository settings, and changing them is the owner's decision:
+
+- **Only the owner can create `v*` tags** (a tag ruleset). Whoever can push such a tag can run this workflow
+  with the tagged commit's own copy of it, so the "on main" check only holds if tags are restricted.
+- **`main` cannot be force-pushed or deleted** (a branch ruleset), so "on main" means "reviewed and merged".
+- **Immutable releases are on** before the first release is published, so assets cannot be swapped afterwards.
+- A draft is visible only to people with write access. Someone reads it before publishing it.
+
+Known gaps before the first release:
+
+- The helper and `scripts/linux-build-helper.sh` reach `main` with the Linux backend pull request. Until then,
+  the build job fails, so no release can be made.
+- `linux-setup.sh` looks for the helper in `../zig-out/bin` relative to itself. A Homebrew or tarball
+  install needs a helper-path argument first. That is a change to privileged setup code and needs its own
+  review and a new pinned hash.
