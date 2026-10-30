@@ -16,6 +16,7 @@ const usage =
     \\
     \\usage:
     \\  blackice version
+    \\  blackice --version
     \\  blackice policy check FILE
     \\  blackice run --policy FILE [--env NAME]... [--relay --model ID...] -- CMD [ARG]...
     \\  blackice grant SCOPE HOST [--for 10m]
@@ -44,7 +45,7 @@ pub fn main(init: std.process.Init) !u8 {
         return 2;
     }
     const cmd = args[1];
-    if (std.mem.eql(u8, cmd, "version")) {
+    if (std.mem.eql(u8, cmd, "version") or std.mem.eql(u8, cmd, "--version")) {
         try out.print("blackice {s}\n", .{version});
         return 0;
     }
