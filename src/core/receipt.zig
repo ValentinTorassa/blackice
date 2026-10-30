@@ -15,7 +15,7 @@
 const std = @import("std");
 const Io = std.Io;
 
-/// Where the decision was enforced. app_filter is the macOS Network Extension (app scopes).
+/// Where the decision was enforced. app_filter identifies application scopes on either platform.
 pub const Point = enum { proxy, kernel, relay, control, app_filter };
 pub const Verdict = enum { allow, deny };
 
@@ -24,6 +24,8 @@ pub const Entry = struct {
     event: []const u8,
     point: Point,
     verdict: ?Verdict = null,
+    app_id: ?u32 = null,
+    executable: ?[]const u8 = null,
     /// A stable reason code (policy.Reason, or a code listed by the component that writes it) or a short
     /// error name.
     reason: ?[]const u8 = null,
@@ -45,14 +47,15 @@ pub const limits = struct {
     pub const host = 256;
     pub const ip = 64;
     pub const detail = 512;
+    pub const executable = 512;
 };
 
-const line_max = 4096;
+const line_max = 6144;
 
 comptime {
     // JSON escaping at most doubles a cleaned field ('"' and '\' become two bytes); the rest of a line
     // (timestamp, ids, numbers, keys) stays under 512 bytes.
-    const fields = limits.event + limits.reason + limits.rule + limits.host + limits.ip + limits.detail;
+    const fields = limits.event + limits.reason + limits.rule + limits.host + limits.ip + limits.detail + limits.executable;
     std.debug.assert(2 * fields + 512 <= line_max);
 }
 
@@ -64,6 +67,8 @@ const Line = struct {
     point: Point,
     event: []const u8,
     verdict: ?Verdict,
+    app_id: ?u32,
+    executable: ?[]const u8,
     reason: ?[]const u8,
     rule: ?[]const u8,
     host: ?[]const u8,
@@ -88,6 +93,8 @@ pub const Log = struct {
     scope: []const u8,
     policy_id: []const u8,
     generation: u32 = 1,
+    app_id: ?u32 = null,
+    executable: ?[]const u8 = null,
     written: u64 = 0,
     /// Lines that could not be written. Reported in scope_end, so a gap in the log is visible.
     failures: u64 = 0,
@@ -123,6 +130,7 @@ pub const Log = struct {
         var host_buf: [limits.host]u8 = undefined;
         var ip_buf: [limits.ip]u8 = undefined;
         var detail_buf: [limits.detail]u8 = undefined;
+        var executable_buf: [limits.executable]u8 = undefined;
         const line: Line = .{
             .ts = formatTimestamp(&ts_buf, Io.Clock.real.now(log.io)),
             .scope = log.scope,
@@ -131,6 +139,8 @@ pub const Log = struct {
             .point = e.point,
             .event = clean(&event_buf, e.event),
             .verdict = e.verdict,
+            .app_id = e.app_id orelse log.app_id,
+            .executable = cleanOptional(&executable_buf, e.executable orelse log.executable),
             .reason = cleanOptional(&reason_buf, e.reason),
             .rule = cleanOptional(&rule_buf, e.rule),
             .host = cleanOptional(&host_buf, e.host),

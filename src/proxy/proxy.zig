@@ -67,7 +67,12 @@ const grants_mod = @import("grants.zig");
 pub const Grants = grants_mod.Grants;
 const builtin = @import("builtin");
 
+pub const Mode = enum { explicit, transparent_http, transparent_tls };
+
 pub const Config = struct {
+    mode: Mode = .explicit,
+    listen_address: net.IpAddress = .{ .ip4 = .loopback(0) },
+    receipt_point: receipt.Point = .proxy,
     /// Connections served at the same time. More are answered with 503.
     max_connections: u32 = 256,
     /// Largest request head (request line and headers).
@@ -114,11 +119,17 @@ pub const Proxy = struct {
         receipts: *receipt.Log,
         config: Config,
     ) StartError!*Proxy {
+        var server = try config.listen_address.listen(io, .{});
+        return startListening(gpa, io, pol, receipts, config, server) catch |err| {
+            server.deinit(io);
+            return err;
+        };
+    }
+
+    /// Takes ownership of an already-bound listener only on success.
+    pub fn startListening(gpa: std.mem.Allocator, io: Io, pol: *const policy.Policy, receipts: *receipt.Log, config: Config, server: net.Server) StartError!*Proxy {
         const p = try gpa.create(Proxy);
         errdefer gpa.destroy(p);
-        const addr: net.IpAddress = .{ .ip4 = .loopback(0) };
-        var server = try addr.listen(io, .{});
-        errdefer server.deinit(io);
         p.* = .{
             .gpa = gpa,
             .io = io,
@@ -148,7 +159,7 @@ pub const Proxy = struct {
                 error.ConnectionAborted, error.WouldBlock => continue,
                 error.SocketNotListening => return,
                 else => {
-                    p.receipts.write(.{ .event = "warning", .point = .proxy, .reason = "accept_failed", .detail = @errorName(err) });
+                    p.receipts.write(.{ .event = "warning", .point = p.config.receipt_point, .reason = "accept_failed", .detail = @errorName(err) });
                     try io.sleep(.fromMilliseconds(100), .awake);
                     continue;
                 },
@@ -201,6 +212,7 @@ const Connection = struct {
     }
 
     fn serve(c: *Connection) Io.Cancelable!void {
+        if (c.p.config.mode == .transparent_tls) return c.serveTls();
         var hs = http.Server.init(&c.reader.interface, &c.writer.interface);
         hs.reader.max_head_len = @min(c.p.config.max_head_bytes, c.in_buf.len);
         var req = hs.receiveHead() catch |err| switch (err) {
@@ -208,7 +220,10 @@ const Connection = struct {
             error.HttpHeadersOversize => return c.badRequest("431 Request Header Fields Too Large", "headers_too_large", null),
             error.HttpHeadersInvalid => return c.badRequest("400 Bad Request", "invalid_request", null),
         };
-        if (req.head.method == .CONNECT) return c.serveConnect(&req);
+        if (req.head.method == .CONNECT) {
+            if (c.p.config.mode != .explicit) return c.badRequest("400 Bad Request", "connect_not_supported", "http");
+            return c.serveConnect(&req);
+        }
         return c.servePlain(&req);
     }
 
@@ -221,7 +236,7 @@ const Connection = struct {
     fn badRequest(c: *Connection, status: []const u8, detail: []const u8, event: ?[]const u8) Io.Cancelable!void {
         c.p.receipts.write(.{
             .event = event orelse "http",
-            .point = .proxy,
+            .point = c.p.config.receipt_point,
             .verdict = .deny,
             .reason = "bad_request",
             .detail = detail,
@@ -231,6 +246,10 @@ const Connection = struct {
     }
 
     fn respondError(c: *Connection, status: []const u8, body: []const u8) void {
+        if (c.p.config.mode == .transparent_tls) {
+            shutdownProtected(c.io, c.client, .both);
+            return;
+        }
         const w = &c.writer.interface;
         w.print("HTTP/1.1 {s}\r\ncontent-type: text/plain\r\ncontent-length: {d}\r\nconnection: close\r\n\r\n{s}", .{
             status, body.len, body,
@@ -326,11 +345,46 @@ const Connection = struct {
         try down.await(c.io);
     }
 
+    /// Transparent TLS routes by the one unambiguous ClientHello name, before dialing.
+    fn serveTls(c: *Connection) Io.Cancelable!void {
+        var d: Decision = .{ .event = "connect", .port = 443 };
+        const r = &c.reader.interface;
+        const hdr = r.peek(5) catch return c.badRequest("400 Bad Request", "tls_unparsed", "connect");
+        const n = std.mem.readInt(u16, hdr[3..5], .big);
+        if (hdr[0] != 0x16 or n > tls_record_max - 5) return c.badRequest("400 Bad Request", "not_tls", "connect");
+        const record = r.peek(5 + @as(usize, n)) catch return c.badRequest("400 Bad Request", "tls_unparsed", "connect");
+        const name = (parseSni(record) catch return c.badRequest("400 Bad Request", "tls_unparsed", "connect")) orelse
+            return c.badRequest("400 Bad Request", "sni_missing", "connect");
+        if (policy.parseIpLiteral(name) != null) return c.badRequest("400 Bad Request", "sni_not_name", "connect");
+        const t0 = Io.Clock.awake.now(c.io);
+        var addrs_buf: [max_dial]net.IpAddress = undefined;
+        const addrs = try c.decide(&d, name, 443, &addrs_buf);
+        if (!d.allowed) return c.refuse(&d);
+        const upstream = (try c.dial(&d, addrs, t0)) orelse return c.refuse(&d);
+        defer upstream.close(c.io);
+        d.detail = "transparent_sni";
+        c.writeReceipt(&d);
+        var down_buf: [16 * 1024]u8 = undefined;
+        var down_reader = upstream.reader(c.io, &down_buf);
+        var down = c.io.concurrent(pump, .{ &down_reader, &c.writer }) catch {
+            shutdownProtected(c.io, upstream, .both);
+            return;
+        };
+        defer down.cancel(c.io) catch {};
+        var up_buf: [0]u8 = undefined;
+        var up_writer = upstream.writer(c.io, &up_buf);
+        pump(&c.reader, &up_writer) catch |err| {
+            down.cancel(c.io) catch {};
+            return err;
+        };
+        try down.await(c.io);
+    }
+
     fn servePlain(c: *Connection, req: *http.Server.Request) Io.Cancelable!void {
         // The head is forwarded, so it must be unambiguous: an upstream that splits lines on a bare LF would
         // otherwise read headers the proxy never saw (a second Host, a second Content-Length).
         if (!headIsClean(req)) return c.badRequest("400 Bad Request", "invalid_request", "http");
-        const url = parseHttpUrl(req.head.target) catch |err| {
+        const url = (if (c.p.config.mode == .transparent_http) originUrl(req) else parseHttpUrl(req.head.target)) catch |err| {
             const detail = if (err == error.HttpsNeedsConnect) "https_needs_connect" else "invalid_url";
             return c.badRequest("400 Bad Request", detail, "http");
         };
@@ -583,7 +637,7 @@ const Connection = struct {
         defer _ = c.io.swapCancelProtection(old);
         c.p.receipts.write(.{
             .event = d.event,
-            .point = .proxy,
+            .point = c.p.config.receipt_point,
             .verdict = if (d.allowed) .allow else .deny,
             .reason = d.reason,
             .rule = d.rule,
@@ -809,7 +863,7 @@ fn watchGrant(p: *Proxy, id: u64, first_deadline: Io.Timestamp, client: net.Stre
     };
     p.receipts.write(.{
         .event = event,
-        .point = .proxy,
+        .point = p.config.receipt_point,
         .verdict = .deny,
         .reason = reason,
         .host = host,
@@ -962,6 +1016,25 @@ pub const HttpUrl = struct {
     path: []const u8,
 };
 
+/// Origin-form requests need exactly one Host; no absolute URI or CONNECT tunnel is accepted.
+pub fn originUrl(req: *const http.Server.Request) !HttpUrl {
+    var host: ?[]const u8 = null;
+    var it = req.iterateHeaders();
+    while (it.next()) |h| if (std.ascii.eqlIgnoreCase(h.name, "host")) {
+        if (host != null) return error.InvalidUrl;
+        host = h.value;
+    };
+    return parseOriginTarget(req.head.target, host orelse return error.InvalidUrl);
+}
+
+pub fn parseOriginTarget(target: []const u8, host: []const u8) error{InvalidUrl}!HttpUrl {
+    if (target.len == 0 or target[0] != '/' or std.mem.startsWith(u8, target, "//")) return error.InvalidUrl;
+    for (target) |ch| if (ch <= 0x20 or ch >= 0x7f or ch == '#' or ch == '\\') return error.InvalidUrl;
+    const auth = parseAuthority(host, 80) catch return error.InvalidUrl;
+    if (auth.port != 80 or policy.parseIpLiteral(auth.host) != null) return error.InvalidUrl;
+    return .{ .authority = host, .host = auth.host, .port = 80, .path = target };
+}
+
 pub fn parseHttpUrl(target: []const u8) error{ InvalidUrl, HttpsNeedsConnect }!HttpUrl {
     const scheme_end = std.mem.find(u8, target, "://") orelse return error.InvalidUrl;
     const scheme = target[0..scheme_end];
@@ -997,23 +1070,28 @@ pub fn parseSni(record: []const u8) error{Malformed}!?[]const u8 {
     _ = try ch.bytes(try ch.byte()); // compression methods
     if (ch.pos == ch.data.len) return null; // no extensions
     var exts: ByteReader = .{ .data = try ch.bytes(try ch.int(u16)) };
+    if (ch.pos != ch.data.len or hs.pos != hs.data.len or r.pos != r.data.len) return error.Malformed;
+    var name_seen: ?[]const u8 = null;
+    var server_name_seen = false;
     while (exts.pos < exts.data.len) {
         const ext_type = try exts.int(u16);
         const ext = try exts.bytes(try exts.int(u16));
         if (ext_type != 0) continue; // server_name
+        if (server_name_seen) return error.Malformed;
+        server_name_seen = true;
         var list_r: ByteReader = .{ .data = ext };
         var list: ByteReader = .{ .data = try list_r.bytes(try list_r.int(u16)) };
+        if (list_r.pos != list_r.data.len) return error.Malformed;
         while (list.pos < list.data.len) {
             const name_type = try list.byte();
             const name = try list.bytes(try list.int(u16));
             if (name_type == 0) {
-                if (name.len == 0) return error.Malformed;
-                return name;
+                if (name.len == 0 or name_seen != null) return error.Malformed;
+                name_seen = name;
             }
         }
-        return null;
     }
-    return null;
+    return name_seen;
 }
 
 const ByteReader = struct {
