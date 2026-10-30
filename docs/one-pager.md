@@ -3,13 +3,12 @@
 ## What it is
 
 blackice gives each app and each task on a machine its own network permissions, decided by a policy file. It
-runs natively on macOS and Linux, headless, with no prompts, no account and no telemetry.
+runs natively on macOS and Linux, headless, with no per-connection prompts, no account and no telemetry.
 
 Today it works for tasks. You put it in front of a command: `blackice run --policy policy.json -- <command>`.
 The command and every process it starts can then reach only the destinations the policy allows. The limit is
 in place before the command runs, nothing inside can widen it, and every decision leaves a receipt. For apps,
-the macOS app filter is built and waits for Developer ID signing, and the Linux app filter is designed and
-being built. blackice is at v0 and not production-ready.
+the macOS app filter is built and waits for Developer ID signing, and the Linux app filter is in design. blackice is at v0 and not production-ready.
 
 ## Design
 
@@ -30,7 +29,8 @@ being built. blackice is at v0 and not production-ready.
 
 ## What the checkpoints show
 
-The runs were on macOS 27.0.1 on Apple silicon with SIP on, and on Debian 13 (kernel 6.12.113) on x86_64.
+The runs were on macOS 27.0.1 on Apple silicon with SIP on, and on Debian 13 (kernel 6.12.113) on x86_64. Each
+entry is one run, made by the people building blackice on their own machines; none is an independent test.
 
 | Checkpoint | What it shows | Evidence |
 |---|---|---|
@@ -54,7 +54,7 @@ was shown working.
 | | Tasks | Apps |
 |---|---|---|
 | **macOS** | Shown on one Mac in the entries above. Not shown yet: launches through `open` or Apple Events refused, fx with a real model. | Built, unsigned, in #8: a Network Extension filter. It has never been activated. Needs an Apple Developer ID, a signed Network Extension, tests on a live system, and receipts written through blackice. |
-| **Linux** | Shown on one Debian 13 machine in the entries above. A small helper is installed once by a setup script run with sudo. The first two real runs on 30 Oct failed closed before the command ran, and were fixed. Not shown yet: aarch64, fx, other distributions. On Ubuntu 24.04 and later, where `kernel.apparmor_restrict_unprivileged_userns=1` is the default, scopes are expected to fail closed. | Designed, being built. |
+| **Linux** | Shown on one Debian 13 machine in the entries above. A small helper is installed once by a setup script run with sudo. The first two real runs on 30 Oct failed closed before the command ran, and were fixed. Not shown yet: aarch64, fx, other distributions. On Ubuntu 24.04 and later, where `kernel.apparmor_restrict_unprivileged_userns=1` is the default, scopes are expected to fail closed. | In design. |
 
 Windows comes after macOS and Linux. Nothing is built for it.
 
@@ -86,5 +86,5 @@ proxy, observe mode, and recovery after faults.
 
 ## Build
 
-Zig 0.17, standard library only. One binary, plus a small Linux helper that holds the capabilities needed to
-attach the kernel programs. Apache-2.0. Design and requirements: [`docs/specs/`](specs/README.md).
+Zig 0.17, standard library only. One binary, plus a small Linux helper with four file capabilities (`CAP_BPF`,
+`CAP_NET_ADMIN`, `CAP_CHOWN`, `CAP_DAC_OVERRIDE`) that sets up each scope. Apache-2.0. Design and requirements: [`docs/specs/`](specs/README.md).
