@@ -1,7 +1,7 @@
 # Evidence
 
-Each file here records one real run of one checkpoint. A capability is listed as working only when it has an
-entry.
+Each file here records one real run of one checkpoint, made by the people building blackice on their own
+machines; none is an independent test. A capability is listed as working only when it has an entry.
 
 ## Naming
 

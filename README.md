@@ -8,11 +8,11 @@
 # blackice
 
 blackice gives each app and each task on your machine its own network permissions, decided by a policy file.
-It runs natively on macOS and Linux, with no prompts for anyone to answer.
+It runs natively on macOS and Linux, with no per-connection prompts.
 
 Today it works for tasks: a command, such as one an AI agent runs, and everything that command starts. That is
-tested on macOS and on Debian 13, and on macOS also inside fx's hook. For apps, the macOS app filter is built
-and waits for Developer ID signing, and the Linux app filter is designed and being built.
+tested on macOS and on Debian 13 (x86_64), and on macOS also inside fx's hook. For apps, the macOS app filter
+is built and waits for Developer ID signing, and the Linux app filter is in design.
 
 ## Status
 
@@ -22,7 +22,7 @@ blackice is at v0 and not production-ready. A cell is marked verified only when 
 | | Apps | Tasks |
 |---|---|---|
 | macOS | Built, not signed yet: a Network Extension content filter ([#8](https://github.com/ValentinTorassa/blackice/pull/8)). It needs a Developer ID to run. | Verified: a Seatbelt sandbox profile plus a local proxy (experimental, because Apple has deprecated `sandbox-exec`). |
-| Linux | Designed, being built. | Verified on Debian 13: cgroup v2 with eBPF socket programs plus a local proxy, and a small helper that a setup script installs with sudo. |
+| Linux | In design. | Verified on Debian 13: cgroup v2 with eBPF socket programs plus a local proxy, and a small helper that a setup script installs with sudo. |
 | Windows | Later | Later |
 
 ## Quick start
@@ -43,7 +43,11 @@ $ sha256sum zig-out/bin/blackice-linux-helper
 $ sudo ./scripts/linux-setup.sh "$USER" <that sha256>
 ```
 
-[`docs/linux.md`](docs/linux.md) covers the setup and teardown in detail. macOS needs no setup.
+Setup copies the helper to `/usr/local/libexec` with four file capabilities (`CAP_BPF`, `CAP_NET_ADMIN`,
+`CAP_CHOWN`, `CAP_DAC_OVERRIDE`), runnable by your group, and creates `/sys/fs/cgroup/blackice`.
+[`scripts/linux-teardown.sh`](scripts/linux-teardown.sh), run with sudo, removes both. Setup needs `setcap` and
+`getcap` (on Debian, the `libcap2-bin` package). [`docs/linux.md`](docs/linux.md) has the details. macOS needs
+no setup.
 
 Write a policy that allows one name:
 
@@ -54,7 +58,8 @@ Write a policy that allows one name:
 }
 ```
 
-Run a command under it. The allowed name works:
+Run a command under it. On Linux the output looks like this, and on macOS the backend name differs. The
+allowed name works:
 
 ```console
 $ ./zig-out/bin/blackice run --policy policy.json -- curl -sS -o /dev/null -w '%{http_code}\n' https://example.com
@@ -104,7 +109,8 @@ set. `blackice policy check policy.json` validates a policy without running anyt
 ## Evidence
 
 The runs were on macOS 27.0.1 on Apple silicon with SIP on, and on Debian 13 (kernel 6.12.113) on x86_64. Each
-entry names the commit it was built from, the exact commands, the receipts and its own limits.
+entry is one run, made by the people building blackice on their own machines; none is an independent test.
+Each entry names the commit it was built from, the exact commands, the receipts and its own limits.
 
 | Checkpoint | What it shows | macOS | Linux |
 |---|---|---|---|
@@ -125,7 +131,12 @@ entry names the commit it was built from, the exact commands, the receipts and i
   run inside one.
 - blackice does not detect prompt injection. It blocks connections the policy does not allow; what is sent to an
   allowed destination is up to that destination.
-- Work handed to a daemon outside the task (docker, launchd, a tmux server) runs outside the task.
+- Work handed to a service outside the task (launchd, `open`, `systemd-run --user`, Docker, a tmux server) is
+  refused only where a test shows it.
+- An allowed name on a shared CDN can reach other sites on that CDN through domain fronting inside TLS: the
+  proxy checks the TLS server name, not the encrypted request.
+- Receipts are a local record for diagnosis. Other programs of the same user, and administrators, can change
+  them.
 - With fx, only the shell commands fx runs are scoped. fx's own file tools and its model traffic run outside
   the scopes, and what those tools read goes to the model's provider.
 - On macOS, a refusal leaves a receipt only when the refused program is signed by Apple. A program you built
