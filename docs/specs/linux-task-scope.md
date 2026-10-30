@@ -125,7 +125,7 @@ the system resolver's sockets do not exist, so it cannot ask a system service to
 | Security review and pin of the protocol v2 helper: 93412c1 reviewed safe; pinned at 35ae1f8, which builds it for baseline CPUs (helper `21509462…`) so its hash does not depend on the build machine | security | done | |
 | Run the setup script with sudo, once it is reviewed: done at e4d9ac3 (that helper could not start a scope); run it again at 35ae1f8 (helper `21509462…`), because older helpers are refused | valen | todo | |
 | Fixtures: immediate connect, fork and exec, TCP and both UDP modes on IPv4 and IPv6, migration, `systemd-run --user`, Docker socket, raw sockets, io_uring, `ping`, an SCTP connect, an unconnected ICMP `sendto`, `bind` and `listen`, DNS paths (`getent hosts`, `resolvectl query`, `busctl call org.freedesktop.resolve1`) | codex-linux | doing | |
-| End-to-end kernel deny with receipts, an off-host receiver that sees nothing per protocol and family, and an evidence entry | codex-linux | todo | |
+| End-to-end kernel deny with receipts, an off-host receiver that sees nothing per protocol and family, and an evidence entry: checks prepared, with receiver controls before and after each scoped stage (4e02c08; network's `scripts/e2e/linux-offhost.sh`, 1c20f45) | codex-linux | doing | the 07:00 install |
 | docs/linux.md | codex-linux | done | |
 | docs/threat-model.md | codex | done | |
 
