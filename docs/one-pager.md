@@ -8,7 +8,8 @@ runs natively on macOS and Linux, headless, with no per-connection prompts, no a
 Today it works for tasks. You put it in front of a command: `blackice run --policy policy.json -- <command>`.
 The command and every process it starts can then reach only the destinations the policy allows. The limit is
 in place before the command runs, nothing inside can widen it, and every decision leaves a receipt. For apps,
-the macOS app filter is built and waits for Developer ID signing, and the Linux app filter is in design. blackice is at v0 and not production-ready.
+the macOS app filter is built and waits for Developer ID signing, and the Linux app filter is in design.
+blackice is at v0 and not production-ready.
 
 ## Design
 
@@ -87,4 +88,5 @@ proxy, observe mode, and recovery after faults.
 ## Build
 
 Zig 0.17, standard library only. One binary, plus a small Linux helper with four file capabilities (`CAP_BPF`,
-`CAP_NET_ADMIN`, `CAP_CHOWN`, `CAP_DAC_OVERRIDE`) that sets up each scope. Apache-2.0. Design and requirements: [`docs/specs/`](specs/README.md).
+`CAP_NET_ADMIN`, `CAP_CHOWN`, `CAP_DAC_OVERRIDE`) that sets up each scope. Apache-2.0. Design and requirements:
+[`docs/specs/`](specs/README.md).

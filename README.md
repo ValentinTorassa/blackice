@@ -45,8 +45,9 @@ $ sudo ./scripts/linux-setup.sh "$USER" <that sha256>
 
 Setup copies the helper to `/usr/local/libexec` with four file capabilities (`CAP_BPF`, `CAP_NET_ADMIN`,
 `CAP_CHOWN`, `CAP_DAC_OVERRIDE`), runnable by your group, and creates `/sys/fs/cgroup/blackice`.
-`sudo ./scripts/linux-teardown.sh` removes both. Setup needs `setcap` and `getcap` (on Debian, the
-`libcap2-bin` package). [`docs/linux.md`](docs/linux.md) has the details. macOS needs no setup.
+[`scripts/linux-teardown.sh`](scripts/linux-teardown.sh), run with sudo, removes both. Setup needs `setcap` and
+`getcap` (on Debian, the `libcap2-bin` package). [`docs/linux.md`](docs/linux.md) has the details. macOS needs
+no setup.
 
 Write a policy that allows one name:
 
