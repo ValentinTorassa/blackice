@@ -4,8 +4,8 @@
 //!                  [--max-requests N]] -- CMD [ARG]...
 //!
 //! Order: the policy is read and checked, the scope directory is created (receipts and an exact copy of the
-//! policy), the proxy starts (and the relay, when asked), and only then does the backend start CMD, already
-//! confined. blackice never runs CMD without an enforcing backend.
+//! policy), the proxy and the owner's control socket start (and the relay, when asked), and only then does the
+//! backend start CMD, already confined. blackice never runs CMD without an enforcing backend.
 //!
 //! CMD gets a clean environment: a short list of variables (PATH, HOME, TERM, locale and a few more), the ones
 //! named with --env, BLACKICE_SCOPE, and the proxy variables. Nothing else from the caller's environment
@@ -25,6 +25,7 @@ const scope = @import("../core/scope.zig");
 const backend = @import("../core/backend.zig");
 const proxy = @import("../proxy/proxy.zig");
 const relay = @import("../relay/relay.zig");
+const control = @import("../control/control.zig");
 
 pub const usage =
     \\usage: blackice run --policy FILE [--env NAME]... [--relay --model ID... [--upstream URL] [--max-requests N]]
@@ -37,8 +38,10 @@ pub const status_spawn_failed: u8 = 127;
 
 /// Variables passed from the caller's environment when present. Everything else is dropped.
 pub const pass_env = [_][]const u8{
-    "PATH", "HOME",     "USER",   "LOGNAME",  "SHELL",       "TERM", "COLORTERM", "NO_COLOR",
-    "LANG", "LANGUAGE", "LC_ALL", "LC_CTYPE", "LC_MESSAGES", "TZ",   "TMPDIR",
+    "PATH",            "HOME",           "USER",          "LOGNAME",        "SHELL",
+    "TERM",            "COLORTERM",      "NO_COLOR",      "LANG",           "LANGUAGE",
+    "LC_ALL",          "LC_CTYPE",       "LC_MESSAGES",   "TZ",             "TMPDIR",
+    "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME",
 };
 
 const max_models = 16;
@@ -239,6 +242,16 @@ pub fn run(gpa: std.mem.Allocator, io: Io, parent_env: *const std.process.Enviro
     var px_running = true;
     defer if (px_running) px.stop();
 
+    // The owner's control socket (grants), unreachable from inside the scope.
+    const ctl = control.Server.start(gpa, io, created.path, &grants, &log) catch |err| {
+        log.write(.{ .event = "warning", .point = .control, .reason = "control_start_failed", .detail = @errorName(err) });
+        log.end(status_setup_failed, "control socket did not start");
+        try errw.print("blackice run: the control socket did not start: {s}\n", .{@errorName(err)});
+        return status_setup_failed;
+    };
+    var ctl_running = true;
+    defer if (ctl_running) ctl.stop();
+
     var ports_buf: [2]u16 = .{ px.port, 0 };
     var ports: []const u16 = ports_buf[0..1];
     var rl: ?*relay.Relay = null;
@@ -275,6 +288,7 @@ pub fn run(gpa: std.mem.Allocator, io: Io, parent_env: *const std.process.Enviro
     }) catch "backend";
     log.write(.{ .event = "scope_start", .point = .control, .detail = start_detail });
     try errw.print("blackice: scope {s} (policy {s}, {s}); receipts: {s}/receipts.jsonl\n", .{ sid, pol.id(), backend.name, created.path });
+    try errw.print("blackice: to allow one more host for a while: blackice grant {s} HOST --for 10m\n", .{sid});
     try errw.flush();
 
     // 6. The command, confined before it runs.
@@ -287,6 +301,8 @@ pub fn run(gpa: std.mem.Allocator, io: Io, parent_env: *const std.process.Enviro
         .receipts = &log,
     }) catch |err| {
         const status: u8 = if (err == error.BackendUnavailable) status_setup_failed else status_spawn_failed;
+        ctl.stop();
+        ctl_running = false;
         if (rl) |r| r.stop();
         rl = null;
         px.stop();
@@ -296,7 +312,9 @@ pub fn run(gpa: std.mem.Allocator, io: Io, parent_env: *const std.process.Enviro
         return status;
     };
 
-    // 7. Stop the relay and the proxy before the last receipt, so scope_end is the final line.
+    // 7. Stop the control socket, the relay and the proxy before the last receipt, so scope_end is the final line.
+    ctl.stop();
+    ctl_running = false;
     if (rl) |r| r.stop();
     rl = null;
     px.stop();
