@@ -155,8 +155,13 @@ pure unit suite and runs only in a disposable QEMU VM; the full crash/restart ch
   ancestors, on ext4 or xfs. Other filesystems, including btrfs and overlayfs, refuse arming because their
   statx device identity may differ from the kernel inode's superblock device. Errors name the executable.
   Symlinks and home-directory applications are refused. List the resolved installed binary.
-- File identity is not code integrity or a publisher signature. Scripts are identified by their interpreter;
-  listing it covers all scripts it runs. AppImages are unsupported.
+- Only readable ELF executables may be listed. The service reads a four-byte prefix from the same pinned
+  inode used for identity: `#!` files refuse with `ScriptExecutableUnsupported`; empty, truncated and other
+  formats refuse with `UnsupportedExecutableFormat`. An unreadable file also refuses. Initial `on` validates
+  every file before creating kernel objects, and identity refresh repeats this check. The refusal receipt
+  names the executable. List the native binary behind a launcher script (for example Debian's Firefox wrapper),
+  not the script or a general interpreter. File identity is not code integrity or a publisher signature;
+  this prefix check does not validate the complete ELF or its contents. AppImages are unsupported.
 - Inotify adds replacement file identities and retains old entries. A launch before a replacement is noticed,
   including while the service is down, is not tagged. A descendant already started before arming and now running
   another file is not discoverable by the task iterator. Processes an app started before arming are not covered.
