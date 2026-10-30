@@ -82,4 +82,5 @@ test {
     _ = seatbelt;
     _ = @import("proxy/proxy.zig");
     _ = @import("relay/relay.zig");
+    _ = @import("control/control.zig");
 }

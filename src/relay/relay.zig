@@ -11,25 +11,40 @@
 //!   GET  /v1/models             answered locally with the allow list
 //!   anything else               404
 //!
-//! Limits per relay (one relay per scope): model allow list, request body size, number of forwarded calls.
-//! Only Content-Type, Accept-Encoding: identity, User-Agent and the key's Authorization header go upstream;
-//! the caller's own headers, including any Authorization, are dropped. Redirects are not followed.
+//! Limits per relay (one relay per scope): model allow list, request body size, number of forwarded calls,
+//! response size and time per call. Only Content-Type, Accept-Encoding: identity, User-Agent and the key's
+//! Authorization header go upstream; the caller's own headers, including any Authorization, are dropped.
+//! Redirects are not followed.
+//!
+//! Callers: requests carrying Origin or Sec-Fetch-* headers (a browser page) are refused, the Host header
+//! must name this listener (127.0.0.1:<port> or localhost:<port>, which defeats DNS rebinding), and chat
+//! calls must be application/json (a page cannot send that without a CORS preflight, which is refused).
+//! Gateway routing fields in the body (providerOptions, models, provider, ...) are refused, so a call cannot
+//! fall back to a model that is not on the list.
 //!
 //! One receipt per call, point "relay", event "relay_call". Reason codes:
 //!   model_allowed      forwarded (rule = the model; detail = status, bytes in and out, stream)
 //!   model_not_allowed  the model is not on the allow list (403)
+//!   routing_not_allowed the body carries a gateway routing field (403; detail = the field)
+//!   browser_request    Origin or Sec-Fetch-* present (403)
+//!   bad_host_header    the Host header does not name this listener (403)
+//!   bad_content_type   a chat call that is not application/json (415)
 //!   request_too_large  the body is over the size cap (413)
 //!   request_cap        the scope used up its calls (429)
 //!   bad_request        the body is not JSON with a string "model" (400)
 //!   unknown_endpoint   not one of the endpoints above (404)
 //!   upstream_error     the upstream could not be reached or failed mid-call (502 when nothing was sent yet)
+//!   relay_watchdog_failed  the task that enforces the call's time limit could not start (503)
+//!   Calls cut by the response cap or the time limit keep reason model_allowed, with error=response_cap or
+//!   error=call_timeout in detail.
 //!   models_list        GET /v1/models, answered locally
 //! The key never appears in receipts, errors or logs.
 //!
 //! Declared limits (v0):
 //! - The relay bounds who pays and how much, not what is said: an allowed call can carry any content to the
 //!   allowed provider.
-//! - Spend is capped by call count, not by tokens.
+//! - Spend is bounded by call count, response size and time per call, not by tokens or money. Set a budget
+//!   on the provider key as well.
 //! - Every process that can reach the port can use the relay; no per-scope credential yet (TODO).
 //! - The key lives in this process's memory; `hardenProcess` keeps same-user debuggers and core dumps out.
 
@@ -55,6 +70,10 @@ pub const Config = struct {
     max_requests: u32 = 100,
     /// Connections served at the same time.
     max_connections: u32 = 32,
+    /// Largest response forwarded for one call; the call is cut there.
+    max_response_bytes: usize = 16 << 20,
+    /// Longest a call may run once its upstream connection is open.
+    call_timeout: Io.Duration = .fromSeconds(300),
 };
 
 pub const KeyError = error{ KeyMissing, KeyTooLong, KeyInvalid, ReadFailed };
@@ -242,6 +261,12 @@ pub const Relay = struct {
 
     /// Serves one request. Returns whether the connection may serve another.
     fn handle(r: *Relay, req: *http.Server.Request) HandleError!bool {
+        if (r.callerRefusal(req)) |reason| {
+            var detail_buf: [160]u8 = undefined;
+            r.writeReceipt(.{ .verdict = .deny, .reason = reason, .detail = describeTarget(&detail_buf, req) });
+            try r.respondErrorClose(req, .forbidden, reason, "the relay serves local tools, not browsers or other hosts");
+            return false;
+        }
         const target = req.head.target;
         const path = if (std.mem.findScalar(u8, target, '?')) |q| target[0..q] else target;
         if (req.head.method == .GET and std.mem.eql(u8, path, "/v1/models")) return r.listModels(req);
@@ -251,6 +276,27 @@ pub const Relay = struct {
         r.writeReceipt(.{ .verdict = .deny, .reason = "unknown_endpoint", .detail = describeTarget(&detail_buf, req) });
         try r.respondError(req, .not_found, "unknown_endpoint", "blackice relay serves POST /v1/chat/completions and GET /v1/models");
         return req.head.keep_alive;
+    }
+
+    /// Refuses browser pages (Origin, Sec-Fetch-*) and any Host other than this listener.
+    fn callerRefusal(r: *const Relay, req: *const http.Server.Request) ?[]const u8 {
+        var host: ?[]const u8 = null;
+        var it = req.iterateHeaders();
+        while (it.next()) |h| {
+            if (std.ascii.eqlIgnoreCase(h.name, "origin")) return "browser_request";
+            if (h.name.len >= 10 and std.ascii.eqlIgnoreCase(h.name[0..10], "sec-fetch-")) return "browser_request";
+            if (std.ascii.eqlIgnoreCase(h.name, "host")) {
+                if (host != null) return "bad_host_header";
+                host = h.value;
+            }
+        }
+        const got = host orelse return "bad_host_header";
+        var buf: [32]u8 = undefined;
+        const a = std.fmt.bufPrint(&buf, "127.0.0.1:{d}", .{r.port}) catch unreachable;
+        if (std.mem.eql(u8, got, a)) return null;
+        const b = std.fmt.bufPrint(&buf, "localhost:{d}", .{r.port}) catch unreachable;
+        if (std.ascii.eqlIgnoreCase(got, b)) return null;
+        return "bad_host_header";
     }
 
     fn listModels(r: *Relay, req: *http.Server.Request) HandleError!bool {
@@ -273,6 +319,15 @@ pub const Relay = struct {
 
     fn chat(r: *Relay, req: *http.Server.Request) HandleError!bool {
         const keep_alive = req.head.keep_alive;
+        const json_body = if (req.head.content_type) |ct|
+            ct.len >= 16 and std.ascii.eqlIgnoreCase(ct[0..16], "application/json")
+        else
+            false;
+        if (!json_body) {
+            r.writeReceipt(.{ .verdict = .deny, .reason = "bad_content_type" });
+            try r.respondErrorClose(req, .unsupported_media_type, "bad_content_type", "chat calls must be application/json");
+            return false;
+        }
         if (req.head.content_length) |len| if (len > r.config.max_request_bytes) {
             r.writeReceipt(.{ .verdict = .deny, .reason = "request_too_large", .detail = "content_length" });
             // The body is not read, so the connection cannot be reused.
@@ -293,7 +348,17 @@ pub const Relay = struct {
         };
         defer r.gpa.free(body);
 
-        const Fields = struct { model: []const u8, stream: ?bool = null };
+        const Fields = struct {
+            model: []const u8,
+            stream: ?bool = null,
+            // Gateway routing fields: present means refused (see routing_fields).
+            providerOptions: ?std.json.Value = null,
+            provider_options: ?std.json.Value = null,
+            models: ?std.json.Value = null,
+            provider: ?std.json.Value = null,
+            route: ?std.json.Value = null,
+            extra_body: ?std.json.Value = null,
+        };
         const parsed = std.json.parseFromSlice(Fields, r.gpa, body, .{ .ignore_unknown_fields = true }) catch {
             r.writeReceipt(.{ .verdict = .deny, .reason = "bad_request", .detail = "body must be JSON with a string \"model\"" });
             try r.respondError(req, .bad_request, "bad_request", "body must be JSON with a string \"model\"");
@@ -305,6 +370,13 @@ pub const Relay = struct {
 
         var model_buf: [128]u8 = undefined;
         const model_label = printable(&model_buf, model);
+        inline for (routing_fields) |field| {
+            if (@field(parsed.value, field) != null) {
+                r.writeReceipt(.{ .verdict = .deny, .reason = "routing_not_allowed", .rule = model_label, .detail = field });
+                try r.respondError(req, .forbidden, "routing_not_allowed", "gateway routing fields are not allowed through the relay");
+                return keep_alive;
+            }
+        }
         if (!r.modelAllowed(model)) {
             r.writeReceipt(.{ .verdict = .deny, .reason = "model_not_allowed", .rule = model_label });
             try r.respondError(req, .forbidden, "model_not_allowed", "model not on the relay's allow list");
@@ -335,9 +407,32 @@ pub const Relay = struct {
             },
         }) catch |err| return r.upstreamFailed(req, &stats, err);
         defer up.deinit();
-        up.sendBodyComplete(body) catch |err| return r.upstreamFailed(req, &stats, err);
+        // The time limit starts once the upstream connection exists: on expiry the watchdog shuts that socket
+        // down, which ends the call wherever it is blocked. No watchdog, no call.
+        var timed_out: std.atomic.Value(bool) = .init(false);
+        const up_stream = up.connection.?.stream_reader.stream;
+        var watchdog = if (builtin.is_test and test_fail_watchdog)
+            error.ConcurrencyUnavailable
+        else
+            r.io.concurrent(callDeadline, .{ r.io, up_stream, r.config.call_timeout, &timed_out });
+        if (watchdog) |_| {} else |_| {
+            _ = r.calls.fetchSub(1, .monotonic); // nothing went upstream
+            stats.err = "relay_watchdog_failed";
+            r.writeReceipt(.{ .verdict = .deny, .reason = "relay_watchdog_failed", .rule = model });
+            try r.respondError(req, .service_unavailable, "relay_watchdog_failed", "the relay could not arm its time limit");
+            return false;
+        }
+        defer if (watchdog) |*f| f.cancel(r.io) catch {} else |_| {};
+
+        up.sendBodyComplete(body) catch |err| {
+            if (timed_out.load(.acquire)) stats.err = "call_timeout";
+            return r.upstreamFailed(req, &stats, if (timed_out.load(.acquire)) error.CallTimeout else err);
+        };
         var redirect_buf: [0]u8 = undefined;
-        var resp = up.receiveHead(&redirect_buf) catch |err| return r.upstreamFailed(req, &stats, err);
+        var resp = up.receiveHead(&redirect_buf) catch |err| {
+            if (timed_out.load(.acquire)) stats.err = "call_timeout";
+            return r.upstreamFailed(req, &stats, if (timed_out.load(.acquire)) error.CallTimeout else err);
+        };
         stats.status = @backingInt(resp.head.status);
 
         // Header strings are invalidated once the body is read, so copy what goes back to the caller.
@@ -365,10 +460,17 @@ pub const Relay = struct {
             const data = rr.peekGreedy(1) catch |err| {
                 if (err == error.ReadFailed) {
                     ok = false;
-                    stats.err = if (resp.bodyErr()) |e| @errorName(e) else "upstream_read_failed";
+                    stats.err = if (timed_out.load(.acquire))
+                        "call_timeout"
+                    else if (resp.bodyErr()) |e| @errorName(e) else "upstream_read_failed";
                 }
                 break;
             };
+            if (stats.bytes_out + data.len > r.config.max_response_bytes) {
+                ok = false;
+                stats.err = "response_cap";
+                break;
+            }
             bw.writer.writeAll(data) catch {
                 ok = false;
                 stats.err = "client_write_failed";
@@ -393,7 +495,7 @@ pub const Relay = struct {
 
     fn upstreamFailed(r: *Relay, req: *http.Server.Request, stats: *CallStats, err: anyerror) HandleError!bool {
         if (err == error.Canceled) return error.Canceled;
-        stats.err = @errorName(err);
+        stats.err = if (err == error.CallTimeout) "call_timeout" else @errorName(err);
         r.writeCallReceipt(stats);
         try r.respondError(req, .bad_gateway, "upstream_error", "the relay could not reach the model provider");
         return req.head.keep_alive;
@@ -472,6 +574,20 @@ pub const Relay = struct {
         }) catch return error.WriteFailed;
     }
 };
+
+/// Top-level body fields that steer the gateway's routing; a call carrying any of them is refused.
+const routing_fields = [_][]const u8{ "providerOptions", "provider_options", "models", "provider", "route", "extra_body" };
+
+/// Tests only: makes the call watchdog fail to start.
+pub var test_fail_watchdog: bool = false;
+
+fn callDeadline(io: Io, upstream: net.Stream, timeout: Io.Duration, timed_out: *std.atomic.Value(bool)) Io.Cancelable!void {
+    try io.sleep(timeout, .boot);
+    timed_out.store(true, .release);
+    const old = io.swapCancelProtection(.blocked);
+    defer _ = io.swapCancelProtection(old);
+    upstream.shutdown(io, .both) catch {};
+}
 
 const Upstream = struct { chat_url: []u8, host: []u8, port: u16 };
 

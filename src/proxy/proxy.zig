@@ -5,18 +5,21 @@
 //! at it (see `setEnv`).
 //!
 //! Two request forms:
-//! - `CONNECT host:port` (HTTPS and any other TLS or TCP traffic). After the tunnel opens, the first bytes the
-//!   command sends are checked: when they are a TLS ClientHello, its server name (SNI) must equal the CONNECT
-//!   host, otherwise the tunnel is closed. This stops "CONNECT allowed.com" followed by "SNI evil.com" from
-//!   reaching another site on a shared CDN address.
+//! - `CONNECT host:port`, for TLS only. After the tunnel opens, the first bytes the command sends must be a
+//!   TLS ClientHello, and for a name its server name (SNI) must be present and equal the CONNECT host;
+//!   otherwise the tunnel is closed before a byte reaches the upstream or comes back from it. This stops "CONNECT allowed.com"
+//!   followed by "SNI evil.com" from reaching another site on a shared CDN address. A CONNECT to an IP
+//!   literal (allowed only by a subnet) needs TLS but no particular server name.
 //! - Plain HTTP with an absolute URI (`GET http://host/path`). The Host header is rewritten from the URI, so
 //!   the request cannot name a different site, hop-by-hop headers are dropped, and the upstream connection
 //!   carries exactly one request.
 //!
 //! Decision, in order:
-//! 1. The host is normalized (lowercase, no trailing dot). An IP literal is decided by `Policy.checkLiteral`.
-//! 2. A name is decided by `Policy.checkHost`; when the policy refuses it, an active grant may still allow it.
-//! 3. An allowed name is resolved here, by the proxy, and every address is checked with
+//! 1. The destination port is checked with `Policy.checkPort`, before any name or DNS work. Grants never
+//!    lift a port refusal.
+//! 2. The host is normalized (lowercase, no trailing dot). An IP literal is decided by `Policy.checkLiteral`.
+//! 3. A name is decided by `Policy.checkHost`; when the policy refuses it, an active grant may still allow it.
+//! 4. An allowed name is resolved here, by the proxy, and every address is checked with
 //!    `Policy.checkResolved`. Only addresses that pass are dialed. The command's own resolution is never used.
 //!
 //! One receipt per decision (point "proxy"), event "connect" or "http". Besides the policy reason codes
@@ -27,12 +30,15 @@
 //!   upstream_unreachable  no checked address accepted the connection (502; rule = the allow entry)
 //!   sni_mismatch          the TLS server name differs from the CONNECT host (tunnel closed)
 //!   tls_unparsed          the first bytes were a TLS handshake that could not be parsed (tunnel closed)
-//!   grant_expired         a tunnel opened under a grant was closed when the grant expired
+//!   not_tls               the first bytes over CONNECT were not TLS, or there were none (tunnel closed)
+//!   sni_missing           a ClientHello for a name carried no server name (tunnel closed)
+//!   grant_expired         a connection opened under a grant was closed when the grant expired
+//!   grant_revoked         a connection opened under a grant was closed when the owner revoked it
+//!   grant_watchdog_failed the task that enforces a grant's lifetime could not start (503)
 //!
 //! Declared limits (v0):
 //! - Only the destination name and port are decided. Content inside TLS is not inspected: a request to an
 //!   allowed host can carry any data to that host.
-//! - Any port of an allowed host is allowed.
 //! - Every process that can reach the port can use the proxy; there is no per-scope credential yet
 //!   (TODO: a Proxy-Authorization token per scope).
 
@@ -42,7 +48,9 @@ const net = Io.net;
 const http = std.http;
 const policy = @import("../core/policy.zig");
 const receipt = @import("../core/receipt.zig");
-pub const Grants = @import("grants.zig").Grants;
+const grants_mod = @import("grants.zig");
+pub const Grants = grants_mod.Grants;
+const builtin = @import("builtin");
 
 pub const Config = struct {
     /// Connections served at the same time. More are answered with 503.
@@ -229,55 +237,54 @@ const Connection = struct {
         const upstream = c.dial(&d, addrs) orelse return c.refuse(&d);
         defer upstream.close(c.io);
 
+        // A grant's expiry or revocation closes the tunnel, not only new connections. No watchdog, no tunnel.
+        var watchdog = c.armWatchdog(&d, upstream) catch return c.refuse(&d);
+        defer if (watchdog) |*f| f.cancel(c.io) catch {};
+
         const w = &c.writer.interface;
         w.writeAll("HTTP/1.1 200 Connection Established\r\n\r\n") catch return c.canceled();
         w.flush() catch return c.canceled();
 
-        // Upstream -> client runs on its own task, so protocols where the server speaks first still work.
+        // Nothing flows in either direction until the first client bytes pass: TLS only, and for a name the
+        // ClientHello must carry exactly that name. A shared front end picks the site by SNI (or, without
+        // TLS, by Host header), so anything else could reach a site the policy never allowed.
+        const refusal: ?[]const u8 = switch (c.checkSni(if (d.literal) null else d.host)) {
+            .match => blk: {
+                d.detail = if (d.literal) "ip_literal" else "sni_match";
+                break :blk null;
+            },
+            .no_sni => if (d.literal) blk: {
+                d.detail = "ip_literal";
+                break :blk null;
+            } else "sni_missing",
+            .not_tls => "not_tls",
+            .no_data => blk: {
+                d.detail = "no_data";
+                break :blk "not_tls";
+            },
+            .mismatch => |name| blk: {
+                d.sni = name;
+                break :blk "sni_mismatch";
+            },
+            .unparsed => "tls_unparsed",
+        };
+        if (refusal) |reason| {
+            d.allowed = false;
+            d.reason = reason;
+            c.writeReceipt(&d);
+            shutdownProtected(c.io, upstream, .both);
+            shutdownProtected(c.io, c.client, .both);
+            return;
+        }
+        c.writeReceipt(&d);
+
         var down_buf: [16 * 1024]u8 = undefined;
         var down_reader = upstream.reader(c.io, &down_buf);
         var down = c.io.concurrent(pump, .{ &down_reader, &c.writer }) catch {
-            d.allowed = false;
-            d.reason = "upstream_unreachable";
-            d.detail = "concurrency_unavailable";
-            c.writeReceipt(&d);
+            shutdownProtected(c.io, upstream, .both);
             return;
         };
         defer down.cancel(c.io) catch {};
-
-        // Grant expiry closes the tunnel, not only new connections.
-        var watchdog: ?Io.Future(Io.Cancelable!void) = null;
-        if (d.expires) |expires| {
-            watchdog = c.io.concurrent(expireTunnel, .{ c.p, c.client, upstream, expires, d.host }) catch null;
-        }
-        defer if (watchdog) |*f| f.cancel(c.io) catch {};
-
-        if (d.literal) {
-            d.detail = "ip_literal";
-        } else switch (c.checkSni(d.host)) {
-            .match => d.detail = "sni_match",
-            .no_sni => d.detail = "no_sni",
-            .not_tls => d.detail = "not_tls",
-            .no_data => d.detail = "no_data",
-            .mismatch => |name| {
-                d.allowed = false;
-                d.reason = "sni_mismatch";
-                d.sni = name;
-                c.writeReceipt(&d);
-                shutdownProtected(c.io, upstream, .both);
-                shutdownProtected(c.io, c.client, .both);
-                return;
-            },
-            .unparsed => {
-                d.allowed = false;
-                d.reason = "tls_unparsed";
-                c.writeReceipt(&d);
-                shutdownProtected(c.io, upstream, .both);
-                shutdownProtected(c.io, c.client, .both);
-                return;
-            },
-        }
-        c.writeReceipt(&d);
 
         var up_buf: [0]u8 = undefined;
         var up_writer = upstream.writer(c.io, &up_buf);
@@ -302,6 +309,8 @@ const Connection = struct {
 
         const upstream = c.dial(&d, addrs) orelse return c.refuse(&d);
         defer upstream.close(c.io);
+        var watchdog = c.armWatchdog(&d, upstream) catch return c.refuse(&d);
+        defer if (watchdog) |*f| f.cancel(c.io) catch {};
         c.writeReceipt(&d);
 
         // Request head, rewritten. Strings in req.head point into the client buffer and stay valid until
@@ -326,9 +335,24 @@ const Connection = struct {
         try pump(&down_reader, &c.writer);
     }
 
+    /// For a connection allowed by a grant, starts the task that closes it when the grant expires or is
+    /// revoked. Fails (filling `d` as a refusal) when that task cannot start, so a grant is never unbounded.
+    fn armWatchdog(c: *Connection, d: *Decision, upstream: net.Stream) error{WatchdogFailed}!?Io.Future(Io.Cancelable!void) {
+        const g = d.grant orelse return null;
+        const fail = builtin.is_test and test_fail_watchdog;
+        if (!fail) {
+            if (c.io.concurrent(watchGrant, .{ c.p, g.id, g.deadline, c.client, upstream, d.event, d.host })) |f| return f else |_| {}
+        }
+        d.allowed = false;
+        d.policy_denied = false;
+        d.reason = "grant_watchdog_failed";
+        d.status = "503 Service Unavailable";
+        return error.WatchdogFailed;
+    }
+
     fn refuse(c: *Connection, d: *Decision) Io.Cancelable!void {
         c.writeReceipt(d);
-        const status = if (d.policy_denied) "403 Forbidden" else "502 Bad Gateway";
+        const status = d.status orelse if (d.policy_denied) "403 Forbidden" else "502 Bad Gateway";
         var body_buf: [512]u8 = undefined;
         const body = std.fmt.bufPrint(&body_buf, "blackice: {s} refused ({s})\n", .{ d.host, d.reason }) catch "blackice: refused\n";
         c.respondError(status, body);
@@ -338,6 +362,12 @@ const Connection = struct {
     /// Fills `d` with the policy decision and returns the addresses that may be dialed.
     fn decide(c: *Connection, d: *Decision, host_raw: []const u8, port: u16, buf: *[16]net.IpAddress) Io.Cancelable![]net.IpAddress {
         const pol = c.p.policy;
+        const pv = pol.checkPort(port);
+        if (!pv.allowed) {
+            d.host = policy.normalizeHost(&d.host_buf, host_raw) catch host_raw;
+            d.setVerdict(pv);
+            return buf[0..0];
+        }
         if (policy.parseIpLiteral(host_raw)) |lit| {
             d.literal = true;
             d.host = host_raw;
@@ -370,6 +400,7 @@ const Connection = struct {
                     d.reason = "granted";
                     d.rule = m.rule;
                     d.expires = m.expires;
+                    d.grant = .{ .id = m.id, .deadline = m.deadline };
                     v = .{ .allowed = true, .reason = .allowed_by_rule };
                 }
             }
@@ -418,6 +449,7 @@ const Connection = struct {
             d.reason = rv.reason.code();
             d.rule = rv.rule;
             d.expires = null;
+            d.grant = null;
             d.setIp(first_denied_addr);
         }
         return buf[0..kept];
@@ -448,8 +480,9 @@ const Connection = struct {
 
     const SniResult = union(enum) { match, no_sni, not_tls, no_data, unparsed, mismatch: []const u8 };
 
-    /// Peeks at the first bytes of the tunnel without consuming them.
-    fn checkSni(c: *Connection, host: []const u8) SniResult {
+    /// Peeks at the first bytes of the tunnel without consuming them. With `host` null (an IP literal), any
+    /// well-formed ClientHello matches.
+    fn checkSni(c: *Connection, host: ?[]const u8) SniResult {
         const r = &c.reader.interface;
         const first = r.peek(1) catch return .no_data;
         if (first[0] != 0x16) return .not_tls;
@@ -459,9 +492,10 @@ const Connection = struct {
         const record = r.peek(5 + @as(usize, len)) catch return .unparsed;
         const sni = parseSni(record) catch return .unparsed;
         const name = sni orelse return .no_sni;
+        const want = host orelse return .match;
         var buf: [policy.max_host_len]u8 = undefined;
         const norm = policy.normalizeHost(&buf, name) catch return .{ .mismatch = name };
-        if (!std.mem.eql(u8, norm, host)) return .{ .mismatch = name };
+        if (!std.mem.eql(u8, norm, want)) return .{ .mismatch = name };
         return .match;
     }
 
@@ -509,8 +543,11 @@ const Decision = struct {
     rule: ?[]const u8 = null,
     detail: ?[]const u8 = null,
     sni: ?[]const u8 = null,
-    /// Set when a grant allowed the connection.
+    /// Set when a grant allowed the connection: wall-clock expiry (display) and the grant to watch.
     expires: ?Io.Timestamp = null,
+    grant: ?struct { id: u64, deadline: Io.Timestamp } = null,
+    /// Overrides the refusal status line.
+    status: ?[]const u8 = null,
     host: []const u8 = "",
     host_buf: [policy.max_host_len]u8 = undefined,
     rule_buf: [policy.max_host_len + 16]u8 = undefined,
@@ -590,21 +627,38 @@ fn sleepFor(io: Io, d: Io.Duration) Io.Cancelable!void {
     return io.sleep(d, .awake);
 }
 
-fn expireTunnel(p: *Proxy, client: net.Stream, upstream: net.Stream, expires: Io.Timestamp, host: []const u8) Io.Cancelable!void {
+/// Closes a connection opened under a grant once the grant expires or is revoked, with a receipt. Follows
+/// extensions: the deadline is re-read from the grant table on every tick.
+fn watchGrant(p: *Proxy, id: u64, first_deadline: Io.Timestamp, client: net.Stream, upstream: net.Stream, event: []const u8, host: []const u8) Io.Cancelable!void {
     const io = p.io;
-    const t: Io.Timeout = .{ .deadline = .{ .raw = expires, .clock = .real } };
-    try t.sleep(io);
+    const g = p.config.grants.?;
+    var deadline = first_deadline;
+    const tick: Io.Duration = .fromMilliseconds(200);
+    const reason: []const u8 = while (true) {
+        const now = grants_mod.clock.now(io);
+        if (g.deadlineOf(io, id)) |dl| {
+            deadline = dl;
+        } else {
+            break if (now.nanoseconds >= deadline.nanoseconds) "grant_expired" else "grant_revoked";
+        }
+        if (now.nanoseconds >= deadline.nanoseconds) break "grant_expired";
+        const left = now.durationTo(deadline);
+        try io.sleep(if (left.nanoseconds < tick.nanoseconds) left else tick, grants_mod.clock);
+    };
     p.receipts.write(.{
-        .event = "connect",
+        .event = event,
         .point = .proxy,
         .verdict = .deny,
-        .reason = "grant_expired",
+        .reason = reason,
         .host = host,
-        .detail = "tunnel_closed",
+        .detail = "connection_closed",
     });
-    upstream.shutdown(io, .both) catch {};
-    client.shutdown(io, .both) catch {};
+    shutdownProtected(io, upstream, .both);
+    shutdownProtected(io, client, .both);
 }
+
+/// Tests only: makes the grant watchdog fail to start.
+pub var test_fail_watchdog: bool = false;
 
 fn writeUpstreamHead(w: *Io.Writer, req: *http.Server.Request, url: HttpUrl) Io.Writer.Error!void {
     try w.print("{s} {s} HTTP/1.1\r\nhost: {s}\r\n", .{ @tagName(req.head.method), url.path, url.authority });

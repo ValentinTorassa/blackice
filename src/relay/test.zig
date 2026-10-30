@@ -87,6 +87,9 @@ const Upstream = struct {
             try req.respond("{\"error\":\"bad key\"}", .{ .status = .unauthorized });
             return;
         }
+        if (std.mem.find(u8, body_store[0..n], "\"slow\":true") != null) {
+            try u.io.sleep(.fromSeconds(3), .awake);
+        }
         if (std.mem.find(u8, body_store[0..n], "\"stream\":true") != null) {
             var out: [256]u8 = undefined;
             var bw = try req.respondStreaming(&out, .{ .respond_options = .{
@@ -157,8 +160,18 @@ const Harness = struct {
         body: []u8,
     };
 
+    const CallOptions = struct {
+        content_type: []const u8 = "application/json",
+        host: ?[]const u8 = null,
+        extra: []const http.Header = &.{.{ .name = "x-from-client", .value = "1" }},
+    };
+
     /// One call through std.http.Client, the way a real OpenAI-compatible client would make it.
     fn call(h: *Harness, method: http.Method, path: []const u8, payload: ?[]const u8) !Response {
+        return h.callWith(method, path, payload, .{});
+    }
+
+    fn callWith(h: *Harness, method: http.Method, path: []const u8, payload: ?[]const u8, o: CallOptions) !Response {
         var client: http.Client = .{ .allocator = testing.allocator, .io = h.io };
         defer client.deinit();
         var url_buf: [128]u8 = undefined;
@@ -170,8 +183,12 @@ const Harness = struct {
             .method = method,
             .payload = payload,
             .response_writer = &aw.writer,
-            .headers = .{ .authorization = .{ .override = "Bearer client-supplied-junk" }, .content_type = .{ .override = "application/json" } },
-            .extra_headers = &.{.{ .name = "x-from-client", .value = "1" }},
+            .headers = .{
+                .authorization = .{ .override = "Bearer client-supplied-junk" },
+                .content_type = .{ .override = o.content_type },
+                .host = if (o.host) |x| .{ .override = x } else .default,
+            },
+            .extra_headers = o.extra,
         });
         return .{ .status = res.status, .body = try aw.toOwnedSlice() };
     }
@@ -275,6 +292,88 @@ test "models off the allow list, oversized bodies, bad JSON and other endpoints 
     }
 }
 
+test "browser pages, foreign Host headers, non-JSON bodies and routing fields are refused" {
+    var h: Harness = undefined;
+    try h.init(.{ .models = &models });
+    defer h.deinit();
+    const body =
+        \\{"model":"test/allowed-model","messages":[]}
+    ;
+    const origin = try h.callWith(.POST, "/v1/chat/completions", body, .{ .extra = &.{.{ .name = "Origin", .value = "https://evil.test" }} });
+    defer testing.allocator.free(origin.body);
+    try testing.expectEqual(http.Status.forbidden, origin.status);
+
+    const fetch_meta = try h.callWith(.POST, "/v1/chat/completions", body, .{ .extra = &.{.{ .name = "Sec-Fetch-Mode", .value = "no-cors" }} });
+    defer testing.allocator.free(fetch_meta.body);
+    try testing.expectEqual(http.Status.forbidden, fetch_meta.status);
+
+    const rebound = try h.callWith(.POST, "/v1/chat/completions", body, .{ .host = "evil.test" });
+    defer testing.allocator.free(rebound.body);
+    try testing.expectEqual(http.Status.forbidden, rebound.status);
+
+    const plain = try h.callWith(.POST, "/v1/chat/completions", body, .{ .content_type = "text/plain" });
+    defer testing.allocator.free(plain.body);
+    try testing.expectEqual(http.Status.unsupported_media_type, plain.status);
+
+    const routed = try h.call(.POST, "/v1/chat/completions",
+        \\{"model":"test/allowed-model","providerOptions":{"gateway":{"models":["test/expensive-model"]}}}
+    );
+    defer testing.allocator.free(routed.body);
+    try testing.expectEqual(http.Status.forbidden, routed.status);
+
+    try testing.expectEqual(@as(u32, 0), h.up.calls);
+    const reasons = [_][]const u8{ "browser_request", "browser_request", "bad_host_header", "bad_content_type", "routing_not_allowed" };
+    for (reasons, 0..) |want, i| {
+        var r = try h.receiptAt(i);
+        defer r.deinit();
+        try expectField(r.value, "verdict", "deny");
+        try expectField(r.value, "reason", want);
+    }
+    var r4 = try h.receiptAt(4);
+    defer r4.deinit();
+    try expectField(r4.value, "detail", "providerOptions");
+}
+
+test "the response cap and the call time limit cut a call" {
+    var h: Harness = undefined;
+    try h.init(.{ .models = &models, .max_response_bytes = 16, .call_timeout = .fromMilliseconds(300) });
+    defer h.deinit();
+    if (h.call(.POST, "/v1/chat/completions",
+        \\{"model":"test/allowed-model","messages":[]}
+    )) |res| {
+        defer testing.allocator.free(res.body);
+        try testing.expect(res.body.len <= 16);
+    } else |_| {}
+    if (h.call(.POST, "/v1/chat/completions",
+        \\{"model":"test/allowed-model","slow":true}
+    )) |res| {
+        defer testing.allocator.free(res.body);
+        try testing.expect(res.status != .ok);
+    } else |_| {}
+    var r0 = try h.receiptAt(0);
+    defer r0.deinit();
+    try testing.expect(std.mem.endsWith(u8, r0.value.object.get("detail").?.string, "error=response_cap"));
+    var r1 = try h.receiptAt(1);
+    defer r1.deinit();
+    try testing.expect(std.mem.endsWith(u8, r1.value.object.get("detail").?.string, "error=call_timeout"));
+}
+
+test "a call whose time limit cannot be armed is refused" {
+    var h: Harness = undefined;
+    try h.init(.{ .models = &models });
+    defer h.deinit();
+    relay.test_fail_watchdog = true;
+    defer relay.test_fail_watchdog = false;
+    const res = try h.call(.POST, "/v1/chat/completions",
+        \\{"model":"test/allowed-model","messages":[]}
+    );
+    defer testing.allocator.free(res.body);
+    try testing.expectEqual(http.Status.service_unavailable, res.status);
+    var r = try h.receiptAt(0);
+    defer r.deinit();
+    try expectField(r.value, "reason", "relay_watchdog_failed");
+}
+
 test "the call cap refuses calls once used up" {
     var h: Harness = undefined;
     try h.init(.{ .models = &models, .max_requests = 2 });
@@ -335,6 +434,7 @@ test "an unreachable upstream gives 502 and a receipt" {
         .location = .{ .url = try std.fmt.bufPrint(&call_url, "http://127.0.0.1:{d}/v1/chat/completions", .{r.port}) },
         .payload = "{\"model\":\"test/allowed-model\"}",
         .response_writer = &aw.writer,
+        .headers = .{ .content_type = .{ .override = "application/json" } },
     });
     try testing.expectEqual(http.Status.bad_gateway, res.status);
     const bytes = try tmp.dir.readFileAlloc(io, "r.jsonl", testing.allocator, .limited(1 << 16));

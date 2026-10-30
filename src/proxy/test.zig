@@ -111,11 +111,13 @@ const TestServer = struct {
     port: u16,
     group: Io.Group = .init,
     kind: Kind,
+    /// Bytes the echo handler received, over all connections.
+    received: std.atomic.Value(usize) = .init(0),
     /// The last request head the HTTP handler saw.
     last_head: [4096]u8 = undefined,
     last_head_len: usize = 0,
 
-    const Kind = enum { echo, http };
+    const Kind = enum { echo, http, slow_http };
 
     fn start(ts: *TestServer, io: Io, kind: Kind) !void {
         const addr: net.IpAddress = .{ .ip4 = .loopback(0) };
@@ -142,7 +144,8 @@ const TestServer = struct {
     fn handle(io: Io, s: net.Stream, ts: *TestServer) Io.Cancelable!void {
         return switch (ts.kind) {
             .echo => echoHandler(io, s, ts),
-            .http => httpHandler(io, s, ts),
+            .http => httpHandler(io, s, ts, false),
+            .slow_http => httpHandler(io, s, ts, true),
         };
     }
 
@@ -152,7 +155,6 @@ const TestServer = struct {
 };
 
 fn echoHandler(io: Io, s: net.Stream, ctx: *TestServer) Io.Cancelable!void {
-    _ = ctx;
     defer s.close(io);
     var rbuf: [4096]u8 = undefined;
     var wbuf: [4096]u8 = undefined;
@@ -160,13 +162,14 @@ fn echoHandler(io: Io, s: net.Stream, ctx: *TestServer) Io.Cancelable!void {
     var w = s.writer(io, &wbuf);
     while (true) {
         const data = r.interface.peekGreedy(1) catch return;
+        _ = ctx.received.fetchAdd(data.len, .monotonic);
         w.interface.writeAll(data) catch return;
         w.interface.flush() catch return;
         r.interface.toss(data.len);
     }
 }
 
-fn httpHandler(io: Io, s: net.Stream, ctx: *TestServer) Io.Cancelable!void {
+fn httpHandler(io: Io, s: net.Stream, ctx: *TestServer, slow: bool) Io.Cancelable!void {
     defer s.close(io);
     var rbuf: [4096]u8 = undefined;
     var wbuf: [512]u8 = undefined;
@@ -182,6 +185,7 @@ fn httpHandler(io: Io, s: net.Stream, ctx: *TestServer) Io.Cancelable!void {
         if (std.mem.eql(u8, line, "\r\n")) break;
     }
     ctx.last_head_len = len;
+    if (slow) try io.sleep(.fromSeconds(3), .awake);
     w.interface.writeAll("HTTP/1.1 200 OK\r\ncontent-length: 8\r\nconnection: close\r\n\r\nupstream") catch return;
     w.interface.flush() catch return;
 }
@@ -307,17 +311,21 @@ fn expectField(v: std.json.Value, key: []const u8, want: []const u8) !void {
     try testing.expectEqualStrings(want, got.string);
 }
 
-const test_policy =
-    \\{"version":"blackice.policy/v0","network":{"mode":"allowlist",
-    \\ "allow":["allowed.test","private.test","mixed.test"],
-    \\ "subnets":{"allow":["127.0.0.0/8"]}}}
-;
+/// The test policy, with the stand-in upstream's port added to the default ports.
+fn testPolicy(buf: []u8, upstream_port: u16) []const u8 {
+    return std.fmt.bufPrint(buf,
+        \\{{"version":"blackice.policy/v0","network":{{"mode":"allowlist",
+        \\ "allow":["allowed.test","private.test","mixed.test"],
+        \\ "subnets":{{"allow":["127.0.0.0/8"]}},"ports":[80,443,{d}]}}}}
+    , .{upstream_port}) catch unreachable;
+}
 
 // ---------------------------------------------------------------- integration tests
 
 test "CONNECT to a name outside the policy is refused with 403 and a receipt" {
     var h: Harness = undefined;
-    try h.init(test_policy);
+    var pbuf: [512]u8 = undefined;
+    try h.init(testPolicy(&pbuf, 443));
     defer h.deinit();
     var c: Client = .{ .stream = try h.connect() };
     c.init(h.io, c.stream);
@@ -339,7 +347,8 @@ test "CONNECT to a name outside the policy is refused with 403 and a receipt" {
 
 test "an allowed name that resolves to a private address is refused" {
     var h: Harness = undefined;
-    try h.init(test_policy);
+    var pbuf: [512]u8 = undefined;
+    try h.init(testPolicy(&pbuf, 443));
     defer h.deinit();
     var c: Client = .{ .stream = try h.connect() };
     c.init(h.io, c.stream);
@@ -361,7 +370,8 @@ test "CONNECT to an allowed name tunnels bytes to the checked address" {
     try up.start(testing.io, .echo);
     defer up.stop();
     var h: Harness = undefined;
-    try h.init(test_policy);
+    var pbuf: [512]u8 = undefined;
+    try h.init(testPolicy(&pbuf, up.port));
     defer h.deinit();
     var c: Client = .{ .stream = try h.connect() };
     c.init(h.io, c.stream);
@@ -371,8 +381,10 @@ test "CONNECT to an allowed name tunnels bytes to the checked address" {
     try c.send(try std.fmt.bufPrint(&req_buf, "CONNECT mixed.test:{d} HTTP/1.1\r\n\r\n", .{up.port}));
     var sbuf: [128]u8 = undefined;
     try testing.expectEqualStrings("HTTP/1.1 200 Connection Established", try c.status(&sbuf));
-    try c.send("ping\n");
-    try testing.expectEqualStrings("ping\n", try c.r.interface.takeDelimiterInclusive('\n'));
+    var hello_buf: [600]u8 = undefined;
+    const hello = clientHello(&hello_buf, "mixed.test");
+    try c.send(hello);
+    try testing.expectEqualSlices(u8, hello, try c.r.interface.take(hello.len));
 
     var r = try h.receiptAt(0);
     defer r.deinit();
@@ -380,7 +392,65 @@ test "CONNECT to an allowed name tunnels bytes to the checked address" {
     try expectField(r.value, "reason", "allowed_by_rule");
     try expectField(r.value, "rule", "mixed.test");
     try expectField(r.value, "ip", "127.0.0.1");
-    try expectField(r.value, "detail", "not_tls");
+    try expectField(r.value, "detail", "sni_match");
+}
+
+test "CONNECT carries TLS only: other bytes close the tunnel" {
+    var up: TestServer = undefined;
+    try up.start(testing.io, .echo);
+    defer up.stop();
+    var h: Harness = undefined;
+    var pbuf: [512]u8 = undefined;
+    try h.init(testPolicy(&pbuf, up.port));
+    defer h.deinit();
+    var c: Client = .{ .stream = try h.connect() };
+    c.init(h.io, c.stream);
+    defer c.stream.close(h.io);
+
+    var req_buf: [128]u8 = undefined;
+    try c.send(try std.fmt.bufPrint(&req_buf, "CONNECT allowed.test:{d} HTTP/1.1\r\n\r\n", .{up.port}));
+    var sbuf: [128]u8 = undefined;
+    try testing.expectEqualStrings("HTTP/1.1 200 Connection Established", try c.status(&sbuf));
+    try c.send("SSH-2.0-OpenSSH_9.9\r\n");
+    const after = try c.rest();
+    defer testing.allocator.free(after);
+    try testing.expectEqual(@as(usize, 0), after.len);
+
+    var r = try h.receiptAt(0);
+    defer r.deinit();
+    try expectField(r.value, "verdict", "deny");
+    try expectField(r.value, "reason", "not_tls");
+    try expectField(r.value, "host", "allowed.test");
+    try testing.expectEqual(@as(usize, 0), up.received.load(.monotonic));
+}
+
+test "a ClientHello without a server name is refused for a name" {
+    var up: TestServer = undefined;
+    try up.start(testing.io, .echo);
+    defer up.stop();
+    var h: Harness = undefined;
+    var pbuf: [512]u8 = undefined;
+    try h.init(testPolicy(&pbuf, up.port));
+    defer h.deinit();
+    var c: Client = .{ .stream = try h.connect() };
+    c.init(h.io, c.stream);
+    defer c.stream.close(h.io);
+
+    var req_buf: [128]u8 = undefined;
+    try c.send(try std.fmt.bufPrint(&req_buf, "CONNECT allowed.test:{d} HTTP/1.1\r\n\r\n", .{up.port}));
+    var sbuf: [128]u8 = undefined;
+    try testing.expectEqualStrings("HTTP/1.1 200 Connection Established", try c.status(&sbuf));
+    var hello_buf: [600]u8 = undefined;
+    try c.send(clientHello(&hello_buf, null));
+    const after = try c.rest();
+    defer testing.allocator.free(after);
+    try testing.expectEqual(@as(usize, 0), after.len);
+    try testing.expectEqual(@as(usize, 0), up.received.load(.monotonic));
+
+    var r = try h.receiptAt(0);
+    defer r.deinit();
+    try expectField(r.value, "verdict", "deny");
+    try expectField(r.value, "reason", "sni_missing");
 }
 
 test "TLS server name must match the CONNECT host" {
@@ -388,7 +458,8 @@ test "TLS server name must match the CONNECT host" {
     try up.start(testing.io, .echo);
     defer up.stop();
     var h: Harness = undefined;
-    try h.init(test_policy);
+    var pbuf: [512]u8 = undefined;
+    try h.init(testPolicy(&pbuf, up.port));
     defer h.deinit();
     var hello_buf: [600]u8 = undefined;
     var req_buf: [128]u8 = undefined;
@@ -436,7 +507,8 @@ test "plain HTTP: Host comes from the URI and proxy headers are dropped" {
     try up.start(testing.io, .http);
     defer up.stop();
     var h: Harness = undefined;
-    try h.init(test_policy);
+    var pbuf: [512]u8 = undefined;
+    try h.init(testPolicy(&pbuf, up.port));
     defer h.deinit();
     var c: Client = .{ .stream = try h.connect() };
     c.init(h.io, c.stream);
@@ -469,7 +541,8 @@ test "plain HTTP with a body is forwarded with its length" {
     try up.start(testing.io, .http);
     defer up.stop();
     var h: Harness = undefined;
-    try h.init(test_policy);
+    var pbuf: [512]u8 = undefined;
+    try h.init(testPolicy(&pbuf, up.port));
     defer h.deinit();
     var c: Client = .{ .stream = try h.connect() };
     c.init(h.io, c.stream);
@@ -488,7 +561,8 @@ test "IP literals need an allowed subnet; requests that are not proxy requests g
     try up.start(testing.io, .echo);
     defer up.stop();
     var h: Harness = undefined;
-    try h.init(test_policy);
+    var pbuf: [512]u8 = undefined;
+    try h.init(testPolicy(&pbuf, up.port));
     defer h.deinit();
     var sbuf: [128]u8 = undefined;
     var req_buf: [128]u8 = undefined;
@@ -498,8 +572,10 @@ test "IP literals need an allowed subnet; requests that are not proxy requests g
         defer c.stream.close(h.io);
         try c.send(try std.fmt.bufPrint(&req_buf, "CONNECT 127.0.0.1:{d} HTTP/1.1\r\n\r\n", .{up.port}));
         try testing.expectEqualStrings("HTTP/1.1 200 Connection Established", try c.status(&sbuf));
-        try c.send("x\n");
-        try testing.expectEqualStrings("x\n", try c.r.interface.takeDelimiterInclusive('\n'));
+        var hello_buf: [600]u8 = undefined;
+        const hello = clientHello(&hello_buf, null);
+        try c.send(hello);
+        try testing.expectEqualSlices(u8, hello, try c.r.interface.take(hello.len));
     }
     {
         var c: Client = .{ .stream = try h.connect() };
@@ -532,7 +608,8 @@ test "a grant allows a refused name until it expires, and expiry closes the tunn
     try up.start(testing.io, .echo);
     defer up.stop();
     var h: Harness = undefined;
-    try h.init(test_policy);
+    var pbuf: [512]u8 = undefined;
+    try h.init(testPolicy(&pbuf, up.port));
     defer h.deinit();
     var sbuf: [128]u8 = undefined;
     var req_buf: [128]u8 = undefined;
@@ -551,8 +628,10 @@ test "a grant allows a refused name until it expires, and expiry closes the tunn
         defer c.stream.close(h.io);
         try c.send(req);
         try testing.expectEqualStrings("HTTP/1.1 200 Connection Established", try c.status(&sbuf));
-        try c.send("y\n");
-        try testing.expectEqualStrings("y\n", try c.r.interface.takeDelimiterInclusive('\n'));
+        var hello_buf: [600]u8 = undefined;
+        const hello = clientHello(&hello_buf, "granted.test");
+        try c.send(hello);
+        try testing.expectEqualSlices(u8, hello, try c.r.interface.take(hello.len));
         // The grant expires while the tunnel is open: the proxy closes it.
         const after = try c.rest();
         defer testing.allocator.free(after);
@@ -582,6 +661,126 @@ test "a grant allows a refused name until it expires, and expiry closes the tunn
     try expectField(r3.value, "reason", "no_matching_rule");
 }
 
+test "revoking a grant closes the tunnels opened under it" {
+    var up: TestServer = undefined;
+    try up.start(testing.io, .echo);
+    defer up.stop();
+    var h: Harness = undefined;
+    var pbuf: [512]u8 = undefined;
+    try h.init(testPolicy(&pbuf, up.port));
+    defer h.deinit();
+    _ = try h.grants.add(h.io, "granted.test", .fromSeconds(60));
+
+    var c: Client = .{ .stream = try h.connect() };
+    c.init(h.io, c.stream);
+    defer c.stream.close(h.io);
+    var req_buf: [128]u8 = undefined;
+    try c.send(try std.fmt.bufPrint(&req_buf, "CONNECT granted.test:{d} HTTP/1.1\r\n\r\n", .{up.port}));
+    var sbuf: [128]u8 = undefined;
+    try testing.expectEqualStrings("HTTP/1.1 200 Connection Established", try c.status(&sbuf));
+    var hello_buf: [600]u8 = undefined;
+    const hello = clientHello(&hello_buf, "granted.test");
+    try c.send(hello);
+    try testing.expectEqualSlices(u8, hello, try c.r.interface.take(hello.len));
+
+    try testing.expect(h.grants.revoke(h.io, "granted.test"));
+    const after = try c.rest();
+    defer testing.allocator.free(after);
+    try testing.expectEqual(@as(usize, 0), after.len);
+
+    var r = try h.receiptAt(1);
+    defer r.deinit();
+    try expectField(r.value, "verdict", "deny");
+    try expectField(r.value, "reason", "grant_revoked");
+    try expectField(r.value, "host", "granted.test");
+}
+
+test "a grant whose watchdog cannot start is refused, never unbounded" {
+    var up: TestServer = undefined;
+    try up.start(testing.io, .echo);
+    defer up.stop();
+    var h: Harness = undefined;
+    var pbuf: [512]u8 = undefined;
+    try h.init(testPolicy(&pbuf, up.port));
+    defer h.deinit();
+    _ = try h.grants.add(h.io, "granted.test", .fromSeconds(60));
+    proxy.test_fail_watchdog = true;
+    defer proxy.test_fail_watchdog = false;
+
+    var c: Client = .{ .stream = try h.connect() };
+    c.init(h.io, c.stream);
+    defer c.stream.close(h.io);
+    var req_buf: [128]u8 = undefined;
+    try c.send(try std.fmt.bufPrint(&req_buf, "CONNECT granted.test:{d} HTTP/1.1\r\n\r\n", .{up.port}));
+    var sbuf: [128]u8 = undefined;
+    try testing.expectEqualStrings("HTTP/1.1 503 Service Unavailable", try c.status(&sbuf));
+    var r = try h.receiptAt(0);
+    defer r.deinit();
+    try expectField(r.value, "verdict", "deny");
+    try expectField(r.value, "reason", "grant_watchdog_failed");
+}
+
+test "grant expiry also cuts a plain HTTP exchange in flight" {
+    var up: TestServer = undefined;
+    try up.start(testing.io, .slow_http);
+    defer up.stop();
+    var h: Harness = undefined;
+    var pbuf: [512]u8 = undefined;
+    try h.init(testPolicy(&pbuf, up.port));
+    defer h.deinit();
+    _ = try h.grants.add(h.io, "granted.test", .fromMilliseconds(300));
+
+    var c: Client = .{ .stream = try h.connect() };
+    c.init(h.io, c.stream);
+    defer c.stream.close(h.io);
+    var req_buf: [256]u8 = undefined;
+    try c.send(try std.fmt.bufPrint(&req_buf, "GET http://granted.test:{d}/slow HTTP/1.1\r\n\r\n", .{up.port}));
+    // The upstream answers after 3 s; the grant ends after 0.3 s, so the client sees the connection close.
+    const got = try c.rest();
+    defer testing.allocator.free(got);
+    try testing.expectEqual(@as(usize, 0), got.len);
+    var r0 = try h.receiptAt(0);
+    defer r0.deinit();
+    try expectField(r0.value, "reason", "granted");
+    var r1 = try h.receiptAt(1);
+    defer r1.deinit();
+    try expectField(r1.value, "event", "http");
+    try expectField(r1.value, "reason", "grant_expired");
+}
+
+test "ports outside the policy are refused before any name work, and grants do not lift them" {
+    var h: Harness = undefined;
+    var pbuf: [512]u8 = undefined;
+    try h.init(testPolicy(&pbuf, 443));
+    defer h.deinit();
+    _ = try h.grants.add(h.io, "granted.test", .fromSeconds(60));
+    var sbuf: [128]u8 = undefined;
+    const reqs = [_][]const u8{
+        "CONNECT allowed.test:8443 HTTP/1.1\r\n\r\n",
+        "CONNECT granted.test:22 HTTP/1.1\r\n\r\n",
+        "GET http://allowed.test:8080/ HTTP/1.1\r\n\r\n",
+        "CONNECT 127.0.0.1:6379 HTTP/1.1\r\n\r\n",
+    };
+    for (reqs) |req| {
+        var c: Client = .{ .stream = try h.connect() };
+        c.init(h.io, c.stream);
+        defer c.stream.close(h.io);
+        try c.send(req);
+        try testing.expectEqualStrings("HTTP/1.1 403 Forbidden", try c.status(&sbuf));
+    }
+    const hosts = [_][]const u8{ "allowed.test", "granted.test", "allowed.test", "127.0.0.1" };
+    const ports = [_]i64{ 8443, 22, 8080, 6379 };
+    for (hosts, ports, 0..) |host, port, i| {
+        var r = try h.receiptAt(i);
+        defer r.deinit();
+        try expectField(r.value, "verdict", "deny");
+        try expectField(r.value, "reason", "port_not_allowed");
+        try expectField(r.value, "host", host);
+        try testing.expectEqual(port, r.value.object.get("port").?.integer);
+        try testing.expect(r.value.object.get("rule") == null);
+    }
+}
+
 test "the system resolver is used when none is injected; localhost stays refused" {
     const io = testing.io;
     var tmp = testing.tmpDir(.{});
@@ -599,7 +798,7 @@ test "the system resolver is used when none is injected; localhost stays refused
     var c: Client = .{ .stream = try addr.connect(io, .{ .mode = .stream }) };
     c.init(io, c.stream);
     defer c.stream.close(io);
-    try c.send("CONNECT localhost:22 HTTP/1.1\r\n\r\n");
+    try c.send("CONNECT localhost:443 HTTP/1.1\r\n\r\n");
     var sbuf: [128]u8 = undefined;
     try testing.expectEqualStrings("HTTP/1.1 403 Forbidden", try c.status(&sbuf));
     const bytes = try tmp.dir.readFileAlloc(io, "r.jsonl", testing.allocator, .limited(1 << 16));
