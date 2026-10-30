@@ -114,6 +114,7 @@ or addresses, only "any host" or "localhost", so every decision about names happ
 | Test inherited sockets, proxy restart and port takeover | lead | todo | |
 | Test name lookups through other system services, with fresh random names | lead | todo | |
 | docs/macos.md | lead | todo | |
+| Label the backend experimental in `blackice run --help`, the scope line and the `scope_start` receipt (R8): at 58b9491 they say `macos-seatbelt` only | lead | todo | |
 
 ## Evidence
 
