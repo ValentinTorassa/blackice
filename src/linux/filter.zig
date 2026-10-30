@@ -102,8 +102,11 @@ pub fn generate(hook: bpf.AttachType, ports: []const u16, ring_fd: l.fd_t, lost_
     _ = p.add(I.mov(.r0, 0));
     _ = p.add(I.exit());
     const allow_label = p.len;
-    _ = p.add(I.mov(.r0, 1));
-    _ = p.add(I.exit());
+    // The verifier rejects unreachable instructions, even an unused return block.
+    if (permits_len > 0) {
+        _ = p.add(I.mov(.r0, 1));
+        _ = p.add(I.exit());
+    }
     for (refuses[0..refuses_len]) |at| p.patch(at, deny_label);
     for (permits[0..permits_len]) |at| p.patch(at, allow_label);
     p.patch(no_space, lost_label);
@@ -217,9 +220,52 @@ test "all generated BPF branches stay in bounds; only IPv4 TCP has an allow bran
             if (i.code & 7 != bpf.JMP or i.code == 0x85 or i.code == 0x95) continue;
             const target: i64 = @as(i64, @intCast(pc)) + 1 + i.off;
             try std.testing.expect(target >= 0 and target < p.len);
-            if (target == p.len - 2) allow_jumps += 1;
+            if (std.meta.eql(p.code[@intCast(target)], I.mov(.r0, 1))) allow_jumps += 1;
         }
         try std.testing.expectEqual(@as(usize, if (hook == .cgroup_inet4_connect) 2 else 0), allow_jumps);
     }
     try std.testing.expectEqual(@as(usize, 40), @sizeOf(Drop));
+}
+
+test "generated BPF has no unreachable instructions for any hook or port count" {
+    const ports = [_]u16{ 18780, 18781, 18782, 18783, 18784, 18785, 18786, 18787 };
+    for (hooks) |hook| {
+        for (0..protocol.max_ports + 1) |count| {
+            const p = generate(hook, ports[0..count], 10, 11);
+            var seen: [256]bool = @splat(false);
+            var pending: [512]usize = undefined;
+            pending[0] = 0;
+            var len: usize = 1;
+            while (len > 0) {
+                len -= 1;
+                const pc = pending[len];
+                try std.testing.expect(pc < p.len);
+                if (seen[pc]) continue;
+                seen[pc] = true;
+                const insn = p.code[pc];
+                // LD_IMM64's second slot is data, not a separately executable instruction.
+                try std.testing.expect(insn.code != 0);
+                if (insn.code == 0x95) continue; // EXIT
+                var next = pc + 1;
+                if (insn.code == bpf.LD | bpf.DW | bpf.IMM) {
+                    try std.testing.expect(next < p.len);
+                    try std.testing.expectEqual(@as(u8, 0), p.code[next].code);
+                    seen[next] = true;
+                    next += 1;
+                } else if (insn.code & 7 == bpf.JMP and insn.code != 0x85) {
+                    const target: i64 = @as(i64, @intCast(pc)) + 1 + insn.off;
+                    try std.testing.expect(target >= 0 and target < p.len);
+                    pending[len] = @intCast(target);
+                    len += 1;
+                    if (insn.code == 0x05) continue; // unconditional jump
+                }
+                pending[len] = next;
+                len += 1;
+            }
+            for (seen[0..p.len], 0..) |reachable, pc| {
+                if (!reachable) std.debug.print("unreachable BPF instruction {d}, hook {s}, {d} ports\n", .{ pc, @tagName(hook), count });
+                try std.testing.expect(reachable);
+            }
+        }
+    }
 }
