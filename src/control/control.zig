@@ -6,7 +6,8 @@
 //! backend refuses its Unix-socket connects (Seatbelt's network-outbound deny on macOS, the Linux backend's
 //! socket filter), so in v0 "owner" means a same-user process outside every scope.
 //!
-//! Protocol: one JSON line in, one JSON line out, then the connection closes.
+//! Protocol: one JSON line in, one JSON line out, then the connection closes. A peer that sends no full line
+//! within 5 seconds gets bad_request and is disconnected, so stalled clients cannot hold the socket.
 //!   {"op":"grant","host":"api.example.com","for_s":600}  ->  {"ok":true,"expires":"2026-10-30T05:12:33.123Z"}
 //!   {"op":"revoke","host":"api.example.com"}             ->  {"ok":true,"removed":true}
 //!   anything refused                                      ->  {"ok":false,"error":"<reason>"}
@@ -14,8 +15,8 @@
 //! are refused. `for_s` is 1..3600. Granting a host that already has a grant extends it, never shortens it.
 //!
 //! Receipts (point "control"), event "grant" | "revoke" (or "control" before the op is known):
-//!   owner_grant      grant added or extended (rule = the pattern; detail = "for <n>s until <ts>")
-//!   owner_revoke     revoke handled (detail = "removed" | "not_found")
+//!   owner_grant      grant added or extended (rule = the pattern; detail = "pid=<p> for <n>s until <ts>")
+//!   owner_revoke     revoke handled (detail = "pid=<p> removed" | "pid=<p> not_found")
 //!   peer_not_owner   the peer is another user, or its uid could not be read (detail = "uid=<n>")
 //!   bad_request      not one JSON line with the fields above
 //!   invalid_duration for_s outside 1..3600
@@ -33,6 +34,7 @@ pub const max_grant_seconds = 3600;
 /// sun_path is 104 bytes on macOS (108 on Linux); use the smaller everywhere.
 pub const max_socket_path = 103;
 const max_line = 1024;
+const read_deadline: Io.Duration = .fromSeconds(5);
 
 pub const Reply = struct {
     ok: bool,
@@ -132,6 +134,11 @@ pub const Server = struct {
             stream.close(s.io);
             _ = s.active.fetchSub(1, .monotonic);
         }
+        var deadline = s.io.concurrent(hangUpAfter, .{ s.io, stream, read_deadline }) catch {
+            // Without a deadline a stalled peer could hold this slot; refuse rather than wait.
+            return;
+        };
+        defer deadline.cancel(s.io) catch {};
         s.serve(stream);
     }
 
@@ -142,10 +149,10 @@ pub const Server = struct {
         var w = stream.writer(s.io, &out_buf);
         const out = &w.interface;
 
-        const peer = peerUid(stream.socket.handle);
-        if (peer == null or peer.? != s.uid) {
-            var detail_buf: [32]u8 = undefined;
-            const detail = if (peer) |u| std.fmt.bufPrint(&detail_buf, "uid={d}", .{u}) catch "uid=?" else "uid=unknown";
+        const peer = peerCred(stream.socket.handle);
+        if (peer == null or peer.?.uid != s.uid) {
+            var detail_buf: [48]u8 = undefined;
+            const detail = if (peer) |p| std.fmt.bufPrint(&detail_buf, "uid={d} pid={d}", .{ p.uid, p.pid orelse -1 }) catch "uid=?" else "uid=unknown";
             s.refuse(out, "control", "peer_not_owner", null, detail);
             return;
         }
@@ -154,7 +161,7 @@ pub const Server = struct {
             s.refuse(out, "control", "bad_request", null, "one JSON line expected");
             return;
         };
-        s.handleLine(out, std.mem.trimEnd(u8, line, "\r"));
+        s.handleLine(out, std.mem.trimEnd(u8, line, "\r"), peer.?.pid);
     }
 
     const Request = struct {
@@ -163,7 +170,7 @@ pub const Server = struct {
         for_s: ?i64 = null,
     };
 
-    fn handleLine(s: *Server, out: *Io.Writer, line: []const u8) void {
+    fn handleLine(s: *Server, out: *Io.Writer, line: []const u8, pid: ?i32) void {
         var arena: std.heap.ArenaAllocator = .init(s.gpa);
         defer arena.deinit();
         const req = std.json.parseFromSliceLeaky(Request, arena.allocator(), line, .{}) catch {
@@ -195,7 +202,7 @@ pub const Server = struct {
             var ts_buf: [32]u8 = undefined;
             const ts = receipt.formatTimestamp(&ts_buf, expires);
             var detail_buf: [64]u8 = undefined;
-            const detail = std.fmt.bufPrint(&detail_buf, "for {d}s until {s}", .{ secs, ts }) catch "";
+            const detail = std.fmt.bufPrint(&detail_buf, "pid={d} for {d}s until {s}", .{ pid orelse -1, secs, ts }) catch "";
             s.receipts.write(.{
                 .event = "grant",
                 .point = .control,
@@ -215,6 +222,8 @@ pub const Server = struct {
                 return;
             }
             const removed = s.grants.revoke(s.io, req.host);
+            var detail_buf: [48]u8 = undefined;
+            const detail = std.fmt.bufPrint(&detail_buf, "pid={d} {s}", .{ pid orelse -1, if (removed) "removed" else "not_found" }) catch "";
             s.receipts.write(.{
                 .event = "revoke",
                 .point = .control,
@@ -222,7 +231,7 @@ pub const Server = struct {
                 .reason = "owner_revoke",
                 .rule = host,
                 .host = host,
-                .detail = if (removed) "removed" else "not_found",
+                .detail = detail,
             });
             reply(out, .{ .ok = true, .removed = removed });
             return;
@@ -264,8 +273,14 @@ fn currentUid() u32 {
 
 extern "c" fn getpeereid(fd: c_int, euid: *std.c.uid_t, egid: *std.c.gid_t) c_int;
 
-/// The uid of the process at the other end of a Unix socket, or null when the OS cannot say.
-pub fn peerUid(handle: net.Socket.Handle) ?u32 {
+pub const PeerCred = struct {
+    uid: u32,
+    /// For receipts only; a pid can be reused, so it never decides anything.
+    pid: ?i32,
+};
+
+/// The credentials of the process at the other end of a Unix socket, or null when the OS cannot say.
+pub fn peerCred(handle: net.Socket.Handle) ?PeerCred {
     switch (builtin.os.tag) {
         .linux => {
             const linux = std.os.linux;
@@ -274,16 +289,29 @@ pub fn peerUid(handle: net.Socket.Handle) ?u32 {
             var len: linux.socklen_t = @sizeOf(Ucred);
             const rc = linux.getsockopt(handle, linux.SOL.SOCKET, linux.SO.PEERCRED, @ptrCast(&cred), &len);
             if (linux.errno(rc) != .SUCCESS or len != @sizeOf(Ucred)) return null;
-            return cred.uid;
+            return .{ .uid = cred.uid, .pid = cred.pid };
         },
         .macos, .ios => {
             var uid: std.c.uid_t = undefined;
             var gid: std.c.gid_t = undefined;
             if (getpeereid(handle, &uid, &gid) != 0) return null;
-            return @intCast(uid);
+            // LOCAL_PEERPID (SOL_LOCAL 0, option 0x002), from <sys/un.h>.
+            var pid: i32 = 0;
+            var len: std.c.socklen_t = @sizeOf(i32);
+            const got_pid = std.c.getsockopt(handle, 0, 0x002, &pid, &len) == 0 and len == @sizeOf(i32);
+            return .{ .uid = @intCast(uid), .pid = if (got_pid) pid else null };
         },
         else => return null,
     }
+}
+
+/// Ends the read side after `d`, so a peer that never finishes its line cannot hold a slot. The server then
+/// records the request as bad_request and answers it before closing.
+fn hangUpAfter(io: Io, stream: net.Stream, d: Io.Duration) Io.Cancelable!void {
+    try io.sleep(d, .awake);
+    const old = io.swapCancelProtection(.blocked);
+    defer _ = io.swapCancelProtection(old);
+    stream.shutdown(io, .recv) catch {};
 }
 
 // ---------------------------------------------------------------- client

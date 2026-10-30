@@ -111,6 +111,8 @@ const TestServer = struct {
     port: u16,
     group: Io.Group = .init,
     kind: Kind,
+    /// Connections accepted.
+    accepted: std.atomic.Value(u32) = .init(0),
     /// Bytes the echo handler received, over all connections.
     received: std.atomic.Value(usize) = .init(0),
     /// The last request head the HTTP handler saw.
@@ -137,6 +139,7 @@ const TestServer = struct {
                 error.Canceled => |e| return e,
                 else => return,
             };
+            _ = ts.accepted.fetchAdd(1, .monotonic);
             ts.group.concurrent(ts.io, handle, .{ ts.io, s, ts }) catch s.close(ts.io);
         }
     }
@@ -534,6 +537,38 @@ test "plain HTTP: Host comes from the URI and proxy headers are dropped" {
     try expectField(r.value, "event", "http");
     try expectField(r.value, "verdict", "allow");
     try expectField(r.value, "detail", "method=GET");
+}
+
+test "plain HTTP heads with bare CR or LF, or bad header names, never reach the upstream" {
+    var up: TestServer = undefined;
+    try up.start(testing.io, .http);
+    defer up.stop();
+    var h: Harness = undefined;
+    var pbuf: [512]u8 = undefined;
+    try h.init(testPolicy(&pbuf, up.port));
+    defer h.deinit();
+    const reqs = [_][]const u8{
+        // A bare LF ends the request line early: an upstream that accepts it would see Host: evil.test first.
+        try std.fmt.allocPrint(testing.allocator, "GET http://allowed.test:{d}/x HTTP/1.1\nHost: evil.test\nX: y HTTP/1.1\r\nUser-Agent: t\r\n\r\n", .{up.port}),
+        // A bare CR inside a header value.
+        try std.fmt.allocPrint(testing.allocator, "GET http://allowed.test:{d}/x HTTP/1.1\r\nX: a\rHost: evil.test\r\n\r\n", .{up.port}),
+        // A header name that is not a token.
+        try std.fmt.allocPrint(testing.allocator, "GET http://allowed.test:{d}/x HTTP/1.1\r\nBad Name: x\r\n\r\n", .{up.port}),
+    };
+    defer for (reqs) |r| testing.allocator.free(r);
+    var sbuf: [128]u8 = undefined;
+    for (reqs, 0..) |req, i| {
+        var c: Client = .{ .stream = try h.connect() };
+        c.init(h.io, c.stream);
+        defer c.stream.close(h.io);
+        try c.send(req);
+        try testing.expectEqualStrings("HTTP/1.1 400 Bad Request", try c.status(&sbuf));
+        var r = try h.receiptAt(i);
+        defer r.deinit();
+        try expectField(r.value, "verdict", "deny");
+        try expectField(r.value, "reason", "bad_request");
+    }
+    try testing.expectEqual(@as(u32, 0), up.accepted.load(.monotonic));
 }
 
 test "plain HTTP with a body is forwarded with its length" {
