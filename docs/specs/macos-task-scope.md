@@ -87,8 +87,9 @@ or addresses, only "any host" or "localhost", so every decision about names happ
     Other processes of the same user can tag their own profiles, so receipts can be added to but not removed;
     bursts lose lines in the kernel log (239 of 300 in a tight loop), and repeats of one refusal are folded
     and counted.
-  - macOS logs a sandbox refusal only when the refused process is an Apple-signed binary (`curl`, `nc`,
-    `python3`, `git`, ...). Refusals of other binaries (third-party, self-built, blackice itself) are still
+  - macOS logs a sandbox refusal when the refused process is an Apple-signed binary (`curl`, `nc`,
+    `python3`, `git`, ...), and not when it is ad-hoc signed (blackice itself, a program built locally).
+    Binaries signed with a third-party Developer ID were not tested. Refusals that are not logged are still
     enforced, but leave no log line, so no `kernel_drop` receipt, and the end-of-scope check cannot detect the
     gap. Found when blackice's own connect to the control socket in P0-04 left no receipt while the same
     connect from `python3` did; a locally built C probe behaved like blackice. `(with report)` and

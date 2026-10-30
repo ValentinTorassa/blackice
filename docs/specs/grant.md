@@ -26,7 +26,7 @@ written as receipts.
 | grant.R2 | If `blackice grant` is run from inside any scope, it shall fail because it cannot reach the control socket, and no scope's access shall change. | P0-04 |
 | grant.R3 | When a grant is accepted, blackice shall write a `grant` receipt with point `control`, the host and the expiry time, and every later decision it allows shall name it, with reason `granted` and rule `grant:<host>`. The policy generation does not change: a grant is not a policy change. | P0-05 |
 | grant.R4 | When a grant expires or is revoked, blackice shall refuse new connections to that host unless the base policy allows them, and write a receipt for it. | P0-05 |
-| grant.R5 | When a grant ends, the proxy shall close every connection it opened under that grant and write a `grant_expired` receipt. If it cannot arm the timer that does this, it shall refuse the connection instead of opening it without a limit. | P0-05 |
+| grant.R5 | When a grant ends, the proxy shall reset every connection it opened under that grant, dropping any bytes still queued, and write a `grant_expired` receipt (`grant_revoked` when the owner revoked it). If it cannot arm the timer that does this, it shall refuse the connection instead of opening it without a limit. | P0-05 |
 | grant.R6 | A grant shall add only a host name or a `*.name` pattern to one scope; the address checks of the policy still apply, and a grant cannot change the mode, the subnets or another scope. | P0-04 |
 | grant.R7 | If the grant names a scope that does not exist or has ended, an invalid host, or a duration that is missing, zero or above the maximum, blackice shall refuse it and change nothing. | P0-04 |
 | grant.R8 | When a scope ends, blackice shall end all of its grants; a new scope started from the same policy file starts without them. | P0-05 |
@@ -57,7 +57,7 @@ the operating system rules, which keep allowing only the proxy and relay ports.
     enough to accept a grant from inside a scope.
 - The grant is held in memory by the proxy, as a name or `*.name`, never an IP literal. It never lifts a port or
   address refusal. Grants are not written to disk and do not survive the process.
-- Lifetimes run on the boot clock, not the wall clock (R10). At expiry or on revoke, a watchdog closes the
+- Lifetimes run on the boot clock, not the wall clock (R10). At expiry or on revoke, a watchdog resets the
   `CONNECT` tunnels and plain HTTP exchanges opened under the grant (R5); if the watchdog cannot start, the
   connection is refused instead of running without a time limit.
 - Receipts: `event: grant` with `point: control`, `verdict: allow`, `host`, and the expiry in `detail`; an
@@ -79,6 +79,7 @@ the operating system rules, which keep allowing only the proxy and relay ports.
 | Grants on the boot clock | network | done | |
 | Refuse the connection when the expiry timer cannot start | network | done | |
 | Close plain HTTP requests at grant expiry or revoke | network | done | |
+| Reset, not drain, connections when a grant ends (`SO_LINGER` 0), so queued bytes stop at expiry (de93f22) | network | done | |
 | `blackice grant` and `blackice revoke` commands (PR #7) | lead | done | |
 | Grant, revoke and expiry receipts; granted decisions name the grant | network | done | |
 | Show on macOS that a scoped process cannot reach the control socket | lead | done | |

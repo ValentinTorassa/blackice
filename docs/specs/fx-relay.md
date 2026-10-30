@@ -83,8 +83,9 @@ key out of the scope; it does not decide what content may be sent to the model.
   traffic must reach a loopback endpoint directly.
 - Tested target: fx v0.0.16. Every evidence entry names the fx release tag and commit used, and the mode.
 - Limits:
-  - Main mode: fx itself is not confined. Its own network features (web fetch, MCP servers, skill installs,
-    upgrades) run as they do today. The hook confines the commands fx launches through its shell tool.
+  - Main mode: fx itself is not confined: its model traffic and its own reads run outside every scope. The hook
+    confines the commands fx launches through its shell tool, and blocks fx's other tools, including its network
+    tools (R17), and its MCP servers (R22).
   - Main mode, fx's own permission modes: the hook runs before fx's permission check, so fx judges the
     rewritten `blackice run ...` command. In `auto` mode no rewritten command is on fx's short no-review list,
     so each one goes to fx's model reviewer. The reviewer sees the command text, the user's request and short
@@ -105,8 +106,9 @@ key out of the scope; it does not decide what content may be sent to the model.
     kept inside the workspace (R21), so blackice and fx must be installed outside it; root-owned is best.
   - Main mode: fx's reads are not limited, and what fx reads goes to the model provider; blackice limits only
     what scoped commands send.
-  - Main mode: only fx profile files that exist when fx starts are protected. A file created later, such as a
-    new `~/.fx/mcp.json`, is not protected, but fx does not read MCP servers in this mode (R22).
+  - Main mode: only fx profile files that exist when fx starts are protected. A missing one, such as `api-key` or
+    `auth.json`, can be created from a scope and is read by the next fx session. A new `~/.fx/mcp.json` has no
+    effect in this mode (R22).
   - Earlier versions had five more gaps, fixed in 617882a, b88c52e and 08e34f3: the outer shell ran the user's
     startup files, the policy and binary could be changed from a scope, fx tools other than the shell were
     allowed, fx's file tools could write outside the workspace, and a scoped command could change fx's profile

@@ -59,8 +59,9 @@ loopback ports; names and addresses are then decided by the proxy.
   `BackendUnavailable` means the command was not run. Changing this contract is a recorded change between
   owners.
 - Backends: macOS uses a Seatbelt profile through `sandbox-exec` ([macos-task-scope](macos-task-scope.md));
-  Linux uses a root-owned cgroup with nftables rules ([linux-task-scope](linux-task-scope.md)). Until the
-  Linux backend lands, `run` on Linux refuses.
+  Linux uses a root-owned cgroup with eBPF socket programs and a small helper ([linux-task-scope](linux-task-scope.md)).
+  Until that backend is merged, `run` on Linux refuses; with it, `run` refuses a helper older than the protocol it
+  expects (`linux_helper_upgrade_required`).
 - Lifecycle in v0: requested, checked, confined, running, ended. Not in v0: policy updates other than grants,
   a degraded state with recovery, draining, and nested scopes.
 - Limits:
@@ -84,19 +85,20 @@ loopback ports; names and addresses are then decided by the proxy.
 | `blackice run`: arguments, policy load, scope creation, launch, exit status (PR #7) | lead | done | |
 | Write the policy bytes into the state directory | lead | done | |
 | State directory read-only inside the scope on macOS, parents protected against rename | lead | done | |
-| State directory read-only or hidden inside the scope on Linux | codex-linux | doing | |
+| State directory read-only or hidden inside the scope on Linux (PR #6, 89a5f49) | codex-linux | done | |
 | Proxy variables and the clean environment | lead | done | |
 | `scope_start` and `scope_end` receipts, with the failed-write count | lead | done | |
 | Decide and document what happens to processes left running after CMD exits | lead | todo | |
 | Protected paths (`protected_paths` in the launch contract, `--protect`, symlink components) and `--policy-sha256`; macOS honors them (PR #7, b958046) | lead | done | |
-| Linux backend honors protected paths (`protects_paths = true`); until then `run` refuses on Linux | codex-linux | doing | |
+| Linux backend honors protected paths (`protects_paths = true`), helper protocol v2 (PR #6, 89a5f49; reviewed safe at 93412c1) | codex-linux | done | |
 | Create each scope's state directory exclusively (0700), with a new id on a clash | lead | done | |
-| Linux enforcing backend behind the same contract (`run` refuses on Linux until it lands) | codex-linux | doing | |
+| Linux enforcing backend behind the same contract (PR #6, not merged; `run` refuses on Linux until it lands) | codex-linux | done | |
 
 ## Evidence
 
 | Covers | Kind | Link | Note |
 |---|---|---|---|
+| scope-core.R10, scope-core.R12 | test | `zig build test` at 35ae1f8 (PR #6), src/linux/protection_test.zig: "protected files, symlink entries and state ancestors resist mutation while neighbors remain writable", "pre-existing hard links and intermediate symlinks refuse protection before exec", "an existing alternate mount view refuses protection before exec", "stdio cannot retain protected inodes, state files or directory access through the old mount" | Linux side of protected paths and the state directory: writes, renames, hard links, other mount views and stdio refused in rootless fixtures, from a directory under `/tmp`. No installed helper and no sudo, so the privileged path is not exercised. 106/106 passed in my copy, Zig 0.17.0, Debian 13 x86_64 |
 | scope-core.R11, scope-core.R12 | entry | [P0-07 macOS, scripted model](../../evidence/P0-07-fx-hook-scripted-macos.md) | macOS 27.0.1 arm64, SIP on, blackice claude/run 58e73cc, fx v0.0.16 (481104f) with the hook patch at 08e34f3, full-access mode, scripted model, one run, PR #11 (not merged). `FAKE_SECRET` from fx's environment was absent in the scope and `AI_AGENT` passed; appending to a protected profile file and copying over blackice were both refused |
 | scope-core.R1, scope-core.R2, scope-core.R13 | entry | [P0-01 macOS](../../evidence/P0-01-policy-before-exec-macos.md) | macOS 27.0.1 arm64, SIP on, claude/run 58e73cc, Zig 0.17.0, one run, PR #11 (not merged). A policy with the allow entry `*`, and a `--policy-sha256` that did not match, each stopped blackice before the command: exit 125, no scope, no marker file. The command's first network call was refused |
 | scope-core.R5 | entry | [P0-02 macOS](../../evidence/P0-02-real-deny-macos.md) | macOS 27.0.1 arm64, SIP on, claude/run 58e73cc, Zig 0.17.0, one run, PR #11 (not merged). Direct TCP and UDP, IPv4 and IPv6, from python3 and curl refused by the kernel; the same scope reached example.com through its proxy |

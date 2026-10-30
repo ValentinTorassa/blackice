@@ -42,14 +42,17 @@ it, and every decision is written down. It runs locally, headless, with no accou
 
 P0-06 (faults and recovery) is not part of this proof of concept.
 
-## What is not done yet
+## What is not done yet (release gap)
 
-The first usable release needs all four cells. This proof of concept covers agent tasks only.
+The first usable release needs all four cells. This proof of concept covers agent tasks only, and "built" below
+means the code compiles and its tests pass, not that it was shown working.
 
 | | Agent tasks (task scopes) | Apps (app scopes) |
 |---|---|---|
-| **macOS** | Experimental: Seatbelt profile plus the local proxy. | Network Extension filter: code being built, unsigned. It cannot run until it is signed with an Apple Developer ID. |
-| **Linux** | cgroup v2 with eBPF socket programs, installed once by a setup script run with sudo. | Not built. Identifying an app by its desktop or service group still has to be proven. |
+| **macOS** | Built, experimental: a Seatbelt sandbox profile plus the local proxy. Shown on one Mac in the entries above. Not shown yet: listening and launchd launches refused, a process that outlives the command, fx with a real model. | Built, unsigned: a Network Extension filter. It has never been activated. Needs an Apple Developer ID, a signed Network Extension, tests on a live system, and receipts written through blackice. |
+| **Linux** | Built: cgroup v2 with eBPF socket programs, and a small helper installed once by a setup script run with sudo. Not shown yet: no evidence entry so far. | Not built. Identifying an app by its desktop or service group still has to be proven. |
+
+Windows is planned for after macOS and Linux. Nothing is built for it.
 
 Also not in this proof of concept: limits for a whole machine and nested scopes, protocols other than HTTP and
 HTTPS through the proxy, observe mode, and recovery after faults.
@@ -66,8 +69,9 @@ HTTPS through the proxy, observe mode, and recovery after faults.
   where a test shows it; otherwise it is a stated limit.
 - An allowed name on a shared CDN can reach other sites on that CDN through domain fronting inside TLS: the
   proxy checks the TLS server name, not the encrypted request.
-- On macOS, a connection the sandbox refuses leaves a receipt only when the refused program is signed by Apple;
-  other programs are still blocked, without a receipt.
+- On macOS, a refusal leaves a receipt when the refused program is signed by Apple, such as `curl` or `python3`.
+  A program without Apple's signature, such as one you built yourself, is still blocked, but leaves no receipt.
+  Programs signed with a Developer ID were not tested.
 - Receipts are a local record for diagnosis. Other programs of the same user, and administrators, can change
   them. The scoped command itself is designed not to write them: on macOS that held in probes, without an
   evidence entry yet; on Linux it is not yet tested.

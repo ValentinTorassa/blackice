@@ -52,9 +52,10 @@ and `jq` are enough to read it.
   `deny`), `reason`, `rule`, `host`, `ip`, `port`, `detail`.
 - `event`: `connect`, `http`, `scope_start`, `backend_armed`, `backend_cleanup` (Linux), `scope_end`, `grant`,
   `revoke`, `control` (a control request refused before its operation is known), `relay_call`, `kernel_drop`,
-  `warning`. On macOS, `kernel_drop` comes from the kernel log, which records refusals of Apple-signed binaries only
-  ([macos-task-scope](macos-task-scope.md) R12); on Linux every refusal by the cgroup programs is reported, whatever
-  the binary.
+  `warning`. On macOS, `kernel_drop` comes from the kernel log, which records refusals of Apple-signed binaries and not of ad-hoc-signed ones
+  ([macos-task-scope](macos-task-scope.md) R12); on Linux every refusal by the cgroup programs is reported, or
+  counted as lost, whatever the binary. Refusals by the Linux seccomp filter (such as a raw socket for `ping`) have
+  no receipt.
 - `reason`: a policy reason code (see [policy](policy.md)) or a short error name for `warning` events.
 - `policy`: the first 12 hex digits of the SHA-256 of the policy file. `gen` is the policy generation: 1 for the
   policy the scope started with. v0 has no live policy reload, so it stays 1; grants have their own receipts

@@ -83,6 +83,12 @@ the system resolver's sockets do not exist, so it cannot ask a system service to
   alternative.
 - The current code (`src/linux/backend.zig`) is a placeholder: it reports `backend_unavailable` and refuses to
   run any command, so blackice never runs a command unconfined on Linux.
+- Protected paths (helper protocol v2): before the command runs, the helper's child pins the parent directories of each
+  protected file by descriptor (no symlinks followed), mounts each protected file and each symlink on the way
+  read-only, and binds every ancestor onto itself so it cannot be renamed or removed; neighbouring files stay
+  writable. A hard link to a protected file, another mount view of it, or standard input or output that points at a
+  protected file, a directory or the state files refuses the launch. A helper older than protocol v2 is refused
+  (`linux_helper_upgrade_required`), so each helper change needs a new reviewed install.
 - Limits:
   - In v0 only the proxy and relay are reachable, so every allowed destination goes through the proxy. Protocols
     that cannot use an HTTP proxy cannot be allowed yet.
@@ -115,7 +121,9 @@ the system resolver's sockets do not exist, so it cannot ask a system service to
 | Landlock scoping and seccomp filter | codex-linux | done | |
 | `scripts/linux-setup.sh` and `scripts/linux-teardown.sh` | codex-linux | done | |
 | Security review of the setup script before it runs (e4d9ac3, then the a6a9a95 changes) | security | done | |
-| Run the setup script with sudo, once it is reviewed: done at e4d9ac3; run it again at a6a9a95 (helper SHA-256 `8b3632e1…`), because the first helper could not start a scope | valen | todo | |
+| Protected paths in the helper, protocol v2 (89a5f49) | codex-linux | done | |
+| Security review and pin of the protocol v2 helper: 93412c1 reviewed safe (helper `3181bb2d…`); 35ae1f8 builds it for baseline CPUs (helper `21509462…`) so its hash does not depend on the build machine | security | doing | |
+| Run the setup script with sudo, once it is reviewed: done at e4d9ac3 (that helper could not start a scope); run it again at the last reviewed protocol v2 commit, because older helpers are refused | valen | todo | |
 | Fixtures: immediate connect, fork and exec, TCP and both UDP modes on IPv4 and IPv6, migration, `systemd-run --user`, Docker socket, raw sockets, io_uring, `ping`, an SCTP connect, an unconnected ICMP `sendto`, `bind` and `listen`, DNS paths (`getent hosts`, `resolvectl query`, `busctl call org.freedesktop.resolve1`) | codex-linux | doing | |
 | End-to-end kernel deny with receipts, an off-host receiver that sees nothing per protocol and family, and an evidence entry | codex-linux | todo | |
 | docs/linux.md | codex-linux | done | |
