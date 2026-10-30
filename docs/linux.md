@@ -51,6 +51,10 @@ path refuses launch. The standalone receiver probe protects its receipt director
 The seccomp prohibition on Unix socket creation prevents connections to `control.sock`; a read-only mount
 alone does not prevent connecting to an existing socket.
 
+The helper parent must be able to open its child's proc directory to install the ID maps. A `/proc` mount
+with `hidepid=2` or `hidepid=invisible` that denies this access makes launch fail closed at
+`child_id_mapping`. The helper does not request `CAP_SYS_PTRACE` to override that restriction.
+
 ## Protected files and state ancestors
 
 `LaunchSpec.protected_paths` supplies the executable, policy and `--protect` files, including symlink entries
