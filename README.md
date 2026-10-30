@@ -41,6 +41,8 @@ The CLI is not frozen yet.
 - Network only. Files, processes and credentials need their own controls.
 - In v0, only HTTP and TLS through the proxy can be allowed.
 - In v0, processes of the same user outside every scope count as the owner.
+- In v0, nothing inside a task scope can listen, not even on loopback. Dev servers and tests that open a port
+  cannot run inside a scope.
 - It does not detect prompt injection. It blocks connections the policy does not allow. Data sent to an allowed
   destination is out of scope.
 - Work handed to a daemon outside the task (docker, launchd, a tmux server) runs outside the task.

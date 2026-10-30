@@ -6,6 +6,7 @@ import Spotlight from '../components/Spotlight';
 import TypedTerminal from '../components/TypedTerminal';
 import Layers from '../components/Layers';
 import CubeMark from '../components/CubeMark';
+import StatusCards from '../components/StatusCards';
 import Corners from '../components/Corners';
 import { IsoScope, IsoPolicy, IsoReceipt } from '../components/Iso';
 import {
@@ -26,8 +27,8 @@ import {
   IconWrap,
 } from '../components/Icons';
 import { SITE } from '../content/site';
-import { MATRIX, CHECKPOINTS, STATE_LABEL } from '../content/status';
-import { recordedCheckpoints, cellState } from '../lib/evidence';
+import { CHECKPOINTS } from '../content/status';
+import { recordedCheckpoints } from '../lib/evidence';
 
 const NOUNS = [
   {
@@ -67,17 +68,6 @@ const SESSION = [
   ['cmd', `${SITE.name} grant s-7f3a91c2 api.example.com --for 10m`, 'another terminal, as the owner'],
   ['out', 'granted until 12:10:03'],
 ];
-
-const OS_ICON = { macOS: IconCommand, Linux: IconPenguin };
-
-function StatusDot({ state }) {
-  return (
-    <span className={`state state-${state}`}>
-      <span className="state-dot" aria-hidden="true" />
-      {STATE_LABEL[state]}
-    </span>
-  );
-}
 
 export default function Home() {
   const recorded = recordedCheckpoints();
@@ -262,33 +252,7 @@ export default function Home() {
               })}
             </ol>
           </div>
-          <div className="os-cards">
-            {MATRIX.map((row) => {
-              const Icon = OS_ICON[row.os] || IconTerminal;
-              return (
-                <article className="os-card" key={row.os}>
-                  <header>
-                    <span className="os-icon">
-                      <Icon size={18} />
-                    </span>
-                    <h3>{row.os}</h3>
-                  </header>
-                  {[
-                    ['apps', 'Apps on the machine'],
-                    ['tasks', 'Tasks an agent runs'],
-                  ].map(([k, label]) => (
-                    <div className="os-row" key={k}>
-                      <div className="os-row-head">
-                        <span>{label}</span>
-                        <StatusDot state={cellState(row[k])} />
-                      </div>
-                      <p>{row[k].how}</p>
-                    </div>
-                  ))}
-                </article>
-              );
-            })}
-          </div>
+          <StatusCards />
         </section>
 
         <section className="container section">

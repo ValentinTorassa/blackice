@@ -18,69 +18,65 @@ function Svg({ size = 18, children, ...rest }) {
   );
 }
 
-// The mark: a task scope resting inside the host boundary, on an isometric grid.
-// The inner faces are opaque, so the edges that run behind them stay hidden.
-const HEX = 'M12 2 20.66 7v10L12 22l-8.66-5V7Z';
-const FRONT = 'M3.34 7 12 12M20.66 7 12 12M12 12v10';
-const BACK = 'M12 2v10M3.34 17 12 12M20.66 17 12 12';
-const SIDE_L = { fill: 'color-mix(in srgb, currentColor 66%, #000)' };
-const SIDE_R = { fill: 'color-mix(in srgb, currentColor 34%, #000)' };
+// The mark: the six corners of a scope boundary on an isometric grid, with the process it holds
+// at the centre. The corners are shaded like the faces of a cube lit from above.
+const CORNERS_SM = [
+  'M8.796 3.85 12 2 15.204 3.85 15.204 5.871 12 4.021 8.796 5.871Z',
+  'M17.456 5.15 20.66 7 20.66 10.7 18.91 9.69 18.91 8.01 17.456 7.171Z',
+  'M20.66 13.3 20.66 17 17.456 18.85 17.456 16.829 18.91 15.99 18.91 14.31Z',
+  'M15.204 20.15 12 22 8.796 20.15 8.796 18.129 12 19.979 15.204 18.129Z',
+  'M6.544 18.85 3.34 17 3.34 13.3 5.09 14.31 5.09 15.99 6.544 16.829Z',
+  'M3.34 10.7 3.34 7 6.544 5.15 6.544 7.171 5.09 8.01 5.09 9.69Z',
+];
+const CORNERS = [
+  'M8.969 3.75 12 2 15.031 3.75 15.031 5.078 12 3.328 8.969 5.078Z',
+  'M17.629 5.25 20.66 7 20.66 10.5 19.51 9.836 19.51 7.664 17.629 6.578Z',
+  'M20.66 13.5 20.66 17 17.629 18.75 17.629 17.422 19.51 16.336 19.51 14.164Z',
+  'M15.031 20.25 12 22 8.969 20.25 8.969 18.922 12 20.672 15.031 18.922Z',
+  'M6.371 18.75 3.34 17 3.34 13.5 4.49 14.164 4.49 16.336 6.371 17.422Z',
+  'M3.34 10.5 3.34 7 6.371 5.25 6.371 6.578 4.49 7.664 4.49 9.836Z',
+];
+const SHADE_SM = [1, 0.55, 0.8, 1, 0.55, 0.8];
+const SHADE = [1, 0.45, 0.75, 1, 0.45, 0.75];
+// The open stretches of the boundary between the corners, for the dashed guide at large sizes.
+const GAPS =
+  'M15.194 4.508 16.892 5.488M20.085 11.02 20.085 12.98M16.892 18.512 15.194 19.492' +
+  'M8.806 19.492 7.108 18.512M3.915 12.98 3.915 11.02M7.108 5.488 8.806 4.508';
 
-function InnerCube() {
+export function Logo({ size = 22, className }) {
   return (
-    <>
-      <path d="M12 9.8 15.64 11.9 12 14 8.36 11.9Z" fill="currentColor" />
-      <path d="M8.36 11.9 12 14v4.2l-3.64-2.1Z" style={SIDE_L} />
-      <path d="M12 14 15.64 11.9v4.2L12 18.2Z" style={SIDE_R} />
-    </>
-  );
-}
-
-export function Logo({ size = 22 }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" aria-hidden="true">
-      <g stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round">
-        <path d={HEX} />
-        <path d={FRONT} />
-      </g>
-      <InnerCube />
+    <svg width={size} height={size} viewBox="0 0 24 24" aria-hidden="true" className={className}>
+      {CORNERS_SM.map((d, i) => (
+        <path key={i} d={d} fill="currentColor" fillOpacity={SHADE_SM[i]} />
+      ))}
+      <circle cx="12" cy="12" r="1.7" fill="currentColor" />
     </svg>
   );
 }
 
-// Large sizes: thin edges, with the hidden back edges dashed. Stroke stays `line` px wide at any size.
-export function LogoFull({ size = 160, line = 1.5, className }) {
+// Large sizes: slimmer corners. With `guides`, a dashed boundary joins them and a ring marks the
+// process. `line` is the guide width in screen pixels at any size.
+export function LogoFull({ size = 160, line = 1, guides = false, className }) {
   const u = 24 / size;
   return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" aria-hidden="true" className={className}>
-      <g stroke="currentColor" strokeWidth={line * u} strokeLinejoin="round">
-        <path d={HEX} />
-        <path d={FRONT} />
-        <path d={BACK} strokeDasharray={`${5 * u} ${4.5 * u}`} strokeOpacity="0.85" />
-      </g>
-      <InnerCube />
+    <svg width={size} height={size} viewBox="0 0 24 24" aria-hidden="true" className={className}>
+      {guides ? (
+        <g fill="none" stroke="currentColor" strokeWidth={line * u} strokeLinecap="round">
+          <path d={GAPS} strokeDasharray={`${0.01 * u} ${7 * u}`} strokeWidth={line * 1.6 * u} strokeOpacity="0.55" />
+          <circle cx="12" cy="12" r="2.7" strokeOpacity="0.3" />
+        </g>
+      ) : null}
+      {CORNERS.map((d, i) => (
+        <path key={i} d={d} fill="currentColor" fillOpacity={SHADE[i]} />
+      ))}
+      <circle cx="12" cy="12" r="1" fill="currentColor" />
     </svg>
   );
 }
 
-// The name in Geist, with a small cube for the dot of the i.
+// The name, set in Geist.
 export function Wordmark({ className = '' }) {
-  return (
-    <span className={`wordmark ${className}`} role="img" aria-label="blackice">
-      <span aria-hidden="true">
-        black
-        <span className="wm-i">
-          ı
-          <svg className="wm-cube" viewBox="0 0 10 10">
-            <path d="M5 0 9.33 2.5 5 5 .67 2.5Z" fill="currentColor" />
-            <path d="M.67 2.5 5 5v5L.67 7.5Z" style={SIDE_L} />
-            <path d="M5 5 9.33 2.5v5L5 10Z" style={SIDE_R} />
-          </svg>
-        </span>
-        ce
-      </span>
-    </span>
-  );
+  return <span className={`wordmark ${className}`}>blackice</span>;
 }
 
 export const IconCube = (p) => (

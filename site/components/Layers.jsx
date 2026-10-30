@@ -3,7 +3,7 @@ import { IconTerminal, IconNested, IconPolicy, IconChip, IconGlobe } from './Ico
 // The v0 enforcement path as designed, drawn as a stack of planes in CSS 3D.
 const LAYERS = [
   { key: 'process', name: 'Process', Icon: IconTerminal, text: 'fx, a test runner or an install, and every process they start.' },
-  { key: 'scope', name: 'Task scope', Icon: IconNested, text: 'Created before exec. Child processes inherit it and cannot leave it.' },
+  { key: 'scope', name: 'Task scope', Icon: IconNested, text: 'Created before exec. Every child process inherits it, and none can leave it.' },
   { key: 'policy', name: 'Policy', Icon: IconPolicy, text: 'A strict JSON file, loaded once: a mode, allowed names, subnets and ports.' },
   {
     key: 'enforce',

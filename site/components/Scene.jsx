@@ -145,10 +145,18 @@ export default function Scene() {
         return scope;
       }
 
-      addScope({ size: [12, 3.4, 8], pos: [0, 1.7, 0], color: WHITE, opacity: 0.1, fill: 0.008 });
+      addScope({ size: [12, 3.4, 8], pos: [0, 1.7, 0], color: WHITE, opacity: 0.16, fill: 0.008 });
       const appA = addScope({ size: [2.4, 1.0, 1.8], pos: [-3.7, 0.5, 2.0], color: GRAY, opacity: 0.8, dashed: true });
       const appB = addScope({ size: [2.4, 1.0, 1.8], pos: [-3.7, 0.5, -1.7], color: GRAY, opacity: 0.8, dashed: true });
       addScope({ size: [4.4, 2.0, 4.6], pos: [1.9, 1.0, 0], color: WHITE, opacity: 0.85, fill: 0.02 });
+      // Light pooled on the floor under the task scope.
+      const pool = new THREE.Mesh(
+        track(new THREE.PlaneGeometry(7.5, 7.5)),
+        track(new THREE.MeshBasicMaterial({ map: glowTex, color: WHITE, transparent: true, opacity: 0.16, blending: THREE.AdditiveBlending, depthWrite: false })),
+      );
+      pool.rotation.x = -Math.PI / 2;
+      pool.position.set(1.9, 0.004, 0);
+      scene.add(pool);
       const toolA = addScope({ size: [1.5, 1.1, 1.5], pos: [1.0, 0.56, -1.05], color: WHITE, opacity: 0.5, fill: 0.03 });
       const toolB = addScope({ size: [1.5, 1.1, 1.5], pos: [2.8, 0.56, 1.05], color: WHITE, opacity: 0.5, fill: 0.03 });
 
@@ -551,8 +559,8 @@ export default function Scene() {
         <span data-anchor="host" className="tag">host</span>
         <span data-anchor="app" className="tag">app scope</span>
         <span data-anchor="task" className="tag tag-strong">task scope</span>
-        <span data-anchor="allow" className="tag tag-strong">allowed</span>
-        <span data-anchor="deny" className="tag tag-deny">denied</span>
+        <span data-anchor="allow" className="tag tag-strong">registry.npmjs.org</span>
+        <span data-anchor="deny" className="tag tag-deny">paste.example</span>
       </div>
     </div>
   );

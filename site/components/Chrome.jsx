@@ -1,6 +1,7 @@
 import Link from 'next/link';
 import { SITE } from '../content/site';
-import { Logo, Wordmark, IconGitHub } from './Icons';
+import { Logo, Wordmark } from './Icons';
+import NavLinks from './NavLinks';
 
 export { Logo };
 
@@ -25,34 +26,28 @@ const FOOTER = [
   ],
 ];
 
-export function Nav() {
+export function Nav({ wide = false }) {
   return (
     <header className="nav">
       <a className="skip" href="#main">
         Skip to content
       </a>
-      <div className="container nav-inner">
+      <div className={`container nav-inner${wide ? ' container-wide' : ''}`}>
         <Link className="brand" href="/" aria-label={`${SITE.name} home`}>
           <Logo size={22} />
           <Wordmark />
           <span className="brand-tag">PoC</span>
         </Link>
-        <nav className="nav-links" aria-label="Main">
-          <Link href="/docs/">Docs</Link>
-          <Link href="/docs/status/">Status</Link>
-          <a className="nav-gh" href={SITE.repo} aria-label="GitHub repository">
-            <IconGitHub size={16} />
-          </a>
-        </nav>
+        <NavLinks repo={SITE.repo} />
       </div>
     </header>
   );
 }
 
-export function Footer() {
+export function Footer({ wide = false }) {
   return (
     <footer className="footer">
-      <div className="container footer-grid">
+      <div className={`container footer-grid${wide ? ' container-wide' : ''}`}>
         <div className="footer-brand">
           <Link className="brand" href="/" aria-label={`${SITE.name} home`}>
             <Logo size={20} />
@@ -87,7 +82,7 @@ export function Footer() {
           </ul>
         </div>
       </div>
-      <div className="container">
+      <div className={`container${wide ? ' container-wide' : ''}`}>
         <p className="footer-note">Not affiliated with or endorsed by Vercel. Product names belong to their owners.</p>
       </div>
       <div className="footer-mark" aria-hidden="true">
