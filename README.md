@@ -40,6 +40,15 @@ Since 0.0.5, [fx](https://github.com/vercel-labs/fx) runs approved commands as o
 fx and everything it starts in one task scope, without changes to fx. A scope per tool call needs a launch hook in
 fx and is future work.
 
+## Site and docs
+
+The project page and the documentation live in [`site/`](site/): a static Next.js export with its own pinned
+dependencies. Nothing in the native product imports or builds anything from `site/`.
+
+```console
+$ cd site && npm ci && npm run dev
+```
+
 ## Related projects
 
 [sandbox-runtime](https://github.com/anthropics/sandbox-runtime) ·

@@ -1,0 +1,47 @@
+import Link from 'next/link';
+import { DOCS, GROUPS } from '../content/docs';
+import { recordedCheckpoints } from '../lib/evidence';
+
+const ORDERED = GROUPS.flatMap((g) => DOCS.filter((d) => d.group === g));
+const hrefOf = (d) => (d.slug ? `/docs/${d.slug}/` : '/docs/');
+
+export default function DocPage({ slug }) {
+  const i = ORDERED.findIndex((d) => d.slug === slug);
+  const doc = ORDERED[i];
+  const prev = ORDERED[i - 1];
+  const next = ORDERED[i + 1];
+  const recordedSet = recordedCheckpoints();
+  const Body = doc.body;
+
+  return (
+    <article className="doc">
+      <p className="doc-group">{doc.group}</p>
+      <h1 className="doc-title">{doc.title}</h1>
+      <p className="doc-desc">{doc.description}</p>
+      <div className="doc-body">
+        <Body recorded={recordedSet.size} recordedSet={recordedSet} />
+      </div>
+      <nav className="pager" aria-label="Previous and next page">
+        {prev ? (
+          <Link href={hrefOf(prev)} className="pager-link">
+            <span className="faint">Previous</span>
+            <span>{prev.title}</span>
+          </Link>
+        ) : (
+          <span />
+        )}
+        {next ? (
+          <Link href={hrefOf(next)} className="pager-link pager-next">
+            <span className="faint">Next</span>
+            <span>{next.title}</span>
+          </Link>
+        ) : null}
+      </nav>
+    </article>
+  );
+}
+
+export function docMeta(slug) {
+  const d = DOCS.find((x) => x.slug === slug);
+  return { title: d.title, description: d.description };
+}

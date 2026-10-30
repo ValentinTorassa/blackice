@@ -1,0 +1,18 @@
+{
+  "name": "blackice-site",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Project page and documentation for blackice. Static export; nothing here is part of the native product.",
+  "scripts": {
+    "dev": "next dev --webpack --hostname 127.0.0.1 --port 4319",
+    "build": "next build --webpack",
+    "serve": "python3 -m http.server 4319 --bind 127.0.0.1 --directory out"
+  },
+  "dependencies": {
+    "geist": "1.8.2",
+    "next": "16.4.3",
+    "react": "19.3.1",
+    "react-dom": "19.3.1",
+    "three": "0.186.1"
+  }
+}

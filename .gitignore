@@ -11,3 +11,8 @@ zig-out/
 
 # Local scratch receipts
 *.local.jsonl
+
+# Site
+site/node_modules/
+site/.next/
+site/out/
