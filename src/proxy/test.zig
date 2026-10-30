@@ -115,11 +115,13 @@ const TestServer = struct {
     accepted: std.atomic.Value(u32) = .init(0),
     /// Bytes the echo handler received, over all connections.
     received: std.atomic.Value(usize) = .init(0),
+    /// Bytes the flood handler managed to send, over all connections.
+    sent: std.atomic.Value(usize) = .init(0),
     /// The last request head the HTTP handler saw.
     last_head: [4096]u8 = undefined,
     last_head_len: usize = 0,
 
-    const Kind = enum { echo, http, slow_http };
+    const Kind = enum { echo, http, slow_http, flood };
 
     fn start(ts: *TestServer, io: Io, kind: Kind) !void {
         const addr: net.IpAddress = .{ .ip4 = .loopback(0) };
@@ -149,6 +151,7 @@ const TestServer = struct {
             .echo => echoHandler(io, s, ts),
             .http => httpHandler(io, s, ts, false),
             .slow_http => httpHandler(io, s, ts, true),
+            .flood => floodHandler(io, s, ts),
         };
     }
 
@@ -169,6 +172,22 @@ fn echoHandler(io: Io, s: net.Stream, ctx: *TestServer) Io.Cancelable!void {
         w.interface.writeAll(data) catch return;
         w.interface.flush() catch return;
         r.interface.toss(data.len);
+    }
+}
+
+/// Waits for the client's first bytes, then sends as much as the connection takes (up to 256 MiB).
+fn floodHandler(io: Io, s: net.Stream, ctx: *TestServer) Io.Cancelable!void {
+    defer s.close(io);
+    var rbuf: [4096]u8 = undefined;
+    var wbuf: [4096]u8 = undefined;
+    var r = s.reader(io, &rbuf);
+    var w = s.writer(io, &wbuf);
+    _ = r.interface.peekGreedy(1) catch return;
+    const chunk: [64 * 1024]u8 = @splat('x');
+    var total: usize = 0;
+    while (total < 256 << 20) : (total += chunk.len) {
+        w.interface.writeAll(&chunk) catch return;
+        _ = ctx.sent.fetchAdd(chunk.len, .monotonic);
     }
 }
 
@@ -303,6 +322,24 @@ const Client = struct {
 
     fn rest(c: *Client) ![]u8 {
         return c.r.interface.allocRemaining(testing.allocator, .limited(1 << 16));
+    }
+
+    const End = struct { bytes: usize, reset: bool };
+
+    /// Reads until the proxy ends the connection, by FIN or by reset, and counts the bytes that arrived.
+    fn untilClosed(c: *Client) !End {
+        var n: usize = 0;
+        while (true) {
+            const data = c.r.interface.peekGreedy(1) catch |err| switch (err) {
+                error.EndOfStream => return .{ .bytes = n, .reset = false },
+                error.ReadFailed => {
+                    if (c.r.err) |e| if (e == error.ConnectionResetByPeer) return .{ .bytes = n, .reset = true };
+                    return err;
+                },
+            };
+            n += data.len;
+            c.r.interface.toss(data.len);
+        }
     }
 };
 
@@ -667,10 +704,8 @@ test "a grant allows a refused name until it expires, and expiry closes the tunn
         const hello = clientHello(&hello_buf, "granted.test");
         try c.send(hello);
         try testing.expectEqualSlices(u8, hello, try c.r.interface.take(hello.len));
-        // The grant expires while the tunnel is open: the proxy closes it.
-        const after = try c.rest();
-        defer testing.allocator.free(after);
-        try testing.expectEqual(@as(usize, 0), after.len);
+        // The grant expires while the tunnel is open: the proxy ends it.
+        try testing.expectEqual(@as(usize, 0), (try c.untilClosed()).bytes);
     }
     {
         var c: Client = .{ .stream = try h.connect() };
@@ -719,15 +754,50 @@ test "revoking a grant closes the tunnels opened under it" {
     try testing.expectEqualSlices(u8, hello, try c.r.interface.take(hello.len));
 
     try testing.expect(h.grants.revoke(h.io, "granted.test"));
-    const after = try c.rest();
-    defer testing.allocator.free(after);
-    try testing.expectEqual(@as(usize, 0), after.len);
+    try testing.expectEqual(@as(usize, 0), (try c.untilClosed()).bytes);
 
     var r = try h.receiptAt(1);
     defer r.deinit();
     try expectField(r.value, "verdict", "deny");
     try expectField(r.value, "reason", "grant_revoked");
     try expectField(r.value, "host", "granted.test");
+}
+
+test "a grant's end resets the tunnel: bytes queued toward the client are dropped, not delivered" {
+    var up: TestServer = undefined;
+    try up.start(testing.io, .flood);
+    defer up.stop();
+    var h: Harness = undefined;
+    var pbuf: [512]u8 = undefined;
+    try h.init(testPolicy(&pbuf, up.port));
+    defer h.deinit();
+    _ = try h.grants.add(h.io, "granted.test", .fromMilliseconds(300));
+
+    var c: Client = .{ .stream = try h.connect() };
+    c.init(h.io, c.stream);
+    defer c.stream.close(h.io);
+    var req_buf: [128]u8 = undefined;
+    try c.send(try std.fmt.bufPrint(&req_buf, "CONNECT granted.test:{d} HTTP/1.1\r\n\r\n", .{up.port}));
+    var sbuf: [128]u8 = undefined;
+    try testing.expectEqualStrings("HTTP/1.1 200 Connection Established", try c.status(&sbuf));
+    var hello_buf: [600]u8 = undefined;
+    try c.send(clientHello(&hello_buf, "granted.test"));
+    // The upstream floods the tunnel and the client reads nothing, so the proxy's socket toward the client fills
+    // up. The grant ends meanwhile.
+    try h.io.sleep(.fromMilliseconds(1000), .awake);
+    const sent_at_end = up.sent.load(.monotonic);
+    const end = try c.untilClosed();
+    // A plain close would deliver the whole queue and then a FIN. The reset drops it: the client reads what its
+    // own socket had already received, then gets the reset.
+    try testing.expect(end.reset);
+    try testing.expect(end.bytes < sent_at_end);
+    // The upstream side was cut too: it sends nothing more.
+    try testing.expectEqual(sent_at_end, up.sent.load(.monotonic));
+
+    var r = try h.receiptAt(1);
+    defer r.deinit();
+    try expectField(r.value, "reason", "grant_expired");
+    try expectField(r.value, "detail", "connection_reset");
 }
 
 test "a grant whose watchdog cannot start is refused, never unbounded" {
@@ -770,10 +840,8 @@ test "grant expiry also cuts a plain HTTP exchange in flight" {
     defer c.stream.close(h.io);
     var req_buf: [256]u8 = undefined;
     try c.send(try std.fmt.bufPrint(&req_buf, "GET http://granted.test:{d}/slow HTTP/1.1\r\n\r\n", .{up.port}));
-    // The upstream answers after 3 s; the grant ends after 0.3 s, so the client sees the connection close.
-    const got = try c.rest();
-    defer testing.allocator.free(got);
-    try testing.expectEqual(@as(usize, 0), got.len);
+    // The upstream answers after 3 s; the grant ends after 0.3 s, so the connection ends with no answer.
+    try testing.expectEqual(@as(usize, 0), (try c.untilClosed()).bytes);
     var r0 = try h.receiptAt(0);
     defer r0.deinit();
     try expectField(r0.value, "reason", "granted");
