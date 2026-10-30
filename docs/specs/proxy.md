@@ -32,9 +32,10 @@ if both the name and the address it found are allowed. Every answer it gives is 
 | proxy.R8 | When the scope ends, blackice shall stop the proxy and close every connection it is relaying. | P0-05 |
 | proxy.R9 | When a request names a port the policy does not allow, the proxy shall answer 403 and write a `deny` receipt with reason `port_not_allowed`. | P0-03 |
 | proxy.R10 | When a `CONNECT` tunnel's first bytes are a TLS ClientHello whose server name (SNI) differs from the `CONNECT` host, the proxy shall close the tunnel before any byte reaches the destination and write a `deny` receipt (`sni_mismatch`). | P0-03 |
-| proxy.R11 | When a `CONNECT` tunnel's first bytes are not a TLS ClientHello, or no bytes arrive, the proxy shall close the tunnel and write a `deny` receipt (`not_tls`, with detail `no_data` when nothing arrived). When a ClientHello for a name carries no server name, it shall do the same with `sni_missing`. Without a server name, a shared front end would pick the site from whatever the client sends next. | P0-03 |
+| proxy.R11 | When a `CONNECT` tunnel's first bytes are not a TLS ClientHello, the proxy shall close the tunnel and write a `deny` receipt (`not_tls`). A tunnel the client closes before sending a byte keeps its allow verdict, with detail `client_closed`; nothing reaches the upstream. When a ClientHello for a name carries no server name, it shall do the same with `sni_missing`. Without a server name, a shared front end would pick the site from whatever the client sends next. | P0-03 |
 | proxy.R12 | When the proxy starts a command's environment, blackice shall point `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY` and their lowercase forms at the proxy, and set `NO_PROXY` to loopback only. | P0-03 |
 | proxy.R13 | If a plain HTTP request head has a bare CR or LF, a control byte in the target or a header name that is not a valid token, the proxy shall answer 400, write a `deny` receipt (`bad_request`, detail `invalid_request`) and send nothing upstream. | P0-03 |
+| proxy.R14 | If the scope ends while the proxy is still dialing an upstream, the proxy shall stop dialing, open no further connection, and write `upstream_unreachable` with detail `canceled`. | P0-06 |
 
 ## Design
 
@@ -55,7 +56,12 @@ service by the program.
   and `Proxy-*` headers, re-frame the body (length or chunked), one request per upstream connection.
 - Decision order: port check first, then the host or IP literal check, then active grants (names only, see
   [grant](grant.md)), then resolution (allowed names only), then the address check on each result (see
-  [policy](policy.md)). A grant never lifts a port or address refusal. Dial timeout: 10 s.
+  [policy](policy.md)). A grant never lifts a port or address refusal.
+- Dialing: Happy Eyeballs (RFC 8305). The checked addresses alternate between IPv6 and IPv4, starting with the
+  family of the resolver's first answer; each attempt starts 250 ms after the previous one, or as soon as it
+  fails; the first connection that opens wins and the others are canceled. One 10 s budget for the whole dial.
+  The `CONNECT` reply (200) is sent only once the upstream connection is open. Receipts for a failed dial carry
+  `wait_ms`.
 - Reason codes beyond the policy's: `granted`, `bad_request`, `resolve_failed`, `upstream_unreachable`,
   `sni_mismatch`, `tls_unparsed`, `not_tls`, `sni_missing`, `grant_expired`, `grant_revoked`,
   `grant_watchdog_failed`.
@@ -85,6 +91,7 @@ service by the program.
 |---|---|---|---|
 | `CONNECT` and plain HTTP proxy on a random loopback port | network | done | |
 | Resolve allowed names in the proxy and dial only checked addresses | network | done | |
+| Happy Eyeballs dial, `client_closed` detail instead of `not_tls`, no dialing after a stop (c6b3c1a; found by the lead when a proxied example.com timed out on a slow IPv6 path) | network | done | |
 | One receipt per decision | network | done | |
 | Bound header size and refuse unsupported requests | network | done | |
 | Tests: refused name, allowed name, private address behind an allowed name, IP literal | network | done | |
