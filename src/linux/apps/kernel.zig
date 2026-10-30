@@ -165,6 +165,11 @@ pub const Loaded = struct {
         }
     }
     pub fn detach(f: *Loaded, cgroup: l.fd_t, root_cgroup: l.fd_t) !void {
+        const before = try sys.capabilities();
+        var raised = before;
+        raised[0].effective |= 1 << 12;
+        try setCaps(raised);
+        defer setCaps(before) catch l.exit_group(125);
         for (f.sockets, socket_hooks, 0..) |fd, hook, i| {
             const target = if (i < programs.hooks.len) cgroup else root_cgroup;
             if (fd < 0 or !try attached(target, hook, (try programInfo(fd)).id)) continue;
@@ -405,14 +410,17 @@ pub fn dropLoadCapabilities() !void {
     try requireSingleThread();
     try sys.noNewPrivileges();
     _ = try sys.check(l.prctl(47, 4, 0, 0, 0)); // PR_CAP_AMBIENT_CLEAR_ALL
-    var hdr: sys.CapHeader = .{};
-    const keep: u32 = (1 << 10) | (1 << 12); // bind reserved ports, detach this filter
-    const caps = [_]sys.Caps{ .{ .effective = keep, .permitted = keep }, .{} };
-    _ = try sys.check(l.syscall2(.capset, @intFromPtr(&hdr), @intFromPtr(&caps)));
+    const keep: u32 = 1 << 12; // permitted only; raised only during exact detach
+    const caps = [_]sys.Caps{ .{ .effective = 0, .permitted = keep }, .{} };
+    try setCaps(caps);
     const actual = try sys.capabilities();
-    if (actual[0].effective != keep or actual[0].permitted != keep or actual[0].inheritable != 0 or actual[1].effective != 0 or actual[1].permitted != 0 or actual[1].inheritable != 0) return error.CapabilityDropNotVerified;
+    if (actual[0].effective != 0 or actual[0].permitted != keep or actual[0].inheritable != 0 or actual[1].effective != 0 or actual[1].permitted != 0 or actual[1].inheritable != 0) return error.CapabilityDropNotVerified;
     // No CAP_SETPCAP is added just to alter the bounding set. Cleared permitted/inheritable/ambient
     // plus NNP prevent regaining BPF/PERFMON at exec; the unit bounds what could ever be acquired.
+}
+fn setCaps(caps: [2]sys.Caps) !void {
+    var hdr: sys.CapHeader = .{};
+    _ = try sys.check(l.syscall2(.capset, @intFromPtr(&hdr), @intFromPtr(&caps)));
 }
 test "appfilter program tags ignore FD numbers but detect instruction changes" {
     const one = programs.admission(.cgroup_inet4_connect, programs.fixture_fds);

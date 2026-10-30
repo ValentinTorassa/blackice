@@ -98,6 +98,10 @@ pub const Log = struct {
     written: u64 = 0,
     /// Lines that could not be written. Reported in scope_end, so a gap in the log is visible.
     failures: u64 = 0,
+    /// Optional per-file ceiling for long-running services; task scopes retain their existing behavior.
+    max_bytes: ?u64 = null,
+    /// A service may publish failures to a shared counter when a separate process owns this log.
+    shared_failures: ?*std.atomic.Value(u64) = null,
 
     /// Creates the receipts file (owner-only). It refuses an existing file.
     pub fn open(io: Io, dir: Io.Dir, sub_path: []const u8, scope: []const u8, policy_id: []const u8) !Log {
@@ -112,6 +116,11 @@ pub const Log = struct {
 
     pub fn write(log: *Log, e: Entry) void {
         log.writeLine(e, null);
+    }
+    pub fn droppedCount(log: *Log) u64 {
+        log.mutex.lockUncancelable(log.io);
+        defer log.mutex.unlock(log.io);
+        return log.failures;
     }
 
     /// Writes scope_end with the command's exit status and the number of lines that could not be written.
@@ -159,12 +168,16 @@ pub const Log = struct {
         const bytes = w.buffered();
         log.mutex.lockUncancelable(log.io);
         defer log.mutex.unlock(log.io);
+        if (log.max_bytes) |limit| if (log.offset > limit or bytes.len > limit - log.offset) {
+            log.failed();
+            return;
+        };
         // A cancel that lands during the write (for example a proxy stop) must neither lose the line nor
         // consume the task's cancel request, so the write runs with cancelation blocked.
         const old = log.io.swapCancelProtection(.blocked);
         defer _ = log.io.swapCancelProtection(old);
         log.file.writePositionalAll(log.io, bytes, log.offset) catch {
-            log.failures += 1;
+            log.failed();
             return;
         };
         log.offset += bytes.len;
@@ -174,7 +187,11 @@ pub const Log = struct {
     fn countFailure(log: *Log) void {
         log.mutex.lockUncancelable(log.io);
         defer log.mutex.unlock(log.io);
-        log.failures += 1;
+        log.failed();
+    }
+    fn failed(log: *Log) void {
+        log.failures +|= 1;
+        if (log.shared_failures) |counter| counter.store(log.failures, .release);
     }
 };
 

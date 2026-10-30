@@ -17,6 +17,7 @@ pub const Config = struct {
 
     pub fn parse(gpa: std.mem.Allocator, bytes: []const u8) !Config {
         if (bytes.len > max_bytes) return error.PolicyTooLarge;
+        try checkDepth(bytes);
         var arena: std.heap.ArenaAllocator = .init(gpa);
         errdefer arena.deinit();
         const alloc = arena.allocator();
@@ -50,6 +51,45 @@ pub const Config = struct {
         c.arena.deinit();
     }
 };
+
+fn checkDepth(bytes: []const u8) !void {
+    // The JSON parser can allocate deeper trees than Stringify can print. Bound the wire input first.
+    var depth: usize = 0;
+    var quoted = false;
+    var escape = false;
+    for (bytes) |ch| {
+        if (quoted) {
+            if (escape) {
+                escape = false;
+                continue;
+            }
+            if (ch == '\\') escape = true else if (ch == '"') quoted = false;
+            continue;
+        }
+        switch (ch) {
+            '"' => quoted = true,
+            '{', '[' => {
+                depth += 1;
+                if (depth > 32) return error.PolicyTooDeep;
+            },
+            '}', ']' => {
+                if (depth == 0) return error.InvalidAppPolicy;
+                depth -= 1;
+            },
+            else => {},
+        }
+    }
+    if (quoted or depth != 0) return error.InvalidAppPolicy;
+}
+
+test "appfilter rejects JSON nesting before Stringify without counting quoted brackets" {
+    var deep: [67]u8 = @splat('[');
+    deep[33] = '0';
+    @memset(deep[34..], ']');
+    try std.testing.expectError(error.PolicyTooDeep, Config.parse(std.testing.allocator, &deep));
+    try checkDepth("{\"name\":\"[[[\\\"{{{\"}");
+    try std.testing.expectError(error.InvalidAppPolicy, checkDepth("[\"unterminated"));
+}
 
 pub fn validPath(path: []const u8) bool {
     if (path.len < 2 or path.len > 512 or path[0] != '/' or path[path.len - 1] == '/') return false;

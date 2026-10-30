@@ -1,5 +1,39 @@
 const std = @import("std");
 const proxy = @import("../../proxy/proxy.zig");
+test "appfilter all listeners share a connection budget and expired headers cannot complete" {
+    var budget: proxy.ConnectionBudget = .{ .limit = 2 };
+    try std.testing.expect(budget.acquire());
+    try std.testing.expect(budget.acquire());
+    try std.testing.expect(!budget.acquire());
+    budget.release();
+    try std.testing.expect(budget.acquire());
+    budget.release();
+    budget.release();
+    try std.testing.expectEqual(@as(u32, 0), budget.active.load(.monotonic));
+    var expired: proxy.HeaderState = .{};
+    try std.testing.expect(expired.expire());
+    try std.testing.expect(!expired.complete());
+    var completed: proxy.HeaderState = .{};
+    try std.testing.expect(completed.complete());
+    try std.testing.expect(!completed.expire());
+}
+test "appfilter file cap counts dropped receipts without extending the file" {
+    const receipt = @import("../../core/receipt.zig");
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const io = std.testing.io;
+    var log = try receipt.Log.open(io, tmp.dir, "bounded.jsonl", "app-1", "hash");
+    defer log.close();
+    var count: std.atomic.Value(u64) = .init(0);
+    log.shared_failures = &count;
+    log.write(.{ .event = "first", .point = .app_filter });
+    const limit = log.offset;
+    log.max_bytes = limit;
+    log.write(.{ .event = "second", .point = .app_filter });
+    try std.testing.expectEqual(limit, try log.file.length(io));
+    try std.testing.expectEqual(@as(u64, 1), log.droppedCount());
+    try std.testing.expectEqual(@as(u64, 1), count.load(.acquire));
+}
 test "appfilter transparent HTTP accepts names and origin form only" {
     const parsed = try proxy.parseOriginTarget("/path?q=1", "example.com");
     try std.testing.expectEqualStrings("example.com", parsed.host);

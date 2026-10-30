@@ -34,21 +34,32 @@ pub const Peer = struct {
     }
 };
 pub fn readExact(fd: l.fd_t, bytes: []u8, timeout_ms: i32) !void {
-    var ts: l.timespec = undefined;
-    _ = try sys.check(l.clock_gettime(l.CLOCK.MONOTONIC, &ts));
-    const deadline = @as(i128, ts.sec) * 1000 + @divTrunc(ts.nsec, 1000000) + timeout_ms;
-    var n: usize = 0;
-    while (n < bytes.len) {
-        _ = try sys.check(l.clock_gettime(l.CLOCK.MONOTONIC, &ts));
-        const left = deadline - (@as(i128, ts.sec) * 1000 + @divTrunc(ts.nsec, 1000000));
-        if (left <= 0) return error.ControlTimeout;
-        var fds = [_]l.pollfd{.{ .fd = fd, .events = l.POLL.IN, .revents = 0 }};
-        if (try sys.poll(&fds, @intCast(left)) == 0) return error.ControlTimeout;
-        const got = try sys.read(fd, bytes[n..]);
-        if (got == 0) return error.UnexpectedEof;
-        n += got;
-    }
+    const deadline = try Deadline.after(timeout_ms);
+    try deadline.read(fd, bytes);
 }
+pub const Deadline = struct {
+    at: i128,
+    fn now() !i128 {
+        var ts: l.timespec = undefined;
+        _ = try sys.check(l.clock_gettime(l.CLOCK.MONOTONIC, &ts));
+        return @as(i128, ts.sec) * 1000 + @divTrunc(ts.nsec, 1000000);
+    }
+    pub fn after(ms: i32) !Deadline {
+        return .{ .at = try now() + ms };
+    }
+    pub fn read(d: Deadline, fd: l.fd_t, bytes: []u8) !void {
+        var n: usize = 0;
+        while (n < bytes.len) {
+            const left = d.at - try now();
+            if (left <= 0) return error.ControlTimeout;
+            var fds = [_]l.pollfd{.{ .fd = fd, .events = l.POLL.IN, .revents = 0 }};
+            if (try sys.poll(&fds, @intCast(left)) == 0) return error.ControlTimeout;
+            const got = try sys.read(fd, bytes[n..]);
+            if (got == 0) return error.UnexpectedEof;
+            n += got;
+        }
+    }
+};
 pub const Header = struct { op: Op, length: u32 };
 pub fn decodeHeader(bytes: *const [8]u8) !Header {
     if (!std.mem.eql(u8, bytes[0..3], "BA1")) return error.BadControlVersion;

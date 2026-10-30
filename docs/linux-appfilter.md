@@ -1,9 +1,9 @@
 # Linux application filter — review candidate
 
-This build implements the Linux apps ADR revision 3.1 on a separate branch. **It has not been loaded,
-attached, installed, or tested against real application traffic.** Userspace unit tests and cross compilation
-are preparation for security review, not evidence of kernel enforcement. The existing task-scope helper is
-unchanged.
+This branch implements the Linux apps ADR revision 3.1 plus the changes requested in security's review of
+978a65c and 6c849ec. **These review fixes have not been loaded, attached, installed, or tested against real
+application traffic.** Earlier VM runs of another commit do not validate this revision. Userspace unit tests
+and cross compilation prepare for review; the existing task-scope helper is unchanged.
 
 This filter routes ordinary applications' HTTP(S) through policy; the allowed DNS stub and delegation paths
 mean it is not containment for an application deliberately trying to escape.
@@ -27,7 +27,7 @@ security clears the exact commit, bundle, scripts and kernel-load plan, and Vale
 After the installation and first-load gate, the CLI flow is `blackice app on --policy APPS.json`,
 `blackice app status`, and owner-authorized `blackice app off`. A sample policy is
 [`examples/linux-apps.json`](../examples/linux-apps.json); close listed applications before arming.
-These commands have not been run for this candidate.
+These commands have not been run for this revision.
 
 ## Identity and decisions
 
@@ -65,6 +65,16 @@ Receipts use the existing JSONL writer, with `point: app_filter`, `app_id` and `
 through a ring buffer; overflow increments a counter and is reported as `receipt_loss`. Files are service-owned,
 mode 0640 under a service-owned 2750 directory whose group can read but cannot change them. Queued kernel
 receipts retain the event's monotonic nanoseconds in `detail`; `ts` is the writer's drain time.
+Glibc can probe resolved addresses with UDP `connect()` while sorting them. Non-stub probes still fail;
+`udp_connect` receipts aggregate counts by app and address family over approximately one second, with the
+first and last kernel timestamps. They are not successful DNS or data connections.
+
+Each log stops growing at 8 MiB. Failed writes and lines refused by that ceiling count in `app status`
+(`write_dropped`); ring overflow appears separately as `ring_dropped`. The service attempts a `receipt_loss`
+line when write loss changes, but that line can also fail, so status is authoritative for the running instance.
+Proxy and kernel records use separate files with one writer per file. There is **no automatic rotation or
+aggregate disk limit across restarts** yet: old files are retained. Write-drop counters reset on service
+restart, and a crash can lose unflushed UDP aggregates. Do not claim complete receipts across those gaps.
 
 ## Service and recovery
 
@@ -81,12 +91,24 @@ cgroup attachments, refreshes file identities, binds listeners and drains queued
 classification running during a service crash. Pinned legacy program handles permit exact detach at authorized
 off without replacing another program.
 
-BPF and PERFMON are removed from effective, permitted, inheritable and ambient capability sets after arming or
-reopening. The loader requires exactly one thread and verifies the drop before starting proxy workers: Linux
-capabilities are per-thread. The bounding set still contains the unit's four caps: dropping bounding bits would require adding
-SETPCAP, which this candidate does not do. NoNewPrivileges plus the cleared sets prevent reacquiring the load
-caps through exec. NET_ADMIN and NET_BIND_SERVICE remain for detach and protected listeners. This distinction
-is explicit for security review.
+BPF, PERFMON and NET_BIND_SERVICE are removed after binding and loading. The loader keeps NET_ADMIN in its
+permitted set only, raises it to effective only for exact detach, and restores the previous effective set.
+It verifies that it has only one thread before forking a separate proxy child. That child has zero effective,
+permitted, inheritable and ambient capabilities; it retains only its listener sockets, its own receipt FDs,
+stdout/stderr and a startup pipe. All loader, BPF, cgroup, control and instance-lock FDs are closed, and the
+inherited ring mapping is unmapped. The startup pipe closes before traffic is acknowledged as armed.
+
+Before creating proxy threads, the child applies Landlock ABI 6 to deny future filesystem writes and scope
+signals/abstract Unix sockets. Its seccomp policy refuses BPF, ptrace, foreign-FD access, namespace operations,
+exec, non-thread forks, filesystem metadata changes and Unix socket creation. Preopened receipts remain
+writable. The loader monitors its pidfd; child failure exits the service with pinned filtering retained.
+Parent death kills the child. These boundaries still need the approved VM checks. The bounding set retains
+the unit's four caps; cleared permitted/inheritable/ambient sets plus NoNewPrivileges prevent reacquisition.
+
+All four listeners for an app share a 16-connection budget. A request has five seconds for its HTTP head or
+TLS ClientHello, before any upstream dial. Overload closes the new connection without a blocking reply.
+FD exhaustion pauses accepting, and a polkit exchange has one 15-second read budget. Policies are limited to
+32 JSON nesting levels before parsing/stringification. The service uses LimitNOFILE=8192 and TasksMax=1024.
 
 The control socket is systemd-owned. SO_PEERCRED plus SO_PEERPIDFD identify the configured non-root owner;
 requests cannot supply a PID, UID, cgroup, program, map FD or BTF. Tagged callers are refused before polkit.
@@ -96,6 +118,12 @@ PID-number fallback. A dead peer or failed/ambiguous response refuses the operat
 This first candidate changes an active policy through an authorized `off`, then a fresh `on`; it refuses a
 different policy while armed. It does not silently reassign IDs held by existing descendants. In-place policy
 updates are a follow-up.
+
+An acknowledged arm persists its policy digest and boot ID in an atomically replaced, fsynced intent file.
+Pins still disappear on reboot: **this build does not automatically re-arm before user sessions**. Until
+the owner re-arms, status says `disarmed_by_reboot`; missing pins during the same boot say
+`disarmed_pins_missing`. Rearming another policy first requires authorized `off`, even after reboot.
+A partially completed off reports `stopping_partial` and retains its stopping phase until cleanup succeeds.
 
 ## Limits to review before installation
 
@@ -113,6 +141,9 @@ updates are a follow-up.
 - Inotify adds replacement file identities and retains old entries. A launch before a replacement is noticed,
   including while the service is down, is not tagged. A descendant already started before arming and now running
   another file is not discoverable by the task iterator. Processes an app started before arming are not covered.
+  New directory watches are installed before refreshing identities, so a concurrent replacement stays queued.
+  Retained old inode numbers can be reused by the filesystem and falsely tag an unrelated executable (L12);
+  this build does not yet include inode generation in its key.
 - DNS through the stub is a full two-way data channel. Unix sockets, delegated work through D-Bus/systemd/portals
   or cron/at, rootless containers relayed by pasta/slirp4netns (including raw AF_PACKET traffic),
   sockets connected before arming and sockets inherited or received from an unlisted process are not fully
@@ -137,6 +168,9 @@ changes sysctls, nftables or sudoers. Its root-owned staged bundle and binary mu
 before any file is installed. Teardown stops socket activation, detaches only pinned handles, unpins/unmounts
 and removes the service; receipts/policies are retained under a root-only directory. Reinstallation refuses
 that archive until the owner moves it aside; setup never adopts or erases preserved evidence.
+Teardown names unexpected configuration entries before changing anything and keeps owner.json until runtime
+cleanup and account deletion complete. Retained evidence entries become root:root without following symlinks;
+the archive directory's setgid bit is explicitly cleared.
 
 Before installation, record the existing cgroup programs, program list, nft ruleset, bpffs, groups, protected
 hardlinks/BPF/Yama/port sysctls and listeners in 760–774. Do not conflate this record with a passing load.

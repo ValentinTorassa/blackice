@@ -232,6 +232,7 @@ test "appfilter emitted UDP allows only the exact system stub; full ring still d
         v.setTag(100, 1);
         v.socket(v6, 53, 17);
         try std.testing.expectEqual(@as(u64, 0), try v.run(&code));
+        try std.testing.expectEqual(@as(u64, @backingInt(if (index < 2) abi.Reason.udp_connect else abi.Reason.udp)), v.get(event + @offsetOf(abi.Event, "reason"), 4));
         v.ring_full = true;
         try std.testing.expectEqual(@as(u64, 0), try v.run(&code));
         try std.testing.expectEqual(@as(u64, 1), v.get(lost, 8));
@@ -268,8 +269,10 @@ test "appfilter user and root guards cover every listener and local or unspecifi
         const owns = port != abi.last_port and tag == 1 + (port - abi.first_port) / 2;
         try std.testing.expectEqual(@as(u64, @intFromBool(owns)), try v.run(&code));
         if (!owns) try std.testing.expectEqual(@as(u64, @backingInt(abi.Reason.listener_peer)), v.get(event + @offsetOf(abi.Event, "reason"), 4));
-        v.put(ctx + 36, 17, 4);
-        try std.testing.expectEqual(@as(u64, @intFromBool(root or tag == 0)), try v.run(&code));
+        for ([_]u32{ 17, 132, 262 }) |protocol| {
+            v.put(ctx + 36, protocol, 4);
+            try std.testing.expectEqual(@as(u64, @intFromBool(if (root) owns else tag == 0)), try v.run(&code));
+        }
     };
 }
 test "appfilter root guard leaves non-listener traffic unchanged for every tag" {

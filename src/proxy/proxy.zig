@@ -69,12 +69,38 @@ const builtin = @import("builtin");
 
 pub const Mode = enum { explicit, transparent_http, transparent_tls };
 
+pub const ConnectionBudget = struct {
+    active: std.atomic.Value(u32) = .init(0),
+    limit: u32,
+    pub fn acquire(b: *ConnectionBudget) bool {
+        if (b.active.fetchAdd(1, .monotonic) < b.limit) return true;
+        _ = b.active.fetchSub(1, .monotonic);
+        return false;
+    }
+    pub fn release(b: *ConnectionBudget) void {
+        _ = b.active.fetchSub(1, .monotonic);
+    }
+};
+pub const HeaderState = struct {
+    state: std.atomic.Value(u8) = .init(0), // waiting / complete / expired
+    pub fn complete(h: *HeaderState) bool {
+        return h.state.cmpxchgStrong(0, 1, .acq_rel, .acquire) == null;
+    }
+    pub fn expire(h: *HeaderState) bool {
+        return h.state.cmpxchgStrong(0, 2, .acq_rel, .acquire) == null;
+    }
+};
+
 pub const Config = struct {
     mode: Mode = .explicit,
     listen_address: net.IpAddress = .{ .ip4 = .loopback(0) },
     receipt_point: receipt.Point = .proxy,
     /// Connections served at the same time. More are answered with 503.
     max_connections: u32 = 256,
+    /// Shared by all listeners for one app. Null preserves the per-proxy task-scope limit.
+    connection_budget: ?*ConnectionBudget = null,
+    /// Total time to receive a transparent HTTP head / TLS ClientHello; null preserves task-scope behavior.
+    header_timeout: ?Io.Duration = null,
     /// Largest request head (request line and headers).
     max_head_bytes: usize = 16 * 1024,
     /// Time allowed for the whole dial, all addresses together.
@@ -164,8 +190,13 @@ pub const Proxy = struct {
                     continue;
                 },
             };
-            if (p.active.fetchAdd(1, .monotonic) >= p.config.max_connections) {
-                _ = p.active.fetchSub(1, .monotonic);
+            if (!p.acquire()) {
+                if (p.config.header_timeout != null) {
+                    // Never block accept on an overload response to a client which does not read.
+                    p.receipts.write(.{ .event = "connection_limit", .point = p.config.receipt_point, .verdict = .deny, .reason = "app_connection_limit" });
+                    stream.close(io);
+                    continue;
+                }
                 var wbuf: [256]u8 = undefined;
                 var w = stream.writer(io, &wbuf);
                 w.interface.writeAll("HTTP/1.1 503 Service Unavailable\r\ncontent-length: 0\r\nconnection: close\r\n\r\n") catch {};
@@ -174,22 +205,46 @@ pub const Proxy = struct {
                 continue;
             }
             p.group.concurrent(io, serveConnection, .{ p, stream }) catch {
-                _ = p.active.fetchSub(1, .monotonic);
+                p.release();
                 stream.close(io);
             };
         }
+    }
+    fn acquire(p: *Proxy) bool {
+        if (p.config.connection_budget) |b| return b.acquire();
+        if (p.active.fetchAdd(1, .monotonic) < p.config.max_connections) return true;
+        _ = p.active.fetchSub(1, .monotonic);
+        return false;
+    }
+    fn release(p: *Proxy) void {
+        if (p.config.connection_budget) |b| b.release() else _ = p.active.fetchSub(1, .monotonic);
     }
 
     fn serveConnection(p: *Proxy, stream: net.Stream) Io.Cancelable!void {
         defer {
             stream.close(p.io);
-            _ = p.active.fetchSub(1, .monotonic);
+            p.release();
         }
         var conn: Connection = undefined;
         conn.init(p, stream);
+        var guard: ?Io.Future(Io.Cancelable!void) = if (p.config.header_timeout) |duration|
+            p.io.concurrent(headerDeadline, .{ &conn, duration }) catch {
+                p.receipts.write(.{ .event = "header_timeout", .point = p.config.receipt_point, .verdict = .deny, .reason = "header_watchdog_failed" });
+                return;
+            }
+        else
+            null;
+        defer if (guard) |*g| g.cancel(p.io) catch {};
         conn.serve() catch |err| switch (err) {
             error.Canceled => |e| return e,
         };
+    }
+    fn headerDeadline(c: *Connection, duration: Io.Duration) Io.Cancelable!void {
+        try c.io.sleep(duration, .awake);
+        if (c.header.expire()) {
+            shutdownProtected(c.io, c.client, .both);
+            c.p.receipts.write(.{ .event = "header_timeout", .point = c.p.config.receipt_point, .verdict = .deny, .reason = "header_timeout" });
+        }
     }
 };
 
@@ -202,6 +257,7 @@ const Connection = struct {
     out_buf: [4096]u8,
     reader: net.Stream.Reader,
     writer: net.Stream.Writer,
+    header: HeaderState,
 
     fn init(c: *Connection, p: *Proxy, stream: net.Stream) void {
         c.p = p;
@@ -209,6 +265,7 @@ const Connection = struct {
         c.client = stream;
         c.reader = stream.reader(p.io, &c.in_buf);
         c.writer = stream.writer(p.io, &c.out_buf);
+        c.header = .{};
     }
 
     fn serve(c: *Connection) Io.Cancelable!void {
@@ -220,6 +277,7 @@ const Connection = struct {
             error.HttpHeadersOversize => return c.badRequest("431 Request Header Fields Too Large", "headers_too_large", null),
             error.HttpHeadersInvalid => return c.badRequest("400 Bad Request", "invalid_request", null),
         };
+        if (!c.header.complete()) return;
         if (req.head.method == .CONNECT) {
             if (c.p.config.mode != .explicit) return c.badRequest("400 Bad Request", "connect_not_supported", "http");
             return c.serveConnect(&req);
@@ -355,6 +413,7 @@ const Connection = struct {
         const record = r.peek(5 + @as(usize, n)) catch return c.badRequest("400 Bad Request", "tls_unparsed", "connect");
         const name = (parseSni(record) catch return c.badRequest("400 Bad Request", "tls_unparsed", "connect")) orelse
             return c.badRequest("400 Bad Request", "sni_missing", "connect");
+        if (!c.header.complete()) return;
         if (policy.parseIpLiteral(name) != null) return c.badRequest("400 Bad Request", "sni_not_name", "connect");
         const t0 = Io.Clock.awake.now(c.io);
         var addrs_buf: [max_dial]net.IpAddress = undefined;

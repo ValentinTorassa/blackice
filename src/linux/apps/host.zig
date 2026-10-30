@@ -91,22 +91,27 @@ test "appfilter executable filesystem identity rejects overlay and btrfs" {
     for ([_]u64{ 0x9123683e, 0x794c7630, 0x01021994, 0 }) |magic| try std.testing.expect(!identityFilesystemSupported(magic));
 }
 pub fn writePolicy(gpa: std.mem.Allocator, io: std.Io, digest: []const u8, bytes: []const u8) !void {
-    const path = try std.fmt.allocPrintSentinel(gpa, state_root ++ "/policy-{s}.json", .{digest}, 0);
+    const path = try std.fmt.allocPrint(gpa, "policy-{s}.json", .{digest});
     defer gpa.free(path);
-    const opened = l.open(path, .{ .ACCMODE = .WRONLY, .CREAT = true, .EXCL = true, .NOFOLLOW = true, .CLOEXEC = true }, 0o600);
-    if (l.errno(opened) == .EXIST) {
-        const old = try std.Io.Dir.cwd().readFileAlloc(io, path, gpa, .limited(@import("config.zig").max_bytes));
+    var dir = try std.Io.Dir.openDirAbsolute(io, state_root, .{});
+    defer dir.close(io);
+    atomicWrite(dir, io, path, bytes, false) catch |err| {
+        if (err != error.PathAlreadyExists) return err;
+        const old = try dir.readFileAlloc(io, path, gpa, .limited(@import("config.zig").max_bytes));
         defer gpa.free(old);
         if (!std.mem.eql(u8, old, bytes)) return error.StoredPolicyMismatch;
-        return;
-    }
-    const fd = try sys.fd(opened);
-    defer sys.close(fd);
-    try sys.writeAll(fd, bytes);
-    _ = try sys.check(l.fsync(fd));
-    const dir = try sys.fd(l.open(state_root, .{ .DIRECTORY = true, .CLOEXEC = true, .NOFOLLOW = true }, 0));
-    defer sys.close(dir);
-    _ = try sys.check(l.fsync(dir));
+    };
+}
+pub fn atomicWrite(dir: std.Io.Dir, io: std.Io, name: []const u8, bytes: []const u8, replace: bool) !void {
+    var file = try dir.createFileAtomic(io, name, .{ .permissions = .fromMode(0o600), .replace = replace });
+    defer file.deinit(io);
+    try file.file.writePositionalAll(io, bytes, 0);
+    _ = try sys.check(l.fsync(file.file.handle));
+    if (replace) try file.replace(io) else try file.link(io);
+    // Io.Dir may hold O_PATH, which cannot be fsynced. Reopen this pinned directory read-only.
+    const sync_dir = try sys.fd(l.openat(dir.handle, ".", .{ .DIRECTORY = true, .CLOEXEC = true, .NOFOLLOW = true }, 0));
+    defer sys.close(sync_dir);
+    _ = try sys.check(l.fsync(sync_dir));
 }
 pub fn watch(gpa: std.mem.Allocator, paths: []const @import("config.zig").App) !l.fd_t {
     const fd = try sys.fd(l.inotify_init1(l.SOCK.CLOEXEC | l.SOCK.NONBLOCK));
@@ -119,4 +124,54 @@ pub fn watch(gpa: std.mem.Allocator, paths: []const @import("config.zig").App) !
         _ = try sys.check(l.inotify_add_watch(fd, parent, l.IN.CREATE | l.IN.MOVED_TO | l.IN.DELETE_SELF | l.IN.MOVE_SELF | l.IN.ATTRIB | l.IN.CLOSE_WRITE));
     }
     return fd;
+}
+
+pub fn refreshWatch(gpa: std.mem.Allocator, paths: []const @import("config.zig").App, old: l.fd_t, context: anytype, comptime refresh: anytype) !l.fd_t {
+    const fresh = try watch(gpa, paths);
+    errdefer sys.close(fresh);
+    // A replacement during refresh is queued on the NEW fd and survives closing the old one.
+    try refresh(context);
+    if (old >= 0) sys.close(old);
+    return fresh;
+}
+
+test "appfilter replacement during refresh remains queued on the new watch" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const io = std.testing.io;
+    const gpa = std.testing.allocator;
+    const base = try tmp.dir.realPathFileAlloc(io, ".", gpa);
+    defer gpa.free(base);
+    const path = try std.fmt.allocPrint(gpa, "{s}/listed", .{base});
+    defer gpa.free(path);
+    try tmp.dir.writeFile(io, .{ .sub_path = "listed", .data = "old" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "replacement", .data = "new" });
+    const apps = [_]@import("config.zig").App{.{ .executable = path, .network = undefined }};
+    const callback = struct {
+        fn replace(dir: std.Io.Dir) !void {
+            try dir.rename("replacement", dir, "listed", std.testing.io);
+        }
+    }.replace;
+    const old = try watch(gpa, &apps);
+    const fresh = try refreshWatch(gpa, &apps, old, tmp.dir, callback);
+    defer sys.close(fresh);
+    var bytes: [1024]u8 = undefined;
+    const n = try sys.read(fresh, &bytes);
+    try std.testing.expect(n >= 16);
+    const mask = std.mem.readInt(u32, bytes[4..8], .little);
+    try std.testing.expect(mask & l.IN.MOVED_TO != 0);
+    try std.testing.expect(std.mem.find(u8, bytes[0..n], "listed") != null);
+}
+
+test "appfilter policy storage is exclusive and intent replacement is atomic" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const io = std.testing.io;
+    try atomicWrite(tmp.dir, io, "policy", "first", false);
+    try std.testing.expectError(error.PathAlreadyExists, atomicWrite(tmp.dir, io, "policy", "second", false));
+    try atomicWrite(tmp.dir, io, "intent", "armed", true);
+    try atomicWrite(tmp.dir, io, "intent", "off", true);
+    const bytes = try tmp.dir.readFileAlloc(io, "intent", std.testing.allocator, .limited(100));
+    defer std.testing.allocator.free(bytes);
+    try std.testing.expectEqualStrings("off", bytes);
 }

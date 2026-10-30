@@ -23,6 +23,7 @@ pub const Reason = enum(u32) {
     listener_missing,
     unsupported_family,
     tag_missing,
+    udp_connect,
 };
 pub const Event = extern struct {
     timestamp_ns: u64,

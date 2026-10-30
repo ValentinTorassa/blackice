@@ -149,9 +149,11 @@ fn loopback(p: *a.Program, v6: bool, yes: *Fixups) void {
         no.patch(p, end);
     }
 }
-fn listenerPeer(p: *a.Program, v6: bool, allow: *Fixups, deny: *Fixups) void {
-    p.emit(I.ldx(.word, .r0, .r6, 36));
-    const not_tcp = p.add(I.jne(.r0, 6, 0));
+fn listenerPeer(p: *a.Program, v6: bool, allow: *Fixups, deny: *Fixups, root: bool) void {
+    const not_tcp = if (!root) blk: {
+        p.emit(I.ldx(.word, .r0, .r6, 36));
+        break :blk p.add(I.jne(.r0, 6, 0));
+    } else null;
     var is_loop: Fixups = .{};
     loopback(p, v6, &is_loop);
     const outside = p.add(I.ja(0));
@@ -172,7 +174,7 @@ fn listenerPeer(p: *a.Program, v6: bool, allow: *Fixups, deny: *Fixups) void {
     p.emit(I.mov(.r0, 0));
     is_loop.patch(p, check);
     p.patch(outside, end);
-    p.patch(not_tcp, end);
+    if (not_tcp) |at| p.patch(at, end);
 }
 
 /// Root-cgroup guard: only reserved local listener ports are restricted, across every cgroup.
@@ -190,7 +192,8 @@ pub fn listenerGuard(hook: bpf.AttachType, fds: Fds) a.Program {
     p.lookup(fds.tags, -16);
     deny.add(&p, I.jeq(.r0, 0, 0));
     p.emit(I.ldx(.word, .r9, .r0, 0));
-    listenerPeer(&p, hook == .cgroup_inet6_connect, &allow, &deny);
+    // Even MPTCP or another connect protocol must not give an untagged caller a local listener.
+    listenerPeer(&p, hook == .cgroup_inet6_connect, &allow, &deny, true);
     const yes = p.len;
     p.ret(1);
     const no = p.len;
@@ -216,7 +219,7 @@ pub fn admission(hook: bpf.AttachType, fds: Fds) a.Program {
     p.lookup(fds.tags, -16);
     deny.add(&p, I.jeq(.r0, 0, 0));
     p.emit(I.ldx(.word, .r9, .r0, 0));
-    if (!create and !send) listenerPeer(&p, v6, &allow, &deny);
+    if (!create and !send) listenerPeer(&p, v6, &allow, &deny, false);
     allow.add(&p, I.jeq(.r9, 0, 0));
     p.emit(I.mov(.r8, @as(i32, @backingInt(abi.Reason.socket_protocol))));
     if (create) {
@@ -237,7 +240,7 @@ pub fn admission(hook: bpf.AttachType, fds: Fds) a.Program {
         p.emit(I.ldx(.word, .r0, .r6, 36));
         const tcp = p.add(I.jeq(.r0, 6, 0));
         deny.add(&p, I.jne(.r0, 17, 0));
-        p.emit(I.mov(.r8, @as(i32, @backingInt(abi.Reason.udp))));
+        p.emit(I.mov(.r8, @as(i32, @intCast(@backingInt(if (send) abi.Reason.udp else abi.Reason.udp_connect)))));
         // Only UDP to the IPv4 system stub. Mapped IPv6 is covered too.
         p.emit(I.ldx(.word, .r1, .r6, 24));
         deny.add(&p, I.jne(.r1, std.mem.nativeToBig(u16, 53), 0));

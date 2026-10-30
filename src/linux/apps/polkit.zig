@@ -136,6 +136,7 @@ fn parseReply(frame: []const u8) !Reply {
     if (header_len > frame.len - 16) return error.BadDbus;
     const start = std.mem.alignForward(usize, 16 + header_len, 8);
     if (start > frame.len or body_len != frame.len - start) return error.BadDbus;
+    for (frame[16 + header_len .. start]) |b| if (b != 0) return error.BadDbus;
     var reply: Reply = .{ .kind = frame[1], .serial = 0, .sender = "", .signature = "", .body = frame[start..] };
     var r: Reader = .{ .data = frame[0 .. 16 + header_len], .pos = 16 };
     var seen: u16 = 0;
@@ -157,15 +158,15 @@ fn parseReply(frame: []const u8) !Reply {
     }
     return reply;
 }
-fn readReply(fd: l.fd_t, buffer: []u8, serial: u32, sender: []const u8) !Reply {
+fn readReply(fd: l.fd_t, buffer: []u8, serial: u32, sender: []const u8, deadline: ipc.Deadline) !Reply {
     for (0..32) |_| {
-        try ipc.readExact(fd, buffer[0..16], 60000);
+        try deadline.read(fd, buffer[0..16]);
         const h = std.mem.readInt(u32, buffer[12..16], .little);
         const b = std.mem.readInt(u32, buffer[4..8], .little);
         if (h > 4096 or b > 8192) return error.DbusTooLarge;
         const length = std.mem.alignForward(usize, 16 + h, 8) + b;
         if (length > buffer.len) return error.DbusTooLarge;
-        try ipc.readExact(fd, buffer[16..length], 60000);
+        try deadline.read(fd, buffer[16..length]);
         const reply = try parseReply(buffer[0..length]);
         if (reply.kind == 4) continue;
         if (reply.serial != serial or !std.mem.eql(u8, reply.sender, sender)) return error.WrongDbusReply;
@@ -174,9 +175,9 @@ fn readReply(fd: l.fd_t, buffer: []u8, serial: u32, sender: []const u8) !Reply {
     }
     return error.TooManyBusSignals;
 }
-fn authLine(fd: l.fd_t, out: []u8) ![]const u8 {
+fn authLine(fd: l.fd_t, out: []u8, deadline: ipc.Deadline) ![]const u8 {
     for (0..out.len) |i| {
-        try ipc.readExact(fd, out[i..][0..1], 5000);
+        try deadline.read(fd, out[i..][0..1]);
         if (i > 0 and out[i] == '\n' and out[i - 1] == '\r') return out[0 .. i - 1];
     }
     return error.BadDbusAuth;
@@ -194,6 +195,8 @@ fn sendWithFd(fd: l.fd_t, bytes: []const u8, pidfd: l.fd_t) !void {
 }
 pub fn authorize(peer: ipc.Peer) !void {
     try peer.live();
+    // One budget for authentication, bus discovery, queued signals and the interactive authorization.
+    const deadline = try ipc.Deadline.after(15000);
     const fd = try ipc.unixConnect("/run/dbus/system_bus_socket");
     defer sys.close(fd);
     var uidbuf: [32]u8 = undefined;
@@ -208,19 +211,19 @@ pub fn authorize(peer: ipc.Peer) !void {
     try sys.writeAll(fd, encoded[0 .. uid.len * 2]);
     try sys.writeAll(fd, "\r\n");
     var line: [256]u8 = undefined;
-    if (!std.mem.startsWith(u8, try authLine(fd, &line), "OK ")) return error.BadDbusAuth;
+    if (!std.mem.startsWith(u8, try authLine(fd, &line, deadline), "OK ")) return error.BadDbusAuth;
     try sys.writeAll(fd, "NEGOTIATE_UNIX_FD\r\n");
-    if (!std.mem.eql(u8, try authLine(fd, &line), "AGREE_UNIX_FD")) return error.PidfdTransportRequired;
+    if (!std.mem.eql(u8, try authLine(fd, &line, deadline), "AGREE_UNIX_FD")) return error.PidfdTransportRequired;
     try sys.writeAll(fd, "BEGIN\r\n");
     var buffer: [16384]u8 = undefined;
     var request = try message(1, bus, "/org/freedesktop/DBus", bus, "Hello", "", "", false);
     try sys.writeAll(fd, request.bytes[0..request.len]);
-    _ = try readReply(fd, &buffer, 1, bus);
+    _ = try readReply(fd, &buffer, 1, bus, deadline);
     var name: Wire = .{};
     try name.string(authority);
     request = try message(2, bus, "/org/freedesktop/DBus", bus, "GetNameOwner", "s", name.bytes[0..name.len], false);
     try sys.writeAll(fd, request.bytes[0..request.len]);
-    const owner_reply = try readReply(fd, &buffer, 2, bus);
+    const owner_reply = try readReply(fd, &buffer, 2, bus, deadline);
     if (!std.mem.eql(u8, owner_reply.signature, "s")) return error.BadDbus;
     var rr: Reader = .{ .data = owner_reply.body };
     const owner = try rr.string(false);
@@ -231,7 +234,7 @@ pub fn authorize(peer: ipc.Peer) !void {
     const body = try authorizationBody(peer.credentials.uid);
     request = try message(3, expected, "/org/freedesktop/PolicyKit1/Authority", authority ++ ".Authority", "CheckAuthorization", "(sa{sv})sa{ss}us", body.bytes[0..body.len], true);
     try sendWithFd(fd, request.bytes[0..request.len], peer.pidfd);
-    const answer = try readReply(fd, &buffer, 3, expected);
+    const answer = try readReply(fd, &buffer, 3, expected, deadline);
     try authorizationResult(answer.signature, answer.body);
     try peer.live();
 }
@@ -272,4 +275,13 @@ test "appfilter polkit never treats malformed, challenged or denied replies as a
     try std.testing.expectError(error.OwnerAuthorizationRequired, authorizationResult("(bba{ss})", &reply));
     reply[4] = 2;
     try std.testing.expectError(error.BadDbus, authorizationResult("(bba{ss})", &reply));
+}
+test "appfilter polkit rejects nonzero header-to-body padding" {
+    var frame = try message(1, bus, "/", bus, "x", "s", "", false);
+    frame.bytes[1] = 2;
+    const end = 16 + std.mem.readInt(u32, frame.bytes[12..16], .little);
+    try std.testing.expect(end < std.mem.alignForward(usize, end, 8));
+    _ = try parseReply(frame.bytes[0..frame.len]);
+    frame.bytes[end] = 1;
+    try std.testing.expectError(error.BadDbus, parseReply(frame.bytes[0..frame.len]));
 }
