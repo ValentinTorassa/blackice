@@ -90,8 +90,8 @@ export default function Home() {
               for apps and tasks.
             </h1>
             <p className="lede">
-              Network rules for each app and each task, decided by a policy file. It runs headless, so nobody has to
-              answer a prompt.
+              Network rules for each app and each task, decided by a policy file. It runs headless, with no
+              per-connection prompts.
             </p>
             <p className="hero-status">
               Task scopes work today on macOS. The macOS app filter is built in its pull request and needs Developer ID
@@ -194,7 +194,10 @@ export default function Home() {
         </section>
 
         <section className="container section">
-          <h2 className="h2">Design</h2>
+          <div className="head-row">
+            <h2 className="h2">Design</h2>
+            <span className="badge">v0 design · verified for macOS task scopes only</span>
+          </div>
           <p className="sub">
             Each connection passes these layers in order. The first layer that refuses it stops it, and the decision
             writes a receipt.
