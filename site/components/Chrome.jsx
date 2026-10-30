@@ -1,7 +1,9 @@
 import Link from 'next/link';
 import { SITE } from '../content/site';
+import { DEMO } from '../content/demo';
 import { Logo, Wordmark } from './Icons';
 import NavLinks from './NavLinks';
+import DemoLangFlags from './DemoLangFlags';
 
 export { Logo };
 
@@ -38,7 +40,10 @@ export function Nav({ wide = false }) {
           <Wordmark />
           <span className="brand-tag">v0</span>
         </Link>
-        <NavLinks repo={SITE.repo} />
+        <div className="nav-right">
+          {DEMO.length > 1 ? <DemoLangFlags /> : null}
+          <NavLinks repo={SITE.repo} />
+        </div>
       </div>
     </header>
   );

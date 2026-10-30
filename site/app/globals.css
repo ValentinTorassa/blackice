@@ -59,6 +59,14 @@ code, pre, .mono { font-family: var(--mono); }
 .nav-links a { color: var(--fg-2); transition: color 0.15s; }
 .nav-links a:hover, .nav-links a.is-active { color: var(--fg); }
 .nav-gh { display: inline-flex; }
+.nav-right { display: flex; align-items: center; gap: 20px; }
+/* The demo's caption languages: Argentina for Spanish, the United States for English */
+.flags { display: inline-flex; align-items: center; gap: 2px; padding-right: 18px; border-right: 1px solid var(--line); }
+.flag-btn { display: grid; place-items: center; width: 34px; height: 28px; padding: 0; border: 1px solid transparent; border-radius: 8px; background: transparent; cursor: pointer; transition: background 0.15s, border-color 0.15s; }
+.flag-btn:hover { background: var(--bg-2); }
+.flag-btn[aria-pressed='true'] { border-color: var(--line-2); background: var(--bg-1); }
+.flag { display: inline-flex; flex: none; width: 21px; height: 14px; border-radius: 3px; overflow: hidden; box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.16); }
+.flag svg { display: block; width: 100%; height: 100%; }
 
 /* Hero */
 .hero { position: relative; isolation: isolate; padding: 120px 0 80px; overflow: hidden; }
@@ -174,7 +182,8 @@ h1 {
 .demo { margin: 32px 0 0; }
 .demo-video { display: block; width: 100%; max-width: 100%; aspect-ratio: 16 / 9; background: #000; }
 .demo-langs { display: inline-flex; gap: 4px; }
-.demo-lang { padding: 5px 9px; border: 1px solid var(--line); border-radius: 999px; background: transparent; color: var(--fg-3); font: 11px/1 var(--mono); cursor: pointer; }
+.demo-lang { display: inline-flex; align-items: center; gap: 6px; padding: 5px 9px; border: 1px solid var(--line); border-radius: 999px; background: transparent; color: var(--fg-3); font: 11px/1 var(--mono); cursor: pointer; }
+.demo-lang .flag { width: 15px; height: 10px; border-radius: 2px; }
 .demo-lang:hover { color: var(--fg); }
 .demo-lang[aria-pressed='true'] { color: var(--fg); border-color: var(--line-3); background: var(--bg-1); }
 
@@ -618,6 +627,11 @@ td p { margin: 8px 0 0; color: var(--fg-2); font-size: 14px; line-height: 1.55; 
 }
 @media (max-width: 640px) {
   .container { padding: 0 16px; }
+  .nav-right { gap: 12px; }
+  .nav-links { gap: 14px; }
+  .flags { padding-right: 10px; }
+  .flag-btn { width: 30px; }
+  .badge { height: auto; min-height: 26px; padding: 5px 10px; white-space: normal; line-height: 1.4; }
   .hero { padding: 76px 0 52px; }
   .br { display: none; }
   .command { height: auto; min-height: 46px; padding: 10px 8px 10px 14px; }
