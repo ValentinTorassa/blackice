@@ -11,8 +11,8 @@ blackice gives each app and each task on your machine its own network permission
 It runs natively on macOS and Linux, with no prompts for anyone to answer.
 
 Today it works for tasks: a command, such as one an AI agent runs, and everything that command starts. That is
-tested on macOS and on Debian 13, including inside fx's hook. For apps, the macOS app filter is built and waits
-for Developer ID signing, and the Linux app filter is designed and being built.
+tested on macOS and on Debian 13, and on macOS also inside fx's hook. For apps, the macOS app filter is built
+and waits for Developer ID signing, and the Linux app filter is designed and being built.
 
 ## Status
 
