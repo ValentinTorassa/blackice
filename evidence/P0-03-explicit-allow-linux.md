@@ -194,10 +194,10 @@ The same run also checked:
   - Exact names only: no wildcard rules, subnets or ports other than 80 and 443.
   - The proxy decides on the destination name and port. Content inside an allowed TLS connection is not
     inspected.
-- **The host.** This entry covers only this host. Ubuntu 23.10 and later set
-  `kernel.apparmor_restrict_unprivileged_userns=1`. There the helper's child gets no capabilities in its new
-  user namespace, so its private mounts fail and the scope fails closed before the command starts. Nothing here
-  shows a scope running there.
+- **The host.** This entry covers only this host. Ubuntu 24.04 and later set
+  `kernel.apparmor_restrict_unprivileged_userns=1` by default. There the helper's child gets no capabilities
+  in its new user namespace, so its private mounts fail and the scope fails closed before the command starts.
+  Nothing here shows a scope running there.
 - **Coverage.** x86_64 only; aarch64 Linux was not run. The helper was installed by the owner before the run.
   This run does not test the installation.
 - **The run.** One run, by the people building blackice, on the owner's machine. Not a recording.

@@ -108,8 +108,8 @@ scope).
   Unix-domain sockets with EPERM; the helper's unit test checks that. That refusal writes no receipt.
 - **Expiry.** A grant's expiry and the closing of live connections are P0-05, not shown here. The revoke came
   before the 2-minute grant ended.
-- **The host.** This entry covers only this host. On Ubuntu 23.10 and later
-  (`kernel.apparmor_restrict_unprivileged_userns=1`), a scope fails closed before the command starts.
+- **The host.** This entry covers only this host. On Ubuntu 24.04 and later, where
+  `kernel.apparmor_restrict_unprivileged_userns=1` is the default, a scope fails closed before the command starts.
 - **The run.** One run, by the people building blackice, on the owner's machine. Not a recording.
 
 **Date.** 2026-10-30, 13:31 UTC.

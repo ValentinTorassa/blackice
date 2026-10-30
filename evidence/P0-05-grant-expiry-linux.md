@@ -113,8 +113,8 @@ the expiry, and it is the one reset.
   the millisecond.
 - **Not shown here.** Revoking a grant is in the P0-04 Linux entry. A plain HTTP exchange cut by an expiry is
   covered by the proxy's unit tests. Neither is shown in this run.
-- **The host.** This entry covers only this host. On Ubuntu 23.10 and later
-  (`kernel.apparmor_restrict_unprivileged_userns=1`), a scope fails closed before the command starts.
+- **The host.** This entry covers only this host. On Ubuntu 24.04 and later, where
+  `kernel.apparmor_restrict_unprivileged_userns=1` is the default, a scope fails closed before the command starts.
 - **httpbingo.org.** It is a public test service. Its `/drip` endpoint paced the stream.
 - **The run.** One run, by the people building blackice, on the owner's machine. Not a recording.
 
