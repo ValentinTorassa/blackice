@@ -6,7 +6,7 @@ const sys = @import("../sys.zig");
 const l = sys.l;
 pub const enabled = @import("appfilter_build").vm_faults;
 const path = "/etc/blackice-appfilter/vm-reload-fault";
-pub const Mode = enum { none, after_validation, after_prepare, after_intent, stop_child, kill_child, invalid_policy, off_stopping };
+pub const Mode = enum { none, after_validation, after_prepare, after_intent, stop_child, kill_child, invalid_policy, off_stopping, after_stage };
 
 pub fn requireGuest() !void {
     if (!enabled) return;

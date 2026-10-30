@@ -230,7 +230,9 @@ The controller removes only its matching selector and leaves the recovered
 generation armed. It does not install a polkit rule or handle a password.
 
 The fault build can pause after added-app validation, after worker preparation,
-or after the fsynced intent but before kernel publication. A pause affects only
+after staging real next-generation map rows, or after the fsynced intent but
+before kernel publication. The staged-row case checks that recovery removes
+uncommitted future keys from both files and ports maps. A pause affects only
 the transaction thread, so the concurrent-request refuser remains testable.
 Pauses expire after 60 seconds and do not renew the five-second exchange budget.
 The controller covers both crash boundaries, child death, a stopped child (the

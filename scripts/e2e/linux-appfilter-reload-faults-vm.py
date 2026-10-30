@@ -29,7 +29,7 @@ assert os.geteuid()==0 and socket.gethostname()=='test3-vm'
 assert subprocess.check_output(['systemd-detect-virt'],text=True).strip() in ('qemu','kvm')
 op,pid,mode=sys.argv[1:]
 assert pid.isdecimal() and int(pid)>1
-assert mode in ('after_validation','after_prepare','after_intent','stop_child','kill_child','invalid_policy','off_stopping')
+assert mode in ('after_validation','after_prepare','after_stage','after_intent','stop_child','kill_child','invalid_policy','off_stopping')
 path='/etc/blackice-appfilter/vm-reload-fault'
 expected=(pid+' '+mode+'\n').encode()
 if op=='create':
@@ -60,7 +60,7 @@ def main():
     p.add_argument('--cli', type=Path, required=True)
     p.add_argument('--cli-sha256', required=True)
     p.add_argument('--fault-build-sha256', required=True)
-    p.add_argument('--mode', required=True, choices=('after_validation', 'after_prepare', 'after_intent', 'stop_child', 'kill_child', 'invalid_policy'))
+    p.add_argument('--mode', required=True, choices=('after_validation', 'after_prepare', 'after_stage', 'after_intent', 'stop_child', 'kill_child', 'invalid_policy'))
     p.add_argument('--current-policy', type=Path, required=True)
     p.add_argument('--next-policy', type=Path, required=True)
     p.add_argument('--output', type=Path, required=True)
@@ -103,7 +103,7 @@ def main():
         return vm.command(['sudo', '-n', 'journalctl', '--no-pager', '--after-cursor', cursor, '-o', 'cat', f'_PID={pid}'], timeout=3)
 
     def monitor():
-        paused = a.mode in ('after_validation', 'after_prepare', 'after_intent')
+        paused = a.mode in ('after_validation', 'after_prepare', 'after_stage', 'after_intent')
         marker = f'VM_RELOAD_PAUSE pid={pid} point={a.mode}' if paused else f'VM_RELOAD_FAULT pid={pid} mode={a.mode}'
         try:
             end = time.monotonic() + 65
@@ -123,6 +123,13 @@ def main():
                             response = s.recv(4096).decode()
                         vm.require('ChangeInProgress' in response, f'concurrent reload not refused: {response}')
                         report['concurrent_refusal'] = response.strip()
+                        if a.mode == 'after_stage':
+                            staged_maps = {}
+                            for name in ('files', 'ports'):
+                                entries = json.loads(vm.command(['sudo', '-n', 'bpftool', '-j', 'map', 'dump', 'pinned', vm.PIN + '/' + name]))
+                                vm.require(any(int.from_bytes(vm.decode_bytes(x['key'])[4:8], 'little') == generation + 1 for x in entries), 'fault did not leave real next-generation rows staged')
+                                staged_maps[name] = entries
+                            report['staged_maps_before_crash'] = staged_maps
                         if a.mode == 'after_validation':
                             app = subprocess.Popen(['/usr/bin/sleep', '60'])
                             race_processes.append(app)
@@ -173,6 +180,12 @@ def main():
         vm.require(vm.state_hash(state) == expected_hash, 'kernel does not follow committed intent')
         raw = vm.decode_bytes(state['value'])
         vm.require(int.from_bytes(raw[48:52], 'little') == expected_generation and raw[52:56] == bytes(4), 'wrong epoch or fence remains closed')
+        recovered_maps = {}
+        for name in ('files', 'ports'):
+            entries = json.loads(vm.command(['sudo', '-n', 'bpftool', '-j', 'map', 'dump', 'pinned', vm.PIN + '/' + name]))
+            vm.require(all(int.from_bytes(vm.decode_bytes(x['key'])[4:8], 'little') <= expected_generation for x in entries), 'uncommitted future rows survived recovery')
+            recovered_maps[name] = entries
+        report['maps_after_recovery'] = recovered_maps
         after = vm.command(['systemctl', 'show', UNIT, '-p', 'MainPID', '--value']).strip()
         vm.require((after == pid) == (a.mode in ('after_validation', 'invalid_policy')), 'unexpected restart behavior')
         time.sleep(0.2)

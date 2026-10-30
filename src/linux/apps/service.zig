@@ -693,6 +693,7 @@ const Runtime = struct {
         var maps = r.loaded.?.generationMaps();
         const image = try reload_maps.Image.fromSnapshot(r.install.owner_uid, &next.snapshot);
         const staged = try reload_maps.stage(&maps, &image);
+        try faults.pause(fault, .after_stage);
         var active = try r.loaded.?.getEpoch();
         active.fenced = 1;
         try r.loaded.?.setEpoch(active);
