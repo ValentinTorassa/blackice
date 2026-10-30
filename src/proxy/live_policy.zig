@@ -42,3 +42,24 @@ test "appfilter live view narrowing checks host port and the already selected ad
     try std.testing.expect(!permits(b, "example.com", 22, null));
     try std.testing.expect(!permits(b, "example.com", 443, .{ .ip4 = .loopback(443) }));
 }
+
+test "appfilter open connection recheck preserves widening and refuses mode port or subnet narrowing" {
+    const cases = .{
+        .{ "{\"mode\":\"allowlist\",\"allow\":[\"example.com\",\"other.example\"]}", true },
+        .{ "{\"mode\":\"allow-all\"}", true },
+        .{ "{\"mode\":\"deny-all\"}", false },
+        .{ "{\"mode\":\"allowlist\",\"allow\":[\"other.example\"]}", false },
+        .{ "{\"mode\":\"allowlist\",\"allow\":[\"example.com\"],\"ports\":[80]}", false },
+        .{ "{\"mode\":\"allowlist\",\"allow\":[\"example.com\"],\"subnets\":{\"deny\":[\"93.184.216.0/24\"]}}", false },
+    };
+    const connected_ip = policy.parseIpLiteral("93.184.216.34").?;
+    inline for (cases) |case| {
+        var p = try policy.Policy.parse(std.testing.allocator, "{\"version\":\"blackice.policy/v0\",\"network\":" ++ case[0] ++ "}", null);
+        defer p.deinit();
+        const b: Binding = .{ .policy = &p, .decision = .{ .policy = &p.digest_hex, .generation = 3 }, .executable = "/usr/bin/curl" };
+        try std.testing.expectEqual(case[1], permits(b, "example.com", 443, connected_ip));
+        var retired_after_restart = b;
+        retired_after_restart.serve = false;
+        try std.testing.expect(!permits(retired_after_restart, "example.com", 443, connected_ip));
+    }
+}

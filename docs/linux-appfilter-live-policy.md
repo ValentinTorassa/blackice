@@ -125,6 +125,14 @@ Scheduling and receipt I/O can add latency; this is not a real-time deadline.
 Data already received by the client cannot be recalled. Name-based routing still
 does not inspect encrypted HTTP content or eliminate domain fronting.
 
+The decided A3 behavior is **reset only newly refused connections**. Keeping a
+connection after the new policy refuses it is not an alternative in this design.
+This also applies to a mode change, such as allowlist to deny-all. Each reset
+receipt names the admitted host and the new generation; a still-allowed stream
+gets no reset receipt. Kernel connect decisions need no retroactive change:
+they run per `connect()`. The decision does not clear this branch for host use;
+security review remains pending.
+
 ## Receipts and bounds
 
 Service `policy_activated` carries the new `gen`, configuration `policy`, and full
@@ -207,6 +215,17 @@ then narrowing to reset only the removed hostname within one observed watchdog
 period, with exactly one `policy_narrowed` receipt at the new generation. The
 still-allowed stream must continue transferring body bytes. Remote HTTP errors
 and stalled endpoints fail the test; they are not enforcement evidence.
+
+Its `--websocket` variant uses two real TLS WebSocket echo streams instead:
+`httpbingo.org/websocket/echo` and `ws.postman-echo.com/raw`. The companion
+`linux-appfilter-websocket-client.py --direct --seconds 2` first checks both
+endpoints while the filter is off. The armed run dials a numeric destination,
+with each endpoint's exact SNI, and validates the HTTP 101 handshake and echoed
+messages. A single connection per host spans both reloads; the client never
+reconnects. It checks one `policy_changed` / `policy_narrowed` receipt for the
+removed host at generation 3, continued bytes for the kept host with no reset,
+and an unchanged process tag. Explicit HTTP CONNECT is refused by the app
+filter's transparent HTTP listener, so this case uses WebSocket over TLS.
 
 The reviewed unit restarts failures with a one-to-60-second backoff over five
 steps. `StartLimitIntervalSec=600` / `StartLimitBurst=60` is a backstop; successful
