@@ -16,7 +16,7 @@ On a Mac with Command Line Tools:
 ```
 
 No packages or network downloads are required. The scripts use `xcrun swiftc`,
-the macOS SDK and system frameworks. They target the current architecture and
+the macOS SDK and system frameworks, plus system Python 3 for output-path checks. They target the current architecture and
 macOS 13.0 or later (source-process audit tokens require macOS 13). Compilation
 uses Swift 5 language mode on the installed Swift compiler, with warnings as
 errors. This deployment target is not a claim of runtime qualification on every
@@ -25,7 +25,9 @@ macOS release.
 `build.sh [output-directory]` requires a fresh app output path, so it cannot
 accidentally preserve profiles or signatures from a previous signed build.
 `test.sh [output-directory]` runs a standalone test executable; XCTest and full
-Xcode are unnecessary. Build products are ignored by Git.
+Xcode are unnecessary. Build products are ignored by Git. Build/test output paths must belong to the
+current user and have no group/other write permission; unsafe pre-existing paths
+are rejected. Use a private `mktemp -d` workspace for signing and evidence.
 
 The output is:
 
@@ -115,8 +117,9 @@ Generate and validate a configuration:
 
 ```sh
 APP=./macos/build/Blackice.app/Contents/MacOS/BlackiceApp
-"$APP" make-config ./macos/Examples/deny-all.json ABCDE12345 com.example.probe app-probe allow ip-only > /tmp/apps.json
-"$APP" validate /tmp/apps.json
+CONFIG_WORK="$(mktemp -d /private/tmp/blackice-config.XXXXXX)"
+"$APP" make-config ./macos/Examples/deny-all.json ABCDE12345 com.example.probe app-probe allow ip-only > "$CONFIG_WORK/apps.json"
+"$APP" validate "$CONFIG_WORK/apps.json"
 ```
 
 The Team ID and signing identifier above are synthetic; substitute a real signed
@@ -412,21 +415,29 @@ security review must finish before the owner runs the following manual recipe.
 `build.sh` and `test.sh` never invoke the signing script.
 
 ```sh
-./macos/build.sh /private/tmp/blackice-sign-input
-./macos/test.sh /private/tmp/blackice-sign-tests
+SIGNING_WORK="$(mktemp -d /private/tmp/blackice-sign.XXXXXX)"
+./macos/build.sh "$SIGNING_WORK/build"
+./macos/test.sh "$SIGNING_WORK/tests"
 ./macos/sign-notarize.sh \
   --team-id TEAM_ID \
   --identity 'Developer ID Application: OWNER NAME (TEAM_ID)' \
   --host-profile /absolute/path/Blackice-Host.provisionprofile \
   --extension-profile /absolute/path/Blackice-Filter.provisionprofile \
   --keychain-profile blackice-notary \
-  --app /private/tmp/blackice-sign-input/Blackice.app \
-  --output /private/tmp/blackice-notarized
+  --app "$SIGNING_WORK/build/Blackice.app" \
+  --output "$SIGNING_WORK/notarized"
 ```
 
 Replace the placeholders with the enrolled identity and downloaded profiles.
 Input build and output directories must be fresh; the signing output must be
-outside the checkout. The shell entry point uses the Command Line Tools'
+outside the checkout. Never reuse a predictable shared temporary directory. The
+script rejects an input app, any node in its tree, or its parent when owned by
+another user or writable by group/others; symlinks and hard-linked files also
+reject. Its output parent receives the same ownership/permission checks. It
+prints both staged executable SHA-256 values before signing and saves them in
+`unsigned-executable-sha256.json`. These checks prevent substitution by another
+local account; they do not protect against a malicious process already running
+as the signing user. The shell entry point uses the Command Line Tools'
 `/usr/bin/python3` and only system signing/notarization tools. It accepts no
 password or API key parameter and strips inherited credential environment
 variables from its tool invocations. Notary authentication uses only
@@ -542,8 +553,9 @@ foreground URLSession with a stable signing identifier,
 small Service/Telemetry window. Build it without signing or opening it:
 
 ```sh
-./macos/build-probe.sh /private/tmp/blackice-probe-build
-./macos/test-probe.sh /private/tmp/blackice-probe-tests
+PROBE_WORK="$(mktemp -d /private/tmp/blackice-probe.XXXXXX)"
+./macos/build-probe.sh "$PROBE_WORK/build"
+./macos/test-probe.sh "$PROBE_WORK/tests"
 ```
 
 Its source is prepared; the Mac was unreachable for compilation and execution.
@@ -553,6 +565,7 @@ HTTP/3 limitation, safe CLI input checks, exact policy-generation command and
 later Developer ID signing recipe. No probe window or network request has been
 run during preparation.
 
+The [example index](../macos/Examples/README.md) names each app explicitly.
 Use `probe-service-only.json` for the probe's service host and
 `netnewswire-feeds.json` as the starting policy for NetNewsWire, the first native
 URLSession candidate. Bind each by its actual Team ID plus signing identifier;
@@ -596,9 +609,37 @@ For a signed, installed filter, the exact recovery command is:
 ```
 
 Approve its Touch ID/password request locally. It needs no DNS or network access.
-If also removing the saved configuration or extension, use `remove-config` and
-`deactivate`, each with its own approval, as described above. No such command was
-run during this preparation. With `unmatched: allow`, an app can still delegate
+To deactivate the extension itself, run:
+
+```sh
+/Applications/Blackice.app/Contents/MacOS/BlackiceApp deactivate
+```
+
+Honor any restart request and check `systemextensionsctl list` afterwards.
+`remove-config` separately removes saved preferences. Apple documents
+[deactivation requests and installed-extension inspection](https://developer.apple.com/documentation/systemextensions/installing-system-extensions-and-drivers).
+These recovery operations must be tested locally on the isolated demo Mac before
+any test that might cut off remote access.
+
+If the host is unusable, local macOS Recovery is the emergency investigation
+route. **Recovery-mode removal is not yet qualified on this Mac.** Check the
+available `systemextensionsctl` help/man page and whether it can inspect the
+installed macOS volume. The targeted removal syntax, where supported, is:
+
+```sh
+systemextensionsctl list
+systemextensionsctl uninstall TEAM_ID com.valentorassa.blackice.filter
+```
+
+Replace `TEAM_ID` with the enrolled identity shown by the list; verify that the
+listed target belongs to the affected installation before removal. Apple
+[documents this targeted uninstall form](https://developer.apple.com/documentation/pcidriverkit/connecting-a-network-driver)
+but that does not establish support in every Recovery environment. If the tool
+is absent, cannot see the installed volume, or demands a security-policy change,
+stop and obtain the OS-specific recovery procedure. Do not use a global reset,
+manually delete the system-extension database, or disable SIP as a generic
+fallback. No recovery command, restart or security-setting change was performed
+in this preparation. With `unmatched: allow`, an app can still delegate
 to an unbound helper; this is not process-tree confinement.
 
 ### Change a policy without restarting the provider
@@ -610,17 +651,20 @@ installs a validated snapshot. This behavior is source/unit-test verified;
 live delivery to a signed provider remains untested.
 
 After the probe's generation-1 configuration from its README is active, add the
-previously excluded test host for generation 2. Start from the original policy
-bytes, then embed the edited file with its new hash:
+previously excluded test host for generation 2. Keep `PROBE_WORK` from the probe
+README's private workspace, which holds `apps.json`; use a fresh workspace for
+the edited policy and candidate configuration:
 
 ```sh
-jq '.network.allow += ["httpbingo.org"]' macos/Examples/probe-service-only.json > /private/tmp/blackice-probe-next-policy.json
-jq --rawfile policy /private/tmp/blackice-probe-next-policy.json \
-  --arg sha "$(shasum -a 256 /private/tmp/blackice-probe-next-policy.json | awk '{print $1}')" \
+: "${PROBE_WORK:?Use the private probe workspace that contains apps.json}"
+POLICY_WORK="$(mktemp -d /private/tmp/blackice-policy.XXXXXX)"
+jq '.network.allow += ["httpbingo.org"]' macos/Examples/probe-service-only.json > "$POLICY_WORK/next-policy.json"
+jq --rawfile policy "$POLICY_WORK/next-policy.json" \
+  --arg sha "$(shasum -a 256 "$POLICY_WORK/next-policy.json" | awk '{print $1}')" \
   '.generation += 1 | .apps |= map(if .scope == "app-probe" then .policy_json = $policy | .policy_sha256 = $sha else . end)' \
-  /private/tmp/blackice-probe-apps.json > /private/tmp/blackice-probe-apps-next.json
-/Applications/Blackice.app/Contents/MacOS/BlackiceApp validate /private/tmp/blackice-probe-apps-next.json
-/Applications/Blackice.app/Contents/MacOS/BlackiceApp enable /private/tmp/blackice-probe-apps-next.json
+  "$PROBE_WORK/apps.json" > "$POLICY_WORK/apps-next.json"
+/Applications/Blackice.app/Contents/MacOS/BlackiceApp validate "$POLICY_WORK/apps-next.json"
+/Applications/Blackice.app/Contents/MacOS/BlackiceApp enable "$POLICY_WORK/apps-next.json"
 ```
 
 For any later update, choose a generation greater than the currently saved one.
@@ -649,11 +693,11 @@ confirmed only linker ad hoc signing with no Team ID. No activation or live
 enforcement test was performed.
 
 The `appfilter/demo-prep` replay onto main `5f84f67` preserves the existing filter/host
-Swift, resources, `build.sh`, `test.sh` and Swift tests byte-for-byte. The probe is
-a separate, newly added target. The Mac was unreachable for a fresh run, so the
+Swift, resources and Swift tests byte-for-byte. Build/test entry points now check
+output ownership and permissions. The probe is a separate, newly added target. The Mac was unreachable for a fresh run, so the
 351-assertion/build result above remains prior
-validation of identical source. The new signing preparation has eight passing
-offline Python tests. The example wrapper's original-byte hashes and `jq` stream
+validation of identical source. The signing/path preparation has thirteen passing
+offline Python tests, including shared-path and wrong-owner rejection. The example wrapper's original-byte hashes and `jq` stream
 parser were checked locally; the stream input was synthetic, not a captured provider receipt. Host
 validation of the samples, compiling/running the new probe and its Swift tests,
 and signing with actual Apple profiles remain pending. No credentials or keychain

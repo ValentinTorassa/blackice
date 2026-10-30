@@ -1,5 +1,6 @@
 #!/bin/bash
 set -euo pipefail
+umask 022
 MACOS_SOURCE_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 if [[ "$(uname -s)" != Darwin ]]; then
     echo 'Run these tests on macOS with Command Line Tools.' >&2
@@ -7,6 +8,7 @@ if [[ "$(uname -s)" != Darwin ]]; then
 fi
 if [[ $# -gt 1 ]]; then echo 'usage: macos/test.sh [output-directory]' >&2; exit 1; fi
 TEST_DIR="${1:-$MACOS_SOURCE_DIR/build/tests}"
+TEST_DIR="$(/usr/bin/python3 -I "$MACOS_SOURCE_DIR/Signing/private_paths.py" directory "$TEST_DIR")"
 mkdir -p "$TEST_DIR/module-cache"
 xcrun swiftc -sdk "$(xcrun --sdk macosx --show-sdk-path)" \
     -target "$(uname -m)-apple-macosx13.0" -swift-version 5 -warnings-as-errors -module-name BlackiceFilter \

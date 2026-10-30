@@ -1,6 +1,7 @@
 #!/bin/bash
 # Tests parsing and evidence classification only. Never starts the app/window.
 set -euo pipefail
+umask 022
 PROBE_SOURCE_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 if [[ "$(uname -s)" != Darwin ]]; then
     echo 'Run probe tests on macOS with Command Line Tools.' >&2
@@ -8,6 +9,7 @@ if [[ "$(uname -s)" != Darwin ]]; then
 fi
 if [[ $# -gt 1 ]]; then echo 'usage: macos/test-probe.sh [output-directory]' >&2; exit 1; fi
 PROBE_TEST_DIR="${1:-$PROBE_SOURCE_DIR/build/probe-tests}"
+PROBE_TEST_DIR="$(/usr/bin/python3 -I "$PROBE_SOURCE_DIR/Signing/private_paths.py" directory "$PROBE_TEST_DIR")"
 mkdir -p "$PROBE_TEST_DIR/module-cache"
 xcrun swiftc -sdk "$(xcrun --sdk macosx --show-sdk-path)" \
     -target "$(uname -m)-apple-macosx13.0" -swift-version 5 -warnings-as-errors \

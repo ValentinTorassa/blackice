@@ -3,11 +3,13 @@ from datetime import datetime, timezone
 import hashlib
 import importlib.util
 import json
+import os
 from pathlib import Path
 import plistlib
 import subprocess
 import tempfile
 import unittest
+from unittest import mock
 
 MACOS = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location("signing", MACOS / "Signing/sign_notarize.py")
@@ -32,6 +34,24 @@ def profile(bundle_id):
 
 def template(role):
     return plistlib.loads((MACOS / "Resources" / (role + ".entitlements")).read_bytes())
+
+
+def bundle(directory):
+    app = Path(directory) / "Blackice.app"
+    for relative, role, executable in [(Path("."), "Host", "BlackiceApp"),
+                                       (signing.EXTENSION, "Filter", "BlackiceFilter")]:
+        contents = app / relative / "Contents"
+        (contents / "MacOS").mkdir(parents=True)
+        info = contents / "Info.plist"
+        info.write_bytes((MACOS / "Resources" / (role + "-Info.plist")).read_bytes())
+        info.chmod(0o644)
+        binary = contents / "MacOS" / executable
+        binary.write_bytes(b"synthetic, never executed")
+        binary.chmod(0o755)
+    for path in [app, *app.rglob("*")]:
+        if path.is_dir():
+            path.chmod(0o755)
+    return app
 
 
 class SigningTests(unittest.TestCase):
@@ -81,24 +101,87 @@ class SigningTests(unittest.TestCase):
 
     def test_fresh_build_layout_only(self):
         with tempfile.TemporaryDirectory() as directory:
-            app = Path(directory) / "Blackice.app"
-            for relative, role, executable in [(Path("."), "Host", "BlackiceApp"),
-                                                (signing.EXTENSION, "Filter", "BlackiceFilter")]:
-                contents = app / relative / "Contents"
-                (contents / "MacOS").mkdir(parents=True)
-                (contents / "Info.plist").write_bytes((MACOS / "Resources" / (role + "-Info.plist")).read_bytes())
-                binary = contents / "MacOS" / executable
-                binary.write_bytes(b"synthetic, never executed")
-                binary.chmod(0o755)
+            app = bundle(directory)
             signing.validate_bundle(app)
             extra = app / "Contents/embedded.provisionprofile"
             extra.write_bytes(b"old profile")
+            extra.chmod(0o644)
             with self.assertRaises(ValueError):
                 signing.validate_bundle(app)
             extra.unlink()
             extra.symlink_to("Info.plist")
             with self.assertRaises(ValueError):
                 signing.validate_bundle(app)
+
+    def test_bundle_and_parent_reject_writable_modes_or_wrong_owner(self):
+        with tempfile.TemporaryDirectory() as directory:
+            app = bundle(directory)
+            for path in [Path(directory), app, app / "Contents", app / "Contents/MacOS/BlackiceApp",
+                         app / signing.EXTENSION / "Contents/Info.plist"]:
+                original = path.stat().st_mode & 0o777
+                try:
+                    for extra_write in [0o020, 0o002]:
+                        path.chmod(original | extra_write)
+                        with self.subTest(path=path.name, bits=extra_write), self.assertRaises(ValueError):
+                            signing.validate_bundle(app)
+                finally:
+                    path.chmod(original)
+            with mock.patch.object(signing.paths.os, "geteuid", return_value=os.geteuid() + 1):
+                with self.assertRaises(ValueError):
+                    signing.validate_bundle(app)
+            signing.validate_bundle(app)
+
+    def test_hard_linked_executable_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            app = bundle(directory)
+            os.link(app / "Contents/MacOS/BlackiceApp", Path(directory) / "extra-link")
+            with self.assertRaises(ValueError):
+                signing.validate_bundle(app)
+
+    def test_private_build_directory_rejects_planted_shared_parent(self):
+        with tempfile.TemporaryDirectory() as directory:
+            parent = Path(directory)
+            result = signing.paths.prepare_directory(parent / "build/tests")
+            self.assertEqual(result.stat().st_mode & 0o777, 0o700)
+            self.assertEqual(signing.paths.prepare_directory(result), result)
+            shared = parent / "planted"
+            shared.mkdir()
+            shared.chmod(0o777)
+            with self.assertRaises(ValueError):
+                signing.paths.prepare_directory(shared / "new-build")
+            self.assertFalse((shared / "new-build").exists())
+            self.assertEqual(shared.stat().st_mode & 0o777, 0o777)
+            alias = parent / "alias"
+            alias.symlink_to(result)
+            with self.assertRaises(ValueError):
+                signing.paths.prepare_directory(alias)
+
+    def test_unsigned_executable_hashes_cover_both_binaries(self):
+        with tempfile.TemporaryDirectory() as directory:
+            app = bundle(directory)
+            hashes = signing.executable_hashes(app)
+            self.assertEqual(len(hashes), 2)
+            self.assertEqual(set(hashes.values()), {hashlib.sha256(b"synthetic, never executed").hexdigest()})
+
+    def test_unsafe_input_or_output_stops_before_any_native_tool(self):
+        with tempfile.TemporaryDirectory() as directory:
+            app = bundle(directory)
+            output_parent = Path(directory) / "release"
+            output_parent.mkdir(mode=0o700)
+            arguments = ["sign-notarize", "--team-id", TEAM, "--identity", IDENTITY,
+                         "--host-profile", "unused-host-profile", "--extension-profile", "unused-filter-profile",
+                         "--keychain-profile", "synthetic-profile", "--app", str(app),
+                         "--output", str(output_parent / "new-output")]
+            for path, original in [(app, 0o755), (output_parent, 0o700)]:
+                path.chmod(0o777)
+                try:
+                    with mock.patch("sys.argv", arguments), mock.patch.object(signing.platform, "system", return_value="Darwin"), \
+                         mock.patch.object(signing, "run") as native:
+                        with self.assertRaises(ValueError):
+                            signing.main()
+                        native.assert_not_called()
+                finally:
+                    path.chmod(original)
 
     def exercise_pipeline(self, status="Accepted", fail_at=None):
         temporary = tempfile.TemporaryDirectory()

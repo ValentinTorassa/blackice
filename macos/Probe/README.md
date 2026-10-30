@@ -14,16 +14,19 @@ unverified.
 Build and test with Command Line Tools, without launching a window:
 
 ```sh
-./macos/build-probe.sh /private/tmp/blackice-probe-build
-./macos/test-probe.sh /private/tmp/blackice-probe-tests
-/private/tmp/blackice-probe-build/BlackiceProbe.app/Contents/MacOS/BlackiceProbe --help
-/private/tmp/blackice-probe-build/BlackiceProbe.app/Contents/MacOS/BlackiceProbe --check https://example.com/ https://httpbingo.org/status/200
+PROBE_WORK="$(mktemp -d /private/tmp/blackice-probe.XXXXXX)"
+./macos/build-probe.sh "$PROBE_WORK/build"
+./macos/test-probe.sh "$PROBE_WORK/tests"
+"$PROBE_WORK/build/BlackiceProbe.app/Contents/MacOS/BlackiceProbe" --help
+"$PROBE_WORK/build/BlackiceProbe.app/Contents/MacOS/BlackiceProbe" --check https://example.com/ https://httpbingo.org/status/200
 ```
 
 These are separate targets; `build.sh` and `test.sh` still build/test only the
 filter and host. `test-probe.sh` tests argument rejection and transport-result
 classification without AppKit, networking, authentication or filter operations.
-Neither build script calls `codesign` or runs the probe.
+Neither build script calls `codesign` or runs the probe. Output directories must
+belong to the current user and must not be group/other-writable. Keep this shell
+and `PROBE_WORK` for the configuration step; do not substitute a shared path.
 
 After the signed-run gate, the CLI makes two or three sequential requests:
 
@@ -66,8 +69,9 @@ After obtaining the real Team ID, use the unsigned host's read-only `make-config
 command to embed `probe-service-only.json` exactly:
 
 ```sh
-./macos/build/Blackice.app/Contents/MacOS/BlackiceApp make-config macos/Examples/probe-service-only.json TEAM_ID com.valentorassa.blackice.probe app-probe allow os-metadata > /private/tmp/blackice-probe-apps.json
-./macos/build/Blackice.app/Contents/MacOS/BlackiceApp validate /private/tmp/blackice-probe-apps.json
+: "${PROBE_WORK:?Run the private-workspace setup above}"
+./macos/build/Blackice.app/Contents/MacOS/BlackiceApp make-config macos/Examples/probe-service-only.json TEAM_ID com.valentorassa.blackice.probe app-probe allow os-metadata > "$PROBE_WORK/apps.json"
+./macos/build/Blackice.app/Contents/MacOS/BlackiceApp validate "$PROBE_WORK/apps.json"
 ```
 
 Replace `TEAM_ID` with the enrolled ten-character ID; the literal placeholder
@@ -99,12 +103,15 @@ only; this separate ordinary app has the following owner-operated recipe.
 These commands have **not** been run:
 
 ```sh
-./macos/build-probe.sh /private/tmp/blackice-probe-release
-PROBE_APP=/private/tmp/blackice-probe-release/BlackiceProbe.app
+PROBE_SIGN_WORK="$(mktemp -d /private/tmp/blackice-probe-sign.XXXXXX)"
+./macos/build-probe.sh "$PROBE_SIGN_WORK/build"
+PROBE_APP="$PROBE_SIGN_WORK/build/BlackiceProbe.app"
+/usr/bin/python3 -I macos/Signing/private_paths.py tree "$PROBE_APP"
+shasum -a 256 "$PROBE_APP/Contents/MacOS/BlackiceProbe"
 /usr/bin/codesign --force --options runtime --timestamp --sign 'Developer ID Application: OWNER NAME (TEAM_ID)' "$PROBE_APP"
 /usr/bin/codesign --verify --strict --deep "$PROBE_APP"
-/usr/bin/ditto -c -k --keepParent "$PROBE_APP" /private/tmp/blackice-probe-release/submission.zip
-xcrun notarytool submit /private/tmp/blackice-probe-release/submission.zip --keychain-profile blackice-notary --wait
+/usr/bin/ditto -c -k --keepParent "$PROBE_APP" "$PROBE_SIGN_WORK/submission.zip"
+xcrun notarytool submit "$PROBE_SIGN_WORK/submission.zip" --keychain-profile blackice-notary --wait
 ```
 
 Only after the response explicitly says `Accepted`, staple and verify:
@@ -114,7 +121,7 @@ xcrun stapler staple "$PROBE_APP"
 /usr/bin/codesign --verify --strict --deep "$PROBE_APP"
 /usr/sbin/spctl -a -vv --type execute "$PROBE_APP"
 xcrun stapler validate "$PROBE_APP"
-/usr/bin/ditto -c -k --keepParent "$PROBE_APP" /private/tmp/blackice-probe-release/BlackiceProbe-notarized.zip
+/usr/bin/ditto -c -k --keepParent "$PROBE_APP" "$PROBE_SIGN_WORK/BlackiceProbe-notarized.zip"
 ```
 
 Stop on any failed command. The final archive is made after stapling. Installation
@@ -123,5 +130,8 @@ and opening the window are separate later owner actions; this recipe does neithe
 Recovery from an active filter is the signed host command
 `/Applications/Blackice.app/Contents/MacOS/BlackiceApp disable`, with local
 Touch ID/password approval. Keep a local terminal available for evidence runs.
-See [the filter guide](../../docs/macos-app-filter.md) for removal/deactivation
-and the existing-flow, helper, DNS and provider-downtime limits.
+To deactivate the extension itself, use
+`/Applications/Blackice.app/Contents/MacOS/BlackiceApp deactivate`. See
+[the filter guide](../../docs/macos-app-filter.md#defaults-and-recovery) for the
+targeted `systemextensionsctl` fallback, the unverified Recovery-mode limit, and
+the existing-flow, helper, DNS and provider-downtime limits.

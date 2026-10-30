@@ -1,6 +1,7 @@
 #!/bin/bash
 # Command Line Tools only. No download, installation, activation or identity signing.
 set -euo pipefail
+umask 022
 MACOS_SOURCE_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 if [[ "$(uname -s)" != Darwin ]]; then
     echo 'Build on macOS with the Command Line Tools installed.' >&2
@@ -14,12 +15,11 @@ BUILD_DIR="${1:-$MACOS_SOURCE_DIR/build}"
 SDK_PATH="$(xcrun --sdk macosx --show-sdk-path)"
 BUILD_ARCH="$(uname -m)"
 case "$BUILD_ARCH" in arm64|x86_64) ;; *) echo 'Unsupported build architecture' >&2; exit 1 ;; esac
-mkdir -p "$BUILD_DIR"
-BUILD_DIR="$(cd -- "$BUILD_DIR" && pwd)"
+BUILD_DIR="$(/usr/bin/python3 -I "$MACOS_SOURCE_DIR/Signing/private_paths.py" directory "$BUILD_DIR")"
 APP_DIR="$BUILD_DIR/Blackice.app"
 EXTENSION_DIR="$APP_DIR/Contents/Library/SystemExtensions/com.valentorassa.blackice.filter.systemextension"
 # Do not leave an old signed bundle/provisioning profile under a fresh unsigned build.
-if [[ -e "$APP_DIR" ]]; then
+if [[ -e "$APP_DIR" || -L "$APP_DIR" ]]; then
     echo 'Output app already exists; choose a fresh build directory.' >&2
     exit 1
 fi

@@ -7,6 +7,7 @@ wholesale: only the two reviewed capability sets below are claimed.
 import argparse
 from datetime import datetime, timezone
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -26,6 +27,9 @@ INSTALL_KEY = "com.apple.developer.system-extension.install"
 TEAM_KEY = "com.apple.developer.team-identifier"
 APP_KEY = "com.apple.application-identifier"
 SOURCE = Path(__file__).resolve().parents[1]
+_paths_spec = importlib.util.spec_from_file_location("blackice_private_paths", SOURCE / "Signing/private_paths.py")
+paths = importlib.util.module_from_spec(_paths_spec)
+_paths_spec.loader.exec_module(paths)
 
 
 def require(condition, message):
@@ -86,6 +90,7 @@ def make_entitlements(profile, template, team, bundle_id, fingerprint, now=None)
 
 
 def validate_bundle(app):
+    paths.checked_tree(app)
     files = {
         Path("Contents/Info.plist"), Path("Contents/MacOS/BlackiceApp"),
         EXTENSION / "Contents/Info.plist", EXTENSION / "Contents/MacOS/BlackiceFilter",
@@ -114,6 +119,12 @@ def validate_bundle(app):
         metadata.append((info.get("CFBundleVersion"), info.get("CFBundleShortVersionString")))
     require(metadata[0] == metadata[1] and all(isinstance(v, str) and v for v in metadata[0]),
             "host and extension versions must match")
+
+
+def executable_hashes(app):
+    return {str(relative): hashlib.sha256((app / relative).read_bytes()).hexdigest() for relative in [
+        Path("Contents/MacOS/BlackiceApp"), EXTENSION / "Contents/MacOS/BlackiceFilter",
+    ]}
 
 
 def run(arguments, *, environment, capture=False):
@@ -169,6 +180,7 @@ def main():
     repository = SOURCE.parent
     require(output != repository and repository not in output.parents, "output must be outside the source repository")
     require(not output.exists() and output.parent.is_dir(), "output must be new, with an existing parent directory")
+    paths.checked_directory(output.parent)
     require(output != app and app not in output.parents, "output cannot be inside the input app")
     # Tools only see the OS user environment needed for the keychain and temp
     # files. Inherited Apple passwords, API keys and unrelated tokens are absent.
@@ -201,6 +213,10 @@ def main():
         signed_app = output / "Blackice.app"
         shutil.copytree(app, signed_app)
         validate_bundle(signed_app)
+        hashes = executable_hashes(signed_app)
+        (output / "unsigned-executable-sha256.json").write_text(json.dumps(hashes, sort_keys=True, indent=2) + "\n")
+        for relative, digest in hashes.items():
+            print("Unsigned executable SHA-256: " + digest + "  " + relative, flush=True)
         entitlement_paths = []
         for role, target, profile, values in zip(["Host", "Filter"], [signed_app, signed_app / EXTENSION], profiles, entitlements):
             shutil.copyfile(profile, target / "Contents/embedded.provisionprofile")
