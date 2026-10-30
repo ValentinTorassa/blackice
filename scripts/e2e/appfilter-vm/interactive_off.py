@@ -23,11 +23,27 @@ import time
 PROMPT = re.compile(rb"password[^\n]*:\s*$", re.I)
 IDENTITY = re.compile(rb"Choose identity to authenticate as \(1-(\d+)\):\s*$")
 IDENTITY_ROW = re.compile(rb"^\s*(\d+)\.\s+(.*?)\s*$", re.M)
-STTY = "stty -a | tr ' ;' '\\n\\n' | grep -x -e echo -e -echo | sed 's/^/{tag}=/'"
+CSI = re.compile(rb"\x1b\[[0-9;?]*[A-Za-z]")
+# The typed form of every marker differs from its output (`ST""TY` prints `STTY`), so the terminal's echo of a
+# typed line, even when it wraps, can never match an output line.
+STTY = "stty -a | tr ' ;' '\\n\\n' | grep -x -e echo -e -echo | sed \"s/^/{head}\"\"{tail}=/\""
 
 
-def line(tag):
-    return re.compile(rb"(?m)^" + re.escape(tag.encode()) + rb"=?([^\r\n]*)\r?$")
+def stty_cmd(tag):
+    return STTY.format(head=tag[:-2], tail=tag[-2:])
+
+
+def typed(tag):
+    return f'{tag[:-1]}""{tag[-1]}'
+
+
+def clean(data):
+    return CSI.sub(b"", data)
+
+
+def line(tag, value=rb"[^\r\n]*"):
+    """An output line `TAG` or `TAG=value`, at the start of a line (after removing terminal escapes)."""
+    return re.compile(rb"(?:^|[\r\n])" + re.escape(tag.encode()) + rb"(?:=(" + value + rb"))?\r?\n")
 
 
 class Pty:
@@ -51,11 +67,11 @@ class Pty:
     def until(self, regex, start, timeout):
         end = time.time() + timeout
         while time.time() < end and not self.eof:
-            m = regex.search(self.buf, start)
+            m = regex.search(clean(self.buf[start:]))
             if m:
                 return m
             self.pump(0.2)
-        return regex.search(self.buf, start)
+        return regex.search(clean(self.buf[start:]))
 
     def send(self, data):
         os.write(self.fd, data)
@@ -97,22 +113,22 @@ def no_tty(args):
 def interactive(args, password, wrong):
     tok = "AFTEST-T-" + secrets.token_hex(6)
     s = Pty([args.vssh, "-t"])  # an interactive login shell, as a person would get
-    s.send(("export LC_ALL=C; " + STTY.format(tag="AFTEST-STTY0") + "; echo AFTEST-READY\n").encode())
+    s.send(("export LC_ALL=C; " + stty_cmd("AFTEST-STTY0") + f"; echo {typed('AFTEST-READY')}\n").encode())
     ready = s.until(line("AFTEST-READY"), 0, 30)
     events, sent, prompts, probe, probe_thread = [], [], 0, {}, None
     if not ready:
         events.append({"event": "shell not ready"})
     mark = len(s.buf)
     target = "pkexec true" if args.attempt == "pkexec" else f"{args.prefix}{args.cli} app off"
-    command = f"{target}; echo AFTEST-RC=$?"
+    command = f"{target}; echo {typed('AFTEST-RC')}=$?"
     s.send((command + "\n").encode())
     t_cmd = time.time()
-    rc_re = line("AFTEST-RC")
+    rc_re = line("AFTEST-RC", rb"\d+")
     rc = None
     while time.time() - t_cmd < args.limit and not s.eof:
-        m = rc_re.search(s.buf, mark)
+        m = rc_re.search(clean(s.buf[mark:]))
         if m:
-            rc = int(m.group(1)) if m.group(1).isdigit() else m.group(1).decode(errors="replace")
+            rc = int(m.group(1))
             break
         s.pump(0.3)
         tail = s.buf[mark:]
@@ -154,9 +170,9 @@ def interactive(args, password, wrong):
         s.send(b"\x03")
         time.sleep(1)
     after = len(s.buf)
-    s.send((STTY.format(tag="AFTEST-STTY") + "\n").encode())
+    s.send((stty_cmd("AFTEST-STTY") + "\n").encode())
     s.send(f"true {tok}\n".encode())
-    s.send(b"echo AFTEST-END\n")
+    s.send(f"echo {typed('AFTEST-END')}\n".encode())
     s.until(line("AFTEST-END"), after, 20)
     s.send(b"exit\n")
     session_exit = s.close()
@@ -165,8 +181,8 @@ def interactive(args, password, wrong):
     text = s.buf
     for secret in (password.encode(), wrong.encode()):
         text = text.replace(secret, b"[scrubbed]")
-    stty0 = line("AFTEST-STTY0").search(text)
-    stty1 = line("AFTEST-STTY").search(text, after)
+    stty0 = line("AFTEST-STTY0", rb"-?echo").search(clean(text))
+    stty1 = line("AFTEST-STTY", rb"-?echo").search(clean(text[after:]))
     text_after = text[after:]
     result = {
         "attempt": args.attempt, "command": f"ssh -t {args.owner}@<vm>, then typed: {command}",
