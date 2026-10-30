@@ -3,10 +3,19 @@
 // with Spanish captions. Each block shows once its URL is set, and the language flags in the nav once both cuts of
 // the fx demo are.
 const BLOB = {
-  walkthrough: { src: '', poster: '' },
+  walkthrough: {
+    src: 'https://wvrrnw987csns1in.public.blob.vercel-storage.com/blackice/blackice-narrated-en.mp4',
+    poster: 'https://wvrrnw987csns1in.public.blob.vercel-storage.com/blackice/poster-narrated-en.jpg',
+  },
   fx: {
-    en: { src: '', poster: '' },
-    es: { src: '', poster: '' },
+    en: {
+      src: 'https://wvrrnw987csns1in.public.blob.vercel-storage.com/blackice/blackice-short-en.mp4',
+      poster: 'https://wvrrnw987csns1in.public.blob.vercel-storage.com/blackice/poster-short-en.jpg',
+    },
+    es: {
+      src: 'https://wvrrnw987csns1in.public.blob.vercel-storage.com/blackice/blackice-short-es.mp4',
+      poster: 'https://wvrrnw987csns1in.public.blob.vercel-storage.com/blackice/poster-short-es.jpg',
+    },
   },
 };
 
