@@ -1,0 +1,99 @@
+# Build and test blackice on Linux and macOS.
+# Rules for this file (docs/security-review/README.md): read-only token, actions pinned to full commit SHAs,
+# no secrets, no pull_request_target, Zig pinned by version and sha256.
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  ZIG_VERSION: 0.17.0
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # sha256 values copied from https://ziglang.org/download/index.json ("0.17.0").
+          - os: ubuntu-latest
+            zig_platform: x86_64-linux
+            zig_sha256: 1cbe9df9f27e6b78d14ccbca43b6703a404ef79ef1c463de901d7f088d4e2026
+            cross_target: aarch64-macos
+          - os: macos-latest
+            zig_platform: aarch64-macos
+            zig_sha256: b607e9b9234790a008116ae5bdb71c6243b84b9fb42a53a9e70fde41c06c536a
+            cross_target: x86_64-linux
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Zig (sha256 pinned)
+        env:
+          ZIG_PLATFORM: ${{ matrix.zig_platform }}
+          ZIG_SHA256: ${{ matrix.zig_sha256 }}
+        run: |
+          set -euo pipefail
+          file="zig-${ZIG_PLATFORM}-${ZIG_VERSION}.tar.xz"
+          dl="${RUNNER_TEMP}/zig-download"
+          mkdir -p "$dl"
+          # Zig asks automation to use its community mirrors. Any source is fine: the sha256 decides.
+          mirrors=$(curl -fsS --proto '=https' --tlsv1.2 --max-time 20 \
+              https://ziglang.org/download/community-mirrors.txt \
+            | grep -E '^https://[A-Za-z0-9.-]+(/[A-Za-z0-9._~-]+)*/?$' \
+            | awk 'BEGIN { srand() } { print rand() "\t" $0 }' | sort -n | cut -f2- | awk 'NR <= 5') || mirrors=""
+          ok=0
+          for base in $mirrors "https://ziglang.org/download/${ZIG_VERSION}"; do
+            base="${base%/}"
+            rm -f "${dl}/${file}"
+            if curl -fsSL --proto '=https' --tlsv1.2 --retry 2 --max-time 300 \
+                -o "${dl}/${file}" "${base}/${file}?source=blackice-ci"; then
+              if echo "${ZIG_SHA256}  ${dl}/${file}" | shasum -a 256 -c - >/dev/null; then
+                echo "Zig ${ZIG_VERSION} from ${base}: sha256 verified"
+                ok=1
+                break
+              fi
+              echo "::warning::sha256 mismatch for ${file} from ${base}"
+            fi
+          done
+          if [ "$ok" != 1 ]; then
+            echo "::error::no source served ${file} with the pinned sha256"
+            exit 1
+          fi
+          tar -xJf "${dl}/${file}" -C "$RUNNER_TEMP"
+          zig_dir="${RUNNER_TEMP}/zig-${ZIG_PLATFORM}-${ZIG_VERSION}"
+          test "$("${zig_dir}/zig" version)" = "$ZIG_VERSION"
+          echo "$zig_dir" >> "$GITHUB_PATH"
+
+      - name: Check formatting
+        if: runner.os == 'Linux'
+        run: zig fmt --check build.zig build.zig.zon src
+
+      - name: Build
+        run: zig build --summary all
+
+      - name: Test
+        run: zig build test --summary all
+
+      - name: Cross-build for the other OS
+        env:
+          CROSS_TARGET: ${{ matrix.cross_target }}
+        run: zig build -Dtarget="$CROSS_TARGET" --summary all
