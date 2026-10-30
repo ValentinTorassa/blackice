@@ -1,16 +1,34 @@
-// Project status shown on the site. Update it in the same pull request as the evidence that changes it.
-// A state may be "verified" only when evidence/ holds a recorded test for it.
+// Project status shown on the site. Cell states are computed when the site builds (lib/evidence.js):
+// "verified" needs a recorded run in evidence/, "built" needs the code in the repository.
 
 export const MATRIX = [
   {
     os: 'macOS',
-    apps: { state: 'unverified', how: 'Signed Network Extension with a small host app.' },
-    tasks: { state: 'probe', how: 'Experimental session mode: the built-in sandbox plus a local proxy.' },
+    apps: {
+      base: 'pending',
+      code: 'macos',
+      builtAs: 'unsigned',
+      how: 'A Network Extension filter that decides per app, by code-signing identity, and per destination, with the same policy and receipts. It cannot run until it is signed with a Developer ID.',
+    },
+    tasks: {
+      base: 'designed',
+      code: 'src/macos',
+      evidence: /^P0-02-.*macos/i,
+      how: 'Experimental session mode: the built-in sandbox lets the command reach only a local proxy, which applies the policy.',
+    },
   },
   {
     os: 'Linux',
-    apps: { state: 'unverified', how: 'Host coverage with trustworthy process attribution. Mechanism chosen after a spike.' },
-    tasks: { state: 'unverified', how: 'A cgroup v2 per task, enforced with nftables or eBPF.' },
+    apps: {
+      base: 'pending',
+      how: 'Host-wide control with trustworthy process attribution. The mechanism will be chosen after a spike.',
+    },
+    tasks: {
+      base: 'designed',
+      code: 'src/linux',
+      evidence: /^P0-02-.*linux/i,
+      how: 'A cgroup v2 per task, with eBPF programs that let the command reach only a local proxy, which applies the policy.',
+    },
   },
 ];
 
@@ -42,4 +60,10 @@ export const INVARIANTS = [
   'The local product works without an account or telemetry. Dependencies and exports are explicit.',
 ];
 
-export const STATE_LABEL = { verified: 'Verified', probe: 'Probes only', unverified: 'Unverified' };
+export const STATE_LABEL = {
+  pending: 'Pending',
+  designed: 'Designed',
+  built: 'Built, not verified',
+  unsigned: 'Built, unsigned',
+  verified: 'Verified',
+};

@@ -1,0 +1,7 @@
+{
+  "version": "blackice.policy/v0",
+  "network": {
+    "mode": "allowlist",
+    "allow": ["example.com", "registry.npmjs.org", "ai-gateway.vercel.sh"]
+  }
+}

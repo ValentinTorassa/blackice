@@ -10,14 +10,14 @@ export default function DocsLayout({ children }) {
 
   return (
     <>
-      <Nav />
-      <div className="container docs">
+      <Nav wide />
+      <div className="container container-wide docs">
         <aside className="docs-aside">
           <DocsSidebar groups={groups} />
         </aside>
         <main id="main" className="docs-main">{children}</main>
       </div>
-      <Footer />
+      <Footer wide />
     </>
   );
 }
