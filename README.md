@@ -8,8 +8,8 @@
 # blackice
 
 blackice limits which hosts a command can reach, along with every process that command starts. The rules come
-from a policy file you can read and review like code. It runs on macOS and Linux, from the terminal, and it never
-asks you to click Allow.
+from a policy file you can read and review like code. Today it runs on macOS and on Debian 13 (x86_64), from the
+terminal, and it never asks you to click Allow.
 
 ## Why I built it
 
@@ -25,12 +25,12 @@ It's v0 and not ready for production. What works is what has an entry under [Evi
 
 ## Status
 
-A cell says Verified only when it has entries in [`evidence/`](evidence/).
+A cell says Tested only when it has entries in [`evidence/`](evidence/).
 
 | | Apps | Tasks |
 |---|---|---|
-| macOS | Built, waiting for Developer ID signing: a Network Extension content filter ([#8](https://github.com/ValentinTorassa/blackice/pull/8)). | Verified. A Seatbelt sandbox profile plus a local proxy. Experimental, because Apple has deprecated `sandbox-exec`. |
-| Linux | In review: a first build, not cleared or installed yet. | Verified on Debian 13 (x86_64). cgroup v2 with eBPF socket programs plus a local proxy, and a small helper that a setup script installs with sudo. |
+| macOS | Built, waiting for Developer ID signing: a Network Extension content filter ([#8](https://github.com/ValentinTorassa/blackice/pull/8)). | Tested. A Seatbelt sandbox profile plus a local proxy. Experimental, because Apple has deprecated `sandbox-exec`. |
+| Linux | In review: a first build, not cleared or installed yet. | Tested on Debian 13 (x86_64). cgroup v2 with eBPF socket programs plus a local proxy, and a small helper that a setup script installs with sudo. |
 | Windows | Later | Later |
 
 A task is a command, such as one an AI agent runs, and everything that command starts. An app is a program
@@ -93,7 +93,7 @@ curl: (56) CONNECT tunnel failed, response 403
 blackice: scope s-f79c31a5 ended with status 56; 5 receipts
 ```
 
-Each decision is one JSON line in the scope's `receipts.jsonl`:
+What the proxy decides goes to the scope's `receipts.jsonl`, one JSON line each:
 
 ```json
 {"ts":"2026-10-30T14:36:01.279Z","scope":"s-1b1f4870","policy":"353b7e8328f9","gen":1,"point":"proxy","event":"connect","verdict":"allow","reason":"allowed_by_rule","rule":"example.com","host":"example.com","ip":"104.20.23.154","port":443,"detail":"sni_match"}
@@ -113,8 +113,8 @@ set. To check a policy without running anything: `blackice policy check policy.j
   `blackice grant SCOPE HOST --for 10m`.
 - The policy is a strict JSON file (`blackice.policy/v0`): a mode (`deny-all`, `allow-all` or `allowlist`) plus
   allowed names, subnets and ports. Unknown fields are an error. See [`docs/policy.md`](docs/policy.md).
-- Every decision is one JSON line with the scope, the policy hash and generation, where it was enforced, the
-  verdict, a reason code and the destination.
+- What the proxy decides is logged as one JSON line each, with the scope, the policy hash and generation, the
+  verdict, a stable reason code and the destination. Some refusals leave no line; see [Limits](#limits).
 - An **app scope** applies a policy to an installed app. A **host ceiling** over every scope is planned. Nested
   scopes can only narrow.
 - No model or remote service takes part in a decision. No account, no telemetry.

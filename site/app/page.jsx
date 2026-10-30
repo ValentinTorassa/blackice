@@ -49,7 +49,7 @@ const NOUNS = [
     name: 'Receipt',
     Icon: IconReceipt,
     Art: IsoReceipt,
-    text: 'One JSON line per decision: which scope, which version of the policy, where it was enforced, and why. tail, grep and jq work on them.',
+    text: 'What the proxy decides is logged as flat JSON lines: which scope, which version of the policy, the verdict and a stable reason code. tail, grep and jq work on them.',
   },
 ];
 
@@ -85,7 +85,7 @@ const UNIX = [
   {
     name: 'Everything is a file',
     Icon: IconLines,
-    text: 'The policy is a file, and each decision is a line appended to another one. grep and jq work on both, and tail -f follows the receipts.',
+    text: 'The policy is a file, and what the proxy decides is appended to another one, a line at a time. grep and jq work on both, and tail -f follows the receipts.',
   },
 ];
 
