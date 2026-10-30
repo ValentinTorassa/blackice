@@ -412,6 +412,7 @@ h3 { margin: 0; font-size: 16px; font-weight: 600; letter-spacing: -0.01em; }
 .segments li { display: flex; flex-direction: column; gap: 8px; }
 .seg { height: 10px; border-radius: 3px; border: 1px solid var(--line); background: repeating-linear-gradient(135deg, #171717 0 3px, #0d0d0d 3px 6px); }
 .segments li.on .seg { background: var(--green); border-color: transparent; box-shadow: 0 0 14px rgba(70, 167, 88, 0.5); }
+.segments li.findings .seg { background: transparent; border-color: var(--fg-2); }
 .seg-id { font: 10px/1 var(--mono); color: var(--fg-3); }
 .os-cards { margin-top: 16px; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
 .os-card { padding: 22px 24px 24px; border: 1px solid var(--line); border-radius: 14px; background: var(--card); }

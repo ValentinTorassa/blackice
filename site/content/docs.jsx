@@ -234,7 +234,7 @@ $ tail -f ~/.local/state/${SITE.name}/scopes/${SCOPE}/receipts.jsonl`}</Code>
             <Code title="terminal">{`$ ${RELEASE.integrity}`}</Code>
           </li>
           <li>
-            Provenance.
+            Provenance, with GitHub CLI 2.49 or later.
             <Code title="terminal">{`$ ${RELEASE.provenance}`}</Code>
           </li>
           <li>

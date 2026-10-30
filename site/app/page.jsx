@@ -32,7 +32,7 @@ import {
 import { SITE } from '../content/site';
 import { DEMO } from '../content/demo';
 import { CHECKPOINTS } from '../content/status';
-import { recordedCheckpoints } from '../lib/evidence';
+import { findingsCheckpoints, recordedCheckpoints } from '../lib/evidence';
 
 const NOUNS = [
   {
@@ -93,6 +93,7 @@ const UNIX = [
 
 export default function Home() {
   const recorded = recordedCheckpoints();
+  const findings = findingsCheckpoints();
 
   return (
     <>
@@ -291,13 +292,15 @@ export default function Home() {
             </p>
             <ol className="segments">
               {CHECKPOINTS.map(([id, name]) => {
-                const on = recorded.has(id);
+                // Same states as /docs/status: an entry that says it is a run, not a pass, is not lit like one.
+                const state = !recorded.has(id) ? 'pending' : findings.has(id) ? 'findings' : 'on';
+                const label = { pending: 'no entry yet', findings: 'recorded, with findings', on: 'recorded' }[state];
                 return (
-                  <li key={id} className={on ? 'on' : undefined} title={`${id} · ${name} · ${on ? 'recorded' : 'no entry yet'}`}>
+                  <li key={id} className={state === 'pending' ? undefined : state} title={`${id} · ${name} · ${label}`}>
                     <span className="seg" />
                     <span className="seg-id">{id.slice(3)}</span>
                     <span className="sr-only">
-                      {id} {name}: {on ? 'recorded' : 'no entry yet'}
+                      {id} {name}: {label}
                     </span>
                   </li>
                 );
