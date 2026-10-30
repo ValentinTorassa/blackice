@@ -68,6 +68,9 @@ proxy, observe mode, and recovery after faults.
 - Network only. Files, processes and credentials need their own controls. In the recorded macOS build (58e73cc),
   a command in a scope could read and write the clipboard; main refuses that since 727a5db.
 - On Linux, ping, SCTP and raw sockets are refused when they are created, so they leave no receipt.
+- On Linux, if the helper is killed while a scope runs, processes that detached from the command keep running
+  with access only to the dead proxy's local port, which another local program can later listen on; removing
+  them needs root, and the receipts wrongly say the command did not start.
 - blackice does not detect prompt injection. It blocks connections the policy does not allow; what is sent to an
   allowed destination is up to that destination.
 - With the fx hook, fx itself runs outside the scopes. Its file tools are kept inside the workspace, so install
