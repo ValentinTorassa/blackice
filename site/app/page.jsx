@@ -110,7 +110,7 @@ export default function Home() {
             </Link>
             <h1>
               Network permissions <br className="br" />
-              for apps and tasks.
+              for tasks, and soon apps.
             </h1>
             <p className="lede">
               blackice decides which hosts a command can reach, along with every process it starts. The rules are in
@@ -138,7 +138,7 @@ export default function Home() {
               </li>
               <li>
                 <IconPenguin size={14} />
-                Linux
+                Debian 13
               </li>
               <li>
                 <IconTerminal size={14} />

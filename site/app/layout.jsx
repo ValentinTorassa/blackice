@@ -8,7 +8,13 @@ export const metadata = {
   title: { default: `${SITE.name}: ${SITE.headline}`, template: `%s · ${SITE.name}` },
   description: SITE.description,
   icons: { icon: '/logo.svg' },
-  openGraph: { title: SITE.name, description: SITE.description, images: ['/og.png'] },
+  openGraph: { title: `${SITE.name}: ${SITE.headline}`, description: SITE.description, images: ['/og.png'] },
+  twitter: {
+    card: 'summary_large_image',
+    title: `${SITE.name}: ${SITE.headline}`,
+    description: SITE.description,
+    images: ['/og.png'],
+  },
 };
 
 export const viewport = { themeColor: '#000000', colorScheme: 'dark' };
