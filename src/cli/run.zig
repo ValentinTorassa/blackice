@@ -180,11 +180,17 @@ pub fn run(gpa: std.mem.Allocator, io: Io, parent_env: *const std.process.Enviro
         try errw.print("blackice run: warning: mode {s} ignores the {d} allow entries\n", .{ pol.mode.label(), pol.ignoredAllowCount() });
     }
 
-    // 2. The relay key, before any scope exists, and only after the process cannot be inspected.
+    // 2. The relay key, before any scope exists, and only after the process cannot be inspected. A terminal
+    //    would echo it, so it must come from a pipe or a file; CMD later gets /dev/null as stdin, so it cannot
+    //    read the key back from the same stream.
     var key_buf: [512]u8 = undefined;
     defer std.crypto.secureZero(u8, &key_buf);
     var key: []const u8 = "";
     if (o.relay) {
+        if (Io.File.stdin().isTty(io) catch true) {
+            try errw.writeAll("blackice run: give the relay key on stdin from a pipe or a file, not a terminal (it would be echoed)\n");
+            return status_setup_failed;
+        }
         if (!relay.hardenProcess()) {
             try errw.writeAll("blackice run: cannot make this process non-dumpable; refusing to read the relay key\n");
             return status_setup_failed;
@@ -207,6 +213,20 @@ pub fn run(gpa: std.mem.Allocator, io: Io, parent_env: *const std.process.Enviro
         return status_setup_failed;
     };
     defer gpa.free(state_root);
+    // The backends protect the state root by its resolved path, so the scope directory must really be inside it.
+    {
+        const real_dir = Io.Dir.realPathFileAbsoluteAlloc(io, created.path, gpa) catch |err| {
+            try errw.print("blackice run: cannot resolve the scope directory: {s}\n", .{@errorName(err)});
+            return status_setup_failed;
+        };
+        defer gpa.free(real_dir);
+        const expected = try std.fs.path.join(gpa, &.{ state_root, "scopes", sid });
+        defer gpa.free(expected);
+        if (!std.mem.eql(u8, real_dir, expected)) {
+            try errw.print("blackice run: the scope directory resolves to {s}, outside the state root {s}\n", .{ real_dir, state_root });
+            return status_setup_failed;
+        }
+    }
 
     var scope_dir = Io.Dir.cwd().openDir(io, created.path, .{}) catch |err| {
         try errw.print("blackice run: cannot open {s}: {s}\n", .{ created.path, @errorName(err) });
@@ -230,61 +250,49 @@ pub fn run(gpa: std.mem.Allocator, io: Io, parent_env: *const std.process.Enviro
     };
     defer log.close();
 
-    // 4. The proxy (and the relay), outside the scope.
+    // From here on every exit goes through `svc.finish`, which stops what started and then writes scope_end,
+    // so scope_end is always the last line.
     var grants: proxy.Grants = .init(gpa);
     defer grants.deinit();
-    const px = proxy.Proxy.start(gpa, io, &pol, &log, .{ .grants = &grants }) catch |err| {
-        log.write(.{ .event = "warning", .point = .control, .reason = "proxy_start_failed", .detail = @errorName(err) });
-        log.end(status_setup_failed, "proxy did not start");
-        try errw.print("blackice run: the proxy did not start: {s}\n", .{@errorName(err)});
-        return status_setup_failed;
-    };
-    var px_running = true;
-    defer if (px_running) px.stop();
+    var svc: Services = .{ .log = &log, .errw = errw };
+    defer svc.stopAll();
 
-    // The owner's control socket (grants), unreachable from inside the scope.
-    const ctl = control.Server.start(gpa, io, created.path, &grants, &log) catch |err| {
-        log.write(.{ .event = "warning", .point = .control, .reason = "control_start_failed", .detail = @errorName(err) });
-        log.end(status_setup_failed, "control socket did not start");
-        try errw.print("blackice run: the control socket did not start: {s}\n", .{@errorName(err)});
-        return status_setup_failed;
-    };
-    var ctl_running = true;
-    defer if (ctl_running) ctl.stop();
-
-    var ports_buf: [2]u16 = .{ px.port, 0 };
+    // 4. The proxy, the owner's control socket and the relay, all outside the scope.
+    svc.px = proxy.Proxy.start(gpa, io, &pol, &log, .{ .grants = &grants }) catch |err|
+        return svc.finish(status_setup_failed, "proxy_start_failed", @errorName(err));
+    svc.ctl = control.Server.start(gpa, io, created.path, &grants, &log) catch |err|
+        return svc.finish(status_setup_failed, "control_start_failed", @errorName(err));
+    const proxy_port = svc.px.?.port;
+    var ports_buf: [2]u16 = .{ proxy_port, 0 };
     var ports: []const u16 = ports_buf[0..1];
-    var rl: ?*relay.Relay = null;
-    defer if (rl) |r| r.stop();
     if (o.relay) {
-        rl = relay.Relay.start(gpa, io, .{
+        svc.rl = relay.Relay.start(gpa, io, .{
             .upstream = o.upstream orelse relay.default_upstream,
             .models = o.models[0..o.model_count],
             .max_requests = o.max_requests,
-        }, key, &log) catch |err| {
-            log.write(.{ .event = "warning", .point = .control, .reason = "relay_start_failed", .detail = @errorName(err) });
-            log.end(status_setup_failed, "relay did not start");
-            try errw.print("blackice run: the relay did not start: {s}\n", .{@errorName(err)});
-            return status_setup_failed;
-        };
+        }, key, &log) catch |err| return svc.finish(status_setup_failed, "relay_start_failed", @errorName(err));
         std.crypto.secureZero(u8, &key_buf);
         key = "";
-        ports_buf[1] = rl.?.port;
+        ports_buf[1] = svc.rl.?.port;
         ports = ports_buf[0..2];
     }
 
     // 5. The command's environment.
-    var env = try buildEnv(gpa, parent_env, o.env_names[0..o.env_count], sid, px.port);
+    var env = buildEnv(gpa, parent_env, o.env_names[0..o.env_count], sid, proxy_port) catch |err|
+        return svc.finish(status_setup_failed, "environment_failed", @errorName(err));
     defer env.deinit();
     var url_buf: [64]u8 = undefined;
-    if (rl) |r| try env.put("BLACKICE_RELAY_URL", try std.fmt.bufPrint(&url_buf, "http://127.0.0.1:{d}/v1", .{r.port}));
+    if (svc.rl) |r| {
+        const url = std.fmt.bufPrint(&url_buf, "http://127.0.0.1:{d}/v1", .{r.port}) catch unreachable;
+        env.put("BLACKICE_RELAY_URL", url) catch |err| return svc.finish(status_setup_failed, "environment_failed", @errorName(err));
+    }
 
     var detail_buf: [160]u8 = undefined;
     const start_detail = std.fmt.bufPrint(&detail_buf, "backend {s}; command {s}; proxy port {d}{s}", .{
         backend.name,
         basename(o.argv[0]),
-        px.port,
-        if (rl != null) "; relay on" else "",
+        proxy_port,
+        if (svc.rl != null) "; relay on" else "",
     }) catch "backend";
     log.write(.{ .event = "scope_start", .point = .control, .detail = start_detail });
     try errw.print("blackice: scope {s} (policy {s}, {s}); receipts: {s}/receipts.jsonl\n", .{ sid, pol.id(), backend.name, created.path });
@@ -299,33 +307,50 @@ pub fn run(gpa: std.mem.Allocator, io: Io, parent_env: *const std.process.Enviro
         .allowed_loopback_ports = ports,
         .state_dir = state_root,
         .receipts = &log,
+        .stdin = if (o.relay) .null_device else .inherit,
     }) catch |err| {
         const status: u8 = if (err == error.BackendUnavailable) status_setup_failed else status_spawn_failed;
-        ctl.stop();
-        ctl_running = false;
-        if (rl) |r| r.stop();
-        rl = null;
-        px.stop();
-        px_running = false;
-        log.end(status, @errorName(err));
-        try errw.print("blackice run: the command was not started: {s}\n", .{@errorName(err)});
-        return status;
+        return svc.finish(status, "command_not_started", @errorName(err));
     };
 
-    // 7. Stop the control socket, the relay and the proxy before the last receipt, so scope_end is the final line.
-    ctl.stop();
-    ctl_running = false;
-    if (rl) |r| r.stop();
-    rl = null;
-    px.stop();
-    px_running = false;
+    // 7. Stop everything, then the last receipt.
     const status = exit.status();
-    log.end(status, null);
+    _ = try svc.finish(status, null, null);
     try errw.print("blackice: scope {s} ended with status {d}; {d} receipts", .{ sid, status, log.written });
     if (log.failures > 0) try errw.print(", {d} could not be written", .{log.failures});
     try errw.writeAll("\n");
     return status;
 }
+
+/// The services of a running scope, stopped in a fixed order: control socket, relay, proxy.
+const Services = struct {
+    log: *receipt.Log,
+    errw: *Io.Writer,
+    px: ?*proxy.Proxy = null,
+    ctl: ?*control.Server = null,
+    rl: ?*relay.Relay = null,
+    ended: bool = false,
+
+    fn stopAll(s: *Services) void {
+        if (s.ctl) |c| c.stop();
+        s.ctl = null;
+        if (s.rl) |r| r.stop();
+        s.rl = null;
+        if (s.px) |p| p.stop();
+        s.px = null;
+    }
+
+    /// Stops the services, then writes scope_end (once). With a reason it is a failure: a warning receipt and a
+    /// message come first.
+    fn finish(s: *Services, status: u8, reason: ?[]const u8, detail: ?[]const u8) !u8 {
+        if (reason) |r| s.log.write(.{ .event = "warning", .point = .control, .reason = r, .detail = detail });
+        s.stopAll();
+        if (!s.ended) s.log.end(status, reason);
+        s.ended = true;
+        if (reason) |r| try s.errw.print("blackice run: {s}: {s}\n", .{ r, detail orelse "" });
+        return status;
+    }
+};
 
 // ---------------------------------------------------------------- tests
 
