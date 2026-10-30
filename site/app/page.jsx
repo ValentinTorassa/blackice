@@ -16,7 +16,11 @@ import {
   Logo,
   IconArrowRight,
   IconBook,
+  IconArrowInto,
   IconCommand,
+  IconFlag,
+  IconLines,
+  IconNarrow,
   IconGitHub,
   IconNested,
   IconPenguin,
@@ -65,8 +69,33 @@ const SESSION = [
   ['ok', '200'],
   ['cmd', 'curl -sS https://paste.example'],
   ['deny', 'curl: (56) CONNECT tunnel failed, response 403'],
-  ['cmd', `${SITE.name} grant s-7f3a91c2 api.example.com --for 10m`, 'another terminal, as the owner'],
-  ['out', 'granted until 12:10:03'],
+  ['cmd', "tail -1 ~/.local/state/blackice/scopes/s-7f3a91c2/receipts.jsonl | jq -c '{verdict,reason,host}'", 'as the owner'],
+  ['out', '{"verdict":"deny","reason":"no_matching_rule","host":"paste.example"}'],
+  ['cmd', `${SITE.name} grant s-7f3a91c2 api.example.com --for 10m`, 'as the owner'],
+  ['out', 'granted api.example.com to scope s-7f3a91c2 until 2026-10-30T12:10:03.000Z'],
+];
+
+const UNIX = [
+  {
+    name: 'Set before exec',
+    Icon: IconArrowInto,
+    text: 'Like chroot, the policy is in place before the command runs its first instruction, so even its first connection is checked.',
+  },
+  {
+    name: 'No way up from inside',
+    Icon: IconNarrow,
+    text: 'Like a process after pledge(2), nothing inside a scope can get more access. Only the owner, from outside, can widen it, and only until a set time.',
+  },
+  {
+    name: 'Fails early',
+    Icon: IconFlag,
+    text: "The Rule of Repair: fail noisily and as soon as possible. If the policy doesn't load, or doesn't match its pinned hash, the command never starts.",
+  },
+  {
+    name: 'Everything is a file',
+    Icon: IconLines,
+    text: 'The policy is a file, and each logged decision is a line appended to another one. grep and jq work on both, and tail -f follows the receipts.',
+  },
 ];
 
 export default function Home() {
@@ -199,8 +228,9 @@ export default function Home() {
             <span className="badge">v0 design · verified for task scopes on macOS and Debian 13 (x86_64)</span>
           </div>
           <p className="sub">
-            Each connection passes these layers in order and stops at the first one that refuses it. Every decision
-            leaves a receipt.
+            Each connection passes these layers in order and stops at the first one that refuses it. A hostname hides
+            the address behind it, so the proxy checks both: the name against the policy, then every address it
+            resolves to. The proxy writes a receipt for each of its decisions.
           </p>
           <Layers />
         </section>
@@ -208,10 +238,27 @@ export default function Home() {
         <section className="container section">
           <h2 className="h2">A shell inside a scope</h2>
           <p className="sub">
-            Put blackice in front of a shell, a test run or fx. Everything started inside stays in the scope. Only the
-            owner, from another terminal, can allow more, and that access expires on its own.
+            It goes in front of a command the way nice or timeout do: a shell, a test run or fx. Everything started
+            inside stays in the scope. From another terminal, the owner can read the receipts and allow more, and that
+            access expires on its own.
           </p>
           <TypedTerminal lines={SESSION} title="~/project" badge="Example · the CLI may change" />
+        </section>
+
+        <section className="container section">
+          <h2 className="h2">Built like a Unix tool</h2>
+          <Spotlight className="grid4">
+            {UNIX.map(({ name, Icon, text }) => (
+              <div className="cell spot" key={name}>
+                <span className="cell-icon">
+                  <Icon size={18} />
+                </span>
+                <h3>{name}</h3>
+                <p>{text}</p>
+              </div>
+            ))}
+            <Corners />
+          </Spotlight>
         </section>
 
         <section className="container section">
