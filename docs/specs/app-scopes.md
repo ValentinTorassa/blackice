@@ -16,7 +16,7 @@ A task scope covers a command that blackice starts. An app scope covers an app t
 and was started some other way: a browser, an editor, a chat client. It gives that app a policy of its own,
 checked from the app's first connection, so the owner can say "this app may reach only these places" without
 wrapping it. blackice needs both kinds before its first usable release, on macOS and on Linux. App scopes are
-not part of the proof of concept and are not built: on macOS they wait for a signed system extension, and on
+not part of v0 and are not built: on macOS they wait for a signed system extension, and on
 Linux the way to recognise an app still has to be proven.
 
 ## Requirements

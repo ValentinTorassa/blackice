@@ -2,7 +2,7 @@
 id: scope-core
 title: Task scope core
 owner: lead
-stage: poc
+stage: v0
 paths: src/main.zig, src/core/scope.zig, src/core/backend.zig
 cases: P0-01, P0-02, P0-09, P0-10
 depends: policy, receipts, proxy

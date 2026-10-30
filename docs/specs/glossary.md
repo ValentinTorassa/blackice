@@ -35,7 +35,7 @@ stays in the relay, outside every scope, so the agent never holds it.
 a browser or an editor.
 
 **Technical.** It needs the OS to say which app a connection comes from: a Network Extension on macOS, and a
-grouping such as a desktop or service cgroup on Linux. Not part of the proof of concept; required for the
+grouping such as a desktop or service cgroup on Linux. Not part of v0; required for the
 first usable release.
 
 **See also.** scope, task scope, Network Extension
@@ -186,7 +186,7 @@ seen.
 the platform, build, policy, commands, result, receipts, recording and limits. Only an evidence entry
 verifies a requirement.
 
-**See also.** evidence gate, probe, PoC-0
+**See also.** evidence gate, probe, v0 checkpoints
 
 ## evidence gate
 
@@ -195,7 +195,7 @@ verifies a requirement.
 **Technical.** Each gate names what it blocks (for example a release cell) and who owns the test. Passing it
 needs evidence entries, not reasoning or source reading.
 
-**See also.** evidence entry, PoC-0
+**See also.** evidence entry, v0 checkpoints
 
 ## exit status
 
@@ -356,16 +356,6 @@ change host firewall rules.
 a declared limit: blackice does not defend against other programs of the same user that are not confined.
 
 **See also.** grant, control socket
-
-## PoC-0
-
-**Plain.** The first proof of concept: a short list of checkpoints that show the boundary works on real
-machines, not a product release.
-
-**Technical.** Checkpoints `P0-01` to `P0-10` (for example `P0-02`, real deny). Each is marked recorded only
-when an evidence entry with its ID exists.
-
-**See also.** evidence entry, evidence gate
 
 ## policy
 
@@ -567,3 +557,13 @@ and the server.
 host name and its own name resolution, before any TLS bytes flow.
 
 **See also.** SNI, ECH, CONNECT proxy
+
+## v0 checkpoints
+
+**Plain.** The checkpoints for v0, the first version: a short list that shows the boundary works on real
+machines. v0 is not a product release.
+
+**Technical.** Checkpoints `P0-01` to `P0-10` (for example `P0-02`, real deny). Each is marked recorded only
+when an evidence entry with its ID exists.
+
+**See also.** evidence entry, evidence gate

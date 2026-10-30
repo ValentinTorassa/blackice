@@ -2,7 +2,7 @@
 id: receipts
 title: Receipts
 owner: lead
-stage: poc
+stage: v0
 paths: src/core/receipt.zig
 cases: P0-02, P0-03, P0-09
 depends: policy

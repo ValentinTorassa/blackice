@@ -2,7 +2,7 @@
 id: sandbox-import
 title: Sandbox policy importer
 owner: codex
-stage: poc
+stage: v0
 paths: src/core/sandbox_import.zig, tests/vectors/
 cases: P0-03
 depends: policy
