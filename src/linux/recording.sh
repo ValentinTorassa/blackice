@@ -17,6 +17,7 @@ helper_hash=$(/usr/bin/sha256sum "$helper")
     echo 'NOT RUN: launcher/helper hash differs from the selected reviewed build.' >&2
     exit 2
 }
+printf 'blackice SHA-256: %s\n' "${cli_hash%% *}"
 shot_dir=$(/usr/bin/mktemp -d /tmp/bi-shot-XXXXXX)
 export XDG_STATE_HOME="$shot_dir/state"
 /usr/bin/mkdir -m 0700 "$XDG_STATE_HOME"
