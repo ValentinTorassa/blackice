@@ -43,7 +43,11 @@ e2e_blackice() {
 # (XDG_STATE_HOME) is inside it, so the scope can see its own receipts and must not be able to change them.
 e2e_workdir() {
     if [ -n "${E2E_DIR:-}" ]; then
-        rm -rf "$E2E_DIR" && mkdir -p "$E2E_DIR" || die "cannot create $E2E_DIR"
+        # Never delete what the caller names: the directory must be new or empty.
+        if [ -e "$E2E_DIR" ] && [ -n "$(ls -A "$E2E_DIR" 2> /dev/null || echo x)" ]; then
+            die "E2E_DIR=$E2E_DIR exists and is not an empty directory; name a new one"
+        fi
+        mkdir -p "$E2E_DIR" || die "cannot create $E2E_DIR"
         W=$(cd "$E2E_DIR" && pwd -P)
     else
         W=$(mktemp -d "${TMPDIR:-/tmp}/blackice-e2e.XXXXXX") || die "mktemp failed"
