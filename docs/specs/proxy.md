@@ -32,8 +32,9 @@ if both the name and the address it found are allowed. Every answer it gives is 
 | proxy.R8 | When the scope ends, blackice shall stop the proxy and close every connection it is relaying. | P0-05 |
 | proxy.R9 | When a request names a port the policy does not allow, the proxy shall answer 403 and write a `deny` receipt with reason `port_not_allowed`. | P0-03 |
 | proxy.R10 | When a `CONNECT` tunnel's first bytes are a TLS ClientHello whose server name (SNI) differs from the `CONNECT` host, the proxy shall close the tunnel before any byte reaches the destination and write a `deny` receipt (`sni_mismatch`). | P0-03 |
-| proxy.R11 | When a `CONNECT` tunnel's first bytes are not a TLS ClientHello, or are a ClientHello without a server name, the proxy shall close the tunnel and write a `deny` receipt (`not_tls` or `no_sni`). Without a server name, a shared front end would pick the site from whatever the client sends next. | P0-03 |
+| proxy.R11 | When a `CONNECT` tunnel's first bytes are not a TLS ClientHello, or no bytes arrive, the proxy shall close the tunnel and write a `deny` receipt (`not_tls`, with detail `no_data` when nothing arrived). When a ClientHello for a name carries no server name, it shall do the same with `sni_missing`. Without a server name, a shared front end would pick the site from whatever the client sends next. | P0-03 |
 | proxy.R12 | When the proxy starts a command's environment, blackice shall point `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY` and their lowercase forms at the proxy, and set `NO_PROXY` to loopback only. | P0-03 |
+| proxy.R13 | If a plain HTTP request head has a bare CR or LF, a control byte in the target or a header name that is not a valid token, the proxy shall answer 400, write a `deny` receipt (`bad_request`, detail `invalid_request`) and send nothing upstream. | P0-03 |
 
 ## Design
 
@@ -56,7 +57,8 @@ service by the program.
   [grant](grant.md)), then resolution (allowed names only), then the address check on each result (see
   [policy](policy.md)). A grant never lifts a port or address refusal. Dial timeout: 10 s.
 - Reason codes beyond the policy's: `granted`, `bad_request`, `resolve_failed`, `upstream_unreachable`,
-  `sni_mismatch`, `not_tls`, `tls_unparsed`, `grant_expired`.
+  `sni_mismatch`, `tls_unparsed`, `not_tls`, `sni_missing`, `grant_expired`, `grant_revoked`,
+  `grant_watchdog_failed`.
 - Responses on refusal: 403 for a policy refusal, 400 or 405 for a malformed or unsupported request.
 - Every decision writes one receipt with `point: proxy` (see [receipts](receipts.md)).
 - Limits:
@@ -89,17 +91,17 @@ service by the program.
 | TLS server name must match the `CONNECT` host; non-TLS first bytes close the tunnel | network | done | |
 | Close the tunnel when the ClientHello has no server name | network | done | |
 | Port check before any name work (`network.ports`) | network | done | |
-| Wire the proxy into `blackice run` | lead | todo | |
+| Wire the proxy into `blackice run` (PR #7) | lead | done | |
 | Per-scope token so only the scope's own processes can use the proxy | network | todo | |
-| Scope end stops the proxy and closes its tunnels | lead | todo | |
+| Scope end stops the proxy and closes its tunnels | lead | done | |
 
 ## Evidence
 
 | Covers | Kind | Link | Note |
 |---|---|---|---|
 | proxy.R2 | probe | - | Feasibility only, no blackice code: on macOS 27.0.1 (SIP on and off) and Linux, a command confined to one loopback port reached a stand-in proxy, which received `CONNECT example.com:443` while direct DNS failed inside the sandbox |
-| proxy.R2, proxy.R3, proxy.R4, proxy.R5, proxy.R6, proxy.R7, proxy.R10, proxy.R12 | test | `zig build test`, src/proxy/test.zig: "CONNECT to a name outside the policy is refused with 403 and a receipt", "an allowed name that resolves to a private address is refused", "CONNECT to an allowed name tunnels bytes to the checked address", "TLS server name must match the CONNECT host", "plain HTTP: Host comes from the URI and proxy headers are dropped", "IP literals need an allowed subnet; requests that are not proxy requests get 400", "setEnv points every proxy variable at the proxy and keeps loopback direct" | 36/36 passed at dd44a0e (PR #4), Zig 0.17.0, Linux x86_64, real loopback sockets with a fixed resolver; no network |
-| proxy.R9, proxy.R11 | test | src/proxy/test.zig: "ports outside the policy are refused before any name work, and grants do not lift them", "CONNECT carries TLS only: other bytes close the tunnel" | Committed on network/proxy-relay (3737e7b, b29d33f); does not compile yet without `Policy.checkPort` in the core, so not run. A ClientHello without a server name is not covered yet |
+| proxy.R2, proxy.R3, proxy.R4, proxy.R5, proxy.R6, proxy.R7, proxy.R10, proxy.R12 | test | `zig build test`, src/proxy/test.zig: "CONNECT to a name outside the policy is refused with 403 and a receipt", "an allowed name that resolves to a private address is refused", "CONNECT to an allowed name tunnels bytes to the checked address", "TLS server name must match the CONNECT host", "plain HTTP: Host comes from the URI and proxy headers are dropped", "IP literals need an allowed subnet; requests that are not proxy requests get 400", "setEnv points every proxy variable at the proxy and keeps loopback direct" | 65/65 passed at 986645a (PR #4), Zig 0.17.0, Linux x86_64, six runs, real loopback sockets, fixed resolver, stand-in upstreams; no network |
+| proxy.R9, proxy.R11, proxy.R13 | test | src/proxy/test.zig: "ports outside the policy are refused before any name work, and grants do not lift them", "CONNECT carries TLS only: other bytes close the tunnel", "a ClientHello without a server name is refused for a name", "plain HTTP heads with bare CR or LF, or bad header names, never reach the upstream" | Same run. The not-TLS and SNI-less tests check that the upstream received 0 bytes |
 
 ## Terms
 

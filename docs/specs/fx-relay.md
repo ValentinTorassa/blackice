@@ -24,7 +24,7 @@ out, so the key never enters the scope.
 
 | ID | Requirement | Checks |
 |---|---|---|
-| fx-relay.R1 | blackice shall accept the gateway key only on standard input. It shall offer no flag, environment variable or file option for it, and the key shall not appear in the scope's environment, arguments, receipts or state directory. | P0-09 |
+| fx-relay.R1 | blackice shall accept the gateway key only on standard input. It shall offer no flag, environment variable or file option for it, and the key shall not appear in the scope's environment, arguments, receipts or state directory. It shall refuse a key typed on a terminal, read the key only after the relay process is hardened (R2), and give the command `/dev/null` as its standard input when the relay is used. | P0-09 |
 | fx-relay.R2 | When the relay starts, it shall harden its process before it reads the key: not dumpable on Linux (`PR_SET_DUMPABLE`), debugger attachment refused on macOS (`PT_DENY_ATTACH`), so that core dumps and same-user debuggers cannot read the key from its memory. | P0-07 |
 | fx-relay.R3 | The relay shall listen only on `127.0.0.1` on a random port, and shall forward only `POST /v1/chat/completions` to the one configured gateway URL (`https`, or `http` only to loopback), adding the key; `GET /v1/models` is answered locally from the allow list. Any other method, path or target shall be refused with an error and a receipt. It shall also refuse a request that carries an `Origin` or any `Sec-Fetch-*` header, whose `Host` is not exactly `127.0.0.1:<port>`, or whose `Content-Type` is not `application/json`. | P0-07 |
 | fx-relay.R4 | When a request names a model that is not on the scope's model allow list, the relay shall refuse it without contacting the gateway. | P0-07 |
@@ -40,6 +40,8 @@ out, so the key never enters the scope.
 | fx-relay.R14 | blackice shall ship the hook as a declared patch under `integrations/fx/` that names the fx release tag and commit it applies to, so anyone can read exactly what it changes in fx. | P0-07 |
 | fx-relay.R15 | The relay shall verify the gateway's TLS certificate and host name, and shall never follow a redirect to another host. | P0-07 |
 | fx-relay.R16 | If fx can send a static bearer token for a configured provider, blackice shall put a random per-scope token in fx's private settings (mode 0600), and the relay shall refuse any request without it. | P0-07 |
+| fx-relay.R17 | When the fx hook is active, fx's own `web_fetch` and `web_search` tools shall be blocked, because they run inside fx and outside every scope. | P0-07 |
+| fx-relay.R18 | If the hook cannot read a tool call safely (a request wrapper, a command that is not a string or contains a NUL byte, a shell other than `sh`, `bash` or `zsh`), it shall block the call. | P0-01 |
 
 ## Design
 
@@ -60,8 +62,9 @@ key out of the scope; it does not decide what content may be sent to the model.
 - Relay (`src/relay/`): sends upstream only `Content-Type`, `Accept-Encoding: identity`, `User-Agent` and its
   own `Authorization`; the caller's headers are dropped and redirects are not followed. It keeps its own copy of
   `Bearer <key>` and zeroes it on stop. Limits: exact-match model allow list, body size cap, call cap and
-  connection cap; a request with a repeated `"model"` key is refused, and so are gateway routing fields
-  (`providerOptions`, `models`, `provider`, `route`, `extra_body`) that could fall back to a model off the list.
+  connection cap; a request with a repeated `"model"` key is refused. Only the standard top-level
+  chat-completion fields pass; any other field, gateway routing options such as `providerOptions` or `models`
+  included, is refused (`routing_not_allowed`), so a call cannot fall back to a model off the list.
   Each call is cut at a response size cap and a time limit, enforced by a watchdog; if the watchdog cannot
   start, the call is refused before anything goes upstream. Streamed answers (`stream: true`) pass
   through as they arrive. Receipts: `point: relay`, `event: relay_call`, with status, bytes in and out and
@@ -78,6 +81,8 @@ key out of the scope; it does not decide what content may be sent to the model.
 - Limits:
   - Main mode: fx itself is not confined. Its own network features (web fetch, MCP servers, skill installs,
     upgrades) run as they do today. The hook confines the commands fx launches through its shell tool.
+  - Main mode: MCP and ACP are not covered. In `auto` mode, fx's reviewer sees the rewritten command. `cd` and
+    `export` do not carry over between commands, since each runs in its own scope. Scopes are clients only.
   - Main mode: the hook is a patch, not an fx feature. Until fx offers a supported launch hook, each fx release
     needs the patch checked again.
   - L0: a tool inside the scope can call the relay too. It can send any content to the allowed model endpoint
@@ -99,17 +104,18 @@ key out of the scope; it does not decide what content may be sent to the model.
 |---|---|---|---|
 | Install fx v0.0.16 from the verified release on the Linux and macOS test machines | valen | done | |
 | Feasibility probes of the L0 shape on Linux and macOS, with a scripted model | lead | done | |
-| fx hook patch: builtin `PreToolUse` handler that wraps shell commands in `blackice run` | lead | todo | |
-| Scrubbed environment for scopes started by the hook | lead | todo | |
+| fx hook patch: builtin `PreToolUse` handler that wraps shell commands in `blackice run` (PR #9) | lead | done | |
+| Scrubbed environment for scopes started by the hook | lead | done | |
+| Block fx's `web_fetch` and `web_search` in blackice mode | lead | done | |
 | Relay: loopback endpoint, key on stdin, forwarding to the gateway | network | done | |
 | Relay limits: model allow list, size cap, request cap, one receipt per call | network | done | |
 | Relay header checks (`Origin`, `Sec-Fetch-*`, `Host`, `Content-Type`) | network | done | |
 | Per-call output-size and time limits | network | done | |
 | Refuse body fields that let the gateway pick a model off the allow list | network | done | |
 | Relay process hardening: not dumpable on Linux; `PT_DENY_ATTACH` on macOS | network | done | |
-| Start the relay from `blackice run`, and refuse to read the key if hardening fails | lead | todo | |
+| Start the relay from `blackice run`, and refuse to read the key if hardening fails (PR #7) | lead | done | |
 | L0 fx setup for a scope: isolated home, configured provider, file modes | lead | todo | |
-| End-to-end run of each mode on each OS, scripted model first | lead | todo | |
+| End-to-end run of each mode on each OS, scripted model first | lead | doing | |
 | Real model through the gateway, key piped from the password manager | lead | todo | |
 | Evidence entries for P0-07 on Linux and macOS, naming the fx tag, commit and mode | lead | todo | |
 
@@ -119,9 +125,11 @@ key out of the scope; it does not decide what content may be sent to the model.
 |---|---|---|---|
 | fx-relay.R8, fx-relay.R9 | probe | - | Linux, 30 Oct: fx v0.0.16 in an empty network namespace with a scripted model on loopback and a stand-in proxy. No Authorization header reached the model; a direct request from a tool failed to resolve; the same request through the stand-in proxy arrived as CONNECT with the host name; fx exited 0. No blackice code. |
 | fx-relay.R8, fx-relay.R9 | probe | - | macOS 27.0.1, 30 Oct, SIP off and then on: the same run under a Seatbelt profile allowing two loopback ports. Same results. No blackice code. |
-| fx-relay.R1, fx-relay.R3, fx-relay.R4, fx-relay.R5 | test | `zig build test`, src/relay/test.zig: "readKey", "an allowed model is forwarded with the relay's key, never the caller's headers", "models off the allow list, oversized bodies, bad JSON and other endpoints are refused locally", "the call cap refuses calls once used up", "upstream URLs: https anywhere, plain http only to loopback" | 36/36 passed at dd44a0e (PR #4), Zig 0.17.0, Linux x86_64, stand-in upstreams, synthetic key. The header checks added to R3 are not built yet |
-| fx-relay.R6 | test | src/relay/test.zig: "an unreachable upstream gives 502 and a receipt" | Same run. Receipt content for a forwarded call is not asserted yet |
+| fx-relay.R1, fx-relay.R3, fx-relay.R4, fx-relay.R5 | test | `zig build test`, src/relay/test.zig: "readKey", "an allowed model is forwarded with the relay's key, never the caller's headers", "models off the allow list, oversized bodies, bad JSON and other endpoints are refused locally", "browser pages, foreign Host headers, non-JSON bodies and routing fields are refused", "only standard chat-completion fields pass the relay", "the response cap and the call time limit cut a call", "a call whose time limit cannot be armed is refused", "the call cap refuses calls once used up", "upstream URLs: https anywhere, plain http only to loopback" | 65/65 passed at 986645a (PR #4), Zig 0.17.0, Linux x86_64, six runs, real loopback sockets, fixed resolver, stand-in upstreams; no network, synthetic key |
+| fx-relay.R6 | test | src/relay/test.zig: "an unreachable upstream gives 502 and a receipt", "end to end with the scripted model: tool calls stream through the relay" | Same run. The end-to-end test uses a scripted local model, not fx and not the gateway |
 | fx-relay.R3, fx-relay.R4 | probe | - | Linux, 30 Oct, reported by the network owner in PR #4: relay to the real gateway with a synthetic key passed the gateway's 401 through with an allow receipt; a model off the list got 403 and a deny receipt. No real key |
+| fx-relay.R11, fx-relay.R12, fx-relay.R13, fx-relay.R14, fx-relay.R18 | test | `integrations/fx/` (PR #9, 91885cb): 5 unit tests in the hook (quoting, run, interact and stop, blocked shapes, misconfiguration); the full fx build with the patch, natively and for aarch64-macos; the patch applies to a fresh v0.0.16 | Reported by the lead; not rerun by the spec session |
+| fx-relay.R11, fx-relay.R12, fx-relay.R17 | probe | Reported by the lead: fx v0.0.16 (commit 481104fd) with the patch, macOS 27.0.1, SIP on, a scripted test model | Four commands ran in four scopes: example.com allowed with a receipt, github.com 403 with a receipt, a direct connection refused by the OS, a variable from fx's environment did not reach the commands. Not a real model. No evidence entry yet |
 
 ## Terms
 

@@ -79,16 +79,17 @@ the operating system rules, which keep allowing only the proxy and relay ports.
 | Grants on the boot clock | network | done | |
 | Refuse the connection when the expiry timer cannot start | network | done | |
 | Close plain HTTP requests at grant expiry or revoke | network | done | |
-| `blackice grant` command, on top of the control socket's client helpers | lead | todo | |
+| `blackice grant` and `blackice revoke` commands (PR #7) | lead | done | |
 | Grant, expiry and generation in receipts | lead | todo | |
-| Show on macOS that a scoped process cannot reach the control socket | lead | todo | |
+| Show on macOS that a scoped process cannot reach the control socket | lead | done | |
 | Refuse Unix sockets inside Linux scopes (seccomp), so the control socket is out of reach | codex-linux | doing | |
 
 ## Evidence
 
 | Covers | Kind | Link | Note |
 |---|---|---|---|
-| grant.R1, grant.R6 | test | `zig build test`, src/proxy/test.zig: "a grant allows a refused name until it expires, and expiry closes the tunnel" | 36/36 passed at dd44a0e (PR #4), Zig 0.17.0, Linux x86_64; only the proxy side. The control socket tests at 7cb5f02 are not counted yet: one of them hangs in about two runs out of three |
+| grant.R1, grant.R5, grant.R6, grant.R7, grant.R9 | test | `zig build test`, src/proxy/test.zig: "a grant allows a refused name until it expires, and expiry closes the tunnel", "revoking a grant closes the tunnels opened under it", "a grant whose watchdog cannot start is refused, never unbounded", "grant expiry also cuts a plain HTTP exchange in flight"; src/control/test.zig: "grant and revoke from outside the scope", "requests are parsed strictly and bounded", "peerCred reports this process's uid and pid for a local peer", "a peer that never sends a full line is disconnected" | 65/65 passed at 986645a (PR #4), Zig 0.17.0, Linux x86_64, six runs, real loopback sockets, fixed resolver, stand-in upstreams; no network. The earlier hang in a control test did not recur. Same-user peers only; no test from inside a real scope yet |
+| grant.R1, grant.R2, grant.R6, grant.R8 | probe | Reported by the lead: `blackice run` (PR #7, 61ffe84) on macOS 27.0.1 (26A434), arm64, SIP on, ReleaseSafe | github.com refused; `blackice grant` from inside the scope refused by the OS (PermissionDenied); the owner's grant from outside let github.com through (`granted`, rule `grant:github.com`) while www.github.com stayed refused; the socket was gone after the scope ended. No evidence entry yet |
 
 ## Terms
 

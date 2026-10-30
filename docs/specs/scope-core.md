@@ -27,11 +27,12 @@ blackice exits with the command's own status, so it can sit in front of any comm
 | scope-core.R3 | If this platform has no enforcing backend, blackice shall refuse to run CMD, print the reason, write a `warning` receipt with reason `backend_unavailable`, and exit non-zero. It shall never run a command unconfined. | P0-10 |
 | scope-core.R4 | When a scope is created, blackice shall give it a new identifier (`s-` followed by 8 hex digits) and a state directory holding the exact policy bytes and the scope's `receipts.jsonl`. | P0-09 |
 | scope-core.R5 | blackice shall confine CMD and every process it starts so that they can open network connections only to the loopback ports of the scope's own proxy and, when present, its relay. | P0-02 |
-| scope-core.R6 | When CMD starts, blackice shall set `HTTP_PROXY`, `HTTPS_PROXY` and `ALL_PROXY`, in upper and lower case, to the scope's proxy address, and remove `NO_PROXY` and `no_proxy`. | P0-03 |
+| scope-core.R6 | When CMD starts, blackice shall set `HTTP_PROXY`, `HTTPS_PROXY` and `ALL_PROXY`, in upper and lower case, to the scope's proxy address, and set `NO_PROXY` and `no_proxy` to loopback only. | P0-03 |
 | scope-core.R7 | When the scope starts and ends, blackice shall write a `scope_start` and a `scope_end` receipt; `scope_end` carries CMD's exit status and the number of receipts that could not be written. | P0-09 |
-| scope-core.R8 | When CMD ends, blackice shall stop the scope's proxy and relay and exit with CMD's exit code, or 128 plus the signal number if CMD was killed by a signal. | P0-01 |
+| scope-core.R8 | When CMD ends, blackice shall stop the scope's control socket, relay and proxy, write `scope_end` as the scope's last receipt, and exit with CMD's exit code, or 128 plus the signal number if CMD was killed by a signal. It shall exit 125 when it cannot set up the scope and 127 when CMD cannot be started. | P0-01 |
 | scope-core.R9 | When `--name N` is given, blackice shall record N in the `scope_start` receipt as a label only; a name never selects or widens a policy. | P0-09 |
 | scope-core.R10 | blackice shall make the scope's state directory read-only, or hidden, for the command and every process it starts, and shall load the policy into memory once, never re-reading it from that directory. | P0-04 |
+| scope-core.R11 | When CMD starts, blackice shall give it a clean environment: only a short pass list (`PATH`, `HOME`, `TERM`, the locale and XDG base-directory variables, `AI_AGENT`), the names given with `--env NAME`, `BLACKICE_SCOPE` and the proxy variables. Nothing else from the caller's environment shall pass. | P0-07 |
 
 ## Design
 
@@ -77,21 +78,22 @@ loopback ports; names and addresses are then decided by the proxy.
 | Scope identifier and state directory | lead | done | |
 | Backend contract between the core and the platform backends | lead | done | |
 | Linux placeholder that refuses to run and writes a `backend_unavailable` receipt | lead | done | |
-| `blackice run`: arguments, policy load, scope creation, launch, exit status | lead | doing | |
-| Write the policy bytes into the state directory | lead | todo | |
-| State directory read-only inside the scope on macOS (`state_dir` in the launch contract) | lead | todo | |
+| `blackice run`: arguments, policy load, scope creation, launch, exit status (PR #7) | lead | done | |
+| Write the policy bytes into the state directory | lead | done | |
+| State directory read-only inside the scope on macOS, parents protected against rename | lead | done | |
 | State directory read-only or hidden inside the scope on Linux | codex-linux | doing | |
-| Proxy variables in the command's environment | lead | todo | |
-| `scope_start` and `scope_end` receipts, with the failed-write count | lead | todo | |
+| Proxy variables and the clean environment | lead | done | |
+| `scope_start` and `scope_end` receipts, with the failed-write count | lead | done | |
 | Decide and document what happens to processes left running after CMD exits | lead | todo | |
 | Create each scope's state directory exclusively (0700), with a new id on a clash | lead | done | |
-| Linux enforcing backend behind the same contract | codex-linux | todo | |
+| Linux enforcing backend behind the same contract (`run` refuses on Linux until it lands) | codex-linux | doing | |
 
 ## Evidence
 
 | Covers | Kind | Link | Note |
 |---|---|---|---|
 | scope-core.R4 | test | `zig build test`, src/core/scope.zig: "newId", "create" | Identifier format, and a new owner-only directory per scope. 21/21 passed at 99e2f4e (PR #1), Zig 0.17.0, Linux x86_64 |
+| scope-core.R5, scope-core.R10, scope-core.R11 | probe | Reported by the lead: `blackice run` (PR #7, 61ffe84) on macOS 27.0.1 (26A434), arm64, SIP on, ReleaseSafe | Through the proxy: example.com and registry.npmjs.org 200 with `allowed_by_rule` receipts; github.com 403 with `no_matching_rule`. With `--noproxy`, a name and 1.1.1.1 were refused by the sandbox. A caller variable off the pass list did not reach CMD. Writing the scope's receipts from inside: Operation not permitted, also after renaming a parent of the state root (that rename worked on the build before 61ffe84). No evidence entry yet |
 
 ## Terms
 

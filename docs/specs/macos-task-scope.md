@@ -82,13 +82,18 @@ or addresses, only "any host" or "localhost", so every decision about names happ
   - The proxy port: what happens if the proxy restarts or another local process takes its port, and how one
     scope's proxy is kept from serving another, belong to [proxy](proxy.md) and are untested.
   - Inherited sockets (R7) are untested.
+  - A connection the sandbox refuses leaves no receipt yet: only the proxy's decisions are receipted on macOS.
+  - The state root's parent directories are also denied rename, and the root is checked by its real path; an
+    earlier build let a command rename a parent and then write its own receipts.
 
 ## Tasks
 
 | Task | Owner | State | Blocked by |
 |---|---|---|---|
 | Profile generator and launch through sandbox-exec | lead | done | |
-| Wire `blackice run` on macOS: scope, proxy, receipts, launch | lead | doing | |
+| Wire `blackice run` on macOS: scope, proxy, receipts, launch (PR #7) | lead | done | |
+| Receipts for refusals made by the sandbox (today only proxy decisions leave one) | lead | todo | |
+| Protect the state root's parent directories against rename | lead | done | |
 | Cross-build for aarch64-macos | lead | done | |
 | End-to-end run on the Mac with SIP on, with receipts, an off-host receiver that sees nothing, and an evidence entry | lead | todo | |
 | Test hardening against launchd job creation (no window opens) | lead | done | |
@@ -108,6 +113,7 @@ or addresses, only "any host" or "localhost", so every decision about names happ
 | macos-task-scope.R3 | probe | Same probe | With all outbound network denied, `curl https://example.com` failed with "Could not resolve host" |
 | macos-task-scope.R4 | probe | Same probe | A background child, orphaned and adopted by launchd (parent PID 1), was still blocked |
 | macos-task-scope.R2 | probe | fx 0.0.16 inside the same kind of profile, scripted local model, stand-in proxy, SIP on | fx reached its model only on the allowed port; a direct `curl` from a tool could not resolve the host; through the stand-in proxy the request arrived as `CONNECT example.com:443` |
+| macos-task-scope.R1, macos-task-scope.R2, macos-task-scope.R10 | probe | Reported by the lead: `blackice run` (PR #7, 61ffe84) on macOS 27.0.1 (26A434), arm64, SIP on, ReleaseSafe | `curl --noproxy '*'` to a name failed (exit 6) and to 1.1.1.1 failed (exit 7); 169.254.169.254 through the proxy got `local_or_private_address`; writing the receipts from inside was refused, including after renaming a parent of the state root. No evidence entry yet |
 
 ## Terms
 
