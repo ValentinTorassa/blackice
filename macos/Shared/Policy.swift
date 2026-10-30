@@ -211,13 +211,16 @@ private struct RawPolicy: Decodable {
     }
 }
 
-func digestID(_ data: Data) -> String {
-    SHA256.hash(data: data).prefix(6).map { String(format: "%02x", $0) }.joined()
+func digestHex(_ data: Data) -> String {
+    SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
 }
+
+func digestID(_ data: Data) -> String { String(digestHex(data).prefix(12)) }
 
 /// Same policy version, byte digest, precedence and reasons as src/core/policy.zig.
 struct NetworkPolicy {
-    let id: String
+    let sha256: String
+    var id: String { String(sha256.prefix(12)) }
     let mode: String
     let patterns: [DomainPattern]
     let allowSubnets: [CIDR]
@@ -237,7 +240,7 @@ struct NetworkPolicy {
               !raw.network.ports.isEmpty, !raw.network.ports.contains(0) else {
             throw ConfigurationError.invalid("policy_limit_or_invalid_port")
         }
-        id = digestID(data)
+        sha256 = digestHex(data)
         mode = raw.network.mode
         patterns = try raw.network.allow.map(DomainPattern.init)
         allowSubnets = try raw.network.subnets.allow.map(CIDR.init)

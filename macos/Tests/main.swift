@@ -45,6 +45,7 @@ do {
     expect(allow.id.count == 12, "12 hex policy digest")
     let raw = Data(#"{"version":"blackice.policy/v0","network":{"mode":"deny-all"}}"#.utf8)
     expect(try NetworkPolicy(data: raw).id == digestID(raw), "hash original bytes")
+    expect(try NetworkPolicy(data: raw).sha256 == "f9789c9c9a6702d0db5723bad39cbfb2bfee0c7d786e71924d9373a84826e999", "full original-byte SHA-256 vector")
     expect(try NetworkPolicy(data: raw + Data([10])).id != digestID(raw), "whitespace changes byte digest")
     let deny = try policy(#"{"mode":"deny-all","subnets":{"allow":["0.0.0.0/0"]}}"#)
     expect(!deny.checkLiteral(ip("198.51.100.1")).allowed, "deny-all wins subnet")
@@ -118,6 +119,17 @@ do {
     expect(v6Only.checkLiteral(ip("::ffff:127.0.0.1")).reason == "local_or_private_address", "IPv6 wildcard does not permit mapped IPv4")
     expect(v6Only.checkLiteral(ip("93.184.216.34")).reason == "ip_literal_needs_subnet", "IPv6 wildcard does not permit IPv4")
     expect(v6Only.checkLiteral(ip("2606:4700::1111")).allowed, "IPv6 wildcard applies to IPv6")
+    let transitionsAllowed = try policy(#"{"mode":"allow-all","subnets":{"allow":["2001::/32","2002::/16","::cb00:7109/128","::ffff:0:cb00:7109/128"]}}"#)
+    for address in ["2001:0:4136:e378:8000:63bf:3fff:fdd2", "2002:cb00:7109::1", "::cb00:7109", "::ffff:0:cb00:7109"] {
+        expect(transitionsAllowed.checkResolved(ip(address)).reason == "allowed_subnet", "explicit subnet precedes transition classification")
+    }
+    for mode in ["deny-all", "allow-all", "allowlist"] {
+        let p = try policy("{\"mode\":\"\(mode)\",\"ports\":[443]}")
+        expect(p.evaluate(hostname: "2130706433", ip: ip("93.184.216.34"), port: 22).reason == "port_not_allowed", "port checked before mode/name")
+    }
+    for host in ["2130706433", "127.1", "0x7f000001", "0X7F.1", "0177.0.0.1", "1.2.3.4.", "foo.0x"] {
+        expect(normalizeHost(host) == nil, "core numeric-name normalization vector")
+    }
 
     let (_, config) = try configuration()
     expect(!AppEvaluator.evaluate(flow(), configuration: config).decision.allowed, "enrolled app deny")
@@ -142,6 +154,30 @@ do {
     rejects("unknown selector rejected") { _ = try AppConfiguration(data: JSONSerialization.data(withJSONObject: object)) }
     object.removeValue(forKey: "unknown_identity")
     let bindings = object["apps"] as! [[String: Any]]
+    expect(object["version"] as? String == "blackice.appscope/v0", "approved wrapper version")
+    expect(bindings[0]["policy_sha256"] as? String == digestHex(raw), "wrapper embeds full SHA-256")
+    var modified = object
+    modified["version"] = "blackice.apps/v0"
+    rejects("old wrapper name rejected") { _ = try AppConfiguration(data: JSONSerialization.data(withJSONObject: modified)) }
+    for value in [String(repeating: "0", count: 64), digestHex(raw).uppercased(), String(digestHex(raw).prefix(12))] {
+        var edited = bindings[0]
+        edited["policy_sha256"] = value
+        modified = object
+        modified["apps"] = [edited]
+        rejects("invalid or mismatched full digest rejected") { _ = try AppConfiguration(data: JSONSerialization.data(withJSONObject: modified)) }
+    }
+    var edited = bindings[0]
+    edited.removeValue(forKey: "policy_sha256")
+    modified = object
+    modified["apps"] = [edited]
+    rejects("digest required") { _ = try AppConfiguration(data: JSONSerialization.data(withJSONObject: modified)) }
+    edited = bindings[0]
+    edited["policy_json"] = (edited["policy_json"] as! String) + "\n"
+    modified["apps"] = [edited]
+    rejects("policy byte change invalidates digest") { _ = try AppConfiguration(data: JSONSerialization.data(withJSONObject: modified)) }
+    edited["policy_sha256"] = digestHex(Data((edited["policy_json"] as! String).utf8))
+    modified["apps"] = [edited]
+    expect(try AppConfiguration(data: JSONSerialization.data(withJSONObject: modified)).apps[0].policy.sha256 == edited["policy_sha256"] as? String, "matching digest preserves changed original bytes")
     object["apps"] = bindings + bindings
     rejects("duplicate binding rejected") { _ = try AppConfiguration(data: JSONSerialization.data(withJSONObject: object)) }
     expect(!validTeamID("A\" OR true") && !validSigningID("com.a\" or true"), "requirement injection rejected")
@@ -177,6 +213,21 @@ do {
     expect(Set(json.keys).isSubset(of: ["ts", "scope", "policy", "gen", "point", "event", "verdict", "reason", "rule", "host", "ip", "port", "status", "dropped", "detail"]), "flat core receipt schema")
     expect(Receipt.clean("a\u{1b}b\u{202e}c", limit: 16) == "a?b?c", "receipt control and bidi cleaning")
     expect(Receipt.clean("0123456789abñññ", limit: 16) == "0123456789ab...", "receipt UTF-8 boundary truncation")
+    let cleaningVectors: [(Data, String)] = [
+        (Data([0x61, 0x1b, 0x62, 0xff, 0x63]), "a?b?c"),
+        (Data("ñandú".utf8), "ñandú"),
+        (Data("0123456789abcdef".utf8), "0123456789abcdef"),
+        (Data("0123456789abcdefg".utf8), "0123456789abc..."),
+        (Data([0xc0, 0xaf]), "??"),
+        (Data([0xed, 0xa0, 0x80]), "???"),
+        (Data([0xf4, 0x90, 0x80, 0x80]), "????"),
+        (Data([0xe2, 0x82]), "??"),
+        (Data([0xef, 0xbb, 0xbf]), "?"),
+        (Data("x\u{85}\u{200b}\u{202e}\u{2066}y".utf8), "x????y")
+    ]
+    for (input, expected) in cleaningVectors {
+        expect(Receipt.clean(input, limit: 16) == expected, "core receipt byte-cleaning vector")
+    }
     var oversized = receipt
     oversized.event = String(repeating: "\"", count: 8192)
     oversized.host = String(repeating: "\"", count: 8192)

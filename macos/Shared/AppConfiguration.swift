@@ -3,7 +3,7 @@ import Foundation
 enum AppFilterConstants {
     static let hostBundleID = "com.blackice.app"
     static let extensionBundleID = "com.blackice.app.filter"
-    static let configurationKey = "blackice.apps.configuration"
+    static let configurationKey = "blackice.appscope.configuration"
     static let logSubsystem = "com.blackice.app.filter"
 }
 
@@ -13,19 +13,23 @@ struct AppBindingDocument: Codable {
     let signingID: String
     /// Exact UTF-8 policy bytes. No reserialization before computing the policy ID.
     let policyJSON: String
+    let policySHA256: String
     enum CodingKeys: String, CodingKey {
         case scope, teamID = "team_id", signingID = "signing_id", policyJSON = "policy_json"
+        case policySHA256 = "policy_sha256"
     }
     init(scope: String, teamID: String, signingID: String, policyJSON: String) {
         self.scope = scope; self.teamID = teamID; self.signingID = signingID; self.policyJSON = policyJSON
+        policySHA256 = digestHex(Data(policyJSON.utf8))
     }
     init(from decoder: Decoder) throws {
-        try decoder.rejectUnknownKeys(["scope", "team_id", "signing_id", "policy_json"])
+        try decoder.rejectUnknownKeys(["scope", "team_id", "signing_id", "policy_json", "policy_sha256"])
         let c = try decoder.container(keyedBy: CodingKeys.self)
         scope = try c.decode(String.self, forKey: .scope)
         teamID = try c.decode(String.self, forKey: .teamID)
         signingID = try c.decode(String.self, forKey: .signingID)
         policyJSON = try c.decode(String.self, forKey: .policyJSON)
+        policySHA256 = try c.decode(String.self, forKey: .policySHA256)
     }
 }
 
@@ -37,7 +41,7 @@ struct AppConfigurationDocument: Codable {
     let apps: [AppBindingDocument]
     enum CodingKeys: String, CodingKey { case version, generation, unmatched, hostnameMode = "hostname_mode", apps }
     init(generation: UInt32, unmatched: String, hostnameMode: String, apps: [AppBindingDocument]) {
-        version = "blackice.apps/v0"
+        version = "blackice.appscope/v0"
         self.generation = generation; self.unmatched = unmatched; self.hostnameMode = hostnameMode; self.apps = apps
     }
     init(from decoder: Decoder) throws {
@@ -82,7 +86,7 @@ struct AppConfiguration {
 
     init(data: Data) throws {
         let raw = try StrictJSON.decode(AppConfigurationDocument.self, from: data)
-        guard raw.version == "blackice.apps/v0", raw.generation > 0,
+        guard raw.version == "blackice.appscope/v0", raw.generation > 0,
               ["allow", "deny"].contains(raw.unmatched),
               ["ip-only", "os-metadata"].contains(raw.hostnameMode),
               !raw.apps.isEmpty, raw.apps.count <= 256 else {
@@ -97,6 +101,9 @@ struct AppConfiguration {
                 throw ConfigurationError.invalid("invalid_or_duplicate_app_binding")
             }
             let policy = try NetworkPolicy(data: Data(app.policyJSON.utf8))
+            guard app.policySHA256 == policy.sha256 else {
+                throw ConfigurationError.invalid("policy_sha256_mismatch")
+            }
             guard raw.hostnameMode == "os-metadata" || policy.patterns.isEmpty else {
                 throw ConfigurationError.invalid("unsupported_capability_hostname")
             }
