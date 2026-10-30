@@ -59,7 +59,7 @@ fn exercise(ipv6: bool) !void {
     try std.testing.expectEqual(@as(c_int, 0), try socketOption(server.socket.handle, l.SO.REUSEPORT));
     try std.testing.expectError(error.AddressInUse, listener.listen(port, ipv6));
 
-    const client = try server.socket.address.connect(io, .{ .mode = .stream, .protocol = .tcp, .timeout = .{ .duration = .{ .raw = .fromSeconds(2), .clock = .awake } } });
+    const client = try server.socket.address.connect(io, .{ .mode = .stream, .protocol = .tcp });
     var client_open = true;
     defer if (client_open) client.close(io);
     const accepted = try server.accept(io);
