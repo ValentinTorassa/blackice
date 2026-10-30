@@ -1,5 +1,3 @@
-import fs from 'node:fs';
-import path from 'node:path';
 import Link from 'next/link';
 import { Nav, Footer } from '../components/Chrome';
 import Scene from '../components/Scene';
@@ -30,16 +28,9 @@ import {
   IconTerminal,
 } from '../components/Icons';
 import { SITE } from '../content/site';
+import { DEMO, DEMO_POSTER } from '../content/demo';
 import { CHECKPOINTS } from '../content/status';
 import { recordedCheckpoints } from '../lib/evidence';
-
-// The demo video is not in the repository. A deployment copies it into site/public/demo/ before the build; without
-// it, the demo section is left out.
-const DEMO = [
-  { lang: 'en', label: 'English', src: '/demo/blackice-demo-en.mp4' },
-  { lang: 'es', label: 'Español', src: '/demo/blackice-demo-es.mp4' },
-].filter((s) => fs.existsSync(path.join(process.cwd(), 'public', s.src)));
-const DEMO_POSTER = fs.existsSync(path.join(process.cwd(), 'public', 'demo', 'poster.jpg')) ? '/demo/poster.jpg' : null;
 
 const NOUNS = [
   {
