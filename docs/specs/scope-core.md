@@ -97,6 +97,7 @@ loopback ports; names and addresses are then decided by the proxy.
 
 | Covers | Kind | Link | Note |
 |---|---|---|---|
+| scope-core.R4, scope-core.R6, scope-core.R7 | entry | [P0-03 macOS](../../evidence/P0-03-explicit-allow-macos.md) | macOS 27.0.1 arm64, SIP on, claude/run 58e73cc, Zig 0.17.0, one run, PR #10 (not merged). Each scope got its own id and directory, curl used the proxy variables, and every receipt file starts with `scope_start` and ends with `scope_end` (status and `dropped`) |
 | scope-core.R4 | test | `zig build test`, src/core/scope.zig: "newId", "create" | Identifier format, and a new owner-only directory per scope. 21/21 passed at 99e2f4e (PR #1), Zig 0.17.0, Linux x86_64 |
 | scope-core.R5, scope-core.R10, scope-core.R11 | probe | Reported by the lead: `blackice run` (PR #7, 61ffe84) on macOS 27.0.1 (26A434), arm64, SIP on, ReleaseSafe | Through the proxy: example.com and registry.npmjs.org 200 with `allowed_by_rule` receipts; github.com 403 with `no_matching_rule`. With `--noproxy`, a name and 1.1.1.1 were refused by the sandbox. A caller variable off the pass list did not reach CMD. Writing the scope's receipts from inside: Operation not permitted, also after renaming a parent of the state root (that rename worked on the build before 61ffe84). No evidence entry yet |
 

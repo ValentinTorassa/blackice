@@ -32,8 +32,8 @@ it, and every decision is written down. It runs locally, headless, with no accou
 |---|---|---|
 | P0-01 Policy before execution | A command cannot connect before its scope is armed, even at its first instruction. | pending |
 | P0-02 Real deny | A direct connection is refused by the OS, and a receiver on another machine sees nothing. Each protocol and address family is stated separately. | pending |
-| P0-03 Small explicit allow | One allowed destination works through the proxy; another is refused. | pending |
-| P0-04 Authorized change | The owner widens a scope from outside; the same request from inside fails. | pending |
+| P0-03 Small explicit allow | One allowed destination works through the proxy; another is refused. | macOS: [entry](../evidence/P0-03-explicit-allow-macos.md). Linux: pending |
+| P0-04 Authorized change | The owner widens a scope from outside; the same request from inside fails. | macOS: [entry](../evidence/P0-04-owner-grant-macos.md). Linux: pending |
 | P0-05 Bounded grant | The extra access ends at its expiry or when the scope ends. | pending |
 | P0-07 fx | fx runs with blackice and its commands are confined, with receipts. The fx version is pinned. | pending |
 | P0-08 Second platform | The same checks on the other OS, or the exact blocker. | pending |

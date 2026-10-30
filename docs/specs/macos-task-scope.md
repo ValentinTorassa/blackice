@@ -86,7 +86,8 @@ or addresses, only "any host" or "localhost", so every decision about names happ
   - Sandbox refusals reach the receipts by reading the kernel log (`log stream`, filtered to the scope's tag).
     Other processes of the same user can tag their own profiles, so receipts can be added to but not removed;
     bursts lose lines in the kernel log (239 of 300 in a tight loop), and repeats of one refusal are folded
-    and counted.
+    and counted. A refused connect to a Unix socket (for example the control socket) does not appear in the
+    kernel log, so it leaves no receipt; the P0-04 entry shows the error instead.
   - The state root's parent directories are also denied rename, hard links to files in the state root are refused,
     and the root is checked by its real path. An earlier build let a command rename a parent and then write
     its own receipts.
