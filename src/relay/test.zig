@@ -490,3 +490,59 @@ test "hardenProcess compiles for this target" {
     // Linux (prctl) and macOS (ptrace) paths when the tests are built for each target.
     _ = &relay.hardenProcess;
 }
+
+const fake_model = @import("fake_model.zig");
+
+fn postJson(io: Io, port: u16, body: []const u8) ![]u8 {
+    var client: http.Client = .{ .allocator = testing.allocator, .io = io };
+    defer client.deinit();
+    var url_buf: [64]u8 = undefined;
+    var aw: Io.Writer.Allocating = .init(testing.allocator);
+    errdefer aw.deinit();
+    const res = try client.fetch(.{
+        .location = .{ .url = try std.fmt.bufPrint(&url_buf, "http://127.0.0.1:{d}/v1/chat/completions", .{port}) },
+        .payload = body,
+        .response_writer = &aw.writer,
+        .headers = .{ .content_type = .{ .override = "application/json" } },
+    });
+    try testing.expectEqual(http.Status.ok, res.status);
+    return aw.toOwnedSlice();
+}
+
+test "end to end with the scripted model: tool calls stream through the relay" {
+    const io = testing.io;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var log = try receipt.Log.open(io, tmp.dir, "r.jsonl", "s-test0008", "000000000000");
+    defer log.close();
+    const steps = [_][]const u8{ "echo one", "echo two" };
+    const m = try fake_model.FakeModel.start(testing.allocator, io, 0, &steps, null);
+    defer m.stop();
+    var url_buf: [64]u8 = undefined;
+    const allowed = [_][]const u8{fake_model.model_id};
+    const r = try relay.Relay.start(testing.allocator, io, .{
+        .models = &allowed,
+        .upstream = try std.fmt.bufPrint(&url_buf, "http://127.0.0.1:{d}/v1", .{m.port}),
+    }, test_key, &log);
+    defer r.stop();
+
+    const first = try postJson(io, r.port,
+        \\{"model":"blackice-test/scripted","stream":true,"messages":[{"role":"user","content":"go"}],
+        \\ "tools":[{"type":"function","function":{"name":"shell","parameters":{}}}]}
+    );
+    defer testing.allocator.free(first);
+    try testing.expect(std.mem.find(u8, first, "\"tool_calls\"") != null);
+    try testing.expect(std.mem.find(u8, first, "echo one") != null);
+    try testing.expect(std.mem.find(u8, first, "\"delta\":{},\"finish_reason\":\"tool_calls\"") != null);
+    try testing.expect(std.mem.endsWith(u8, first, "data: [DONE]\n\n"));
+
+    const last = try postJson(io, r.port,
+        \\{"model":"blackice-test/scripted","messages":[{"role":"user","content":"go"},
+        \\ {"role":"tool","tool_call_id":"call_1","content":"one\n"},{"role":"tool","tool_call_id":"call_2","content":"two\n"}],
+        \\ "tools":[{"type":"function","function":{"name":"shell","parameters":{}}}]}
+    );
+    defer testing.allocator.free(last);
+    try testing.expect(std.mem.find(u8, last, "SCRIPTED TEST MODEL (not a real model). Tool results: one | two") != null);
+    try testing.expectEqual(@as(u32, 2), m.calls.load(.monotonic));
+    try testing.expectEqual(@as(u32, 2), r.callCount());
+}
