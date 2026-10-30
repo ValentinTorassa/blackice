@@ -243,8 +243,8 @@ own receipts. The patch names the fx release it applies to. L0 is the fallback.
 `api.example.com` for ten minutes".
 
 **Technical.** `blackice grant <scope> <host> --for <duration>`, sent over a control socket the scope cannot
-reach. It raises the policy generation, ends at its expiry or when the scope ends, whichever comes first, and
-applies to new connections.
+reach. Its own receipt records it, and the decisions it allows name it (`grant:<host>`). It ends at its
+expiry, on revoke or when the scope ends, whichever comes first, and closes the connections it opened.
 
 **See also.** owner, control socket, policy generation
 
@@ -387,9 +387,11 @@ decision.
 
 ## policy generation
 
-**Plain.** A counter that goes up each time a running scope's rules change, for example when a grant is added.
+**Plain.** A counter for changes to a running scope's policy. In v0 a running scope's policy never changes, so
+it is always 1.
 
-**Technical.** The `gen` field of a receipt. Generation 1 is the policy the scope started with.
+**Technical.** The `gen` field of a receipt. Generation 1 is the policy the scope started with. v0 has no live
+policy reload; grants are recorded by their own receipts, not as new generations.
 
 **See also.** grant, receipt
 

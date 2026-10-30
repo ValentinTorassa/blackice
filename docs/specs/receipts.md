@@ -54,8 +54,9 @@ and `jq` are enough to read it.
   `revoke`, `control` (a control request refused before its operation is known), `relay_call`, `kernel_drop`,
   `warning`. On macOS, `kernel_drop` comes from the kernel log ([macos-task-scope](macos-task-scope.md) R12).
 - `reason`: a policy reason code (see [policy](policy.md)) or a short error name for `warning` events.
-- `policy`: the first 12 hex digits of the SHA-256 of the policy file. `gen` starts at 1 and goes up by one
-  with each accepted grant or expiry ([grant](grant.md)).
+- `policy`: the first 12 hex digits of the SHA-256 of the policy file. `gen` is the policy generation: 1 for the
+  policy the scope started with. v0 has no live policy reload, so it stays 1; grants have their own receipts
+  ([grant](grant.md)).
 - Writer: `receipt.Log` serialises each line into a fixed 4 KiB buffer and appends it under a lock. Control
   characters, zero-width and bidirectional marks become `?`, and each field is cut at a character boundary to a
   fixed size, ending in `...`, so a decision line always fits (R9). Lines that still cannot be written are
