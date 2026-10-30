@@ -13,11 +13,21 @@
 //! the stream is live (a backend_armed receipt); seeing the last one proves every earlier refusal has been
 //! read, since the kernel delivers its lines in order. Probe lines are recognised by the probe's pid.
 //!
-//! Best effort, and stated in the receipts: the kernel folds repeated refusals by one process into
-//! "N duplicate reports for ...", which becomes one receipt with the count; it prints remote addresses as
-//! "*", so a receipt has the port but not the address; refusals by processes that outlive the command are
-//! not read after the scope ends. If the stream cannot start, the command still runs (enforcement does not
-//! depend on it) and a warning receipt says the refusal receipts are off.
+//! What the receipts can and cannot prove:
+//! - They can be added to, not removed. Any process of the same user can tag its own sandbox-exec profile
+//!   with "blackice <scope id>" and so add refusal lines that did not come from the scope. A refusal by the
+//!   scope always gets a receipt, within the limits below, even when its line cannot be parsed (reason
+//!   seatbelt_refused, with the raw line).
+//! - Repeats of one refusal (same operation, target and process) get one receipt and a count at the end. The
+//!   kernel also folds repeats itself ("N duplicate reports for ..."), which becomes repeats=N.
+//! - At most 256 distinct refusals get their own receipt; the last 32 after that are written at the end, and
+//!   the rest are counted in a warning.
+//! - Under a burst (hundreds of refusals a second) the kernel or the log system drops some lines: a tight loop
+//!   of 300 refused connects left 239 receipts on macOS 27.0.1. The refusals themselves all happened.
+//! - The kernel prints remote addresses as "*", so a receipt has the port but not the address.
+//! - Refusals by processes that outlive the command are not read after the scope ends.
+//! If the stream cannot start, the command still runs (enforcement does not depend on it) and a warning
+//! receipt says the refusal receipts are off.
 
 const std = @import("std");
 const Io = std.Io;
@@ -27,8 +37,12 @@ pub const log_bin = "/usr/bin/log";
 pub const sandbox_exec = "/usr/bin/sandbox-exec";
 pub const curl_bin = "/usr/bin/curl";
 
-/// At most this many refusal receipts per scope; the rest are counted in one warning.
+/// At most this many distinct refusals get a receipt while the scope runs.
 pub const max_receipts = 256;
+/// After the cap, the last this many distinct refusals are kept and written at the end.
+pub const tail_len = 32;
+/// Distinct refusals remembered for folding repeats.
+const max_keys = 1024;
 const probe_wait_ms = 2000;
 const poll_ms = 2;
 
@@ -40,7 +54,15 @@ pub fn tag(buf: []u8, scope_id: []const u8) ?[]const u8 {
     return std.fmt.bufPrint(buf, "blackice {s}", .{scope_id}) catch null;
 }
 
-/// One refusal, parsed from the kernel's message.
+/// The first line of a kernel message that ends with "\n" ++ `want_tag`, or null when the message is not ours.
+pub fn firstLine(message: []const u8, want_tag: []const u8) ?[]const u8 {
+    if (message.len < want_tag.len + 1) return null;
+    if (!std.mem.endsWith(u8, message, want_tag) or message[message.len - want_tag.len - 1] != '\n') return null;
+    const body = message[0 .. message.len - want_tag.len - 1];
+    return if (std.mem.findScalar(u8, body, '\n')) |i| body[0..i] else body;
+}
+
+/// One refusal, parsed from the first line of the kernel's message.
 pub const Refusal = struct {
     process: []const u8,
     pid: u32,
@@ -69,41 +91,45 @@ pub const Refusal = struct {
     }
 };
 
-/// Parses a kernel Sandbox message that ends with "\n" ++ `want_tag`. Null for anything else.
-pub fn parse(message: []const u8, want_tag: []const u8) ?Refusal {
-    if (message.len < want_tag.len + 1) return null;
-    if (!std.mem.endsWith(u8, message, want_tag) or message[message.len - want_tag.len - 1] != '\n') return null;
-    var line = message[0 .. message.len - want_tag.len - 1];
-    if (std.mem.findScalar(u8, line, '\n')) |i| line = line[0..i];
-
+/// Parses "[N duplicate reports for ]Sandbox: NAME(PID) deny(K) OP[ TARGET]". The process name is the
+/// command's choice and may itself hold " deny(", so the split is at the first "(PID) deny(K)" pattern.
+pub fn parse(line_in: []const u8) ?Refusal {
+    var line = line_in;
     var count: u32 = 1;
     if (std.mem.find(u8, line, " duplicate reports for ")) |i| {
-        count = std.fmt.parseInt(u32, line[0..i], 10) catch return null;
-        line = line[i + " duplicate reports for ".len ..];
+        if (std.fmt.parseInt(u32, line[0..i], 10)) |n| {
+            count = n;
+            line = line[i + " duplicate reports for ".len ..];
+        } else |_| {}
     }
     const prefix = "Sandbox: ";
     if (!std.mem.startsWith(u8, line, prefix)) return null;
     line = line[prefix.len..];
 
-    const deny_at = std.mem.find(u8, line, " deny(") orelse return null;
-    const who = line[0..deny_at];
-    const open = std.mem.findScalarLast(u8, who, '(') orelse return null;
-    if (who.len < open + 2 or who[who.len - 1] != ')') return null;
-    const pid = std.fmt.parseInt(u32, who[open + 1 .. who.len - 1], 10) catch return null;
-
-    var rest = line[deny_at + " deny(".len ..];
-    const close = std.mem.find(u8, rest, ") ") orelse return null;
-    rest = rest[close + 2 ..];
-    const sp = std.mem.findScalar(u8, rest, ' ');
-    const op = if (sp) |i| rest[0..i] else rest;
-    if (op.len == 0) return null;
-    return .{
-        .process = who[0..open],
-        .pid = pid,
-        .op = op,
-        .target = if (sp) |i| rest[i + 1 ..] else "",
-        .count = count,
-    };
+    var i: usize = 0;
+    while (std.mem.findScalarPos(u8, line, i, '(')) |open| : (i = open + 1) {
+        var j = open + 1;
+        while (j < line.len and std.ascii.isDigit(line[j])) j += 1;
+        if (j == open + 1 or !std.mem.startsWith(u8, line[j..], ") deny(")) continue;
+        var k = j + ") deny(".len;
+        const k0 = k;
+        while (k < line.len and std.ascii.isDigit(line[k])) k += 1;
+        if (k == k0 or k >= line.len or line[k] != ')') continue;
+        if (k + 1 < line.len and line[k + 1] != ' ') continue;
+        const pid = std.fmt.parseInt(u32, line[open + 1 .. j], 10) catch continue;
+        const rest = if (k + 2 <= line.len) line[k + 2 ..] else "";
+        const sp = std.mem.findScalar(u8, rest, ' ');
+        const op = if (sp) |s| rest[0..s] else rest;
+        if (op.len == 0) return null;
+        return .{
+            .process = line[0..open],
+            .pid = pid,
+            .op = op,
+            .target = if (sp) |s| rest[s + 1 ..] else "",
+            .count = count,
+        };
+    }
+    return null;
 }
 
 /// The `log stream` predicate for a tag: the kernel, the Sandbox extension, and the tag as the last line.
@@ -115,6 +141,14 @@ pub fn predicate(buf: []u8, t: []const u8) ?[]const u8 {
 pub fn probeProfile(buf: []u8, t: []const u8) ?[]const u8 {
     return std.fmt.bufPrint(buf, "(version 1)(allow default)(deny network-outbound (with message \"{s}\"))", .{t}) catch null;
 }
+
+/// A receipt kept for later (after the cap): copies, since the line it came from is gone by then.
+const Kept = struct {
+    reason: []const u8 = "",
+    port: ?u16 = null,
+    detail_buf: [400]u8 = undefined,
+    detail_len: usize = 0,
+};
 
 pub const Watch = struct {
     gpa: std.mem.Allocator,
@@ -130,7 +164,14 @@ pub const Watch = struct {
     /// The pid of the probe in flight, 0 when none.
     probe_pid: u32 = 0,
     probe_seen: bool = false,
+    /// Distinct refusals seen, as hashes, and how many repeats were folded into an earlier receipt.
+    keys: [max_keys]u64 = undefined,
+    key_count: usize = 0,
+    folded: u64 = 0,
     written: usize = 0,
+    /// Distinct refusals after the cap: the last `tail_len` are kept, the rest only counted.
+    tail: [tail_len]Kept = undefined,
+    tail_next: usize = 0,
     over_cap: u64 = 0,
 
     fn tagSlice(w: *const Watch) []const u8 {
@@ -192,20 +233,30 @@ pub const Watch = struct {
         return null;
     }
 
-    /// After the command: waits for an end probe (so every earlier refusal is read), then stops the stream.
+    /// After the command: waits for an end probe (so every earlier refusal is read), stops the stream, then
+    /// writes what was held back: the tail after the cap and the counts.
     pub fn finish(w: *Watch) void {
         const complete = w.probe();
         w.stop();
-        w.mutex.lockUncancelable(w.io);
-        const over = w.over_cap;
-        w.mutex.unlock(w.io);
+        // The reader has ended; nothing else touches the state now.
+        const kept = @min(w.over_cap, tail_len);
+        var i: usize = 0;
+        while (i < kept) : (i += 1) {
+            const at = (w.tail_next + tail_len - kept + i) % tail_len;
+            const k = &w.tail[at];
+            w.receipts.write(.{ .event = "kernel_drop", .point = .kernel, .verdict = .deny, .reason = k.reason, .port = k.port, .detail = k.detail_buf[0..k.detail_len] });
+        }
+        var buf: [160]u8 = undefined;
+        if (w.over_cap > kept) {
+            const detail = std.fmt.bufPrint(&buf, "{d} more distinct refusals after the first {d} receipts have no receipt; the last {d} are above; enforcement unchanged", .{ w.over_cap - kept, max_receipts, kept }) catch "more refusals than receipts";
+            w.receipts.write(.{ .event = "warning", .point = .kernel, .reason = "kernel_receipts_lost", .detail = detail });
+        }
+        if (w.folded > 0) {
+            const detail = std.fmt.bufPrint(&buf, "{d} repeats of refusals that already have a receipt", .{w.folded}) catch "repeats folded";
+            w.receipts.write(.{ .event = "warning", .point = .kernel, .reason = "kernel_receipts_folded", .detail = detail });
+        }
         if (!complete) {
             w.receipts.write(.{ .event = "warning", .point = .kernel, .reason = "kernel_receipts_lost", .detail = "the end probe did not arrive; refusals at the very end may have no receipt; enforcement unchanged" });
-        }
-        if (over > 0) {
-            var buf: [128]u8 = undefined;
-            const detail = std.fmt.bufPrint(&buf, "{d} more refusals after the first {d} receipts; enforcement unchanged", .{ over, max_receipts }) catch "more refusals than receipts";
-            w.receipts.write(.{ .event = "warning", .point = .kernel, .reason = "kernel_receipts_lost", .detail = detail });
         }
         w.destroy();
     }
@@ -286,38 +337,75 @@ pub const Watch = struct {
         const ev = std.json.parseFromSliceLeaky(Event, arena, line, .{ .ignore_unknown_fields = true }) catch return;
         // The predicate already asks for this; checked again so a change in `log` cannot widen it.
         if (ev.processID != 0 or !std.mem.endsWith(u8, ev.senderImagePath, "/Sandbox")) return;
-        const ref = parse(ev.eventMessage, w.tagSlice()) orelse return;
+        const first = firstLine(ev.eventMessage, w.tagSlice()) orelse return;
 
-        const io = w.io;
-        w.mutex.lockUncancelable(io);
-        if (w.probe_pid != 0 and ref.pid == w.probe_pid) {
-            w.probe_seen = true;
-            w.mutex.unlock(io);
-            return;
+        // From here the line is a tagged refusal and must leave a trace, parsed or not.
+        var detail_buf: [400]u8 = undefined;
+        var dw: Io.Writer = .fixed(&detail_buf);
+        var reason: []const u8 = "seatbelt_refused";
+        var port: ?u16 = null;
+        var count: u64 = 1;
+        var key: u64 = 0;
+        if (parse(first)) |ref| {
+            w.mutex.lockUncancelable(w.io);
+            const is_probe = w.probe_pid != 0 and ref.pid == w.probe_pid;
+            if (is_probe) w.probe_seen = true;
+            w.mutex.unlock(w.io);
+            if (is_probe) return;
+            reason = ref.reason();
+            port = ref.port();
+            count = ref.count;
+            dw.print("backend=seatbelt op={s} target={s} process={s} pid={d}", .{
+                ref.op,
+                if (ref.target.len > 0) ref.target else "-",
+                ref.process,
+                ref.pid,
+            }) catch {};
+            if (ref.count > 1) dw.print(" repeats={d}", .{ref.count}) catch {};
+            var h: std.hash.Wyhash = .init(0);
+            h.update(ref.op);
+            h.update("\x00");
+            h.update(ref.target);
+            h.update("\x00");
+            h.update(ref.process);
+            key = h.final();
+        } else {
+            dw.print("backend=seatbelt unparsed: {s}", .{first}) catch {};
+            key = std.hash.Wyhash.hash(1, first);
+        }
+
+        w.mutex.lockUncancelable(w.io);
+        for (w.keys[0..w.key_count]) |k| {
+            if (k == key) {
+                w.folded += count;
+                w.mutex.unlock(w.io);
+                return;
+            }
+        }
+        if (w.key_count < max_keys) {
+            w.keys[w.key_count] = key;
+            w.key_count += 1;
         }
         if (w.written >= max_receipts) {
-            w.over_cap += ref.count;
-            w.mutex.unlock(io);
+            const slot = &w.tail[w.tail_next];
+            const d = dw.buffered();
+            @memcpy(slot.detail_buf[0..d.len], d);
+            slot.detail_len = d.len;
+            slot.reason = reason;
+            slot.port = port;
+            w.tail_next = (w.tail_next + 1) % tail_len;
+            w.over_cap += 1;
+            w.mutex.unlock(w.io);
             return;
         }
         w.written += 1;
-        w.mutex.unlock(io);
-
-        var detail_buf: [512]u8 = undefined;
-        var dw: Io.Writer = .fixed(&detail_buf);
-        dw.print("backend=seatbelt op={s} target={s} process={s} pid={d}", .{
-            ref.op,
-            if (ref.target.len > 0) ref.target else "-",
-            ref.process,
-            ref.pid,
-        }) catch {};
-        if (ref.count > 1) dw.print(" repeats={d}", .{ref.count}) catch {};
+        w.mutex.unlock(w.io);
         w.receipts.write(.{
             .event = "kernel_drop",
             .point = .kernel,
             .verdict = .deny,
-            .reason = ref.reason(),
-            .port = ref.port(),
+            .reason = reason,
+            .port = port,
             .detail = dw.buffered(),
         });
     }
@@ -335,9 +423,17 @@ test tag {
     try testing.expect(tag(&buf, "x-0a1b2c3d") == null);
 }
 
-test parse {
+test firstLine {
     const t = "blackice s-395b9848";
-    const a = parse("Sandbox: curl(5314) deny(1) network-outbound remote:*:443\nblackice s-395b9848", t).?;
+    try testing.expectEqualStrings("Sandbox: curl(1) deny(1) network-outbound remote:*:443", firstLine("Sandbox: curl(1) deny(1) network-outbound remote:*:443\nblackice s-395b9848", t).?);
+    try testing.expect(firstLine("Sandbox: curl(1) deny(1) network-outbound remote:*:443\nblackice s-00000000", t) == null);
+    try testing.expect(firstLine("Sandbox: curl(1) deny(1) network-outbound remote:*:443 blackice s-395b9848", t) == null);
+    // A path holding the tag: only the first line counts.
+    try testing.expectEqualStrings("Sandbox: sh(9) deny(1) file-write-create /tmp/a", firstLine("Sandbox: sh(9) deny(1) file-write-create /tmp/a\nblackice s-395b9848\nblackice s-395b9848", t).?);
+}
+
+test parse {
+    const a = parse("Sandbox: curl(5314) deny(1) network-outbound remote:*:443").?;
     try testing.expectEqualStrings("curl", a.process);
     try testing.expectEqual(@as(u32, 5314), a.pid);
     try testing.expectEqualStrings("network-outbound", a.op);
@@ -345,38 +441,35 @@ test parse {
     try testing.expectEqual(@as(?u16, 443), a.port());
     try testing.expectEqualStrings("loopback_proxy_only", a.reason());
 
-    const dns = parse("Sandbox: curl(5325) deny(1) network-outbound /private/var/run/mDNSResponder\nblackice s-395b9848", t).?;
+    const dns = parse("Sandbox: curl(5325) deny(1) network-outbound /private/var/run/mDNSResponder").?;
     try testing.expect(dns.port() == null);
     try testing.expectEqualStrings("/private/var/run/mDNSResponder", dns.target);
 
-    const dup = parse("4 duplicate reports for Sandbox: Python(5342) deny(1) network-outbound remote:*:443\nblackice s-395b9848", t).?;
+    const dup = parse("4 duplicate reports for Sandbox: Python(5342) deny(1) network-outbound remote:*:443").?;
     try testing.expectEqual(@as(u32, 4), dup.count);
     try testing.expectEqualStrings("Python", dup.process);
 
-    const bind = parse("Sandbox: Python(5333) deny(1) network-bind local:*:0\nblackice s-395b9848", t).?;
+    const bind = parse("Sandbox: Python(5333) deny(1) network-bind local:*:0").?;
     try testing.expectEqualStrings("clients_only", bind.reason());
     try testing.expectEqual(@as(?u16, 0), bind.port());
 
-    const job = parse("Sandbox: launchctl(5340) deny(1) job-creation\nblackice s-395b9848", t).?;
+    const job = parse("Sandbox: launchctl(5340) deny(1) job-creation").?;
     try testing.expectEqualStrings("", job.target);
     try testing.expectEqualStrings("launch_outside_scope", job.reason());
 
-    const file = parse("Sandbox: touch(5372) deny(1) file-write-create /private/tmp/x/state/scopes/forged\nblackice s-395b9848", t).?;
-    try testing.expectEqualStrings("protected_path", file.reason());
+    try testing.expectEqualStrings("protected_path", parse("Sandbox: touch(5372) deny(1) file-write-create /x/state/scopes/f").?.reason());
 
-    // A process name with parentheses keeps them.
-    const odd = parse("Sandbox: a(b)(77) deny(1) network-outbound remote:*:80\nblackice s-395b9848", t).?;
+    // Process names are the command's choice: parentheses and " deny(" inside them are kept.
+    const odd = parse("Sandbox: a(b)(77) deny(1) network-outbound remote:*:80").?;
     try testing.expectEqualStrings("a(b)", odd.process);
     try testing.expectEqual(@as(u32, 77), odd.pid);
+    const sneaky = parse("Sandbox: x deny((91) deny(1) network-outbound remote:*:443").?;
+    try testing.expectEqualStrings("x deny(", sneaky.process);
+    try testing.expectEqual(@as(u32, 91), sneaky.pid);
 
-    // Not ours, or not the kernel's format.
-    try testing.expect(parse("Sandbox: curl(1) deny(1) network-outbound remote:*:443\nblackice s-00000000", t) == null);
-    try testing.expect(parse("Sandbox: curl(1) deny(1) network-outbound remote:*:443 blackice s-395b9848", t) == null);
-    try testing.expect(parse("hello\nblackice s-395b9848", t) == null);
-    try testing.expect(parse("Sandbox: curl(x) deny(1) network-outbound\nblackice s-395b9848", t) == null);
-    // A path holding the tag is still parsed from the first line only.
-    const path = parse("Sandbox: sh(9) deny(1) file-write-create /tmp/a\nblackice s-395b9848\nblackice s-395b9848", t).?;
-    try testing.expectEqualStrings("/tmp/a", path.target);
+    try testing.expect(parse("hello") == null);
+    try testing.expect(parse("Sandbox: curl(x) deny(1) network-outbound") == null);
+    try testing.expect(parse("Sandbox: curl(12) deny(1) ") == null);
 }
 
 test predicate {

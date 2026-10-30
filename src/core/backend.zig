@@ -73,6 +73,18 @@ pub const available = switch (builtin.os.tag) {
     else => false,
 };
 
+/// Whether the backend honors LaunchSpec.protected_paths. blackice run refuses to start a scope with
+/// protected paths on a backend that does not (fail closed), since a scope could then swap in what the next
+/// scope runs.
+pub const protects_paths = switch (builtin.os.tag) {
+    .macos => true,
+    .linux => blk: {
+        const linux = @import("../linux/backend.zig");
+        break :blk @hasDecl(linux, "protects_paths") and linux.protects_paths;
+    },
+    else => false,
+};
+
 pub fn launch(gpa: std.mem.Allocator, io: Io, spec: LaunchSpec) Error!Exit {
     return switch (builtin.os.tag) {
         .macos => @import("../macos/seatbelt.zig").launch(gpa, io, spec),

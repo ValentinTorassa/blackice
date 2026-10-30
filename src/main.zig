@@ -52,7 +52,7 @@ pub fn main(init: std.process.Init) !u8 {
     }
     if (std.mem.eql(u8, cmd, "run")) {
         errw.flush() catch {};
-        return run_cmd.run(init.gpa, io, init.environ_map, args[2..], errw);
+        return run_cmd.run(init.gpa, io, init.environ_map, args[0], args[2..], errw);
     }
     if (std.mem.eql(u8, cmd, "policy") and args.len == 4 and std.mem.eql(u8, args[2], "check")) {
         return policyCheck(init.gpa, io, args[3], out, errw);
