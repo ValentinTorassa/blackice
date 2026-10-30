@@ -1,0 +1,321 @@
+diff --git a/src/builtins/hooks.zig b/src/builtins/hooks.zig
+index 0ee675c..843ee71 100644
+--- a/src/builtins/hooks.zig
++++ b/src/builtins/hooks.zig
+@@ -9,6 +9,8 @@ const hooks = @import("../core/hooks/hooks.zig");
+ const herdr = @import("hooks/herdr.zig");
+ 
+ pub const notifications = @import("hooks/notifications.zig");
++/// blackice task scopes for shell commands (declared blackice patch, not upstream fx).
++pub const blackice = @import("hooks/blackice.zig");
+ pub const Client = herdr.Client;
+ 
+ pub fn Runtime(comptime App: type) type {
+diff --git a/src/builtins/hooks/blackice.zig b/src/builtins/hooks/blackice.zig
+new file mode 100644
+index 0000000..e8c35be
+--- /dev/null
++++ b/src/builtins/hooks/blackice.zig
+@@ -0,0 +1,250 @@
++//! blackice task scopes for the commands fx runs.
++//!
++//! This file is a declared patch to fx v0.0.16, kept in the blackice repository (integrations/fx). It is not
++//! part of upstream fx.
++//!
++//! Enabled when FX_BLACKICE_POLICY names a policy file (absolute path). A PreToolUse handler then acts before
++//! fx validates, reviews or runs a tool call:
++//! - `shell` that starts a command (action "run", or no action and a command): the command is rewritten to
++//!       '<blackice>' run --policy '<policy>' -- '<shell>' <no-startup-files flag> -c '<command>'
++//!   so it starts inside its own blackice task scope: network only through the scope's proxy, decided by the
++//!   policy, with receipts, and a clean environment. The shell is the call's own `shell.path` or $SHELL when
++//!   it is a POSIX shell, else /bin/sh; it starts without startup files, so they cannot add secrets back.
++//! - `shell` interact and stop: unchanged; they talk to a session that was started inside a scope.
++//! - `web_fetch` and `web_search`: blocked. They run inside fx, outside any scope.
++//! - A call that cannot be read safely (a request wrapper, a command that is not a string or holds a NUL
++//!   byte, a shell that is not POSIX) is blocked, never run unscoped.
++//! FX_BLACKICE_BIN is the blackice executable (absolute path; default "blackice" from PATH).
++//!
++//! fx's own permission modes still apply, to the rewritten command. In this mode fx itself and its model
++//! traffic stay outside the scopes.
++
++const std = @import("std");
++const hooks = @import("../../core/hooks/hooks.zig");
++const io_mod = @import("../../core/shared/io.zig");
++
++pub const handler_name = "blackice.scope_shell";
++
++pub const State = struct {
++    enabled: bool = false,
++    /// When set, every shell and web call is blocked with this reason (misconfiguration fails closed).
++    problem: ?[]const u8 = null,
++    bin: []const u8 = "blackice",
++    policy: []const u8 = "",
++    /// $SHELL when it is a POSIX shell.
++    default_shell: ?[]const u8 = null,
++
++    pub fn initFromEnv(state: *State) void {
++        state.configure(io_mod.getenv("FX_BLACKICE_POLICY"), io_mod.getenv("FX_BLACKICE_BIN"), io_mod.getenv("SHELL"));
++    }
++
++    pub fn configure(state: *State, policy: ?[]const u8, bin: ?[]const u8, shell: ?[]const u8) void {
++        const p = policy orelse return;
++        state.enabled = true;
++        if (p.len == 0 or p[0] != '/' or std.mem.findScalar(u8, p, 0) != null) {
++            state.problem = "blackice: FX_BLACKICE_POLICY must be an absolute path to a policy file.";
++            return;
++        }
++        state.policy = p;
++        if (bin) |b| {
++            if (b.len == 0 or b[0] != '/' or std.mem.findScalar(u8, b, 0) != null) {
++                state.problem = "blackice: FX_BLACKICE_BIN must be an absolute path to the blackice executable.";
++                return;
++            }
++            state.bin = b;
++        }
++        if (shell) |s| {
++            if (shellKind(s) != null) state.default_shell = s;
++        }
++    }
++};
++
++pub fn register(runtime: *hooks.Runtime, state: *State) !void {
++    if (!state.enabled) return;
++    try runtime.registerPreToolUse(.{ .name = handler_name, .ctx = state, .run = preToolUse });
++}
++
++const ShellKind = enum { sh, bash, zsh };
++
++/// POSIX shells the rewrite knows how to start without startup files.
++fn shellKind(path: []const u8) ?ShellKind {
++    if (path.len == 0 or path[0] != '/' or std.mem.findScalar(u8, path, 0) != null) return null;
++    const base = if (std.mem.findScalarLast(u8, path, '/')) |i| path[i + 1 ..] else path;
++    if (std.mem.eql(u8, base, "bash")) return .bash;
++    if (std.mem.eql(u8, base, "zsh")) return .zsh;
++    if (std.mem.eql(u8, base, "sh") or std.mem.eql(u8, base, "dash") or std.mem.eql(u8, base, "ksh")) return .sh;
++    return null;
++}
++
++/// One POSIX single-quoted word: nothing inside is special except the quote, written as '\''.
++fn appendQuoted(out: *std.ArrayList(u8), gpa: std.mem.Allocator, s: []const u8) !void {
++    try out.append(gpa, '\'');
++    for (s) |c| {
++        if (c == '\'') try out.appendSlice(gpa, "'\\''") else try out.append(gpa, c);
++    }
++    try out.append(gpa, '\'');
++}
++
++/// The rewritten command line.
++pub fn wrapCommand(gpa: std.mem.Allocator, state: *const State, shell_path: []const u8, command: []const u8) ![]u8 {
++    const kind = shellKind(shell_path) orelse return error.UnsupportedShell;
++    var out: std.ArrayList(u8) = .empty;
++    errdefer out.deinit(gpa);
++    try appendQuoted(&out, gpa, state.bin);
++    try out.appendSlice(gpa, " run --policy ");
++    try appendQuoted(&out, gpa, state.policy);
++    try out.appendSlice(gpa, " -- ");
++    try appendQuoted(&out, gpa, shell_path);
++    try out.appendSlice(gpa, switch (kind) {
++        .zsh => " -f -c ",
++        .bash => " --noprofile --norc -c ",
++        .sh => " -c ",
++    });
++    try appendQuoted(&out, gpa, command);
++    return out.toOwnedSlice(gpa);
++}
++
++pub const Decision = union(enum) {
++    keep,
++    /// New arguments JSON.
++    rewrite: []u8,
++    block: []const u8,
++};
++
++/// The whole decision, separate from the hook plumbing so it can be tested.
++pub fn decide(arena: std.mem.Allocator, state: *const State, tool_name: []const u8, arguments_json: []const u8) !Decision {
++    const is_shell = std.mem.eql(u8, tool_name, "shell");
++    const is_web = std.mem.eql(u8, tool_name, "web_fetch") or std.mem.eql(u8, tool_name, "web_search");
++    if (!is_shell and !is_web) return .keep;
++    if (state.problem) |p| return .{ .block = p };
++    if (is_web) return .{ .block = "blackice: fx's own web tools run outside every blackice scope, so they are off. " ++
++        "Use a shell command (for example curl) instead; it runs in a scope under the network policy." };
++
++    const parsed = std.json.parseFromSliceLeaky(std.json.Value, arena, arguments_json, .{}) catch
++        return .{ .block = "blackice: the shell arguments are not a JSON object; the call was not run." };
++    if (parsed != .object) return .{ .block = "blackice: the shell arguments are not a JSON object; the call was not run." };
++    var object = parsed.object;
++    if (object.get("request") != null)
++        return .{ .block = "blackice: send the shell fields at the top level (no request wrapper)." };
++
++    const starts_command = if (object.get("action")) |a| switch (a) {
++        .string => |s| std.mem.eql(u8, s, "run"),
++        .null => object.get("command") != null,
++        else => return .{ .block = "blackice: the shell action must be run, interact or stop." },
++    } else object.get("command") != null;
++    if (!starts_command) return .keep;
++
++    const command = switch (object.get("command") orelse return .{ .block = "blackice: a shell run needs a command." }) {
++        .string => |s| s,
++        else => return .{ .block = "blackice: the shell command must be a string." },
++    };
++    if (std.mem.findScalar(u8, command, 0) != null) return .{ .block = "blackice: the shell command holds a NUL byte." };
++
++    var shell_path: []const u8 = state.default_shell orelse "/bin/sh";
++    if (object.get("shell")) |sv| switch (sv) {
++        .null => {},
++        .object => |so| {
++            const path = so.get("path") orelse return .{ .block = "blackice: the shell field needs a path." };
++            if (path != .string or shellKind(path.string) == null)
++                return .{ .block = "blackice: only sh, bash and zsh (absolute path) are supported in blackice mode." };
++            shell_path = path.string;
++        },
++        else => return .{ .block = "blackice: the shell field must be an object." },
++    };
++
++    const wrapped = try wrapCommand(arena, state, shell_path, command);
++    try object.put(arena, "command", .{ .string = wrapped });
++    const json = try std.fmt.allocPrint(arena, "{f}", .{std.json.fmt(std.json.Value{ .object = object }, .{})});
++    return .{ .rewrite = json };
++}
++
++/// The returned slices must stay valid until the hook runtime copies them, which it does right after this
++/// handler returns, on the same thread.
++threadlocal var last_arena: ?std.heap.ArenaAllocator = null;
++
++fn preToolUse(ctx: *anyopaque, input: hooks.PreToolUseInput) hooks.HandlerError!hooks.PreToolUseAction {
++    const state: *const State = @ptrCast(@alignCast(ctx));
++    if (last_arena) |*a| a.deinit();
++    last_arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
++    const arena = last_arena.?.allocator();
++    const decision = decide(arena, state, input.tool_name, input.arguments_json) catch
++        return .{ .block = "blackice: the call could not be prepared for a scope; it was not run." };
++    return switch (decision) {
++        .keep => .continue_,
++        .rewrite => |json| .{ .rewrite_arguments = json },
++        .block => |reason| .{ .block = reason },
++    };
++}
++
++// ---------------------------------------------------------------- tests
++
++const testing = std.testing;
++
++fn testState() State {
++    var s: State = .{};
++    s.configure("/home/u/policy.json", "/usr/local/bin/blackice", "/bin/zsh");
++    return s;
++}
++
++test "a shell run is rewritten into a scope, quoting kept intact" {
++    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
++    defer arena_state.deinit();
++    const arena = arena_state.allocator();
++    const s = testState();
++    const d = try decide(arena, &s, "shell",
++        \\{"action":"run","command":"echo 'it''s' && curl -s https://example.com | head -1","cwd":"src"}
++    );
++    const json = d.rewrite;
++    const v = try std.json.parseFromSliceLeaky(std.json.Value, arena, json, .{});
++    try testing.expectEqualStrings("src", v.object.get("cwd").?.string);
++    try testing.expectEqualStrings(
++        \\'/usr/local/bin/blackice' run --policy '/home/u/policy.json' -- '/bin/zsh' -f -c 'echo '\''it'\'''\''s'\'' && curl -s https://example.com | head -1'
++    , v.object.get("command").?.string);
++}
++
++test "a command without an action is still a run; interact and stop are kept" {
++    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
++    defer arena_state.deinit();
++    const arena = arena_state.allocator();
++    const s = testState();
++    try testing.expect((try decide(arena, &s, "shell", "{\"command\":\"ls\"}")) == .rewrite);
++    try testing.expect((try decide(arena, &s, "shell", "{\"action\":null,\"command\":\"ls\"}")) == .rewrite);
++    try testing.expect((try decide(arena, &s, "shell", "{\"action\":\"interact\",\"session_id\":\"shell-1\",\"chars\":\"y\\n\"}")) == .keep);
++    try testing.expect((try decide(arena, &s, "shell", "{\"action\":\"stop\",\"session_id\":\"shell-1\"}")) == .keep);
++    try testing.expect((try decide(arena, &s, "read_file", "{\"path\":\"a\"}")) == .keep);
++}
++
++test "unsafe or unknown shapes are blocked, never run unscoped" {
++    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
++    defer arena_state.deinit();
++    const arena = arena_state.allocator();
++    const s = testState();
++    try testing.expect((try decide(arena, &s, "web_fetch", "{\"url\":\"https://x.test\"}")) == .block);
++    try testing.expect((try decide(arena, &s, "web_search", "{\"query\":\"x\"}")) == .block);
++    try testing.expect((try decide(arena, &s, "shell", "{\"request\":{\"command\":\"ls\"}}")) == .block);
++    try testing.expect((try decide(arena, &s, "shell", "{\"action\":\"run\",\"command\":[\"ls\"]}")) == .block);
++    try testing.expect((try decide(arena, &s, "shell", "{\"action\":\"run\",\"command\":\"ls\\u0000x\"}")) == .block);
++    try testing.expect((try decide(arena, &s, "shell", "{\"action\":\"run\",\"command\":\"ls\",\"shell\":{\"kind\":\"executable\",\"path\":\"/usr/bin/fish\"}}")) == .block);
++    try testing.expect((try decide(arena, &s, "shell", "not json")) == .block);
++    // An explicit POSIX shell is used as given.
++    const d = try decide(arena, &s, "shell", "{\"action\":\"run\",\"command\":\"ls\",\"shell\":{\"kind\":\"executable\",\"path\":\"/bin/bash\"}}");
++    try testing.expect(std.mem.find(u8, d.rewrite, "'/bin/bash' --noprofile --norc -c 'ls'") != null);
++}
++
++test "misconfiguration fails closed" {
++    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
++    defer arena_state.deinit();
++    const arena = arena_state.allocator();
++    var s: State = .{};
++    s.configure("relative/policy.json", null, null);
++    try testing.expect(s.enabled);
++    try testing.expect((try decide(arena, &s, "shell", "{\"command\":\"ls\"}")) == .block);
++    var off: State = .{};
++    off.configure(null, null, null);
++    try testing.expect(!off.enabled);
++    // fish as $SHELL falls back to /bin/sh.
++    var f: State = .{};
++    f.configure("/p.json", null, "/usr/bin/fish");
++    const d = try decide(arena, &f, "shell", "{\"command\":\"ls\"}");
++    try testing.expect(std.mem.find(u8, d.rewrite, "'blackice' run --policy '/p.json' -- '/bin/sh' -c 'ls'") != null);
++}
+diff --git a/src/core/cli/cli_ask.zig b/src/core/cli/cli_ask.zig
+index b2fe6b1..e5ff336 100644
+--- a/src/core/cli/cli_ask.zig
++++ b/src/core/cli/cli_ask.zig
+@@ -74,6 +74,7 @@ const test_builtin_gateway = if (std_builtin.is_test)
+ else
+     struct {};
+ const builtin_tools = @import("../../builtins/tools.zig");
++const blackice_hook = @import("../../builtins/hooks/blackice.zig");
+ const model_tool_schema = @import("../tooling/model_tool_schema.zig");
+ const tool_projection_mod = @import("../tooling/tool_projection.zig");
+ const tool_admission = @import("../tooling/tool_admission.zig");
+@@ -645,6 +646,7 @@ const AskContext = struct {
+     capability_resolver: gateway_provider.CapabilityResolver = .{},
+     lifecycle_runtime: hooks.Runtime,
+     lifecycle_view: hooks.RuntimeView,
++    blackice: blackice_hook.State = .{},
+     active_turn_id: u64 = 0,
+     notification_player: ?notification_sound.Player = null,
+     image_snapshot_temp_dir: ?[]u8 = null,
+@@ -698,6 +700,9 @@ const AskContext = struct {
+                 .run = attentionRequiredNotification,
+             });
+         }
++        // blackice patch: scope every shell command when FX_BLACKICE_POLICY is set.
++        self.blackice.initFromEnv();
++        try blackice_hook.register(&self.lifecycle_runtime, &self.blackice);
+         self.lifecycle_view = self.lifecycle_runtime.freeze();
+     }
+ 
+diff --git a/src/main.zig b/src/main.zig
+index c64b4e8..a0a1b84 100644
+--- a/src/main.zig
++++ b/src/main.zig
+@@ -547,6 +547,7 @@ const App = struct {
+     lifecycle_view: hooks.RuntimeView = hooks.RuntimeView.empty(),
+     notifications: builtin_hooks.notifications.State = .{},
+     herdr: builtin_hooks.Client = .{},
++    blackice: builtin_hooks.blackice.State = .{},
+     program_status: ui_program_status.Reporter = .{},
+ 
+     session: SessionRuntime = SessionRuntime.init(max_history_turns),
+@@ -741,6 +742,9 @@ const App = struct {
+         // Register herdr hooks before NotificationAppRuntime.configure freezes
+         // the lifecycle runtime (its call to freeze() is the sole freeze site).
+         try HerdrAppRuntime.configure(self, SessionAppRuntime.activeSessionId(self));
++        // blackice patch: scope every shell command when FX_BLACKICE_POLICY is set.
++        self.blackice.initFromEnv();
++        try builtin_hooks.blackice.register(&self.lifecycle_runtime, &self.blackice);
+         try NotificationAppRuntime.configure(self);
+     }
+ 
