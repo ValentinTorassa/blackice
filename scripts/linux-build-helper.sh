@@ -1,6 +1,7 @@
-#!/bin/sh
+#!/bin/bash
 # Unprivileged build; setup never compiles code as root.
-set -eu
+set -euo pipefail
+[[ $EUID -ne 0 ]] || { echo 'Build as the normal user; root is only needed for the reviewed setup script.' >&2; exit 1; }
 cd "$(dirname "$0")/.."
 zig_bin=${ZIG:-"$HOME/.local/bin/zig"}
 mkdir -p zig-out/bin

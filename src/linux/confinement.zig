@@ -189,6 +189,18 @@ test "seccomp installs and refuses Unix sockets, namespaces and io_uring in a di
         if (l.errno(l.socket(l.AF.INET, l.SOCK.DGRAM, 1)) != .PERM) l.exit_group(8); // ping v4
         if (l.errno(l.socket(l.AF.INET6, l.SOCK.DGRAM, 58)) != .PERM) l.exit_group(9); // ping v6
         if (l.errno(l.socket(l.AF.INET, l.SOCK.STREAM, 262)) != .PERM) l.exit_group(10); // MPTCP
+        if (l.errno(l.socket(l.AF.INET6, l.SOCK.STREAM, 132)) != .PERM) l.exit_group(11); // SCTP v6
+        if (l.errno(l.socket(l.AF.INET, l.SOCK.DGRAM, 136)) != .PERM) l.exit_group(12); // UDPLITE
+        for ([_]u32{ l.AF.INET, l.AF.INET6 }) |family| {
+            for ([_]struct { kind: u32, protocol: u32 }{
+                .{ .kind = l.SOCK.STREAM, .protocol = 6 },
+                .{ .kind = l.SOCK.DGRAM, .protocol = 17 },
+            }) |s| {
+                const fd = l.socket(family, s.kind, s.protocol);
+                if (l.errno(fd) != .SUCCESS) l.exit_group(13);
+                sys.close(@intCast(fd));
+            }
+        }
         l.exit_group(0);
     }
     try std.testing.expectEqual(@as(u32, 0), try sys.wait(pid));

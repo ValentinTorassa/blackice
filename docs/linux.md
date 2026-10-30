@@ -70,8 +70,11 @@ sudo ./scripts/linux-setup.sh USER EXPECTED_SHA256
 
 Setup verifies a root-owned private copy against the expected hash before granting capabilities. It installs
 `/usr/local/libexec/blackice-linux-helper` as root, executable only by root and the selected user's primary
-group, records the installation namespaces in `/etc/blackice-linux/namespaces`, and creates the private
-cgroup parent. No sudoers entry, daemon, dependency download, sysctl change or firewall flush is installed.
+group. Both the staged and installed files must have exactly mode 0750 and the four required effective and
+permitted capabilities, with no inheritable capabilities. Setup records the installation namespaces in
+`/etc/blackice-linux/namespaces` (root:root 0644, directory 0755), and creates the cgroup parent as root:root
+0700. The Bash scripts use strict error handling, absolute command paths and an action trace. No sudoers
+entry, daemon, dependency download, sysctl change or firewall flush is installed.
 Run commands as the normal user after setup. Repeat setup after a reboot; cgroups are not persistent.
 
 Recovery is an explicit owner operation:
@@ -80,9 +83,10 @@ Recovery is an explicit owner operation:
 sudo ./scripts/linux-teardown.sh
 ```
 
-It terminates only blackice scope cgroups and removes only blackice's helper/configuration. A populated or
-stuck cgroup retains its attached policy; teardown refuses to remove that boundary. Never detach programs
-from a live scope as a shortcut.
+It disables new helper executions, terminates only blackice scope cgroups and removes only blackice's
+helper/configuration. It is safe to repeat. A populated or stuck cgroup retains its attached policy;
+teardown refuses to remove that boundary and leaves new launches disabled until owner recovery. Never
+detach programs from a live scope as a shortcut.
 
 ## Receipts and lifetime
 
@@ -122,6 +126,21 @@ receipts and controlled destinations for each run. Before recording P0-02, test 
 both UDP modes and families, direct DNS, daemon IPC, inherited sockets, cgroup migration, SCTP/ping sockets,
 descendant cleanup and failure recovery. An off-host receiver must observe positive controls and no denied
 traffic. No P0 evidence file should be created until that real run exists.
+
+After the reviewed helper is installed, the Python standard-library harness runs local receiver controls
+and actual backend cases. It checks TCP, both UDP modes/families, SCTP, unconnected ping sockets, the ping
+command, UDPLITE, MPTCP, helper re-entry, cgroup migration and double-forked descendants:
+
+```sh
+python3 src/linux/integration.py
+python3 src/linux/integration.py --crash-tests
+```
+
+The optional crash cases send SIGKILL only to processes launched by that test, using pidfds. Killing the core
+must terminate the scope; killing the helper must leave its surviving descendants filtered. The latter case
+intentionally retains an empty cgroup for owner teardown afterward. Logs are stored under `out/`; the harness
+does not install anything, run sudo or create an evidence entry. These local tests do not replace the off-host
+receiver required for P0-02. A missing helper is reported as blocked, never passed.
 
 This is a network boundary, not a general filesystem or same-user sandbox. Filesystem triggers, shared
 files, terminal output, preexisting filesystem aliases, and cooperation from an unrelated outside process

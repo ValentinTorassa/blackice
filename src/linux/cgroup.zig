@@ -11,7 +11,9 @@ pub const Scope = struct {
 
     pub fn create(id: []const u8) !Scope {
         if (!protocol.validScope(id)) return error.InvalidScope;
-        const root = try sys.fd(l.open(protocol.cgroup_root, .{ .DIRECTORY = true, .CLOEXEC = true, .NOFOLLOW = true }, 0));
+        const opened = l.open(protocol.cgroup_root, .{ .DIRECTORY = true, .CLOEXEC = true, .NOFOLLOW = true }, 0);
+        if (l.errno(opened) == .NOENT) return error.CgroupRootMissingRunSetup;
+        const root = try sys.fd(opened);
         errdefer sys.close(root);
         try sys.rootOwned(root);
         const rs = try sys.stat(root);
@@ -23,8 +25,10 @@ pub const Scope = struct {
         errdefer _ = l.unlinkat(root, &s.name, l.AT.REMOVEDIR);
         s.dir = try sys.fd(l.openat(root, &s.name, .{ .DIRECTORY = true, .CLOEXEC = true, .NOFOLLOW = true }, 0));
         errdefer sys.close(s.dir);
-        _ = try sys.check(l.fchown(s.dir, 0, 0));
-        _ = try sys.check(l.fchmod(s.dir, 0o700));
+        // We own the newly created directory. Set its mode before handing ownership to root:
+        // CAP_DAC_OVERRIDE does not permit chmod of somebody else's inode (that needs CAP_FOWNER).
+        _ = sys.check(l.fchmod(s.dir, 0o700)) catch return error.CgroupModeChangeFailed;
+        _ = sys.check(l.fchown(s.dir, 0, 0)) catch return error.CgroupOwnershipTransferFailed;
         for ([_][:0]const u8{ "cgroup.procs", "cgroup.threads", "cgroup.subtree_control", "cgroup.type", "cgroup.freeze", "cgroup.kill", "cgroup.max.depth", "cgroup.max.descendants" }) |path| {
             _ = try sys.check(l.fchownat(s.dir, path, 0, 0, l.AT.SYMLINK_NOFOLLOW));
         }
