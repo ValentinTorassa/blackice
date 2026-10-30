@@ -5,6 +5,9 @@ attached, installed, or tested against real application traffic.** Userspace uni
 are preparation for security review, not evidence of kernel enforcement. The existing task-scope helper is
 unchanged.
 
+This filter routes ordinary applications' HTTP(S) through policy; the allowed DNS stub and delegation paths
+mean it is not containment for an application deliberately trying to escape.
+
 The initial target is Debian 13, `6.12.113+deb13-amd64`, x86-64 baseline. Startup checks the exact release and
 SHA-256 of `/sys/kernel/btf/vmlinux`:
 `5727b13fd2212290ae031719c9367251c0c8eda0a3f48181af71452ccf5f8943`.
@@ -36,17 +39,22 @@ reexec and detached descendants. Only the authenticated owner's real UID acquire
 Five legacy cgroup programs attach at `/sys/fs/cgroup/user.slice`: connect4/6, UDP sendmsg4/6, and INET socket
 creation. This attach point includes other users' sessions, not just `user-<uid>.slice`: their socket operations
 also run these programs. New executable tags are assigned only for the configured owner's real UID; existing
-tags remain inherited across UID changes. The reserved-listener peer restriction applies to every process
-under `user.slice`, including otherwise unlisted processes belonging to other users.
+tags remain inherited across UID changes. Two additional listener-only connect programs attach at the cgroup
+root, `/sys/fs/cgroup`, with ALLOW_MULTI. They restrict the reserved local listener ports across all cgroups,
+including other users, cron/at jobs and system services; they do not redirect other traffic outside `user.slice`.
 Listed TCP 80/443 goes to the application's HTTP/TLS loopback listeners. IPv4, native IPv6 and mapped
 IPv6 are handled explicitly. Other TCP ports, non-stub UDP, QUIC, raw INET sockets, ICMP/ping, SCTP, UDPLite and
 MPTCP are refused. UDP DNS to `127.0.0.53:53`, including its mapped IPv6 spelling, is allowed. TCP DNS is refused.
 Unlisted processes retain their network access, except that loopback listener ports require the matching app tag.
+Tagged INET sockets are bound to the loopback interface at creation. Accepted sockets inherit this binding;
+the intended effect is to block inbound LAN traffic and routing-header/device-selection detours. These effects
+still require the approved kernel tests, including UDP stub DNS and both proxy redirects.
 
 Each app has HTTP and TLS ports in 760–773, with port 774 reserved. Both `127.0.0.1` and `::1` are bound; there
 are no wildcard listeners. Arming reserves the entire 760–774 range and refuses any collision. The service checks
-that `ip_unprivileged_port_start` is greater than 774 before binding. The connect hooks cover all 127/8, ::1 and
-mapped 127/8 spellings for `listener_peer` checks. Processes in system services are outside that attach point.
+that `ip_unprivileged_port_start` is greater than 774 before binding. The connect hooks treat 127/8, 0/8, ::1,
+::, and mapped IPv4 equivalents as local for `listener_peer` checks. The unspecified-address cases matter
+because Linux can route them to loopback after the connect hook.
 
 The proxy checks exactly one TLS ClientHello SNI, or one HTTP Host header in an origin-form request. It resolves
 and dials that name using the existing policy and resolved-address checks, not the original destination IP.
@@ -91,25 +99,30 @@ updates are a follow-up.
 
 ## Limits to review before installation
 
-- Fresh arming currently requires those five attach points to be vacant. It refuses an unknown program ID:
+- Fresh arming requires the five user.slice hooks and the two root connect hooks to be vacant. Restart also
+  requires exactly the pinned program IDs, with no foreign additions. It refuses an unknown program ID:
   Linux 6.12 requires SYS_ADMIN to open arbitrary program IDs for name inspection, and the service intentionally
   lacks that capability. ALLOW_MULTI is used, but this candidate does not yet accept pre-existing systemd programs
   at the same points. The owner's root preflight determines whether this limit affects this host.
 - Policy executable paths must be canonical, root-owned regular executable files with root-owned, non-writable
-  ancestors. Symlinks and home-directory applications are refused. List the resolved installed binary.
+  ancestors, on ext4 or xfs. Other filesystems, including btrfs and overlayfs, refuse arming because their
+  statx device identity may differ from the kernel inode's superblock device. Errors name the executable.
+  Symlinks and home-directory applications are refused. List the resolved installed binary.
 - File identity is not code integrity or a publisher signature. Scripts are identified by their interpreter;
   listing it covers all scripts it runs. AppImages are unsupported.
 - Inotify adds replacement file identities and retains old entries. A launch before a replacement is noticed,
   including while the service is down, is not tagged. A descendant already started before arming and now running
   another file is not discoverable by the task iterator. Processes an app started before arming are not covered.
-- DNS through the stub is a full two-way data channel. Unix sockets, delegated work through D-Bus/systemd/portals,
+- DNS through the stub is a full two-way data channel. Unix sockets, delegated work through D-Bus/systemd/portals
+  or cron/at, rootless containers relayed by pasta/slirp4netns (including raw AF_PACKET traffic),
   sockets connected before arming and sockets inherited or received from an unlisted process are not fully
   contained. Connected sockets, protocols without these connect/sendmsg hooks, and sockets created outside
   user.slice can bypass the checks on later use.
 - Clipboard/session-socket access is not blocked by this app filter and has not been tested with real data.
 - Root and other privileged software are outside the application's trust boundary. Other users' sessions
   traverse the hooks and reserved-listener peer checks, but acquire no new executable tags for this owner's
-  policy. System services outside `user.slice` can reach a proxy port and produce receipts attributed to that app.
+  policy. The root guard restricts reserved listener access from system services too; it does not make the
+  broader application policy cover network sockets created outside `user.slice`.
 - IO_uring identity attribution, kernel verifier acceptance, post-capability-drop map updates, crash recovery,
   polkit interaction, protected-port rebinding and application traffic all still need the approved installed run.
   Restart receipts report lost events; exact downtime is not measured and is labeled unknown.

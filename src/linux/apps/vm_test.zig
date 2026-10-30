@@ -194,8 +194,11 @@ test "appfilter emitted programs refuse SCTP ping raw and bad protocol/type comb
         const allowed = (protocol == 6 and kind == 1) or (protocol == 17 and kind == 2);
         try std.testing.expectEqual(@as(u64, @intFromBool(allowed)), try v.run(&code));
         try std.testing.expectEqual(@as(u32, @intFromBool(!allowed)), v.events);
+        try std.testing.expectEqual(@as(u64, 1), v.get(ctx, 4)); // tagged sockets are bound to lo
         v.setTag(100, 0);
+        v.put(ctx, 0, 4);
         try std.testing.expectEqual(@as(u64, 1), try v.run(&code));
+        try std.testing.expectEqual(@as(u64, 0), v.get(ctx, 4));
     };
 }
 test "appfilter emitted TCP redirects both families and mapped IPv6; unlisted stays unchanged" {
@@ -238,28 +241,46 @@ test "appfilter emitted UDP allows only the exact system stub; full ring still d
         try std.testing.expectEqual(@as(u64, 0), try v.run(&code));
     }
 }
-test "appfilter emitted listener_peer covers 127/8 native and mapped loopback" {
-    for ([_]u32{ 0, 1, 2 }) |tag| for (0..4) |form| {
-        const v6 = form >= 2;
+test "appfilter user and root guards cover every listener and local or unspecified spelling" {
+    for (0..abi.max_apps + 1) |app| for (abi.first_port..abi.last_port + 1) |port| for (0..9) |form| for ([_]bool{ false, true }) |root| {
+        const tag: u32 = @intCast(app);
+        const v6 = form >= 4;
         var v = Vm.init();
         v.setTag(100, tag);
-        v.socket(v6, 760, 6);
+        v.socket(v6, @intCast(port), 6);
         switch (form) {
             0 => v.addr4(0x7f000001),
             1 => v.addr4(0x7f123456),
-            2 => {
+            2 => v.addr4(0),
+            3 => v.addr4(0x00123456),
+            4, 5 => {
                 v.put(ctx + 8, 0, 8);
                 v.put(ctx + 16, 0, 4);
-                v.put(ctx + 20, std.mem.nativeToBig(u32, 1), 4);
+                v.put(ctx + 20, std.mem.nativeToBig(u32, if (form == 4) 1 else 0), 4);
             },
-            3 => v.mapped(0x7f123456),
+            6 => v.mapped(0x7f123456),
+            7 => v.mapped(0),
+            8 => v.mapped(0x00123456),
             else => unreachable,
         }
-        const code = programs.admission(if (v6) .cgroup_inet6_connect else .cgroup_inet4_connect, fd);
-        try std.testing.expectEqual(@as(u64, @intFromBool(tag == 1)), try v.run(&code));
-        if (tag != 1) try std.testing.expectEqual(@as(u64, @backingInt(abi.Reason.listener_peer)), v.get(event + @offsetOf(abi.Event, "reason"), 4));
+        const hook: std.os.linux.BPF.AttachType = if (v6) .cgroup_inet6_connect else .cgroup_inet4_connect;
+        const code = if (root) programs.listenerGuard(hook, fd) else programs.admission(hook, fd);
+        const owns = port != abi.last_port and tag == 1 + (port - abi.first_port) / 2;
+        try std.testing.expectEqual(@as(u64, @intFromBool(owns)), try v.run(&code));
+        if (!owns) try std.testing.expectEqual(@as(u64, @backingInt(abi.Reason.listener_peer)), v.get(event + @offsetOf(abi.Event, "reason"), 4));
         v.put(ctx + 36, 17, 4);
-        try std.testing.expectEqual(@as(u64, @intFromBool(tag == 0)), try v.run(&code));
+        try std.testing.expectEqual(@as(u64, @intFromBool(root or tag == 0)), try v.run(&code));
+    };
+}
+test "appfilter root guard leaves non-listener traffic unchanged for every tag" {
+    for (programs.hooks[0..2], 0..) |hook, family| for ([_]u32{ 0, 1, 7 }) |tag| for ([_]u16{ 22, 80, 443, 760, 774 }) |port| {
+        var v = Vm.init();
+        v.setTag(100, tag);
+        v.socket(family == 1, port, 6); // non-local address
+        const before = v.mem[ctx .. ctx + 64].*;
+        const code = programs.listenerGuard(hook, fd);
+        try std.testing.expectEqual(@as(u64, 1), try v.run(&code));
+        try std.testing.expectEqualSlices(u8, &before, v.mem[ctx .. ctx + 64]);
     };
 }
 test "appfilter emitted exec fork exit and iterator obey lifecycle and PID reuse" {

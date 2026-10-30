@@ -124,6 +124,7 @@ fn loopback(p: *a.Program, v6: bool, yes: *Fixups) void {
         p.emit(I.ldx(.word, .r0, .r6, 4));
         p.emit(I.alu_and(.r0, 255));
         yes.add(p, I.jeq(.r0, 127, 0));
+        yes.add(p, I.jeq(.r0, 0, 0)); // Linux routes unspecified IPv4 destinations locally.
     } else {
         var no: Fixups = .{};
         p.emit(I.ldx(.word, .r0, .r6, 8));
@@ -135,11 +136,13 @@ fn loopback(p: *a.Program, v6: bool, yes: *Fixups) void {
         no.add(p, I.jne(.r0, 0, 0));
         p.emit(I.ldx(.word, .r0, .r6, 20));
         yes.add(p, I.jeq(.r0, @as(i32, @bitCast(std.mem.nativeToBig(u32, 1))), 0));
+        yes.add(p, I.jeq(.r0, 0, 0)); // tcp_v6_connect maps :: to ::1 after this hook.
         no.add(p, I.ja(0));
         const m = p.len;
         p.emit(I.ldx(.word, .r0, .r6, 20));
         p.emit(I.alu_and(.r0, 255));
         yes.add(p, I.jeq(.r0, 127, 0));
+        yes.add(p, I.jeq(.r0, 0, 0));
         const end = p.len;
         p.emit(I.mov(.r0, 0));
         p.patch(mapped, m);
@@ -172,6 +175,31 @@ fn listenerPeer(p: *a.Program, v6: bool, allow: *Fixups, deny: *Fixups) void {
     p.patch(not_tcp, end);
 }
 
+/// Root-cgroup guard: only reserved local listener ports are restricted, across every cgroup.
+pub fn listenerGuard(hook: bpf.AttachType, fds: Fds) a.Program {
+    std.debug.assert(hook == .cgroup_inet4_connect or hook == .cgroup_inet6_connect);
+    var p: a.Program = .{};
+    var allow: Fixups = .{};
+    var deny: Fixups = .{};
+    p.emit(I.mov(.r6, .r1));
+    p.emit(I.mov(.r9, 0));
+    p.emit(I.mov(.r8, @as(i32, @backingInt(abi.Reason.tag_missing))));
+    p.emit(I.call(.get_current_pid_tgid));
+    p.emit(I.rsh(.r0, 32));
+    p.emit(I.stx(.word, .r10, -16, .r0));
+    p.lookup(fds.tags, -16);
+    deny.add(&p, I.jeq(.r0, 0, 0));
+    p.emit(I.ldx(.word, .r9, .r0, 0));
+    listenerPeer(&p, hook == .cgroup_inet6_connect, &allow, &deny);
+    const yes = p.len;
+    p.ret(1);
+    const no = p.len;
+    emitRefusal(&p, hook, fds);
+    allow.patch(&p, yes);
+    deny.patch(&p, no);
+    return p;
+}
+
 pub fn admission(hook: bpf.AttachType, fds: Fds) a.Program {
     const create = hook == .cgroup_inet_sock_create;
     const v6 = hook == .cgroup_inet6_connect or hook == .cgroup_udp6_sendmsg;
@@ -181,7 +209,7 @@ pub fn admission(hook: bpf.AttachType, fds: Fds) a.Program {
     var allow: Fixups = .{};
     p.emit(I.mov(.r6, .r1));
     p.emit(I.mov(.r9, 0));
-    p.emit(I.mov(.r8, @as(i32, @backingInt(abi.Reason.listener_missing))));
+    p.emit(I.mov(.r8, @as(i32, @backingInt(abi.Reason.tag_missing))));
     p.emit(I.call(.get_current_pid_tgid));
     p.emit(I.rsh(.r0, 32));
     p.emit(I.stx(.word, .r10, -16, .r0));
@@ -192,6 +220,8 @@ pub fn admission(hook: bpf.AttachType, fds: Fds) a.Program {
     allow.add(&p, I.jeq(.r9, 0, 0));
     p.emit(I.mov(.r8, @as(i32, @backingInt(abi.Reason.socket_protocol))));
     if (create) {
+        // bpf_sock.bound_dev_if: tagged sockets are bound to lo before sending or accepting.
+        p.emit(I.st(.word, .r6, 0, 1));
         p.emit(I.ldx(.word, .r0, .r6, 12));
         const tcp = p.add(I.jeq(.r0, 6, 0));
         deny.add(&p, I.jne(.r0, 17, 0));
@@ -334,4 +364,5 @@ pub const fixture_fds: Fds = .{ .files = 10, .tags = 11, .ports = 12, .state = 1
 test "appfilter every emitted trace, iterator and admission instruction is reachable" {
     for (std.meta.tags(trace_events)) |event| try a.validate(&tracing(event, fixture_fds));
     for (hooks) |hook| try a.validate(&admission(hook, fixture_fds));
+    for (hooks[0..2]) |hook| try a.validate(&listenerGuard(hook, fixture_fds));
 }

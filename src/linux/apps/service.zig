@@ -44,6 +44,8 @@ fn run(init: std.process.Init) !void {
     if (!teardown) try host.directories(install);
     const cg = try host.cgroup();
     defer sys.close(cg);
+    const root_cg = try host.rootCgroup();
+    defer sys.close(root_cg);
     const lock = try sys.fd(l.open(host.state_root ++ "/instance.lock", .{ .ACCMODE = .RDWR, .CREAT = true, .NOFOLLOW = true, .CLOEXEC = true }, 0o600));
     defer sys.close(lock);
     _ = try sys.check(l.flock(lock, 2 | 4));
@@ -51,11 +53,12 @@ fn run(init: std.process.Init) !void {
         if (try kernel.Loaded.openExisting(true)) |got| {
             var f = got;
             defer f.close();
-            try f.detach(cg);
+            try f.detach(cg, root_cg);
             try kernel.unpinAll();
         }
         // Without pins do not guess an ID or detach someone else's program.
         try kernel.requireVacant(cg);
+        try kernel.requireRootVacant(root_cg);
         return;
     }
     // procfs files report size 0, so readFileAlloc on /proc/sys/kernel/osrelease returns no bytes and the
@@ -65,7 +68,7 @@ fn run(init: std.process.Init) !void {
     const btf = try Io.Dir.cwd().readFileAlloc(init.io, "/sys/kernel/btf/vmlinux", init.gpa, .limited(16 * 1024 * 1024));
     defer init.gpa.free(btf);
     try pinning.verify(release, btf);
-    var runtime: Runtime = .{ .gpa = init.gpa, .io = init.io, .install = install, .cg = cg };
+    var runtime: Runtime = .{ .gpa = init.gpa, .io = init.io, .install = install, .cg = cg, .root_cg = root_cg };
     defer runtime.deinit();
     runtime.service_log = try newLog(init.gpa, init.io, "service", "appfilter");
     if (try kernel.Loaded.openExisting(true)) |got| {
@@ -78,7 +81,7 @@ fn run(init: std.process.Init) !void {
         } else {
             runtime.loaded.?.close();
             runtime.loaded = (try kernel.Loaded.openExisting(false)) orelse return error.IncompletePins;
-            try runtime.loaded.?.verifyAttachments(cg);
+            try runtime.loaded.?.verifyAttachments(cg, root_cg);
             const hex = std.fmt.bytesToHex(state.policy_sha256, .lower);
             const path = try std.fmt.allocPrint(init.gpa, host.state_root ++ "/policy-{s}.json", .{hex});
             defer init.gpa.free(path);
@@ -98,7 +101,10 @@ fn run(init: std.process.Init) !void {
             try runtime.drain();
             runtime.service_log.?.write(.{ .event = "app_filter_restart", .point = .app_filter, .detail = "reopened verified pins; receipts drained; file identities refreshed; downtime=unknown" });
         }
-    } else try kernel.requireVacant(cg);
+    } else {
+        try kernel.requireVacant(cg);
+        try kernel.requireRootVacant(root_cg);
+    }
     while (true) {
         try runtime.drain();
         var fds = [_]l.pollfd{
@@ -159,6 +165,7 @@ const Runtime = struct {
     io: Io,
     install: host.Install,
     cg: l.fd_t,
+    root_cg: l.fd_t,
     cfg: ?config.Config = null,
     loaded: ?kernel.Loaded = null,
     ring: ?Ring = null,
@@ -202,7 +209,17 @@ const Runtime = struct {
         }
     }
     fn refreshFiles(r: *Runtime) !void {
-        for (r.cfg.?.apps, 0..) |app, i| try r.loaded.?.addFile(try host.identity(r.gpa, app.executable), @intCast(i + 1));
+        for (r.cfg.?.apps, 0..) |app, i| try r.loaded.?.addFile(try r.identity(app.executable), @intCast(i + 1));
+    }
+    fn identity(r: *Runtime, path: []const u8) !abi.FileKey {
+        return host.identity(r.gpa, path) catch |err| {
+            r.service_log.?.write(.{ .event = "app_filter_identity", .point = .app_filter, .verdict = .deny, .reason = @errorName(err), .executable = path });
+            sys.writeAll(2, path) catch {};
+            sys.writeAll(2, ": ") catch {};
+            sys.writeAll(2, @errorName(err)) catch {};
+            sys.writeAll(2, "\n") catch {};
+            return err;
+        };
     }
     fn bindListeners(r: *Runtime) !void {
         try host.portFloor();
@@ -231,7 +248,7 @@ const Runtime = struct {
     fn rollback(r: *Runtime) !void {
         if (r.loaded == null) r.loaded = try kernel.Loaded.openExisting(true);
         if (r.loaded) |*f| {
-            try f.detach(r.cg);
+            try f.detach(r.cg, r.root_cg);
             try kernel.unpinAll();
             f.close();
             r.loaded = null;
@@ -245,7 +262,7 @@ const Runtime = struct {
             r.cfg = null;
         };
         // Validate every executable and its ancestors before creating kernel objects.
-        for (r.cfg.?.apps) |app| _ = try host.identity(r.gpa, app.executable);
+        for (r.cfg.?.apps) |app| _ = try r.identity(app.executable);
         try host.writePolicy(r.gpa, r.io, &r.cfg.?.digest, bytes);
         var hash: [32]u8 = undefined;
         _ = try std.fmt.hexToBytes(&hash, &r.cfg.?.digest);
@@ -262,7 +279,7 @@ const Runtime = struct {
         r.loaded = try kernel.Loaded.create(state);
         try r.refreshFiles();
         for (r.cfg.?.apps, 0..) |_, i| try r.loaded.?.setPorts(@intCast(i + 1));
-        try r.loaded.?.attach(r.cg, &r.verifier);
+        try r.loaded.?.attach(r.cg, r.root_cg, &r.verifier);
         state.phase = .cgroup;
         try r.loaded.?.setState(state);
         try r.openLogs();
@@ -306,7 +323,7 @@ const Runtime = struct {
                     var state = try r.loaded.?.getState();
                     state.phase = .stopping;
                     try r.loaded.?.setState(state);
-                    try r.loaded.?.detach(r.cg);
+                    try r.loaded.?.detach(r.cg, r.root_cg);
                     try kernel.unpinAll();
                     r.armed = false;
                     var detail: [80]u8 = undefined;
@@ -341,7 +358,8 @@ const Runtime = struct {
                 const event = try ring.next() orelse break;
                 const log = if (event.app_id > 0 and event.app_id <= r.cfg.?.apps.len) &r.logs[event.app_id - 1].? else &r.service_log.?;
                 var ipbuf: [64]u8 = undefined;
-                const ip = if (event.family == 2) proxy.formatIp(&ipbuf, .{ .ip4 = .{ .bytes = event.ip[0..4].*, .port = 0 } }) else proxy.formatIp(&ipbuf, .{ .ip6 = .{ .bytes = event.ip, .port = 0, .interface = .none } });
+                const ipv4 = event.family == 2 or event.hook == @backingInt(l.BPF.AttachType.cgroup_udp4_sendmsg);
+                const ip = if (ipv4) proxy.formatIp(&ipbuf, .{ .ip4 = .{ .bytes = event.ip[0..4].*, .port = 0 } }) else proxy.formatIp(&ipbuf, .{ .ip6 = .{ .bytes = event.ip, .port = 0, .interface = .none } });
                 var detail: [160]u8 = undefined;
                 log.write(.{ .event = "kernel_drop", .point = .app_filter, .verdict = .deny, .reason = @tagName(event.reason), .app_id = event.app_id, .ip = if (event.port != 0) ip else null, .port = if (event.port != 0) std.mem.bigToNative(u16, @truncate(event.port)) else null, .detail = try std.fmt.bufPrint(&detail, "tgid={d} family={d} protocol={d} hook={d} kernel_monotonic_ns={d}", .{ event.tgid, event.family, event.protocol, event.hook, event.timestamp_ns }) });
             }

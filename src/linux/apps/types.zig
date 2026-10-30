@@ -22,6 +22,7 @@ pub const Reason = enum(u32) {
     listener_peer,
     listener_missing,
     unsupported_family,
+    tag_missing,
 };
 pub const Event = extern struct {
     timestamp_ns: u64,

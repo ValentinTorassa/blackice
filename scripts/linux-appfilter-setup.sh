@@ -14,7 +14,7 @@ if [[ -d /var/lib/blackice-appfilter && ! -f /etc/blackice-appfilter/owner.json 
 fi
 [[ ! -e /run/blackice-appfilter/bpf/state ]] || { echo 'Existing pinned policy: owner teardown is required before an upgrade.' >&2; exit 1; }
 if /usr/bin/systemctl is-active --quiet blackice-appfilter.service; then echo 'Stop through authorized app off first.' >&2; exit 1; fi
-for program in /usr/sbin/bpftool /usr/sbin/nft /usr/sbin/useradd /usr/sbin/userdel /usr/sbin/groupadd /usr/sbin/groupdel /usr/sbin/getcap; do
+for program in /usr/sbin/bpftool /usr/sbin/nft /usr/sbin/useradd /usr/sbin/userdel /usr/sbin/groupadd /usr/sbin/groupdel /usr/sbin/getcap /usr/bin/ss; do
     [[ -x $program ]] || { echo "Required reviewed system tool is missing: $program (no packages installed by this script)" >&2; exit 1; }
 done
 owner_uid=$(/usr/bin/id -u "$owner")

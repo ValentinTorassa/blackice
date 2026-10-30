@@ -33,7 +33,13 @@ pub fn directories(cfg: Install) !void {
     if (ds.uid != cfg.service_uid or ds.gid != cfg.owner_gid or ds.mode & 0o7777 != 0o2750) return error.UnprotectedServiceState;
 }
 pub fn cgroup() !l.fd_t {
-    const fd = try sys.fd(l.open(kernel.cgroup_path, .{ .DIRECTORY = true, .NOFOLLOW = true, .CLOEXEC = true }, 0));
+    return openCgroup(kernel.cgroup_path);
+}
+pub fn rootCgroup() !l.fd_t {
+    return openCgroup(kernel.root_cgroup_path);
+}
+fn openCgroup(path: [:0]const u8) !l.fd_t {
+    const fd = try sys.fd(l.open(path, .{ .DIRECTORY = true, .NOFOLLOW = true, .CLOEXEC = true }, 0));
     errdefer sys.close(fd);
     try sys.rootOwned(fd);
     var fs: [32]u64 = @splat(0);
@@ -67,10 +73,22 @@ pub fn identity(gpa: std.mem.Allocator, path: []const u8) !abi.FileKey {
         dir = next;
         if (last) {
             if (s.mode & 0o111 == 0) return error.ExecutableRequired;
+            var fs: [32]u64 = @splat(0);
+            _ = try sys.check(l.syscall2(.fstatfs, @as(usize, @intCast(dir)), @intFromPtr(&fs)));
+            if (!identityFilesystemSupported(fs[0])) return error.UnsupportedExecutableFilesystem;
             return .{ .device = try abi.kernelDevice(s.dev_major, s.dev_minor), .inode = s.ino };
         }
     }
     return error.ExecutableRequired;
+}
+pub fn identityFilesystemSupported(magic: u64) bool {
+    // statx st_dev must equal inode->i_sb->s_dev. btrfs subvolumes and overlayfs do not meet this contract.
+    return magic == 0xef53 or magic == 0x58465342; // ext4 (ext family ABI) / xfs
+}
+test "appfilter executable filesystem identity rejects overlay and btrfs" {
+    try std.testing.expect(identityFilesystemSupported(0xef53));
+    try std.testing.expect(identityFilesystemSupported(0x58465342));
+    for ([_]u64{ 0x9123683e, 0x794c7630, 0x01021994, 0 }) |magic| try std.testing.expect(!identityFilesystemSupported(magic));
 }
 pub fn writePolicy(gpa: std.mem.Allocator, io: std.Io, digest: []const u8, bytes: []const u8) !void {
     const path = try std.fmt.allocPrintSentinel(gpa, state_root ++ "/policy-{s}.json", .{digest}, 0);

@@ -5,6 +5,7 @@
   <action id="org.blackice.appfilter.change">
     <description>Turn off or change the blackice application filter</description>
     <message>Administrator authentication is required to change blackice application network permissions.</message>
+    <annotate key="org.freedesktop.policykit.owner">unix-user:blackice-appfilter</annotate>
     <defaults>
       <allow_any>auth_admin</allow_any>
       <allow_inactive>auth_admin</allow_inactive>

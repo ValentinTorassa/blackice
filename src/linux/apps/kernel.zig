@@ -9,6 +9,7 @@ const pin = @import("kernel_pin.zig");
 const a = @import("assembler.zig");
 pub const pin_root = "/run/blackice-appfilter/bpf";
 pub const cgroup_path = "/sys/fs/cgroup/user.slice";
+pub const root_cgroup_path = "/sys/fs/cgroup";
 const Map = struct { name: [:0]const u8, kind: bpf.MapType, key: u32, value: u32, count: u32 };
 const maps = [_]Map{
     .{ .name = "state", .kind = .array, .key = 4, .value = @sizeOf(abi.State), .count = 1 },
@@ -22,14 +23,21 @@ const maps = [_]Map{
 const trace_events = [_]programs.trace_events{ .exit, .fork, .exec };
 const trace_ids = [_]u32{ pin.sched_process_exit_btf_id, pin.sched_process_fork_btf_id, pin.sched_process_exec_btf_id };
 const trace_names = [_][:0]const u8{ "exit", "fork", "exec" };
-const socket_names = [_][:0]const u8{ "conn4", "conn6", "send4", "send6", "create" };
+const socket_names = [_][:0]const u8{ "conn4", "conn6", "send4", "send6", "create", "peer4", "peer6" };
+const socket_hooks = programs.hooks ++ programs.hooks[0..2].*;
+fn socketProgram(index: usize, fds: programs.Fds) a.Program {
+    return if (index < programs.hooks.len) programs.admission(socket_hooks[index], fds) else programs.listenerGuard(socket_hooks[index], fds);
+}
+fn socketKind(index: usize) bpf.ProgType {
+    return if (index == 4) .cgroup_sock else .cgroup_sock_addr;
+}
 const zero: u32 = 0;
 
 pub const Loaded = struct {
     maps: programs.Fds = .{ .files = -1, .tags = -1, .ports = -1, .state = -1, .ring = -1, .lost = -1, .existing = -1 },
     traces: [3]l.fd_t = @splat(-1),
     trace_links: [3]l.fd_t = @splat(-1),
-    sockets: [5]l.fd_t = @splat(-1),
+    sockets: [socket_names.len]l.fd_t = @splat(-1),
 
     pub fn create(state: abi.State) !Loaded {
         var f: Loaded = .{};
@@ -57,7 +65,7 @@ pub const Loaded = struct {
             if (f.traces[i] < 0 or f.trace_links[i] < 0) {
                 if (!partial) return error.IncompletePins;
             } else {
-                try verifyProgram(f.traces[i], &programs.tracing(trace_events[i], f.maps));
+                try verifyProgram(f.traces[i], &programs.tracing(trace_events[i], f.maps), .tracing, trace_ids[i]);
                 var info: LinkInfo = undefined;
                 try getInfo(f.trace_links[i], &info);
                 const prog = try programInfo(f.traces[i]);
@@ -69,7 +77,7 @@ pub const Loaded = struct {
             f.sockets[i] = (try getPin("prog_" ++ name)) orelse -1;
             if (f.sockets[i] < 0) {
                 if (!partial) return error.IncompletePins;
-            } else try verifyProgram(f.sockets[i], &programs.admission(programs.hooks[i], f.maps));
+            } else try verifyProgram(f.sockets[i], &socketProgram(i, f.maps), socketKind(i), 0);
         }
         return f;
     }
@@ -132,34 +140,40 @@ pub const Loaded = struct {
         try bpf.map_lookup_elem(f.maps.existing, std.mem.asBytes(&zero), std.mem.asBytes(&app));
         if (app != 0) return error.CloseListedAppsFirst;
     }
-    pub fn attach(f: *Loaded, cgroup: l.fd_t, verifier: []u8) !void {
+    pub fn attach(f: *Loaded, cgroup: l.fd_t, root_cgroup: l.fd_t, verifier: []u8) !void {
         // Without CAP_SYS_ADMIN an unknown ID cannot be opened to check its name. Refuse conservatively.
         try requireVacant(cgroup);
-        inline for (programs.hooks, 0..) |hook, i| {
-            const code = programs.admission(hook, f.maps);
-            f.sockets[i] = try load(&code, if (i == 4) .cgroup_sock else .cgroup_sock_addr, hook, 0, "bi_af_" ++ socket_names[i], verifier);
+        try requireRootVacant(root_cgroup);
+        inline for (socket_hooks, 0..) |hook, i| {
+            const target = if (i < programs.hooks.len) cgroup else root_cgroup;
+            const code = socketProgram(i, f.maps);
+            f.sockets[i] = try load(&code, socketKind(i), hook, 0, "bi_af_" ++ socket_names[i], verifier);
             try pinFd(f.sockets[i], "prog_" ++ socket_names[i]);
             var attr: bpf.Attr = .{ .prog_attach = std.mem.zeroes(bpf.ProgAttachAttr) };
-            attr.prog_attach.target_fd = cgroup;
+            attr.prog_attach.target_fd = target;
             attr.prog_attach.attach_bpf_fd = f.sockets[i];
             attr.prog_attach.attach_type = @backingInt(hook);
             attr.prog_attach.attach_flags = 2;
             _ = try sys.check(l.bpf(.prog_attach, &attr, @sizeOf(bpf.ProgAttachAttr)));
-            if (!try attached(cgroup, hook, (try programInfo(f.sockets[i])).id)) return error.AttachmentNotVerified;
+            try exactlyAttached(target, hook, (try programInfo(f.sockets[i])).id);
         }
     }
-    pub fn verifyAttachments(f: *const Loaded, cgroup: l.fd_t) !void {
-        for (f.sockets, programs.hooks) |fd, hook| if (fd < 0 or !try attached(cgroup, hook, (try programInfo(fd)).id)) return error.AttachmentNotVerified;
+    pub fn verifyAttachments(f: *const Loaded, cgroup: l.fd_t, root_cgroup: l.fd_t) !void {
+        for (f.sockets, socket_hooks, 0..) |fd, hook, i| {
+            if (fd < 0) return error.AttachmentNotVerified;
+            try exactlyAttached(if (i < programs.hooks.len) cgroup else root_cgroup, hook, (try programInfo(fd)).id);
+        }
     }
-    pub fn detach(f: *Loaded, cgroup: l.fd_t) !void {
-        for (f.sockets, programs.hooks) |fd, hook| {
-            if (fd < 0 or !try attached(cgroup, hook, (try programInfo(fd)).id)) continue;
+    pub fn detach(f: *Loaded, cgroup: l.fd_t, root_cgroup: l.fd_t) !void {
+        for (f.sockets, socket_hooks, 0..) |fd, hook, i| {
+            const target = if (i < programs.hooks.len) cgroup else root_cgroup;
+            if (fd < 0 or !try attached(target, hook, (try programInfo(fd)).id)) continue;
             var attr: bpf.Attr = .{ .prog_attach = std.mem.zeroes(bpf.ProgAttachAttr) };
-            attr.prog_attach.target_fd = cgroup;
+            attr.prog_attach.target_fd = target;
             attr.prog_attach.attach_bpf_fd = fd;
             attr.prog_attach.attach_type = @backingInt(hook);
             _ = try sys.check(l.bpf(.prog_detach, &attr, @sizeOf(bpf.ProgAttachAttr)));
-            if (try attached(cgroup, hook, (try programInfo(fd)).id)) return error.DetachmentNotVerified;
+            if (try attached(target, hook, (try programInfo(fd)).id)) return error.DetachmentNotVerified;
         }
     }
     pub fn loss(f: *const Loaded) !u64 {
@@ -190,17 +204,61 @@ fn load(code: *const a.Program, kind: bpf.ProgType, attach_type: bpf.AttachType,
     attr.prog_load.insns = @intFromPtr(&code.code);
     attr.prog_load.insn_cnt = @intCast(code.len);
     attr.prog_load.license = @intFromPtr("Dual BSD/GPL");
-    attr.prog_load.log_level = 1;
-    attr.prog_load.log_size = @intCast(verifier.len);
-    attr.prog_load.log_buf = @intFromPtr(verifier.ptr);
     if (name.len >= attr.prog_load.prog_name.len) return error.ProgramNameTooLong;
     @memcpy(attr.prog_load.prog_name[0..name.len], name);
-    const fd = try sys.fd(l.bpf(.prog_load, &attr, @sizeOf(bpf.ProgLoadAttr)));
+    // A successful verifier run must not fail merely because its diagnostic log exceeds our buffer.
+    const first = l.bpf(.prog_load, &attr, @sizeOf(bpf.ProgLoadAttr));
+    const fd = sys.fd(first) catch retry: {
+        attr.prog_load.log_level = 1;
+        attr.prog_load.log_size = @intCast(verifier.len);
+        attr.prog_load.log_buf = @intFromPtr(verifier.ptr);
+        break :retry try sys.fd(l.bpf(.prog_load, &attr, @sizeOf(bpf.ProgLoadAttr)));
+    };
     errdefer sys.close(fd);
-    try verifyProgram(fd, code);
+    try verifyProgram(fd, code, kind, btf_id);
     return fd;
 }
-const ProgInfo = extern struct { kind: u32, id: u32, tag: [8]u8, jited_len: u32, xlated_len: u32, jited_insns: u64, xlated_insns: u64, load_time: u64, uid: u32, map_count: u32, map_ids: u64, name: [16]u8 };
+const ProgInfo = extern struct {
+    kind: u32,
+    id: u32,
+    tag: [8]u8,
+    jited_len: u32,
+    xlated_len: u32,
+    jited_insns: u64,
+    xlated_insns: u64,
+    load_time: u64,
+    uid: u32,
+    map_count: u32,
+    map_ids: u64,
+    name: [16]u8,
+    ifindex: u32,
+    gpl_compatible: u32,
+    netns_dev: u64,
+    netns_ino: u64,
+    nr_jited_ksyms: u32,
+    nr_jited_func_lens: u32,
+    jited_ksyms: u64,
+    jited_func_lens: u64,
+    btf_id: u32,
+    func_info_rec_size: u32,
+    func_info: u64,
+    nr_func_info: u32,
+    nr_line_info: u32,
+    line_info: u64,
+    jited_line_info: u64,
+    nr_jited_line_info: u32,
+    line_info_rec_size: u32,
+    jited_line_info_rec_size: u32,
+    nr_prog_tags: u32,
+    prog_tags: u64,
+    run_time_ns: u64,
+    run_cnt: u64,
+    recursion_misses: u64,
+    verified_insns: u32,
+    attach_btf_obj_id: u32,
+    attach_btf_id: u32,
+    padding: u32,
+};
 const LinkInfo = extern struct { kind: u32, id: u32, prog_id: u32, padding: u32, details: [32]u8 };
 const MapInfo = extern struct { kind: u32, id: u32, key: u32, value: u32, count: u32, flags: u32 };
 fn getInfo(fd: l.fd_t, value: anytype) !void {
@@ -213,13 +271,14 @@ fn programInfo(fd: l.fd_t) !ProgInfo {
     try getInfo(fd, &info);
     return info;
 }
-fn verifyProgram(fd: l.fd_t, code: *const a.Program) !void {
+fn verifyProgram(fd: l.fd_t, code: *const a.Program, kind: bpf.ProgType, btf_id: u32) !void {
     var ids: [16]u32 = @splat(0);
     var info: ProgInfo = std.mem.zeroes(ProgInfo);
     info.map_count = ids.len;
     info.map_ids = @intFromPtr(&ids);
     var attr: bpf.Attr = .{ .info = .{ .bpf_fd = fd, .info_len = @sizeOf(ProgInfo), .info = @intFromPtr(&info) } };
     _ = try sys.check(l.bpf(.obj_get_info_by_fd, &attr, @sizeOf(bpf.InfoAttr)));
+    if (info.kind != @backingInt(kind) or info.attach_btf_id != btf_id) return error.ProgramTypeMismatch;
     if (!std.mem.eql(u8, &info.tag, &programTag(code))) return error.ProgramTagMismatch;
     if (info.map_count > ids.len) return error.ProgramMapMismatch;
     var expected: [16]u32 = @splat(0);
@@ -304,9 +363,18 @@ fn attached(cgroup: l.fd_t, hook: bpf.AttachType, id: u32) !bool {
     for (try query(cgroup, hook, &ids)) |got| if (got == id) return true;
     return false;
 }
+fn exactlyAttached(cgroup: l.fd_t, hook: bpf.AttachType, id: u32) !void {
+    var ids: [128]u32 = undefined;
+    const got = try query(cgroup, hook, &ids);
+    if (got.len != 1 or got[0] != id) return error.ForeignOrMissingAttachment;
+}
 pub fn requireVacant(cgroup: l.fd_t) !void {
     var ids: [128]u32 = undefined;
     for (programs.hooks) |hook| if ((try query(cgroup, hook, &ids)).len != 0) return error.AttachPointOccupiedNeedsOwnerReview;
+}
+pub fn requireRootVacant(cgroup: l.fd_t) !void {
+    var ids: [128]u32 = undefined;
+    for (programs.hooks[0..2]) |hook| if ((try query(cgroup, hook, &ids)).len != 0) return error.AttachPointOccupiedNeedsOwnerReview;
 }
 fn requireSingleThread() !void {
     const fd = try sys.fd(l.open("/proc/self/task", .{ .DIRECTORY = true, .CLOEXEC = true, .NOFOLLOW = true }, 0));
