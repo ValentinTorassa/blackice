@@ -5,7 +5,7 @@
 //! network connections only to the loopback ports listed in `allowed_loopback_ports`. Everything else is
 //! refused by the operating system, not by the command's cooperation.
 //!
-//! Owners: src/macos (lead), src/linux (Codex). Changing this file needs a line in lead.txt section 7.
+//! Owners: src/macos (lead), src/linux (Linux backend). Changing this file is a contract change between them.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -20,10 +20,11 @@ pub const LaunchSpec = struct {
     environ: *const std.process.Environ.Map,
     /// The only loopback TCP ports the command may connect to: the scope's proxy and, when present, its relay.
     allowed_loopback_ports: []const u16,
+    /// The blackice state root (every scope's directory: receipts, policy copies, control sockets), absolute
+    /// and with symlinks resolved. Backends must make it read-only or hidden inside the scope.
+    state_dir: []const u8,
     /// Receipts for events the backend sees (for example kernel drops on Linux).
     receipts: *receipt.Log,
-    /// macOS: also refuse launchd job creation, LaunchServices opens and Apple Events (tests pending).
-    harden: bool = false,
 };
 
 pub const Exit = union(enum) {
@@ -65,7 +66,7 @@ pub fn launch(gpa: std.mem.Allocator, io: Io, spec: LaunchSpec) Error!Exit {
 pub fn exitFromTerm(term: std.process.Child.Term) Exit {
     return switch (term) {
         .exited => |c| .{ .exited = c },
-        .signal => |s| .{ .signal = @intFromEnum(s) },
+        .signal => |s| .{ .signal = @backingInt(s) },
         else => .other,
     };
 }

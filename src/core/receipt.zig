@@ -3,6 +3,11 @@
 //! A scope has a single writer, the blackice process. Backends (for example the Linux helper) report their
 //! events to it instead of writing the file, so lines never interleave.
 //!
+//! Every string field is cleaned before it is written: invalid UTF-8, control characters and bidirectional
+//! controls become '?', and each field is cut to a fixed size (ending in "..."). A line therefore always fits,
+//! and a scoped command cannot get its own receipt dropped by sending a long or malformed name. Lines that still
+//! cannot be written are counted and reported as "dropped" in scope_end.
+//!
 //! Example line:
 //!     {"ts":"2026-10-30T04:12:33.123Z","scope":"s-1a2b3c4d","policy":"cae35a3beb20","gen":1,"point":"proxy",
 //!      "event":"connect","verdict":"deny","reason":"no_matching_rule","host":"attacker.test","port":443}
@@ -10,24 +15,46 @@
 const std = @import("std");
 const Io = std.Io;
 
-/// Where the decision was enforced.
-pub const Point = enum { proxy, kernel, relay, control };
+/// Where the decision was enforced. app_filter is the macOS Network Extension (app scopes).
+pub const Point = enum { proxy, kernel, relay, control, app_filter };
 pub const Verdict = enum { allow, deny };
 
 pub const Entry = struct {
-    /// connect | http | scope_start | scope_end | grant | relay_call | kernel_drop | warning
+    /// connect | http | scope_start | scope_end | grant | revoke | relay_call | kernel_drop | warning
     event: []const u8,
     point: Point,
     verdict: ?Verdict = null,
-    /// A stable reason code (see policy.Reason) or a short error name.
+    /// A stable reason code (policy.Reason, or a code listed by the component that writes it) or a short
+    /// error name.
     reason: ?[]const u8 = null,
     /// The policy entry that decided, as written in the file.
     rule: ?[]const u8 = null,
     host: ?[]const u8 = null,
     ip: ?[]const u8 = null,
     port: ?u16 = null,
+    /// The command's exit status, on scope_end.
+    status: ?u8 = null,
     detail: ?[]const u8 = null,
 };
+
+/// Bytes kept per field after cleaning.
+pub const limits = struct {
+    pub const event = 32;
+    pub const reason = 64;
+    pub const rule = 256;
+    pub const host = 256;
+    pub const ip = 64;
+    pub const detail = 512;
+};
+
+const line_max = 4096;
+
+comptime {
+    // JSON escaping at most doubles a cleaned field ('"' and '\' become two bytes); the rest of a line
+    // (timestamp, ids, numbers, keys) stays under 512 bytes.
+    const fields = limits.event + limits.reason + limits.rule + limits.host + limits.ip + limits.detail;
+    std.debug.assert(2 * fields + 512 <= line_max);
+}
 
 const Line = struct {
     ts: []const u8,
@@ -42,8 +69,16 @@ const Line = struct {
     host: ?[]const u8,
     ip: ?[]const u8,
     port: ?u16,
+    status: ?u8,
     detail: ?[]const u8,
+    dropped: ?u64,
 };
+
+/// Owner read and write only, where the OS has POSIX modes.
+pub const private_file: Io.File.Permissions = if (@hasDecl(Io.File.Permissions, "fromMode"))
+    .fromMode(0o600)
+else
+    .default_file;
 
 pub const Log = struct {
     io: Io,
@@ -57,9 +92,9 @@ pub const Log = struct {
     /// Lines that could not be written. Reported in scope_end, so a gap in the log is visible.
     failures: u64 = 0,
 
-    /// Opens (or creates) the receipts file and appends to it.
+    /// Creates the receipts file (owner-only). It refuses an existing file.
     pub fn open(io: Io, dir: Io.Dir, sub_path: []const u8, scope: []const u8, policy_id: []const u8) !Log {
-        const file = try dir.createFile(io, sub_path, .{ .truncate = false });
+        const file = try dir.createFile(io, sub_path, .{ .truncate = false, .exclusive = true, .permissions = private_file });
         errdefer file.close(io);
         return .{ .io = io, .file = file, .offset = try file.length(io), .scope = scope, .policy_id = policy_id };
     }
@@ -69,23 +104,43 @@ pub const Log = struct {
     }
 
     pub fn write(log: *Log, e: Entry) void {
+        log.writeLine(e, null);
+    }
+
+    /// Writes scope_end with the command's exit status and the number of lines that could not be written.
+    pub fn end(log: *Log, status: ?u8, detail: ?[]const u8) void {
+        log.mutex.lockUncancelable(log.io);
+        const dropped = log.failures;
+        log.mutex.unlock(log.io);
+        log.writeLine(.{ .event = "scope_end", .point = .control, .status = status, .detail = detail }, dropped);
+    }
+
+    fn writeLine(log: *Log, e: Entry, dropped: ?u64) void {
         var ts_buf: [32]u8 = undefined;
+        var event_buf: [limits.event]u8 = undefined;
+        var reason_buf: [limits.reason]u8 = undefined;
+        var rule_buf: [limits.rule]u8 = undefined;
+        var host_buf: [limits.host]u8 = undefined;
+        var ip_buf: [limits.ip]u8 = undefined;
+        var detail_buf: [limits.detail]u8 = undefined;
         const line: Line = .{
             .ts = formatTimestamp(&ts_buf, Io.Clock.real.now(log.io)),
             .scope = log.scope,
             .policy = log.policy_id,
             .gen = log.generation,
             .point = e.point,
-            .event = e.event,
+            .event = clean(&event_buf, e.event),
             .verdict = e.verdict,
-            .reason = e.reason,
-            .rule = e.rule,
-            .host = e.host,
-            .ip = e.ip,
+            .reason = cleanOptional(&reason_buf, e.reason),
+            .rule = cleanOptional(&rule_buf, e.rule),
+            .host = cleanOptional(&host_buf, e.host),
+            .ip = cleanOptional(&ip_buf, e.ip),
             .port = e.port,
-            .detail = e.detail,
+            .status = e.status,
+            .detail = cleanOptional(&detail_buf, e.detail),
+            .dropped = dropped,
         };
-        var buf: [4096]u8 = undefined;
+        var buf: [line_max]u8 = undefined;
         var w: Io.Writer = .fixed(&buf);
         w.print("{f}\n", .{std.json.fmt(line, .{ .emit_null_optional_fields = false })}) catch {
             log.countFailure();
@@ -108,6 +163,50 @@ pub const Log = struct {
         log.failures += 1;
     }
 };
+
+fn printable(cp: u21) bool {
+    return switch (cp) {
+        0x00...0x1f, 0x7f...0x9f => false, // C0 controls, DEL, C1 controls
+        0x200b...0x200f, 0x2028...0x202e, 0x2060...0x2069, 0xfeff => false, // zero-width, separators, bidi controls
+        else => true,
+    };
+}
+
+/// Copies `s` into `out` as printable UTF-8. Invalid bytes, control characters, line separators and
+/// bidirectional controls become '?'. Text that does not fit is cut at a character boundary and ends in "...".
+/// The result is never longer than `s` or `out`.
+pub fn clean(out: []u8, s: []const u8) []const u8 {
+    std.debug.assert(out.len >= 4);
+    // Cleaning never makes text longer, so input that fits needs no room for the "...".
+    const cap = if (s.len <= out.len) out.len else out.len - 3;
+    var o: usize = 0;
+    var i: usize = 0;
+    while (i < s.len) {
+        var n: usize = 1;
+        var keep = false;
+        if (std.unicode.utf8ByteSequenceLength(s[i])) |len| {
+            if (i + len <= s.len) {
+                if (std.unicode.utf8Decode(s[i .. i + len])) |cp| {
+                    n = len;
+                    keep = printable(cp);
+                } else |_| {}
+            }
+        } else |_| {}
+        const w: usize = if (keep) n else 1;
+        if (o + w > cap) {
+            @memcpy(out[o..][0..3], "...");
+            return out[0 .. o + 3];
+        }
+        if (keep) @memcpy(out[o..][0..n], s[i..][0..n]) else out[o] = '?';
+        o += w;
+        i += n;
+    }
+    return out[0..o];
+}
+
+fn cleanOptional(out: []u8, s: ?[]const u8) ?[]const u8 {
+    return if (s) |v| clean(out, v) else null;
+}
 
 /// RFC 3339 in UTC with milliseconds, e.g. 2026-10-30T04:12:33.123Z.
 pub fn formatTimestamp(buf: *[32]u8, t: Io.Timestamp) []const u8 {
@@ -135,13 +234,28 @@ test formatTimestamp {
     try std.testing.expectEqualStrings("2025-10-30T04:53:20.123Z", formatTimestamp(&buf, t));
 }
 
+test clean {
+    var buf: [16]u8 = undefined;
+    try std.testing.expectEqualStrings("plain.example", clean(&buf, "plain.example"));
+    try std.testing.expectEqualStrings("a?b?c", clean(&buf, "a\x1bb\xffc"));
+    try std.testing.expectEqualStrings("ñandú", clean(&buf, "ñandú"));
+    try std.testing.expectEqualStrings("x?y", clean(&buf, "x\u{202e}y"));
+    try std.testing.expectEqualStrings("0123456789abcdef", clean(&buf, "0123456789abcdef"));
+    try std.testing.expectEqualStrings("0123456789abc...", clean(&buf, "0123456789abcdefg"));
+    // A cut never splits a character.
+    try std.testing.expectEqualStrings("0123456789ab...", clean(&buf, "0123456789abñññ"));
+    // Overlong encodings and surrogates are invalid.
+    try std.testing.expectEqualStrings("??", clean(&buf, "\xc0\xaf"));
+    try std.testing.expectEqualStrings("???", clean(&buf, "\xed\xa0\x80"));
+}
+
 test "receipt lines are JSON with nulls omitted" {
     const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     var log = try Log.open(io, tmp.dir, "r.jsonl", "s-00000000", "abc123abc123");
     log.write(.{ .event = "connect", .point = .proxy, .verdict = .deny, .reason = "no_matching_rule", .host = "a\"b.test", .port = 443 });
-    log.write(.{ .event = "scope_end", .point = .control });
+    log.end(0, null);
     log.close();
     const bytes = try tmp.dir.readFileAlloc(io, "r.jsonl", std.testing.allocator, .limited(1 << 16));
     defer std.testing.allocator.free(bytes);
@@ -149,7 +263,37 @@ test "receipt lines are JSON with nulls omitted" {
     const first = it.next().?;
     try std.testing.expect(std.mem.find(u8, first, "\"verdict\":\"deny\"") != null);
     try std.testing.expect(std.mem.find(u8, first, "\"host\":\"a\\\"b.test\"") != null);
+    try std.testing.expect(std.mem.find(u8, first, "dropped") == null);
     const second = it.next().?;
     try std.testing.expect(std.mem.find(u8, second, "verdict") == null);
+    try std.testing.expect(std.mem.find(u8, second, "\"status\":0") != null);
+    try std.testing.expect(std.mem.find(u8, second, "\"dropped\":0") != null);
     try std.testing.expect(it.next() == null);
+    // The receipts file is new and owner-only.
+    try std.testing.expectError(error.PathAlreadyExists, Log.open(io, tmp.dir, "r.jsonl", "s-00000000", "abc123abc123"));
+    if (@hasDecl(Io.File.Permissions, "fromMode")) {
+        const st = try tmp.dir.statFile(io, "r.jsonl", .{});
+        try std.testing.expectEqual(@as(std.posix.mode_t, 0o600), st.permissions.toMode() & 0o777);
+    }
+}
+
+test "long and malformed fields cannot drop a receipt" {
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var log = try Log.open(io, tmp.dir, "r.jsonl", "s-00000000", "abc123abc123");
+    const quotes: [8192]u8 = @splat('"');
+    const junk: [8192]u8 = @splat(0xff);
+    log.write(.{ .event = &quotes, .point = .proxy, .verdict = .deny, .reason = &junk, .rule = &quotes, .host = &quotes, .ip = &junk, .detail = &quotes });
+    log.end(null, null);
+    log.close();
+    try std.testing.expectEqual(@as(u64, 0), log.failures);
+    try std.testing.expectEqual(@as(u64, 2), log.written);
+    const bytes = try tmp.dir.readFileAlloc(io, "r.jsonl", std.testing.allocator, .limited(1 << 16));
+    defer std.testing.allocator.free(bytes);
+    var it = std.mem.splitScalar(u8, std.mem.trimEnd(u8, bytes, "\n"), '\n');
+    const first = it.next().?;
+    try std.testing.expect(first.len < line_max);
+    try std.testing.expect(std.unicode.utf8ValidateSlice(first));
+    try std.testing.expect(std.mem.find(u8, first, "\"verdict\":\"deny\"") != null);
 }

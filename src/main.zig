@@ -56,13 +56,21 @@ fn policyCheck(gpa: std.mem.Allocator, io: Io, path: []const u8, out: *Io.Writer
     defer gpa.free(bytes);
     var diag: policy.Diagnostic = .{};
     var p = policy.Policy.parse(gpa, bytes, &diag) catch |err| {
-        try errw.print("blackice: {s}: {s}: {s} ({s})\n", .{ path, @errorName(err), diag.message, diag.item });
+        try errw.print("blackice: {s}: {s}: {s} ({s})\n", .{ path, @errorName(err), diag.message, diag.item() });
         return 1;
     };
     defer p.deinit();
-    try out.print("ok: {s}, mode {s}, {d} allowed names, {d} allowed subnets, {d} denied subnets, policy {s}\n", .{
-        path, p.mode.label(), p.allow.len, p.allow_subnets.len, p.deny_subnets.len, p.id(),
+    try out.print("ok: {s}, mode {s}, {d} allowed names, {d} allowed subnets, {d} denied subnets, ports", .{
+        path, p.mode.label(), p.allow.len, p.allow_subnets.len, p.deny_subnets.len,
     });
+    for (p.ports) |port| try out.print(" {d}", .{port});
+    try out.print(", policy {s}\n", .{p.id()});
+    const ignored = p.ignoredAllowCount();
+    if (ignored > 0) {
+        try errw.print("blackice: warning: mode {s} ignores the {d} allow entries; use allowlist to apply them\n", .{
+            p.mode.label(), ignored,
+        });
+    }
     return 0;
 }
 
