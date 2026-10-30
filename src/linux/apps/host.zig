@@ -64,23 +64,52 @@ pub fn identity(gpa: std.mem.Allocator, path: []const u8) !abi.FileKey {
         const name = try gpa.dupeSentinel(u8, part, 0);
         defer gpa.free(name);
         const next = try sys.fd(l.openat(dir, name, .{ .PATH = true, .NOFOLLOW = true, .CLOEXEC = true }, 0));
-        errdefer sys.close(next);
+        var next_owned = true;
+        defer if (next_owned) sys.close(next);
         try sys.rootOwned(next);
         const s = try sys.stat(next);
         const last = parts.peek() == null;
         if (s.mode & 0o170000 != (if (last) @as(u16, 0o100000) else @as(u16, 0o040000))) return error.CanonicalRootOwnedExecutableRequired;
         sys.close(dir);
         dir = next;
+        next_owned = false; // dir's outer defer owns this fd, including header-validation failures.
         if (last) {
             if (s.mode & 0o111 == 0) return error.ExecutableRequired;
             var fs: [32]u64 = @splat(0);
             _ = try sys.check(l.syscall2(.fstatfs, @as(usize, @intCast(dir)), @intFromPtr(&fs)));
             if (!identityFilesystemSupported(fs[0])) return error.UnsupportedExecutableFilesystem;
+            try requireNativeExecutable(dir);
             return .{ .device = try abi.kernelDevice(s.dev_major, s.dev_minor), .inode = s.ino };
         }
     }
     return error.ExecutableRequired;
 }
+
+fn requireNativeExecutable(pinned: l.fd_t) !void {
+    const original = try sys.stat(pinned);
+    if (original.mode & 0o170000 != 0o100000) return error.CanonicalRootOwnedExecutableRequired;
+    // O_PATH cannot read. Follow only our own fixed fd link, never the policy's pathname again:
+    // a rename-over must not make the header belong to a different inode than the registered key.
+    var path: [64]u8 = undefined;
+    const fd_path = try std.fmt.bufPrintSentinel(&path, "/proc/self/fd/{d}", .{pinned}, 0);
+    const readable = try sys.fd(l.open(fd_path, .{ .CLOEXEC = true, .NONBLOCK = true }, 0));
+    defer sys.close(readable);
+    const opened = try sys.stat(readable);
+    if (opened.ino != original.ino or opened.dev_major != original.dev_major or opened.dev_minor != original.dev_minor)
+        return error.ExecutableIdentityChanged;
+    var magic: [4]u8 = undefined;
+    var n: usize = 0;
+    while (n < magic.len) {
+        const got = try sys.read(readable, magic[n..]);
+        if (got == 0) break;
+        n += got;
+    }
+    if (n >= 2 and std.mem.eql(u8, magic[0..2], "#!")) return error.ScriptExecutableUnsupported;
+    // Other interpreter/binfmt formats also cannot be identified by the configured file's inode.
+    // This checks the format prefix only; the kernel still validates the full ELF at exec.
+    if (n != magic.len or !std.mem.eql(u8, &magic, "\x7fELF")) return error.UnsupportedExecutableFormat;
+}
+
 pub fn identityFilesystemSupported(magic: u64) bool {
     // statx st_dev must equal inode->i_sb->s_dev. btrfs subvolumes and overlayfs do not meet this contract.
     return magic == 0xef53 or magic == 0x58465342; // ext4 (ext family ABI) / xfs
@@ -90,6 +119,64 @@ test "appfilter executable filesystem identity rejects overlay and btrfs" {
     try std.testing.expect(identityFilesystemSupported(0x58465342));
     for ([_]u64{ 0x9123683e, 0x794c7630, 0x01021994, 0 }) |magic| try std.testing.expect(!identityFilesystemSupported(magic));
 }
+
+test "appfilter executable headers refuse scripts and incomplete or foreign formats" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const io = std.testing.io;
+    for ([_][]const u8{ "#!", "#!/bin/sh\necho test\n", "#!/usr/bin/env python3\npass\n" }) |bytes| {
+        try tmp.dir.writeFile(io, .{ .sub_path = "listed", .data = bytes });
+        const fd = try sys.fd(l.openat(tmp.dir.handle, "listed", .{ .PATH = true, .NOFOLLOW = true, .CLOEXEC = true }, 0));
+        defer sys.close(fd);
+        try std.testing.expectError(error.ScriptExecutableUnsupported, requireNativeExecutable(fd));
+    }
+    for ([_][]const u8{ "", "#", "\x7fEL", "echo test\n", "MZ\x00\x00" }) |bytes| {
+        try tmp.dir.writeFile(io, .{ .sub_path = "listed", .data = bytes });
+        const fd = try sys.fd(l.openat(tmp.dir.handle, "listed", .{ .PATH = true, .NOFOLLOW = true, .CLOEXEC = true }, 0));
+        defer sys.close(fd);
+        try std.testing.expectError(error.UnsupportedExecutableFormat, requireNativeExecutable(fd));
+    }
+    try tmp.dir.writeFile(io, .{ .sub_path = "listed", .data = "\x7fELF\x02\x01\x01\x00" });
+    const native = try sys.fd(l.openat(tmp.dir.handle, "listed", .{ .PATH = true, .NOFOLLOW = true, .CLOEXEC = true }, 0));
+    defer sys.close(native);
+    try requireNativeExecutable(native);
+    try std.testing.expectError(error.CanonicalRootOwnedExecutableRequired, requireNativeExecutable(tmp.dir.handle));
+}
+
+test "appfilter executable header stays with the pinned inode across rename replacement" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const io = std.testing.io;
+    const script = "#!/bin/sh\nexit 0\n";
+    const native = "\x7fELF\x02\x01\x01\x00";
+    for ([_]bool{ false, true }) |script_first| {
+        try tmp.dir.writeFile(io, .{ .sub_path = "listed", .data = if (script_first) script else native });
+        try tmp.dir.writeFile(io, .{ .sub_path = "replacement", .data = if (script_first) native else script });
+        const pinned = try sys.fd(l.openat(tmp.dir.handle, "listed", .{ .PATH = true, .NOFOLLOW = true, .CLOEXEC = true }, 0));
+        defer sys.close(pinned);
+        try tmp.dir.rename("replacement", tmp.dir, "listed", io);
+        const replaced = try sys.fd(l.openat(tmp.dir.handle, "listed", .{ .PATH = true, .NOFOLLOW = true, .CLOEXEC = true }, 0));
+        defer sys.close(replaced);
+        try std.testing.expect((try sys.stat(pinned)).ino != (try sys.stat(replaced)).ino);
+        try requireNativeExecutable(if (script_first) replaced else pinned);
+        try std.testing.expectError(error.ScriptExecutableUnsupported, requireNativeExecutable(if (script_first) pinned else replaced));
+    }
+}
+
+test "appfilter unreadable executable header refuses instead of accepting an unchecked identity" {
+    if (l.geteuid() == 0) return error.SkipZigTest;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const io = std.testing.io;
+    const file = try tmp.dir.createFile(io, "listed", .{});
+    defer file.close(io);
+    try file.writePositionalAll(io, "\x7fELF\x02\x01\x01\x00", 0);
+    _ = try sys.check(l.fchmod(file.handle, 0o111));
+    const pinned = try sys.fd(l.openat(tmp.dir.handle, "listed", .{ .PATH = true, .NOFOLLOW = true, .CLOEXEC = true }, 0));
+    defer sys.close(pinned);
+    try std.testing.expectError(error.PermissionDenied, requireNativeExecutable(pinned));
+}
+
 pub fn writePolicy(gpa: std.mem.Allocator, io: std.Io, digest: []const u8, bytes: []const u8) !void {
     const path = try std.fmt.allocPrint(gpa, "policy-{s}.json", .{digest});
     defer gpa.free(path);
