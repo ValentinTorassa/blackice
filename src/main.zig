@@ -73,4 +73,5 @@ test {
     _ = backend;
     _ = seatbelt;
     _ = @import("proxy/proxy.zig");
+    _ = @import("relay/relay.zig");
 }
