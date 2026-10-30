@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Synthetic analyzer unit tests only; never opens SSH, sockets, polkit or BPF."""
 import copy
+import hashlib
 import importlib.util
+import json
 from pathlib import Path
 import unittest
 
@@ -44,6 +46,29 @@ class ReceiptChecks(unittest.TestCase):
         self.assertEqual(vm.state_hash({'value': [f'{x:02x}' for x in data]}), data[16:48].hex())
         for value in [[], ['zz'], [256], 'not a byte array']:
             with self.assertRaises(RuntimeError): vm.state_hash({'value': value})
+
+    def test_https_counts_verdicts_and_policy_generation_pairs(self):
+        configs, records, attempts = [], [], []
+        for gen in range(1, 5):
+            allowed = ['example.com', 'github.com'] if gen == 2 else ['example.com']
+            policy = {'version': 'blackice.policy/v0', 'network': {'mode': 'allowlist', 'allow': allowed}}
+            digest = hashlib.sha256(json.dumps(policy, separators=(',', ':')).encode()).hexdigest()
+            configs.append({'applications': [{'executable': '/launcher', 'policy': policy}]})
+            for host in ('example.com', 'github.com'):
+                yes = host in allowed
+                records.append({'event': 'connect', 'app_id': 1, 'gen': gen, 'policy': digest, 'host': host,
+                                'verdict': 'allow' if yes else 'deny', 'reason': 'allowed_domain' if yes else 'no_matching_rule'})
+                attempts.append({'http_status': 200 if yes else None})
+        result = vm.validate_web(records, attempts, 99, 1, configs, '/launcher')
+        self.assertEqual(result['attempts'], 8)
+        self.assertEqual(result['http_responses'], 5)
+        for mutation in ('missing', 'duplicate', 'wrong_hash', 'wrong_allow'):
+            rows = copy.deepcopy(records)
+            if mutation == 'missing': rows.pop()
+            if mutation == 'duplicate': rows.append(rows[0])
+            if mutation == 'wrong_hash': rows[0]['policy'] = '0' * 64
+            if mutation == 'wrong_allow': rows[-1]['verdict'] = 'allow'
+            with self.assertRaises(RuntimeError): vm.validate_web(rows, attempts, 99, 1, configs, '/launcher')
 
 
 if __name__ == '__main__':

@@ -168,6 +168,16 @@ the receiver; the scoped marker must not. It never supplies passwords or install
 a polkit bypass. This fixed-membership driver is one acceptance test, not the
 whole security gate.
 
+Add `--web-loop` to run a second process through that same listed launcher. It
+schedules 20 HTTPS requests per second alternating `example.com` and `github.com`,
+with at most eight in flight, certificate verification and no client DNS/proxy
+environment. The fixtures must use exact-name allowlists for those hosts. The
+analyzer requires one initial proxy/kernel decision per completed attempt,
+matching policy hashes and generations, observations of both names in every
+generation, and no unexpected allowed-request failures or skipped schedule ticks.
+An in-flight request reset by narrowing is counted separately from its initial
+decision. Numeric dialing is intentional: the app filter must route by TLS SNI.
+
 `scripts/e2e/linux-appfilter-reload-refusals-vm.py` checks an already armed VM
 without a password: stale/invalid policies, raw unauthenticated owner, concurrent
 request, root non-owner, tagged curl and a real terminal prompt cancelled with

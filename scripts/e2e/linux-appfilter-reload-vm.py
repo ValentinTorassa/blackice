@@ -140,6 +140,37 @@ def validate_windows(records, windows, pid, attempts):
         require(all(gen == generation for gen in inside), 'kernel receipt labeled with a different generation')
 
 
+def validate_web(records, attempts, pid, app_id, configs, launcher):
+    flows = [r for r in records if r.get('event') == 'connect' and r.get('app_id') == app_id]
+    kernels = [r for r in records if r.get('event') == 'kernel_drop' and re.search(rf'\btgid={pid}\b', r.get('detail', ''))]
+    require(len(flows) + len(kernels) == len(attempts), 'HTTPS attempts do not have exactly one initial decision each')
+    policies = [next(a['policy'] for a in cfg['applications'] if a['executable'] == launcher) for cfg in configs]
+    digests = [hashlib.sha256(json.dumps(pol, separators=(',', ':'), ensure_ascii=False).encode()).hexdigest() for pol in policies]
+    for row in flows:
+        gen = row.get('gen')
+        require(gen in (1, 2, 3, 4) and row['policy'] == digests[gen - 1], 'HTTPS receipt mixes policy and generation')
+        host = row.get('host')
+        if host is None:
+            require(row.get('verdict') == 'deny' and row.get('reason') == 'policy_change_in_progress', 'unexplained nameless HTTPS decision')
+            continue
+        require(host in ('example.com', 'github.com'), 'unexpected HTTPS host')
+        network = policies[gen - 1]['network']
+        require(network['mode'] == 'allowlist', 'web-loop fixtures must use exact-name allowlists')
+        allowed = host in network['allow']
+        require(row.get('verdict') == ('allow' if allowed else 'deny'), 'HTTPS verdict contradicts its recorded generation')
+        if not allowed:
+            require(row.get('reason') == 'no_matching_rule', 'refused host has an unexpected reason')
+    for gen in range(1, 5):
+        for host in ('example.com', 'github.com'):
+            require(any(r.get('gen') == gen and r.get('host') == host for r in flows), f'no HTTPS observation for gen{gen} {host}')
+    successes = sum(r.get('http_status') is not None for r in attempts)
+    allowed = sum(r.get('verdict') == 'allow' for r in flows)
+    narrowed = sum(r.get('event') == 'policy_changed' and r.get('reason') == 'policy_narrowed' and r.get('app_id') == app_id for r in records)
+    require(successes <= allowed and allowed - successes <= narrowed, 'allowed HTTPS failures lack a narrowing reset explanation')
+    return {'attempts': len(attempts), 'proxy_decisions': len(flows), 'kernel_decisions': len(kernels),
+            'http_responses': successes, 'narrowing_resets': narrowed}
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--cli', required=True, type=Path)
@@ -150,6 +181,7 @@ def main():
     p.add_argument('--receiver-port', required=True, type=int)
     p.add_argument('--token', required=True, help='unique public test marker, never a credential')
     p.add_argument('--output', required=True, type=Path, help='new directory')
+    p.add_argument('--web-loop', action='store_true', help='also send 20 Hz HTTPS requests alternating example.com/github.com')
     args = p.parse_args()
     require(os.geteuid() != 0, 'run as the unprivileged configured VM owner')
     require(command(['systemd-detect-virt']).strip() in ('kvm', 'qemu'), 'disposable KVM/QEMU VM required')
@@ -182,6 +214,8 @@ def main():
     with socket.create_connection((str(receiver), args.receiver_port), timeout=3) as control:
         control.sendall((args.token + ':outside-before\n').encode())
     probe = None
+    web = None
+    web_file = None
     armed = False
     report = {'result': 'NOT RUN', 'cli_sha256': args.cli_sha256, 'configuration_sha256': hashes}
     try:
@@ -198,6 +232,12 @@ def main():
             first = snapshot(args.output, 1, probe.pid)
             require(first['tag'] != 0, 'probe is untagged')
             require(state_hash(first['state']) == hashes[0], 'initial kernel policy hash mismatch')
+            if args.web_loop:
+                web_file = (args.output / 'web-probe.jsonl').open('w')
+                web = subprocess.Popen([str(args.launcher), sys.executable, '-u', '-B',
+                                        str(Path(__file__).with_name('linux-appfilter-reload-web-probe.py'))], stdout=web_file, stderr=subprocess.STDOUT)
+                time.sleep(0.3)
+                require(web.poll() is None and tag(web.pid) == first['tag'], 'web probe is not live with the expected tag')
             windows = []
             window_start = time.monotonic_ns()
             time.sleep(0.5)
@@ -217,6 +257,14 @@ def main():
         probe.terminate()
         probe.wait(timeout=5)
         probe = None
+        web_pid = None
+        if web is not None:
+            web_pid = web.pid
+            web.terminate()
+            require(web.wait(timeout=15) == 0, 'web probe failed')
+            web = None
+            web_file.close()
+            web_file = None
         attempts = [json.loads(line) for line in (args.output / 'direct-probe.jsonl').read_text().splitlines()]
         attempts = [r for r in attempts if r.get('event') == 'direct_attempt']
         require(len(attempts) >= 40, 'too few continuous kernel probes')
@@ -226,6 +274,12 @@ def main():
         (args.output / 'receipts.jsonl').write_text(''.join(json.dumps(r) + '\n' for r in rows))
         validate_activations(rows, hashes)
         validate_windows(rows, windows, probe_pid, len(attempts))
+        if web_pid is not None:
+            web_rows = [json.loads(line) for line in (args.output / 'web-probe.jsonl').read_text().splitlines()]
+            require(web_rows[-1].get('event') == 'web_finished', 'web probe did not finish its bounded requests')
+            require(web_rows[-1]['backpressure_skipped'] == 0, 'web loop could not sustain the scheduled 20 Hz rate')
+            web_attempts = [r for r in web_rows if r.get('event') == 'web_attempt']
+            report['web'] = validate_web(rows, web_attempts, web_pid, first['tag'], configs, str(args.launcher))
         with socket.create_connection((str(receiver), args.receiver_port), timeout=3) as control:
             control.sendall((args.token + ':outside-after\n').encode())
         report.update(result='LOCAL CHECKS PASS; RECEIVER CORROBORATION REQUIRED', attempts=len(attempts),
@@ -234,6 +288,12 @@ def main():
         report.update(result='FAIL', error=str(error))
         raise
     finally:
+        if web is not None:
+            web.terminate()
+            try: web.wait(timeout=15)
+            except subprocess.TimeoutExpired: web.kill(); web.wait()
+        if web_file is not None:
+            web_file.close()
         if probe is not None:
             probe.terminate()
             try: probe.wait(timeout=5)
