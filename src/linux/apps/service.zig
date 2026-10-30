@@ -58,11 +58,13 @@ fn run(init: std.process.Init) !void {
         try kernel.requireVacant(cg);
         return;
     }
-    const release = try Io.Dir.cwd().readFileAlloc(init.io, "/proc/sys/kernel/osrelease", init.gpa, .limited(256));
-    defer init.gpa.free(release);
+    // procfs files report size 0, so readFileAlloc on /proc/sys/kernel/osrelease returns no bytes and the
+    // release check could never pass. uname(2) returns the same release string.
+    const uts = std.posix.uname();
+    const release = std.mem.sliceTo(&uts.release, 0);
     const btf = try Io.Dir.cwd().readFileAlloc(init.io, "/sys/kernel/btf/vmlinux", init.gpa, .limited(16 * 1024 * 1024));
     defer init.gpa.free(btf);
-    try pinning.verify(std.mem.trim(u8, release, "\n"), btf);
+    try pinning.verify(release, btf);
     var runtime: Runtime = .{ .gpa = init.gpa, .io = init.io, .install = install, .cg = cg };
     defer runtime.deinit();
     runtime.service_log = try newLog(init.gpa, init.io, "service", "appfilter");
