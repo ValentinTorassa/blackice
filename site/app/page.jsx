@@ -94,8 +94,8 @@ export default function Home() {
               per-connection prompts.
             </p>
             <p className="hero-status">
-              Task scopes work today on macOS. The macOS app filter is built in its pull request and needs Developer ID
-              signing to run. The Linux app filter is in design.
+              Task scopes work today on macOS and on Debian 13 (x86_64). The macOS app filter is built in its pull
+              request and needs Developer ID signing to run. The Linux app filter is in design.
             </p>
             <CopyCommand command={SITE.command} />
             <div className="actions">
@@ -196,7 +196,7 @@ export default function Home() {
         <section className="container section">
           <div className="head-row">
             <h2 className="h2">Design</h2>
-            <span className="badge">v0 design · verified for macOS task scopes only</span>
+            <span className="badge">v0 design · verified for task scopes on macOS and Debian 13 (x86_64)</span>
           </div>
           <p className="sub">
             Each connection passes these layers in order. The first layer that refuses it stops it, and the decision
