@@ -363,7 +363,12 @@ pub const Policy = struct {
         const a = arena.allocator();
         const own = try a.dupe(u8, bytes);
 
-        const raw = std.json.parseFromSliceLeaky(Raw, a, own, .{}) catch |err| switch (err) {
+        // Stated explicitly so a change of std defaults cannot loosen parsing: a repeated key or an unknown
+        // field is an error, never a silent pick.
+        const raw = std.json.parseFromSliceLeaky(Raw, a, own, .{
+            .duplicate_field_behavior = .@"error",
+            .ignore_unknown_fields = false,
+        }) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
             else => return fail(diag, error.InvalidJson, "not valid policy JSON (unknown fields are rejected)", @errorName(err)),
         };
@@ -664,6 +669,14 @@ test "invalid policies fail closed" {
         .{
             error.InvalidJson,
             \\{"version":"blackice.policy/v0","network":{"mode":"allowlist","alow":["x.com"]}}
+        },
+        .{
+            error.InvalidJson,
+            \\{"version":"blackice.policy/v0","network":{"mode":"deny-all","mode":"allow-all"}}
+        },
+        .{
+            error.InvalidJson,
+            \\{"version":"blackice.policy/v0","network":{"mode":"deny-all"},"network":{"mode":"allow-all"}}
         },
         .{
             error.UnsupportedVersion,
