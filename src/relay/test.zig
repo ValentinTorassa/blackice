@@ -87,7 +87,7 @@ const Upstream = struct {
             try req.respond("{\"error\":\"bad key\"}", .{ .status = .unauthorized });
             return;
         }
-        if (std.mem.find(u8, body_store[0..n], "\"slow\":true") != null) {
+        if (std.mem.find(u8, body_store[0..n], "\"user\":\"slow\"") != null) {
             try u.io.sleep(.fromSeconds(3), .awake);
         }
         if (std.mem.find(u8, body_store[0..n], "\"stream\":true") != null) {
@@ -334,6 +334,38 @@ test "browser pages, foreign Host headers, non-JSON bodies and routing fields ar
     try expectField(r4.value, "detail", "providerOptions");
 }
 
+test "only standard chat-completion fields pass the relay" {
+    var h: Harness = undefined;
+    try h.init(.{ .models = &models });
+    defer h.deinit();
+    const full = try h.call(.POST, "/v1/chat/completions",
+        \\{"model":"test/allowed-model","messages":[{"role":"user","content":"hi","name":"x"}],"tools":[],
+        \\ "tool_choice":"auto","stream":false,"stream_options":null,"temperature":0.2,"top_p":1,"max_tokens":50,
+        \\ "max_completion_tokens":50,"response_format":{"type":"text"},"stop":["\\n"],"seed":1,"n":1,"user":"u",
+        \\ "parallel_tool_calls":true,"reasoning_effort":"low"}
+    );
+    defer testing.allocator.free(full.body);
+    try testing.expectEqual(http.Status.ok, full.status);
+    const unknown = [_][]const u8{
+        \\{"model":"test/allowed-model","messages":[],"models":["test/expensive-model"]}
+        ,
+        \\{"model":"test/allowed-model","messages":[],"order":["openai"]}
+        ,
+        \\{"model":"test/allowed-model","messages":[],"\u0070roviderOptions":{}}
+        ,
+    };
+    for (unknown) |body| {
+        const res = try h.call(.POST, "/v1/chat/completions", body);
+        defer testing.allocator.free(res.body);
+        try testing.expectEqual(http.Status.forbidden, res.status);
+    }
+    try testing.expectEqual(@as(u32, 1), h.up.calls);
+    var r = try h.receiptAt(3);
+    defer r.deinit();
+    try expectField(r.value, "reason", "routing_not_allowed");
+    try expectField(r.value, "detail", "providerOptions");
+}
+
 test "the response cap and the call time limit cut a call" {
     var h: Harness = undefined;
     try h.init(.{ .models = &models, .max_response_bytes = 16, .call_timeout = .fromMilliseconds(300) });
@@ -345,7 +377,7 @@ test "the response cap and the call time limit cut a call" {
         try testing.expect(res.body.len <= 16);
     } else |_| {}
     if (h.call(.POST, "/v1/chat/completions",
-        \\{"model":"test/allowed-model","slow":true}
+        \\{"model":"test/allowed-model","user":"slow"}
     )) |res| {
         defer testing.allocator.free(res.body);
         try testing.expect(res.status != .ok);

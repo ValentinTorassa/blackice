@@ -19,13 +19,14 @@
 //! Callers: requests carrying Origin or Sec-Fetch-* headers (a browser page) are refused, the Host header
 //! must name this listener (127.0.0.1:<port> or localhost:<port>, which defeats DNS rebinding), and chat
 //! calls must be application/json (a page cannot send that without a CORS preflight, which is refused).
-//! Gateway routing fields in the body (providerOptions, models, provider, ...) are refused, so a call cannot
-//! fall back to a model that is not on the list.
+//! Only standard top-level chat-completion fields pass (`allowed_fields`); anything else, gateway routing
+//! options such as providerOptions or models included, is refused, so a call cannot fall back to a model
+//! that is not on the list.
 //!
 //! One receipt per call, point "relay", event "relay_call". Reason codes:
 //!   model_allowed      forwarded (rule = the model; detail = status, bytes in and out, stream)
 //!   model_not_allowed  the model is not on the allow list (403)
-//!   routing_not_allowed the body carries a gateway routing field (403; detail = the field)
+//!   routing_not_allowed the body carries a top-level field outside `allowed_fields` (403; detail = the field)
 //!   browser_request    Origin or Sec-Fetch-* present (403)
 //!   bad_host_header    the Host header does not name this listener (403)
 //!   bad_content_type   a chat call that is not application/json (415)
@@ -348,34 +349,42 @@ pub const Relay = struct {
         };
         defer r.gpa.free(body);
 
-        const Fields = struct {
-            model: []const u8,
-            stream: ?bool = null,
-            // Gateway routing fields: present means refused (see routing_fields).
-            providerOptions: ?std.json.Value = null,
-            provider_options: ?std.json.Value = null,
-            models: ?std.json.Value = null,
-            provider: ?std.json.Value = null,
-            route: ?std.json.Value = null,
-            extra_body: ?std.json.Value = null,
-        };
-        const parsed = std.json.parseFromSlice(Fields, r.gpa, body, .{ .ignore_unknown_fields = true }) catch {
-            r.writeReceipt(.{ .verdict = .deny, .reason = "bad_request", .detail = "body must be JSON with a string \"model\"" });
+        // Strict: a repeated key is an error, so the relay and the upstream cannot read different values.
+        const parsed = std.json.parseFromSlice(std.json.Value, r.gpa, body, .{ .duplicate_field_behavior = .@"error" }) catch {
+            r.writeReceipt(.{ .verdict = .deny, .reason = "bad_request", .detail = "body must be one JSON object" });
             try r.respondError(req, .bad_request, "bad_request", "body must be JSON with a string \"model\"");
             return keep_alive;
         };
         defer parsed.deinit();
-        const model = parsed.value.model;
-        const stream = parsed.value.stream orelse false;
+        const obj = switch (parsed.value) {
+            .object => |o| o,
+            else => {
+                r.writeReceipt(.{ .verdict = .deny, .reason = "bad_request", .detail = "body must be one JSON object" });
+                try r.respondError(req, .bad_request, "bad_request", "body must be JSON with a string \"model\"");
+                return keep_alive;
+            },
+        };
+        const model = switch (obj.get("model") orelse std.json.Value{ .null = {} }) {
+            .string => |m| m,
+            else => {
+                r.writeReceipt(.{ .verdict = .deny, .reason = "bad_request", .detail = "missing string \"model\"" });
+                try r.respondError(req, .bad_request, "bad_request", "body must be JSON with a string \"model\"");
+                return keep_alive;
+            },
+        };
+        const stream = if (obj.get("stream")) |v| v == .bool and v.bool else false;
 
         var model_buf: [128]u8 = undefined;
         const model_label = printable(&model_buf, model);
-        inline for (routing_fields) |field| {
-            if (@field(parsed.value, field) != null) {
-                r.writeReceipt(.{ .verdict = .deny, .reason = "routing_not_allowed", .rule = model_label, .detail = field });
-                try r.respondError(req, .forbidden, "routing_not_allowed", "gateway routing fields are not allowed through the relay");
-                return keep_alive;
-            }
+        // Only the top-level fields a chat call needs pass. Anything else, gateway routing options included
+        // (providerOptions, models, provider, ...), is refused, so a call cannot fall back to another model.
+        var keys = obj.iterator();
+        while (keys.next()) |entry| {
+            if (allowedField(entry.key_ptr.*)) continue;
+            var field_buf: [64]u8 = undefined;
+            r.writeReceipt(.{ .verdict = .deny, .reason = "routing_not_allowed", .rule = model_label, .detail = printable(&field_buf, entry.key_ptr.*) });
+            try r.respondError(req, .forbidden, "routing_not_allowed", "only standard chat-completion fields pass the relay");
+            return keep_alive;
         }
         if (!r.modelAllowed(model)) {
             r.writeReceipt(.{ .verdict = .deny, .reason = "model_not_allowed", .rule = model_label });
@@ -576,8 +585,18 @@ pub const Relay = struct {
     }
 };
 
-/// Top-level body fields that steer the gateway's routing; a call carrying any of them is refused.
-const routing_fields = [_][]const u8{ "providerOptions", "provider_options", "models", "provider", "route", "extra_body" };
+/// The top-level chat-completion fields that pass the relay. Any other field is refused (routing_not_allowed).
+pub const allowed_fields = [_][]const u8{
+    "model",               "messages",         "tools", "tool_choice", "stream",
+    "stream_options",      "temperature",      "top_p", "max_tokens",  "max_completion_tokens",
+    "response_format",     "stop",             "seed",  "n",           "user",
+    "parallel_tool_calls", "reasoning_effort",
+};
+
+fn allowedField(name: []const u8) bool {
+    for (allowed_fields) |f| if (std.mem.eql(u8, f, name)) return true;
+    return false;
+}
 
 /// Tests only: makes the call watchdog fail to start.
 pub var test_fail_watchdog: bool = false;
