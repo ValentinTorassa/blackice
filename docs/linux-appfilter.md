@@ -23,6 +23,8 @@ scripts/linux-build-appfilter.sh
 The second command prints hashes for the stripped static `blackice-linux-appfilter` binary and its deterministic
 installation bundle. Neither command installs on the host. Do not run setup, `app on`, or the service until
 security clears the exact commit, bundle, scripts and kernel-load plan, and Valen approves the service footprint.
+The test step includes the CLI's argument, help, error-message and non-tty tests. It does not spawn a polkit
+agent or contact the service; imported socket/fork fixtures are excluded from this step.
 
 After the installation and first-load gate, the CLI flow is `blackice app on --policy APPS.json`,
 `blackice app status`, and owner-authorized `blackice app off`. A sample policy is
@@ -42,6 +44,8 @@ also run these programs. New executable tags are assigned only for the configure
 tags remain inherited across UID changes. Two additional listener-only connect programs attach at the cgroup
 root, `/sys/fs/cgroup`, with ALLOW_MULTI. They restrict the reserved local listener ports across all cgroups,
 including other users, cron/at jobs and system services; they do not redirect other traffic outside `user.slice`.
+The [cgroup attachment decision](linux-appfilter-cgroup-decision.md) explains why logout must not remove
+enforcement and what these hooks mean for other users and system services.
 Listed TCP 80/443 goes to the application's HTTP/TLS loopback listeners. IPv4, native IPv6 and mapped
 IPv6 are handled explicitly. Other TCP ports, non-stub UDP, QUIC, raw INET sockets, ICMP/ping, SCTP, UDPLite and
 MPTCP are refused. UDP DNS to `127.0.0.53:53`, including its mapped IPv6 spelling, is allowed. TCP DNS is refused.
@@ -121,11 +125,20 @@ For `app off` with a terminal on stdin, the unprivileged CLI starts `/usr/bin/pk
 and process start time, waits for registration, and uses `--fallback` so an existing agent is not replaced.
 The agent owns any password prompt; passwords never enter blackice's control messages or receipts. It is
 terminated and reaped when the request ends, and the terminal mode is restored. Without a tty, the CLI does
-not start an agent; authorization still requires an existing session agent. Registration failure, denial,
+not start an agent; authorization still requires an existing session agent. A failed non-tty `off` keeps
+the original error and explains how to retry from a terminal (`ssh -t`) or a desktop session with an agent.
+Registration failure, denial,
 cancel or the daemon's 15-second authorization timeout leave the filter armed. This follows the
 [pkttyagent contract](https://www.freedesktop.org/software/polkit/docs/latest/pkttyagent.1.html); real approve,
-wrong-password, Ctrl-C and timeout cases remain VM tests. Answer the prompt promptly; on timeout,
-run `app off` again.
+wrong-password, Ctrl-C and timeout cases remain VM tests for this revision. Answer the password prompt within
+15 s; the entire authorization exchange shares that budget. On timeout, run `app off` again.
+`blackice app off --help` shows these requirements without starting an agent or contacting the service.
+
+If an existing desktop agent makes `pkttyagent --fallback` exit, `app off` refuses before contacting the
+service. When a desktop polkit agent is running, retry `blackice app off </dev/null`: the CLI skips its text
+agent, and polkit can use the desktop agent. The first failure does not automatically retry or disable the
+filter. This desktop-agent interaction still needs a desktop test; the unit suite checks the guidance and
+the no-tty path, without prompting or authorizing anything.
 
 This first candidate changes an active policy through an authorized `off`, then a fresh `on`; it refuses a
 different policy while armed. It does not silently reassign IDs held by existing descendants. In-place policy

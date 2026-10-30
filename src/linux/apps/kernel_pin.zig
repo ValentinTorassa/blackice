@@ -2,8 +2,6 @@
 pub const release = "6.12.113+deb13-amd64";
 pub const btf_sha256 = "5727b13fd2212290ae031719c9367251c0c8eda0a3f48181af71452ccf5f8943";
 pub const task_struct_tgid: i16 = 2436;
-pub const task_struct_pid: i16 = 2432;
-pub const task_struct_group_leader: i16 = 2496;
 pub const task_struct_mm: i16 = 2304;
 pub const task_struct_signal: i16 = 3072;
 pub const task_struct_real_cred: i16 = 2952;

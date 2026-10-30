@@ -75,7 +75,18 @@ pub fn build(b: *std.Build) void {
     const apps = b.addExecutable(.{ .name = "blackice-linux-appfilter", .root_module = apps_root });
     b.step("linux-appfilter", "Build the kernel-pinned Linux application filter (no install to host)").dependOn(&b.addInstallArtifact(apps, .{}).step);
     const apps_tests = b.addTest(.{ .root_module = apps_root, .filters = &.{"appfilter"} });
-    b.step("linux-appfilter-test", "Run pure application-filter unit tests; no BPF or network activity").dependOn(&b.addRunArtifact(apps_tests).step);
+    const apps_test_step = b.step("linux-appfilter-test", "Run pure application-filter and CLI unit tests; no BPF or network activity");
+    apps_test_step.dependOn(&b.addRunArtifact(apps_tests).step);
+    const apps_cli_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/linux_appfilter_cli_test.zig"),
+            .target = apps_target,
+            .optimize = .ReleaseSafe,
+        }),
+        // Imported sys.zig also has a socket/fork fixture; it is not part of this pure test step.
+        .filters = &.{"appfilter"},
+    });
+    apps_test_step.dependOn(&b.addRunArtifact(apps_cli_tests).step);
 
     addRelease(b);
 }

@@ -102,8 +102,8 @@ fn run(init: std.process.Init) !void {
             runtime.ring = try Ring.open(runtime.loaded.?.maps.ring);
             try kernel.dropLoadCapabilities();
             try runtime.startProxyWorker();
-            runtime.armed = true;
             try intent.write(init.gpa, init.io, true, &runtime.cfg.?.digest);
+            runtime.armed = true;
             runtime.service_log.?.policy_id = &runtime.cfg.?.digest;
             try runtime.drain();
             runtime.service_log.?.write(.{ .event = "app_filter_restart", .point = .app_filter, .detail = "reopened verified pins; receipts drained; file identities refreshed; downtime=unknown" });
@@ -404,8 +404,8 @@ const Runtime = struct {
         try r.loaded.?.setState(state);
         try kernel.dropLoadCapabilities();
         try r.startProxyWorker();
-        r.armed = true;
         try intent.write(r.gpa, r.io, true, &r.cfg.?.digest);
+        r.armed = true;
         r.failed_start = false;
         r.service_log.?.policy_id = &r.cfg.?.digest;
         var detail: [160]u8 = undefined;
