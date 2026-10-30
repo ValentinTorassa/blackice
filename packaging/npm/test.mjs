@@ -145,6 +145,9 @@ test('Linux READMEs derive setup from the tag and attested helper checksum; ARM 
   }
   const readme = readFileSync(join(f.outDir, 'linux-x64', 'README.md'), 'utf8');
   const command = readme.match(/```sh\n([\s\S]*?)```/)[1];
+  const verification = command.split('\n').find(line => line.trimStart().startsWith('gh attestation verify '));
+  assert.ok(verification.includes(' --source-digest "$(git rev-parse HEAD)" --deny-self-hosted-runners'),
+    'manifest attestation must match the checked-out commit and refuse self-hosted runners');
   const guide = readFileSync(new URL('./README.md', import.meta.url), 'utf8').split('## Manual Linux setup')[1].split('## Validation')[0];
   assert.equal(guide.match(/```sh\n([\s\S]*?)```/)[1], command, 'the two setup command blocks must agree');
   assert.doesNotMatch(guide, /gh attestation verify [^\n]*(?:setup|teardown)\.sh/);

@@ -67,7 +67,7 @@ The following block uses a fresh checkout and stops on any failed check. It perf
   gh release download v0.1.0 --repo ValentinTorassa/blackice --dir "$release_dir"
   (
     cd "$release_dir"
-    gh attestation verify SHA256SUMS --repo ValentinTorassa/blackice --signer-workflow ValentinTorassa/blackice/.github/workflows/release.yml --source-ref refs/tags/v0.1.0
+    gh attestation verify SHA256SUMS --repo ValentinTorassa/blackice --signer-workflow ValentinTorassa/blackice/.github/workflows/release.yml --source-ref refs/tags/v0.1.0 --source-digest "$(git rev-parse HEAD)" --deny-self-hosted-runners
     sha256sum -c SHA256SUMS
   )
   zig build -Doptimize=ReleaseSafe

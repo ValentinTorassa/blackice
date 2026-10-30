@@ -140,7 +140,7 @@ On Linux x86_64, use the Zig version required by the tag. Check out v${version},
   gh release download v${version} --repo ValentinTorassa/blackice --dir "$release_dir"
   (
     cd "$release_dir"
-    gh attestation verify SHA256SUMS --repo ValentinTorassa/blackice --signer-workflow ValentinTorassa/blackice/.github/workflows/release.yml --source-ref refs/tags/v${version}
+    gh attestation verify SHA256SUMS --repo ValentinTorassa/blackice --signer-workflow ValentinTorassa/blackice/.github/workflows/release.yml --source-ref refs/tags/v${version} --source-digest "$(git rev-parse HEAD)" --deny-self-hosted-runners
     sha256sum -c SHA256SUMS
   )
   zig build -Doptimize=ReleaseSafe
