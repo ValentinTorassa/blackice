@@ -1,5 +1,12 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="96" height="96" role="img" aria-label="blackice">
-  <style>.s{stroke:#111}.f{fill:#111}@media (prefers-color-scheme: dark){.s{stroke:#ededed}.f{fill:#ededed}}</style>
-  <path class="s" d="M12 2.2 20.5 7.1v9.8L12 21.8 3.5 16.9V7.1z" fill="none" stroke-width="1.5" stroke-linejoin="round"/>
-  <path class="f" d="M12 7.6 16.2 10v4.9L12 17.4 7.8 14.9V10z"/>
+  <style>
+    .e{fill:none;stroke:#111;stroke-width:1.6;stroke-linejoin:round}
+    .t{fill:#111}.l{fill:#4a4a4a}.r{fill:#8c8c8c}
+    @media (prefers-color-scheme: dark){.e{stroke:#ededed}.t{fill:#ededed}.l{fill:#9c9c9c}.r{fill:#505050}}
+  </style>
+  <path class="e" d="M12 2 20.66 7v10L12 22l-8.66-5V7Z"/>
+  <path class="e" d="M3.34 7 12 12M20.66 7 12 12M12 12v10"/>
+  <path class="t" d="M12 9.8 15.64 11.9 12 14 8.36 11.9Z"/>
+  <path class="l" d="M8.36 11.9 12 14v4.2l-3.64-2.1Z"/>
+  <path class="r" d="M12 14 15.64 11.9v4.2L12 18.2Z"/>
 </svg>

@@ -1,18 +1,27 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-// A checkpoint counts as recorded only when evidence/ at the repo root has a file named after it,
-// for example evidence/P0-02-real-deny.md. Read at build time.
-export function recordedCheckpoints() {
+// Status is read from the repository when the site builds. Nothing here is typed by hand.
+const ROOT = path.join(process.cwd(), '..');
+
+function evidenceFiles() {
   try {
-    const dir = path.join(process.cwd(), '..', 'evidence');
-    const ids = fs
-      .readdirSync(dir)
-      .map((f) => f.match(/^(P0-\d{2})\b/))
-      .filter(Boolean)
-      .map((m) => m[1]);
-    return new Set(ids);
+    return fs.readdirSync(path.join(ROOT, 'evidence')).filter((f) => /^P\d-\d{2}-.+\.md$/.test(f));
   } catch {
-    return new Set();
+    return [];
   }
+}
+
+// A checkpoint counts as recorded only when evidence/ has a file named after it,
+// for example evidence/P0-02-real-deny-linux.md.
+export function recordedCheckpoints() {
+  return new Set(evidenceFiles().map((f) => f.slice(0, 5)));
+}
+
+// A platform cell is verified by its evidence file, built when its code is in the repository,
+// and otherwise keeps its design state.
+export function cellState(cell) {
+  if (cell.evidence && evidenceFiles().some((f) => cell.evidence.test(f))) return 'verified';
+  if (cell.code && fs.existsSync(path.join(ROOT, cell.code))) return cell.builtAs || 'built';
+  return cell.base;
 }

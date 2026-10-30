@@ -40,22 +40,85 @@ export default function Scene() {
       wrap.prepend(renderer.domElement);
 
       const scene = new THREE.Scene();
+      scene.fog = new THREE.Fog(0x000000, 20, 60);
       const camera = new THREE.PerspectiveCamera(30, 1, 0.1, 200);
       const target = new THREE.Vector3(0, 1.9, -0.3);
+      const tmp = new THREE.Vector3();
+      const look = new THREE.Vector3();
 
       const disposables = [];
       const track = (x) => (disposables.push(x), x);
 
-      // Host plane and grid.
-      const grid = new THREE.GridHelper(18, 36, 0x1a1a1a, 0x0e0e0e);
+      // Soft round glow, drawn once and shared by every sprite.
+      const glowTex = (() => {
+        const c = document.createElement('canvas');
+        c.width = c.height = 64;
+        const g = c.getContext('2d');
+        const grd = g.createRadialGradient(32, 32, 0, 32, 32, 32);
+        grd.addColorStop(0, 'rgba(255,255,255,1)');
+        grd.addColorStop(0.22, 'rgba(255,255,255,0.42)');
+        grd.addColorStop(1, 'rgba(255,255,255,0)');
+        g.fillStyle = grd;
+        g.fillRect(0, 0, 64, 64);
+        return track(new THREE.CanvasTexture(c));
+      })();
+      const sharedGlow = {};
+      function glowMat(color, opacity) {
+        const key = `${color}:${opacity}`;
+        if (!sharedGlow[key]) {
+          sharedGlow[key] = track(
+            new THREE.SpriteMaterial({ map: glowTex, color, transparent: true, opacity, blending: THREE.AdditiveBlending, depthWrite: false, fog: false }),
+          );
+        }
+        return sharedGlow[key];
+      }
+      function glow(color, size, opacity) {
+        const s = new THREE.Sprite(glowMat(color, opacity));
+        s.scale.setScalar(size);
+        return s;
+      }
+      function oneOffGlow(color, size, opacity) {
+        const m = new THREE.SpriteMaterial({ map: glowTex, color, transparent: true, opacity, blending: THREE.AdditiveBlending, depthWrite: false, fog: false });
+        const s = new THREE.Sprite(m);
+        s.scale.setScalar(size);
+        return s;
+      }
+
+      // Ground.
+      const grid = new THREE.GridHelper(24, 48, 0x1c1c1c, 0x0f0f0f);
       grid.material.transparent = true;
-      grid.material.opacity = 0.9;
       track(grid.geometry);
       track(grid.material);
       scene.add(grid);
 
+      // Dust for depth.
+      const dust = (() => {
+        const n = 520;
+        const pos = new Float32Array(n * 3);
+        for (let i = 0; i < n; i++) {
+          let x;
+          let y;
+          let z;
+          do {
+            x = (Math.random() - 0.5) * 34;
+            y = Math.random() * 12 - 0.5;
+            z = (Math.random() - 0.5) * 26;
+          } while (Math.abs(x) < 7 && Math.abs(z) < 5 && y < 4);
+          pos[i * 3] = x;
+          pos[i * 3 + 1] = y;
+          pos[i * 3 + 2] = z;
+        }
+        const geo = track(new THREE.BufferGeometry());
+        geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+        const mat = track(new THREE.PointsMaterial({ color: 0x8a8a8a, size: 0.05, transparent: true, opacity: 0.55, depthWrite: false }));
+        const points = new THREE.Points(geo, mat);
+        scene.add(points);
+        return points;
+      })();
+
+      // Scopes.
       const scopes = [];
-      function addScope({ size, pos, color, opacity, dashed, fill, name }) {
+      function addScope({ size, pos, color, opacity, dashed, fill }) {
         const [w, h, d] = size;
         const geo = track(new THREE.BoxGeometry(w, h, d));
         const edges = track(new THREE.EdgesGeometry(geo));
@@ -69,10 +132,7 @@ export default function Scene() {
         line.position.set(pos[0], pos[1], pos[2]);
         scene.add(line);
         if (fill) {
-          const m = new THREE.Mesh(
-            geo,
-            track(new THREE.MeshBasicMaterial({ color, transparent: true, opacity: fill, depthWrite: false })),
-          );
+          const m = new THREE.Mesh(geo, track(new THREE.MeshBasicMaterial({ color, transparent: true, opacity: fill, depthWrite: false })));
           m.position.copy(line.position);
           scene.add(m);
         }
@@ -80,66 +140,91 @@ export default function Scene() {
           new THREE.Vector3(pos[0] - w / 2, pos[1] - h / 2, pos[2] - d / 2),
           new THREE.Vector3(pos[0] + w / 2, pos[1] + h / 2, pos[2] + d / 2),
         );
-        const scope = { name, line, mat, box, base: new THREE.Color(color), baseOpacity: opacity, flash: 0 };
+        const scope = { line, mat, box, base: new THREE.Color(color), baseOpacity: opacity, flash: 0 };
         scopes.push(scope);
         return scope;
       }
 
-      // Host ceiling: the outer policy every scope sits under.
-      addScope({ name: 'host', size: [12, 3.4, 8], pos: [0, 1.7, 0], color: WHITE, opacity: 0.1, fill: 0.008 });
-      // App scopes: persistent app identity (dashed, neutral).
-      const appA = addScope({ name: 'appA', size: [2.4, 1.0, 1.8], pos: [-3.7, 0.5, 2.0], color: GRAY, opacity: 0.8, dashed: true });
-      const appB = addScope({ name: 'appB', size: [2.4, 1.0, 1.8], pos: [-3.7, 0.5, -1.7], color: GRAY, opacity: 0.8, dashed: true });
-      // Task scope (fx) with two nested tool scopes. Nested scopes only intersect.
-      addScope({ name: 'task', size: [4.4, 2.0, 4.6], pos: [1.9, 1.0, 0], color: WHITE, opacity: 0.85, fill: 0.02 });
-      const toolA = addScope({ name: 'toolA', size: [1.5, 1.1, 1.5], pos: [1.0, 0.56, -1.05], color: WHITE, opacity: 0.5, fill: 0.03 });
-      const toolB = addScope({ name: 'toolB', size: [1.5, 1.1, 1.5], pos: [2.8, 0.56, 1.05], color: WHITE, opacity: 0.5, fill: 0.03 });
+      addScope({ size: [12, 3.4, 8], pos: [0, 1.7, 0], color: WHITE, opacity: 0.1, fill: 0.008 });
+      const appA = addScope({ size: [2.4, 1.0, 1.8], pos: [-3.7, 0.5, 2.0], color: GRAY, opacity: 0.8, dashed: true });
+      const appB = addScope({ size: [2.4, 1.0, 1.8], pos: [-3.7, 0.5, -1.7], color: GRAY, opacity: 0.8, dashed: true });
+      addScope({ size: [4.4, 2.0, 4.6], pos: [1.9, 1.0, 0], color: WHITE, opacity: 0.85, fill: 0.02 });
+      const toolA = addScope({ size: [1.5, 1.1, 1.5], pos: [1.0, 0.56, -1.05], color: WHITE, opacity: 0.5, fill: 0.03 });
+      const toolB = addScope({ size: [1.5, 1.1, 1.5], pos: [2.8, 0.56, 1.05], color: WHITE, opacity: 0.5, fill: 0.03 });
 
-      // Process nodes inside scopes.
+      // A scan plane sweeping up through the task scope.
+      const scanGeo = track(new THREE.PlaneGeometry(4.4, 4.6));
+      const scanMat = track(new THREE.MeshBasicMaterial({ color: WHITE, transparent: true, opacity: 0, side: THREE.DoubleSide, depthWrite: false }));
+      const scanLineMat = track(new THREE.LineBasicMaterial({ color: WHITE, transparent: true, opacity: 0 }));
+      const scan = new THREE.Mesh(scanGeo, scanMat);
+      const scanEdges = new THREE.LineSegments(track(new THREE.EdgesGeometry(scanGeo)), scanLineMat);
+      for (const o of [scan, scanEdges]) {
+        o.rotation.x = -Math.PI / 2;
+        o.position.set(1.9, 0, 0);
+        scene.add(o);
+      }
+
+      // Processes.
       const nodeGeo = track(new THREE.SphereGeometry(0.07, 16, 16));
-      const nodeMat = track(new THREE.MeshBasicMaterial({ color: 0xffffff }));
+      const nodeMat = track(new THREE.MeshBasicMaterial({ color: WHITE }));
       const appNodeMat = track(new THREE.MeshBasicMaterial({ color: 0x8a8a8a }));
-      function node(scope, mat) {
+      function node(scope, mat, glowOpacity) {
         const c = new THREE.Vector3();
         scope.box.getCenter(c);
         const m = new THREE.Mesh(nodeGeo, mat);
         m.position.copy(c);
         scene.add(m);
+        const g = glow(WHITE, 0.9, glowOpacity);
+        g.position.copy(c);
+        scene.add(g);
         return c;
       }
-      const nToolA = node(toolA, nodeMat);
-      const nToolB = node(toolB, nodeMat);
-      const nAppA = node(appA, appNodeMat);
-      const nAppB = node(appB, appNodeMat);
+      const nToolA = node(toolA, nodeMat, 0.55);
+      const nToolB = node(toolB, nodeMat, 0.55);
+      const nAppA = node(appA, appNodeMat, 0.2);
+      const nAppB = node(appB, appNodeMat, 0.2);
 
-      // Destinations outside the host ceiling.
-      const destGeo = track(new THREE.OctahedronGeometry(0.16, 0));
-      const destAllowMat = track(new THREE.MeshBasicMaterial({ color: 0xffffff, wireframe: true }));
-      const destDenyMat = track(new THREE.MeshBasicMaterial({ color: 0x4a4a4a, wireframe: true }));
+      // Destinations outside the host ceiling, each on a stem down to the ground.
       const dests = {
         registry: new THREE.Vector3(7.3, 4.3, -2.7),
         github: new THREE.Vector3(6.5, 4.9, 3.0),
         paste: new THREE.Vector3(-0.8, 5.2, -5.5),
         tracker: new THREE.Vector3(-7.3, 4.0, 2.6),
       };
+      const destGeo = track(new THREE.OctahedronGeometry(0.16, 0));
+      const destAllowMat = track(new THREE.MeshBasicMaterial({ color: WHITE, wireframe: true }));
+      const destDenyMat = track(new THREE.MeshBasicMaterial({ color: 0x5a5a5a, wireframe: true }));
+      const stemMat = track(new THREE.LineDashedMaterial({ color: 0x2c2c2c, dashSize: 0.1, gapSize: 0.12 }));
+      const groundRingGeo = track(new THREE.RingGeometry(0.2, 0.235, 40));
+      const groundRingMat = track(new THREE.MeshBasicMaterial({ color: 0x3a3a3a, side: THREE.DoubleSide }));
       const destMeshes = [];
       for (const [k, v] of Object.entries(dests)) {
-        const m = new THREE.Mesh(destGeo, k === 'paste' || k === 'tracker' ? destDenyMat : destAllowMat);
+        const denied = k === 'paste' || k === 'tracker';
+        const m = new THREE.Mesh(destGeo, denied ? destDenyMat : destAllowMat);
         m.position.copy(v);
         scene.add(m);
         destMeshes.push(m);
+        const g = glow(WHITE, denied ? 0.7 : 1.2, denied ? 0.1 : 0.35);
+        g.position.copy(v);
+        scene.add(g);
+        const stem = new THREE.Line(track(new THREE.BufferGeometry().setFromPoints([v, new THREE.Vector3(v.x, 0, v.z)])), stemMat);
+        stem.computeLineDistances();
+        scene.add(stem);
+        const ring = new THREE.Mesh(groundRingGeo, groundRingMat);
+        ring.rotation.x = -Math.PI / 2;
+        ring.position.set(v.x, 0.01, v.z);
+        scene.add(ring);
       }
 
-      // Faint guide lines for allowed routes.
+      // Faint guides for allowed routes.
       const guideMat = track(new THREE.LineDashedMaterial({ color: 0x2a2a2a, dashSize: 0.12, gapSize: 0.14 }));
       for (const [a, b] of [[nToolA, dests.registry], [nToolB, dests.github], [nAppA, dests.github]]) {
-        const g = track(new THREE.BufferGeometry().setFromPoints([a, b]));
-        const l = new THREE.Line(g, guideMat);
+        const l = new THREE.Line(track(new THREE.BufferGeometry().setFromPoints([a, b])), guideMat);
         l.computeLineDistances();
         scene.add(l);
       }
 
-      // Routes: the innermost scope that denies is where a packet stops.
+      // Routes. A denied packet stops at the boundary of the innermost scope that denies it.
       const ray = new THREE.Ray();
       function exitPoint(from, to, scope) {
         ray.origin.copy(from);
@@ -161,31 +246,55 @@ export default function Scene() {
         return routes[0];
       }
 
-      const packetGeo = track(new THREE.SphereGeometry(0.055, 12, 12));
-      const ringGeo = track(new THREE.RingGeometry(0.07, 0.1, 40));
+      const packetGeo = track(new THREE.SphereGeometry(0.05, 12, 12));
+      const hexGeo = track(new THREE.RingGeometry(0.1, 0.13, 6));
       const packets = [];
-      const rings = [];
+      const effects = [];
 
-      function spawn(progress = 0) {
+      function spawn() {
         const r = pickRoute();
         const end = r.stop || r.to;
-        const dist = r.from.distanceTo(end);
-        const mat = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 1 });
+        const mat = new THREE.MeshBasicMaterial({ color: WHITE, transparent: true, opacity: 1 });
         const mesh = new THREE.Mesh(packetGeo, mat);
+        mesh.add(glow(WHITE, 0.55, 0.75));
         const trailGeo = new THREE.BufferGeometry().setFromPoints([r.from.clone(), r.from.clone()]);
         const trailMat = new THREE.LineBasicMaterial({ color: WHITE, transparent: true, opacity: r.stop ? 0.35 : 0.6 });
         const trail = new THREE.Line(trailGeo, trailMat);
         scene.add(mesh, trail);
-        packets.push({ r, end, t: progress, dur: Math.max(0.6, dist / 4.2), mesh, mat, trail, trailGeo, trailMat });
+        packets.push({ r, end, t: 0, dur: Math.max(0.6, r.from.distanceTo(end) / 4.2), mesh, mat, trail, trailGeo, trailMat });
+      }
+
+      function faceNormal(p, box) {
+        const e = 1e-3;
+        if (Math.abs(p.x - box.min.x) < e) return new THREE.Vector3(-1, 0, 0);
+        if (Math.abs(p.x - box.max.x) < e) return new THREE.Vector3(1, 0, 0);
+        if (Math.abs(p.y - box.min.y) < e) return new THREE.Vector3(0, -1, 0);
+        if (Math.abs(p.y - box.max.y) < e) return new THREE.Vector3(0, 1, 0);
+        if (Math.abs(p.z - box.min.z) < e) return new THREE.Vector3(0, 0, -1);
+        if (Math.abs(p.z - box.max.z) < e) return new THREE.Vector3(0, 0, 1);
+        return null;
       }
 
       function denyAt(p, scope) {
         const mat = new THREE.MeshBasicMaterial({ color: RED, transparent: true, opacity: 0.95, side: THREE.DoubleSide, depthWrite: false });
-        const ring = new THREE.Mesh(ringGeo, mat);
-        ring.position.copy(p);
-        scene.add(ring);
-        rings.push({ ring, mat, age: 0 });
+        const hex = new THREE.Mesh(hexGeo, mat);
+        hex.position.copy(p);
+        const n = faceNormal(p, scope.box);
+        if (n) hex.lookAt(look.copy(p).add(n));
+        scene.add(hex);
+        effects.push({ kind: 'ripple', obj: hex, mat, aligned: !!n, age: 0, life: 0.9 });
+        const flash = oneOffGlow(RED, 0.6, 0.9);
+        flash.position.copy(p);
+        scene.add(flash);
+        effects.push({ kind: 'flash', obj: flash, mat: flash.material, age: 0, life: 0.5, from: 0.6, to: 1.8, peak: 0.9 });
         scope.flash = 1;
+      }
+
+      function arriveAt(p) {
+        const pulse = oneOffGlow(WHITE, 0.4, 0.8);
+        pulse.position.copy(p);
+        scene.add(pulse);
+        effects.push({ kind: 'flash', obj: pulse, mat: pulse.material, age: 0, life: 0.6, from: 0.4, to: 2.0, peak: 0.8 });
       }
 
       function removePacket(i) {
@@ -197,10 +306,10 @@ export default function Scene() {
         packets.splice(i, 1);
       }
 
-      const tmp = new THREE.Vector3();
       const tail = new THREE.Vector3();
       const red = new THREE.Color(RED);
       let spawnClock = 0;
+      let scanClock = 0;
 
       function step(dt) {
         spawnClock += dt;
@@ -221,20 +330,26 @@ export default function Scene() {
           pos.needsUpdate = true;
           if (p.t >= 1) {
             if (p.r.stop) denyAt(p.end, p.r.deniedBy);
+            else arriveAt(p.end);
             removePacket(i);
           }
         }
-        for (let i = rings.length - 1; i >= 0; i--) {
-          const g = rings[i];
-          g.age += dt;
-          const k = g.age / 0.8;
-          g.ring.scale.setScalar(1 + k * 5);
-          g.mat.opacity = Math.max(0, 0.95 * (1 - k));
-          g.ring.quaternion.copy(camera.quaternion);
+        for (let i = effects.length - 1; i >= 0; i--) {
+          const f = effects[i];
+          f.age += dt;
+          const k = Math.min(1, f.age / f.life);
+          if (f.kind === 'ripple') {
+            f.obj.scale.setScalar(1 + k * 6);
+            f.mat.opacity = 0.95 * (1 - k);
+            if (!f.aligned) f.obj.quaternion.copy(camera.quaternion);
+          } else {
+            f.obj.scale.setScalar(f.from + (f.to - f.from) * k);
+            f.mat.opacity = f.peak * (1 - k);
+          }
           if (k >= 1) {
-            scene.remove(g.ring);
-            g.mat.dispose();
-            rings.splice(i, 1);
+            scene.remove(f.obj);
+            f.mat.dispose();
+            effects.splice(i, 1);
           }
         }
         for (const s of scopes) {
@@ -242,17 +357,24 @@ export default function Scene() {
           s.mat.color.copy(s.base).lerp(red, s.flash * 0.85);
           s.mat.opacity = s.baseOpacity + (1 - s.baseOpacity) * s.flash * 0.6;
         }
+        scanClock += dt;
+        const sk = (scanClock % 4.5) / 4.5;
+        const fade = Math.sin(Math.PI * sk);
+        scan.position.y = scanEdges.position.y = 0.02 + sk * 1.96;
+        scanMat.opacity = 0.045 * fade;
+        scanLineMat.opacity = 0.4 * fade;
         for (const m of destMeshes) m.rotation.y += dt * 0.6;
+        dust.rotation.y += dt * 0.008;
       }
 
-      // Labels projected from 3D anchors.
+      // Labels projected from 3D anchors and kept inside the frame.
       const anchors = labelsEl
         ? [
             ['host', new THREE.Vector3(-5.6, 3.5, -4)],
             ['app', new THREE.Vector3(-3.7, 1.15, 2.9)],
             ['task', new THREE.Vector3(1.6, -0.15, 2.6)],
-            ['allow', dests.registry.clone().add(new THREE.Vector3(0, 0.35, 0))],
-            ['deny', dests.paste.clone().add(new THREE.Vector3(0, 0.35, 0))],
+            ['allow', dests.registry.clone().add(new THREE.Vector3(0, 0.38, 0))],
+            ['deny', dests.paste.clone().add(new THREE.Vector3(0, 0.38, 0))],
           ].map(([key, v]) => ({ el: labelsEl.querySelector(`[data-anchor="${key}"]`), v, w: 0, h: 0 }))
         : [];
       function measureLabels() {
@@ -263,7 +385,7 @@ export default function Scene() {
         }
       }
 
-      // Camera sways around a base angle. The distance is fitted so the host
+      // The camera sways around a base angle; its distance is fitted so the host
       // and every destination stay in frame at any aspect ratio.
       const BASE = 0.72;
       const SWAY = 0.28;
@@ -297,6 +419,8 @@ export default function Scene() {
           else lo = mid;
         }
         dist = hi;
+        scene.fog.near = dist * 0.85;
+        scene.fog.far = dist * 2.3;
       }
 
       let width = 1;
@@ -325,9 +449,11 @@ export default function Scene() {
       if (!reduced) wrap.addEventListener('pointermove', onPointer);
 
       let elapsed = 0;
+      let intro = reduced ? 1 : 0;
       function placeCamera() {
-        const a = BASE + Math.sin(elapsed * 0.12) * SWAY + pointerX * 0.06;
-        placeAt(a, dist);
+        const e = 1 - Math.pow(1 - intro, 3);
+        const a = BASE + Math.sin(elapsed * 0.12) * SWAY + pointerX * 0.06 - (1 - e) * 0.55;
+        placeAt(a, dist * (1 + 0.45 * (1 - e)));
         camera.position.y -= pointerY * 0.5;
         camera.lookAt(target);
       }
@@ -340,11 +466,10 @@ export default function Scene() {
           tmp.copy(a.v).project(camera);
           const sx = (tmp.x * 0.5 + 0.5) * width;
           const sy = (-tmp.y * 0.5 + 0.5) * height;
-          // Centre on the anchor, then keep the whole label inside the frame.
           const x = Math.min(Math.max(sx - a.w / 2, 6), Math.max(6, width - a.w - 6));
           const y = Math.min(Math.max(sy - a.h / 2, 6), Math.max(6, height - a.h - 6));
           a.el.style.transform = `translate(${x.toFixed(1)}px, ${y.toFixed(1)}px)`;
-          a.el.style.opacity = tmp.z < 1 ? '1' : '0';
+          a.el.style.opacity = tmp.z < 1 ? String(Math.min(1, intro * 1.5)) : '0';
         }
       }
 
@@ -363,6 +488,7 @@ export default function Scene() {
         const dt = last ? Math.min(0.05, (now - last) / 1000) : 0.016;
         last = now;
         elapsed += dt;
+        intro = Math.min(1, intro + dt / 1.8);
         step(dt);
         render();
         if (visible && !document.hidden) raf = requestAnimationFrame(frame);
@@ -386,7 +512,6 @@ export default function Scene() {
       document.addEventListener('visibilitychange', onVis);
 
       if (reduced) {
-        // One still frame with traffic mid-flight.
         for (let i = 0; i < 120; i++) step(1 / 30);
         render();
       } else {
@@ -401,7 +526,7 @@ export default function Scene() {
         document.removeEventListener('visibilitychange', onVis);
         wrap.removeEventListener('pointermove', onPointer);
         while (packets.length) removePacket(packets.length - 1);
-        for (const g of rings) g.mat.dispose();
+        for (const f of effects) f.mat.dispose();
         for (const d of disposables) d.dispose?.();
         renderer.dispose();
         renderer.domElement.remove();
@@ -437,19 +562,19 @@ function SceneFallback() {
   return (
     <svg className="scene-fallback" viewBox="0 0 640 360" aria-hidden="true">
       <rect x="40" y="70" width="560" height="250" rx="10" fill="none" stroke="#3a3a3a" />
-      <text x="56" y="94" fill="#8f8f8f" fontSize="12" fontFamily="var(--font-mono)">host ceiling</text>
+      <text x="56" y="94" fill="#8f8f8f" fontSize="12" fontFamily="var(--mono)">host</text>
       <rect x="70" y="120" width="140" height="70" rx="6" fill="none" stroke="#8f8f8f" strokeDasharray="6 5" />
       <rect x="70" y="220" width="140" height="70" rx="6" fill="none" stroke="#8f8f8f" strokeDasharray="6 5" />
-      <text x="82" y="140" fill="#8f8f8f" fontSize="11" fontFamily="var(--font-mono)">app scope</text>
+      <text x="82" y="140" fill="#8f8f8f" fontSize="11" fontFamily="var(--mono)">app scope</text>
       <rect x="290" y="110" width="270" height="190" rx="8" fill="rgba(255,255,255,0.02)" stroke="#ededed" />
-      <text x="304" y="132" fill="#ededed" fontSize="12" fontFamily="var(--font-mono)">task scope · fx</text>
+      <text x="304" y="132" fill="#ededed" fontSize="12" fontFamily="var(--mono)">task scope</text>
       <rect x="315" y="160" width="100" height="100" rx="6" fill="rgba(255,255,255,0.03)" stroke="#8f8f8f" />
       <rect x="440" y="180" width="100" height="100" rx="6" fill="rgba(255,255,255,0.03)" stroke="#8f8f8f" />
-      <line x1="365" y1="210" x2="610" y2="30" stroke="#8f8f8f" strokeWidth="1.5" />
-      <text x="470" y="24" fill="#ededed" fontSize="12" fontFamily="var(--font-mono)">registry · allowed</text>
+      <line x1="365" y1="210" x2="610" y2="30" stroke="#ededed" strokeWidth="1.5" />
+      <text x="520" y="24" fill="#ededed" fontSize="12" fontFamily="var(--mono)">allowed</text>
       <line x1="490" y1="230" x2="540" y2="200" stroke="#ededed" strokeWidth="1.5" />
       <circle cx="540" cy="200" r="7" fill="none" stroke="#e5484d" strokeWidth="2" />
-      <text x="552" y="196" fill="#e5484d" fontSize="12" fontFamily="var(--font-mono)">denied</text>
+      <text x="552" y="196" fill="#e5484d" fontSize="12" fontFamily="var(--mono)">denied</text>
     </svg>
   );
 }
