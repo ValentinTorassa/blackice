@@ -5,7 +5,9 @@
 #
 # The receiver is started over SSH on the other host (python3 needed there; nothing is installed). It listens
 # on TCP 47121/47122 and UDP 47123/47124 (IPv4/IPv6), the same ports as the macOS P0-02 run, and writes JSON
-# lines to a log file on that host, which this script reads back.
+# lines to a log file on that host, which this script reads back. The log is made with mktemp under umask 077,
+# so no other user there can create, read or truncate it. A second control after the scoped runs shows the
+# receiver was still listening while they ran.
 #
 # Needs: a built blackice whose `run` launches the Linux backend, the helper installed by the owner, python3
 # on both hosts. Synthetic policy, no credentials. Never installs anything, never uses sudo.
@@ -13,7 +15,7 @@
 # Usage: E2E_SSH='ssh -o BatchMode=yes valen@other-host' scripts/e2e/linux-offhost.sh RECEIVER_V4 RECEIVER_V6
 #   RECEIVER_V4, RECEIVER_V6  the other host's addresses, as this machine reaches them
 #   E2E_SSH                   the ssh command (with options) that reaches the other host
-#   E2E_REMOTE_DIR            where the receiver's log goes on the other host (default /tmp)
+#   E2E_REMOTE_DIR            the directory for the receiver's log on the other host (default /tmp)
 set -u
 . "$(dirname "$0")/lib.sh"
 
@@ -23,13 +25,33 @@ set -u
 command -v python3 > /dev/null || die "python3 is needed"
 V4=$1
 V6=$2
+# Both addresses go into a remote command line, so they must be plain addresses of the right family.
+python3 -I -c 'import ipaddress, sys; assert ipaddress.ip_address(sys.argv[1]).version == 4 and ipaddress.ip_address(sys.argv[2]).version == 6' "$V4" "$V6" 2> /dev/null ||
+    die "RECEIVER_V4 must be an IPv4 address and RECEIVER_V6 an IPv6 address (got '$V4' '$V6')"
+REMOTE_DIR=${E2E_REMOTE_DIR:-/tmp}
+case "$REMOTE_DIR" in
+    /*) ;;
+    *) die "E2E_REMOTE_DIR must be an absolute path" ;;
+esac
+case "$REMOTE_DIR" in
+    *[!A-Za-z0-9/._-]*) die "E2E_REMOTE_DIR may hold only letters, digits and / . _ -" ;;
+esac
 e2e_blackice
 HELPER=/usr/local/libexec/blackice-linux-helper
 [ -e "$HELPER" ] || die "the Linux helper is not installed at $HELPER (the owner runs scripts/linux-setup.sh)"
 e2e_workdir
 e2e_policy
 TAG=$(date -u +%Y%m%dT%H%M%SZ)
-REMOTE_LOG="${E2E_REMOTE_DIR:-/tmp}/blackice-offhost-$TAG.jsonl"
+# A fresh log file only this user can open: mktemp creates it (O_EXCL, unpredictable name), umask 077 makes it 0600.
+REMOTE_LOG=$($E2E_SSH "umask 077; mktemp '$REMOTE_DIR/blackice-offhost.XXXXXXXX'" 2> "$W/out/mktemp.err") ||
+    { cat "$W/out/mktemp.err"; die "could not create the receiver's log on the other host"; }
+case "$REMOTE_LOG" in
+    "$REMOTE_DIR"/blackice-offhost.*) ;;
+    *) die "unexpected log path from the other host: $REMOTE_LOG" ;;
+esac
+case "$REMOTE_LOG" in
+    *[!A-Za-z0-9/._-]*) die "unexpected log path from the other host: $REMOTE_LOG" ;;
+esac
 
 . /etc/os-release 2> /dev/null
 echo "== Linux $(uname -r) ($(uname -m)), ${PRETTY_NAME:-unknown distribution}"
@@ -119,6 +141,11 @@ CURL_RCPT=$RCPT
 scoped late -- /bin/sh -c "(sleep 1; /usr/bin/python3 -I '$W/sender.py' '$V4' '$V6' '$SCOPED-grandchild') & wait"
 LATE_RCPT=$RCPT
 
+AFTER=control-after-$TAG
+echo
+echo "\$ python3 -I sender.py $V4 $V6 $AFTER      # outside any scope again: the receiver must still log these"
+python3 -I "$W/sender.py" "$V4" "$V6" "$AFTER" | sed 's/^/  | /'
+
 sleep 2
 remote_log > "$W/out/receiver.jsonl"
 kill "$RECEIVER" 2> /dev/null
@@ -138,6 +165,9 @@ curl_direct_failed() { grep -q 'curl-direct-v4 exit=7$' "$W/out/curl.out" && gre
 for p in tcp4 udp4 tcp6 udp6; do
     check "control $p: the receiver logged it (the path works)" logged "$CONTROL-$p"
 done
+for p in tcp4 udp4 tcp6 udp6; do
+    check "control after the scoped runs, $p: logged (the receiver was listening throughout)" logged "$AFTER-$p"
+done
 check "the receiver logged nothing from any scope" nothing_scoped
 for p in tcp4 udp4 tcp6 udp6; do
     check "scoped sender $p: refused inside the scope" grep -Eq "^$SCOPED $p: (Operation not permitted|Permission denied)$" "$W/out/sender.out"
@@ -147,7 +177,6 @@ check "scoped sender: kernel_drop receipts for IPv6 ports 47122 (TCP) and 47124 
 check "scoped curl --noproxy to both addresses: cannot connect (exit 7)" curl_direct_failed
 check "scoped curl through the proxy to the bare address: HTTP 403" grep -q 'through the proxy: HTTP 403' "$W/out/curl.out"
 check "a grandchild started 1 s later is refused too" grep -Eq "^$SCOPED-grandchild tcp4: (Operation not permitted|Permission denied)$" "$W/out/late.out"
-check "receiver log: the receiver ran for the whole check" grep -q '"event": "listening"' "$W/out/receiver.jsonl"
 
 show_receipts
 summary
