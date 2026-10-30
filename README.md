@@ -51,7 +51,7 @@ macOS agent tasks only: macOS 27.0.1 on Apple silicon with SIP on, release build
 | [P0-03](evidence/P0-03-explicit-allow-macos.md) | With a policy that allows only `example.com`, the command reaches example.com over HTTPS and plain HTTP; github.com is refused on both, with a receipt for each connection. |
 | [P0-04](evidence/P0-04-owner-grant-macos.md) | A command inside a scope cannot widen its own policy. The owner's `blackice grant` from outside lets exactly one more name through, with an end time. |
 | [P0-05](evidence/P0-05-grant-expiry-macos.md) | When the owner's grant ends, the proxy resets the connection opened under it within milliseconds, and a new connection to that name is refused again. |
-| [P0-07](evidence/P0-07-fx-hook-scripted-macos.md) | With fx 0.0.16 and the blackice hook patch, in full-access mode and with a **scripted test model, not a real model**, every shell command fx runs gets its own scope and receipts, and a command cannot change blackice, fx, the policy or fx's settings. fx's `write_file` outside the workspace and its web tools are blocked; fx's own reads (`read_file`, `glob_files`, `grep_files`) and its model traffic still run outside the scopes, and what they read goes to the model's provider. A run with a real model is pending. |
+| [P0-07](evidence/P0-07-fx-hook-scripted-macos.md) | With fx 0.0.16 and the blackice hook patch, in full-access mode and with a **scripted test model, not a real model**, every shell command fx runs gets its own scope and receipts, and a command cannot change blackice, fx, the policy or fx's settings. fx's `write_file` outside the workspace and its `web_fetch` are blocked; fx's own reads (`read_file`, `glob_files`, `grep_files`), its writes inside the workspace and its model traffic still run outside the scopes, and what they read goes to the model's provider. A run with a real model is pending. |
 
 Linux task scopes, the app filter and Windows are not verified.
 
@@ -77,7 +77,7 @@ Since 0.0.5, [fx](https://github.com/vercel-labs/fx) runs approved commands as o
 ([changelog](https://github.com/vercel-labs/fx/blob/main/CHANGELOG.md)). Two ways to use blackice with it:
 
 - **A scope per command.** A small patch to fx's PreToolUse hook, kept in `integrations/fx/` and not part of fx
-  upstream, will run every command fx launches as `blackice run`, each with its own scope and receipts.
+  upstream, runs every shell command fx launches as `blackice run`, each with its own scope and receipts.
 - **One scope around fx.** `blackice run --policy policy.json -- fx` will put fx and everything it starts in one
   task scope, with no changes to fx.
 
