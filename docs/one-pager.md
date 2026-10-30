@@ -41,7 +41,7 @@ entry is one run, made by the people building blackice on their own machines; no
 | P0-04 Authorized change | The owner widens a scope from outside; the same request from inside fails. | [macOS](../evidence/P0-04-owner-grant-macos.md), [Linux](../evidence/P0-04-owner-grant-linux.md) |
 | P0-05 Bounded grant | The extra access ends at its expiry. | [macOS](../evidence/P0-05-grant-expiry-macos.md), [Linux](../evidence/P0-05-grant-expiry-linux.md) |
 | P0-07 fx | Every shell command fx 0.0.16 runs gets its own scope and receipts. The run used a scripted test model. | [macOS](../evidence/P0-07-fx-hook-scripted-macos.md) |
-| P0-08 Second platform | The same checks on the other OS. | Linux has P0-01 to P0-05; fx on Linux has no entry |
+| P0-08 Second platform | P0-01 to P0-05 pass on both macOS and Linux, each enforced by the platform's own mechanism. fx (P0-07) was not run on Linux. | [macOS and Linux](../evidence/P0-08-second-platform.md) |
 | P0-09 Forwardable proof | Evidence entries, a short recording and this page. | pending: no recording yet |
 | P0-10 Release gap | The table below. | this page |
 
