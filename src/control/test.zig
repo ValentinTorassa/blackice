@@ -91,14 +91,16 @@ test "grant and revoke from outside the scope" {
     try expectField(r0.value, "verdict", "allow");
     try expectField(r0.value, "reason", "owner_grant");
     try expectField(r0.value, "host", "API.example.com");
-    try testing.expect(std.mem.startsWith(u8, r0.value.object.get("detail").?.string, "for 600s until "));
+    var pid_buf: [32]u8 = undefined;
+    const want_prefix = try std.fmt.bufPrint(&pid_buf, "pid={d} for 600s until ", .{std.os.linux.getpid()});
+    try testing.expect(std.mem.startsWith(u8, r0.value.object.get("detail").?.string, want_prefix));
     var r1 = try h.receiptAt(1);
     defer r1.deinit();
     try expectField(r1.value, "event", "revoke");
-    try expectField(r1.value, "detail", "removed");
+    try testing.expect(std.mem.endsWith(u8, r1.value.object.get("detail").?.string, " removed"));
     var r2 = try h.receiptAt(2);
     defer r2.deinit();
-    try expectField(r2.value, "detail", "not_found");
+    try testing.expect(std.mem.endsWith(u8, r2.value.object.get("detail").?.string, " not_found"));
 }
 
 test "requests are parsed strictly and bounded" {
@@ -150,7 +152,7 @@ test "the socket is 0600, a stale file is replaced, and stop removes it" {
     try testing.expectError(error.FileNotFound, tmp.dir.statFile(io, control.socket_name, .{}));
 }
 
-test "peerUid reports this process's uid for a local peer" {
+test "peerCred reports this process's uid and pid for a local peer" {
     var h: Harness = undefined;
     try h.init();
     defer h.deinit();
@@ -159,9 +161,10 @@ test "peerUid reports this process's uid for a local peer" {
     const addr = try net.UnixAddress.init(path);
     const stream = try addr.connect(h.io);
     defer stream.close(h.io);
-    const uid = control.peerUid(stream.socket.handle);
-    try testing.expect(uid != null);
-    try testing.expectEqual(h.server.uid, uid.?);
+    const cred = control.peerCred(stream.socket.handle);
+    try testing.expect(cred != null);
+    try testing.expectEqual(h.server.uid, cred.?.uid);
+    try testing.expectEqual(@as(?i32, std.os.linux.getpid()), cred.?.pid);
 }
 
 test "parseDuration" {
@@ -172,4 +175,27 @@ test "parseDuration" {
     try testing.expectEqual(@as(?u32, null), control.parseDuration("10d"));
     try testing.expectEqual(@as(?u32, null), control.parseDuration("m"));
     try testing.expectEqual(@as(?u32, null), control.parseDuration(""));
+}
+
+test "a peer that never sends a full line is disconnected" {
+    var h: Harness = undefined;
+    try h.init();
+    defer h.deinit();
+    var path_buf: [128]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/{s}", .{ h.dir, control.socket_name });
+    const addr = try net.UnixAddress.init(path);
+    const stream = try addr.connect(h.io);
+    defer stream.close(h.io);
+    var wbuf: [64]u8 = undefined;
+    var w = stream.writer(h.io, &wbuf);
+    try w.interface.writeAll("{\"op\":\"gra");
+    try w.interface.flush();
+    // After its 5 s read deadline the server stops reading, records bad_request and answers it.
+    var rbuf: [256]u8 = undefined;
+    var r = stream.reader(h.io, &rbuf);
+    const reply = try r.interface.takeDelimiterExclusive('\n');
+    try testing.expectEqualStrings("{\"ok\":false,\"error\":\"bad_request\"}", reply);
+    var rec = try h.receiptAt(0);
+    defer rec.deinit();
+    try expectField(rec.value, "reason", "bad_request");
 }

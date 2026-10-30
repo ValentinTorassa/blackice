@@ -297,6 +297,9 @@ const Connection = struct {
     }
 
     fn servePlain(c: *Connection, req: *http.Server.Request) Io.Cancelable!void {
+        // The head is forwarded, so it must be unambiguous: an upstream that splits lines on a bare LF would
+        // otherwise read headers the proxy never saw (a second Host, a second Content-Length).
+        if (!headIsClean(req)) return c.badRequest("400 Bad Request", "invalid_request", "http");
         const url = parseHttpUrl(req.head.target) catch |err| {
             const detail = if (err == error.HttpsNeedsConnect) "https_needs_connect" else "invalid_url";
             return c.badRequest("400 Bad Request", detail, "http");
@@ -692,6 +695,27 @@ fn writeUpstreamHead(w: *Io.Writer, req: *http.Server.Request, url: HttpUrl) Io.
         }
     }
     try w.writeAll("connection: close\r\n\r\n");
+}
+
+/// The request target has only visible ASCII, every header name is a token, and no header value carries
+/// a control character other than HTAB (so no bare CR or LF).
+fn headIsClean(req: *const http.Server.Request) bool {
+    for (req.head.target) |ch| if (ch <= 0x20 or ch >= 0x7f) return false;
+    var it = req.iterateHeaders();
+    while (it.next()) |h| {
+        if (h.name.len == 0) return false;
+        for (h.name) |ch| if (!isTokenChar(ch)) return false;
+        for (h.value) |ch| if ((ch < 0x20 and ch != '\t') or ch == 0x7f) return false;
+    }
+    return true;
+}
+
+fn isTokenChar(ch: u8) bool {
+    return switch (ch) {
+        'a'...'z', 'A'...'Z', '0'...'9' => true,
+        '!', '#', '$', '%', '&', '\'', '*', '+', '-', '.', '^', '_', '`', '|', '~' => true,
+        else => false,
+    };
 }
 
 const hop_by_hop = [_][]const u8{

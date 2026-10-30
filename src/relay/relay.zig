@@ -485,11 +485,12 @@ pub const Relay = struct {
             stats.bytes_out += data.len;
             rr.toss(data.len);
         }
+        // The receipt is written before the response ends, so a caller that has seen the whole answer can
+        // already find the receipt for it.
+        r.writeCallReceipt(&stats);
         if (ok) bw.end() catch {
             ok = false;
-            stats.err = "client_write_failed";
         };
-        r.writeCallReceipt(&stats);
         return ok and keep_alive;
     }
 
