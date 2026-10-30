@@ -9,8 +9,8 @@
 
 Network permissions for apps and agent tasks on macOS and Linux. Native and headless.
 
-> **Status: v0, not production-ready yet.** Only macOS agent tasks have evidence entries so far (see
-> [Evidence](#evidence)); everything else is not verified yet. A capability is listed as working only when a
+> **Status: v0, not production-ready yet.** Only agent tasks have evidence entries so far, on macOS and on Linux
+> (see [Evidence](#evidence)); everything else is not verified yet. A capability is listed as working only when a
 > recorded test backs it; see [`evidence/`](evidence/). Parts that are not built yet are written in the future tense.
 
 ## Design
@@ -31,17 +31,17 @@ The CLI is not frozen yet.
 
 ## Platforms
 
-Only the macOS agent-task cell has evidence entries ([Evidence](#evidence)). Every other cell is not verified.
+Only the two agent-task cells have evidence entries ([Evidence](#evidence)). Every other cell is not verified.
 
 | | Apps | Agent tasks |
 |---|---|---|
 | macOS | Network Extension content filter: built, unsigned, in [#8](https://github.com/ValentinTorassa/blackice/pull/8), not merged yet. It cannot run until it is signed with a Developer ID. | Seatbelt task scope with a local proxy, experimental ([#7](https://github.com/ValentinTorassa/blackice/pull/7)). Evidence entries P0-01 to P0-05 and P0-07 |
-| Linux | Not built. Grouping apps by the desktop's systemd scopes still has to be proven. | cgroup v2 with eBPF socket programs and a small privileged helper, installed once with a setup script run with sudo, plus a local proxy: built in [#6](https://github.com/ValentinTorassa/blackice/pull/6), not merged yet. On main, `blackice run` refuses on Linux. |
+| Linux | Not built. Grouping apps by the desktop's systemd scopes still has to be proven. | cgroup v2 with eBPF socket programs and a small privileged helper, installed once with a setup script run with sudo, plus a local proxy ([#6](https://github.com/ValentinTorassa/blackice/pull/6)). Evidence entries P0-01 to P0-05. Tested on Debian 13 (kernel 6.12). On Ubuntu 23.10+, where `kernel.apparmor_restrict_unprivileged_userns=1` is the default, scopes fail closed. |
 | Windows | Later, not part of the first release | Later, not part of the first release |
 
 ## Evidence
 
-macOS agent tasks only: macOS 27.0.1 on Apple silicon with SIP on, release builds of 58e73cc (P0-05: 58b9491),
+**macOS agent tasks:** macOS 27.0.1 on Apple silicon with SIP on, release builds of 58e73cc (P0-05: 58b9491),
 from before the code was merged into main, run by the people who built it, with no video of the runs yet. Each
 entry states its own limits.
 
@@ -54,7 +54,18 @@ entry states its own limits.
 | [P0-05](evidence/P0-05-grant-expiry-macos.md) | When the owner's grant ends, the proxy resets the connection opened under it within milliseconds, and a new connection to that name is refused again. |
 | [P0-07](evidence/P0-07-fx-hook-scripted-macos.md) | With fx 0.0.16 and the blackice hook patch, in full-access mode and with a **scripted test model, not a real model**, every shell command fx runs gets its own scope and receipts, and a command cannot change blackice, fx, the policy or fx's settings. fx's `write_file` outside the workspace and its `web_fetch` are blocked; fx's own reads (`read_file`, `glob_files`, `grep_files`), its writes inside the workspace and its model traffic still run outside the scopes, and what they read goes to the model's provider. A run with a real model is pending. |
 
-Linux task scopes, the app filter and Windows are not verified.
+**Linux agent tasks:** Debian 13 (kernel 6.12.113) on x86_64, launcher 020f389 and helper 7c3bcff, built before
+the Linux backend was merged into main, run on the owner's machine by the people who built it, with no video of the runs yet. Each entry states its own limits.
+
+| Checkpoint | What the entry shows |
+|---|---|
+| [P0-01](evidence/P0-01-policy-before-exec-linux.md) | A command whose policy does not load, or does not match its pinned hash, never starts, and no scope is created. A valid command saw its own copy of the policy and its first receipt before doing any work. |
+| [P0-02](evidence/P0-02-real-deny-linux.md) | The kernel refused direct TCP and UDP over IPv4 and IPv6, from a command in a scope and from a descendant that double-forked, with a receipt for each. A receiver on another machine, reachable from outside the scope, got nothing from inside it. |
+| [P0-03](evidence/P0-03-explicit-allow-linux.md) | With a policy that allows only `example.com` and `registry.npmjs.org`, the command reaches both over HTTPS through the proxy. github.com and the cloud metadata address are refused by the proxy, the same destinations reached directly are refused by the kernel, and each decision leaves a receipt. |
+| [P0-04](evidence/P0-04-owner-grant-linux.md) | A command inside a scope cannot widen its own policy: it cannot reach the control socket. The owner's `blackice grant` from outside lets exactly one more name through, with an end time, and `blackice revoke` takes it back at once. |
+| [P0-05](evidence/P0-05-grant-expiry-linux.md) | When the owner's grant ends, the proxy resets the connection opened under it, and a new connection to that name is refused again. |
+
+The app filters and Windows are not verified.
 
 ## Limits
 
@@ -63,6 +74,8 @@ Linux task scopes, the app filter and Windows are not verified.
   ad-hoc-signed program, such as one you built yourself, is still refused, but leaves no receipt. Programs signed
   with a Developer ID were not tested. Even then, a burst of refusals can lose some receipts, and a process that
   outlives the command gets none.
+- On Linux, sockets other than TCP and UDP (ping, SCTP, raw) are refused before any address is chosen, so they
+  leave no receipt. Only x86_64 was run.
 - In v0, only HTTP and TLS through the proxy can be allowed.
 - In v0, processes of the same user outside every scope count as the owner.
 - In v0, nothing inside a task scope can listen, not even on loopback. Dev servers and tests that open a port
