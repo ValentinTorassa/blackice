@@ -12,6 +12,8 @@ const std = @import("std");
 const backend = @import("../core/backend.zig");
 
 pub const available = false;
+/// LaunchSpec.protected_paths is not honored yet; blackice run refuses scopes that need it.
+pub const protects_paths = false;
 
 pub fn launch(gpa: std.mem.Allocator, io: std.Io, spec: backend.LaunchSpec) backend.Error!backend.Exit {
     _ = gpa;
