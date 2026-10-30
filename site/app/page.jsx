@@ -186,7 +186,7 @@ export default function Home() {
         </section>
 
         <section className="container section about" aria-labelledby="about-title">
-          <div className={WALKTHROUGH ? 'about-grid' : undefined}>
+          <div className={WALKTHROUGH.length ? 'about-grid' : undefined}>
             <div className="about-text">
               <h2 className="h2" id="about-title">
                 Why I built it
@@ -204,10 +204,9 @@ export default function Home() {
                 agent calls. blackice works one layer down, on the connections the commands themselves open.
               </p>
             </div>
-            {WALKTHROUGH ? (
+            {WALKTHROUGH.length ? (
               <div className="about-video">
-                <Walkthrough {...WALKTHROUGH} />
-                <p className="caption">Recorded on macOS, on Debian 13 and in a Debian 13 virtual machine.</p>
+                <Walkthrough cuts={WALKTHROUGH} />
               </div>
             ) : null}
           </div>
