@@ -55,6 +55,8 @@ are no wildcard listeners. Arming reserves the entire 760–774 range and refuse
 that `ip_unprivileged_port_start` is greater than 774 before binding. The connect hooks treat 127/8, 0/8, ::1,
 ::, and mapped IPv4 equivalents as local for `listener_peer` checks. The unspecified-address cases matter
 because Linux can route them to loopback after the connect hook.
+The unspecified-address coverage and root guard were added after `978a65c`/`086aeac`.
+Those earlier demo builds do not support the coverage claim above, including for cron/at callers.
 
 The proxy checks exactly one TLS ClientHello SNI, or one HTTP Host header in an origin-form request. It resolves
 and dials that name using the existing policy and resolved-address checks, not the original destination IP.
