@@ -84,7 +84,9 @@ sudo ./scripts/linux-teardown.sh
 ```
 
 It disables new helper executions, terminates only blackice scope cgroups and removes only blackice's
-helper/configuration. It is safe to repeat. A populated or stuck cgroup retains its attached policy;
+helper/configuration, including root-owned setup staging files left by an uncatchable interruption. The
+reserved temporary names are `blackice-linux-helper.XXXXXX` and `namespaces.XXXXXX` in their installation
+directories. It is safe to repeat. A populated or stuck cgroup retains its attached policy;
 teardown refuses to remove that boundary and leaves new launches disabled until owner recovery. Never
 detach programs from a live scope as a shortcut.
 

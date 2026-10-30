@@ -7,10 +7,11 @@ export PATH LC_ALL=C
 PS4='+ blackice setup: '
 set -x
 [[ $EUID -eq 0 ]] || { echo 'Run this script with sudo after reviewing it.' >&2; exit 1; }
-owner=${1:-${SUDO_USER:-}}
+[[ $# -eq 2 ]] || { echo 'Usage: linux-setup.sh USER EXPECTED_SHA256 (both required).' >&2; exit 1; }
+owner=$1
 [[ -n $owner ]] && [[ $(/usr/bin/id -u -- "$owner") -ne 0 ]] || { echo 'Supply an existing non-root user.' >&2; exit 1; }
 group=$(/usr/bin/id -g -- "$owner")
-expected=${2:-}
+expected=$2
 [[ $expected =~ ^[0-9a-f]{64}$ ]] || { echo 'Supply the reviewed helper SHA-256 as the second argument.' >&2; exit 1; }
 script=$(/usr/bin/readlink -f -- "$0")
 source=$(/usr/bin/dirname -- "$script")/../zig-out/bin/blackice-linux-helper
