@@ -5,7 +5,7 @@ import { DEMO_LANG_PICK, DEMO_LANG_STATE, Flag } from './Flags';
 
 // The demo, one cut per caption language. The files are served from outside the build (content/demo.js). The flags
 // in the nav pick the language too, and ?lang=es opens it in that language.
-export default function DemoVideo({ sources }) {
+export default function DemoVideo({ sources, title = 'demo · v0' }) {
   const [lang, setLang] = useState(sources[0].lang);
   const langRef = useRef(lang);
   langRef.current = lang;
@@ -46,7 +46,7 @@ export default function DemoVideo({ sources }) {
   return (
     <figure className="frame demo">
       <figcaption className="frame-bar">
-        <span className="frame-title">demo · v0</span>
+        <span className="frame-title">{title}</span>
         {sources.length > 1 ? (
           <span className="demo-langs" role="group" aria-label="Caption language">
             {sources.map((s) => (

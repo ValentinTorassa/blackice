@@ -9,6 +9,7 @@ import CubeMark from '../components/CubeMark';
 import StatusCards from '../components/StatusCards';
 import Corners from '../components/Corners';
 import DemoVideo from '../components/DemoVideo';
+import Walkthrough from '../components/Walkthrough';
 import Install from '../components/Install';
 import { RELEASE } from '../content/site';
 import { IsoScope, IsoPolicy, IsoReceipt } from '../components/Iso';
@@ -30,7 +31,7 @@ import {
   IconTerminal,
 } from '../components/Icons';
 import { SITE } from '../content/site';
-import { DEMO } from '../content/demo';
+import { DEMO, WALKTHROUGH } from '../content/demo';
 import { CHECKPOINTS } from '../content/status';
 import { findingsCheckpoints, recordedCheckpoints } from '../lib/evidence';
 
@@ -152,13 +153,17 @@ export default function Home() {
           </div>
         </section>
 
-        {DEMO.length ? (
+        {WALKTHROUGH || DEMO.length ? (
           <section className="container demo-section" id="demo" aria-labelledby="demo-title">
             <h2 className="h2" id="demo-title">
               Demo
             </h2>
-            <DemoVideo sources={DEMO} />
-            <p className="caption">Recorded on macOS and in a Debian 13 virtual machine. Each demo carries a label that says what it shows.</p>
+            {WALKTHROUGH ? <Walkthrough {...WALKTHROUGH} /> : null}
+            {DEMO.length ? <DemoVideo sources={DEMO} title="fx demo · 1 min" /> : null}
+            <p className="caption">
+              Recorded on macOS, on Debian 13 and in a Debian 13 virtual machine. Each demo carries a label that says
+              what it shows.
+            </p>
           </section>
         ) : null}
 
