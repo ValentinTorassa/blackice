@@ -125,8 +125,7 @@ not start an agent; authorization still requires an existing session agent. Regi
 cancel or the daemon's 15-second authorization timeout leave the filter armed. This follows the
 [pkttyagent contract](https://www.freedesktop.org/software/polkit/docs/latest/pkttyagent.1.html); real approve,
 wrong-password, Ctrl-C and timeout cases remain VM tests. Answer the prompt promptly; on timeout,
-run `app off` again. The service permits at most five starts in ten minutes to bound repeated crash
-recovery and receipt-file creation. Its pinned programs remain attached when that limit is reached.
+run `app off` again.
 
 This first candidate changes an active policy through an authorized `off`, then a fresh `on`; it refuses a
 different policy while armed. It does not silently reassign IDs held by existing descendants. In-place policy
@@ -146,7 +145,8 @@ pure unit suite and runs only in a disposable QEMU VM; the full crash/restart ch
 
 The service restarts after a failure with a backoff, from 1 s up to 60 s over five steps, and keeps the pins while
 it is down. The start limit (60 starts in 10 minutes) is only a backstop: while the filter is off, every control
-request starts the service once, so a low limit would stop the socket.
+request starts the service once, so a low limit would stop the socket. The pinned programs remain attached
+if that limit is reached.
 
 ## Limits to review before installation
 
