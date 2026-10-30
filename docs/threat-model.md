@@ -2,7 +2,7 @@
 
 blackice is an experimental local network-permission system. The first intended usable release covers both ordinary applications and managed command sessions on macOS and Linux. A command-only demonstration does not complete that release.
 
-The current core implements policy parsing, destination decisions and receipt primitives. Its Linux backend is a refusal stub at the reviewed core baseline; macOS contains an experimental Seatbelt launcher. A successful build or a backend's static availability flag is not evidence that all of the guarantees below hold.
+The merged PoC-0 baseline (`727a5db`) implements policy parsing, a proxy and model relay, temporary grants, receipts and an experimental macOS Seatbelt task launcher. Its Linux task backend still refuses launch. The macOS task runs are recorded in `evidence/`; they do not qualify an app filter or the Linux backend. A successful build or a backend's static availability flag is not evidence that all of the guarantees below hold.
 
 ## Assets and actors
 
@@ -46,7 +46,7 @@ Mount-namespace hiding of resolver or daemon paths is a targeted mitigation. It 
 
 ## Proxy and real-model relay
 
-The provider key stays in the relay outside every workload scope. It must not appear in workload environment variables, arguments, state files, receipts or recorded demonstrations. Disable process dumps where supported, keep credentials out of errors, and consider inheritance and process-inspection paths separately. Excluding the raw key does not eliminate the authority to spend through the relay.
+In `blackice run --relay`, the provider key belongs to the relay outside the managed command's scope. It must not appear in workload environment variables, arguments, state files, receipts or recorded demonstrations. Disable process dumps where supported, keep credentials out of errors, and consider inheritance and process-inspection paths separately. This mode does not isolate existing credential files or establish isolation between all same-user processes. Excluding the raw key does not eliminate the authority to spend through the relay.
 
 The relay needs a fixed upstream, a model allowlist, bounded body/response sizes, request and spending limits, and a verified scope/lifetime binding. Client input must not override upstream credentials, choose arbitrary upstream destinations, or redirect a credential-bearing request elsewhere. Authentication to the relay is distinct from authentication of its upstream provider.
 
@@ -54,11 +54,11 @@ An allowed name on a shared front end can expose other sites behind the same add
 
 Treat attacker-controlled pages in the user's browser as potential callers of loopback services. A permitted `no-cors` POST can cause a side effect even when the page cannot read the response; DNS rebinding can give an attacker-controlled hostname a loopback address. Browser protections vary, so random ports, loopback binding and CORS response restrictions do not establish caller authority. The command-line-only relay and any future TCP control endpoint must reject requests carrying `Origin` (including `null`) or `Sec-Fetch-*`, require an exact configured loopback `Host` with the listening port, and require `application/json` for JSON POSTs. Reject ambiguous authority headers and do not enable browser access through permissive preflight responses. These checks address the [browser-to-loopback review](https://github.com/ValentinTorassa/blackice/pull/4#discussion_r4420538075); [Fetch Metadata headers](https://www.w3.org/TR/fetch-metadata/) describe the browser request context. Their absence does not authenticate a caller: native clients can omit or forge headers, so scope binding and independent control authority remain necessary.
 
-A local listening port is not a scope identity. Prevent cross-scope reuse, stale-port takeover and unbound requests. The intended fx integration uses a declared `PreToolUse` patch to launch each shell command in a blackice scope while the controller stays outside. Every relevant execution path must be audited before claiming that all launched commands are covered; a hook's existence does not establish coverage. The L0 whole-agent wrapper remains a fallback and shares one network envelope with its tools, including any destinations or relay access granted to the agent.
+A local listening port is not a scope identity. Prevent cross-scope reuse, stale-port takeover and unbound requests. The fx integration provides a declared `PreToolUse` patch to launch each shell command in a blackice scope while the controller stays outside. The [recorded hook test](../evidence/P0-07-fx-hook-scripted-macos.md) uses a scripted model; fx's own reads, writes inside the workspace and model traffic remain outside those scopes. Every relevant execution path must be audited before claiming that all launched commands are covered; a hook's existence does not establish coverage. The L0 whole-agent wrapper is a planned fallback, not qualified by the hook test. Such a wrapper would share one network envelope with its tools, including any destinations or relay access granted to the agent.
 
 ## Owner-grant limitation in the initial design
 
-The proposed first control path treats same-user processes outside managed scopes as the owner. This is a limited convenience model, not proof of independent authority against an adversarial shared-user process. Hiding a control socket pathname alone cannot establish that stronger property.
+The current control path treats same-user processes outside managed scopes as the owner. This is a limited convenience model, not proof of independent authority against an adversarial shared-user process. Hiding a control socket pathname alone cannot establish that stronger property.
 
 Before claiming resistance to self-grant, test direct IPC, alternate paths, existing descriptors, process injection, helper invocation and delegation to unconfined daemons. Document exactly which attempts were blocked and what trusted-owner assumptions remain. Do not widen the threat claim just because one CLI invocation from inside a scope failed.
 
@@ -67,5 +67,7 @@ Before claiming resistance to self-grant, test direct IPC, alternate paths, exis
 The backend must report whether protection is active, degraded or unknown. The behavior after extension loss, packet-rule removal, proxy failure, broker restart, sleep, reboot and storage failure is platform-specific. Preserve valid mandatory policy where supported and refuse new strict work when the required boundary is unknown. Recovery belongs to an independently authorized operator.
 
 Each native claim needs a controlled receiving endpoint, allowed control traffic, denied probes, host/build details and recorded limits. Include DNS, inherited sockets, process escape, expiry and fault behavior as applicable. Test unsupported socket creation, plaintext and SNI-less named tunnels, conflicting HTTP authorities, and browser-shaped relay requests alongside a legitimate command-line control request. Refused proxy/relay requests must not forward workload bytes or spend provider authority. A generated receipt or a policy evaluator result alone is not a network test.
+
+The [macOS deny run](../evidence/P0-02-real-deny-macos.md) records an observation limit: Apple-signed binaries produced kernel-denial receipts, while tested ad-hoc-signed binaries were refused without those receipts; third-party Developer ID signatures were not tested. The kernel log omits destination addresses and loses some lines under bursts. Absence of a receipt does not establish absence of an attempt or permission to connect.
 
 The [policy contract](policy.md) describes the import capability gate. The repository's `evidence/` directory records actual runs; source review and unit vectors must be described as such.

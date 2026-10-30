@@ -2,7 +2,7 @@
 
 blackice separates a policy decision from the mechanism that enforces it. Parsing a file, passing a unit test, or converting another format does not establish a working network boundary.
 
-This document describes `blackice.policy/v0` and the experimental `blackice.sandbox-subset/v1` importer. The core CLI currently validates native policy files. The importer is a library API; it is not yet wired into a CLI import command or a native launch path.
+This document describes `blackice.policy/v0` and the experimental `blackice.sandbox-subset/v1` importer. The CLI validates native policy files and uses them for managed commands on supported backends. The importer is a library API; it is not yet wired into a CLI import command or a native launch path.
 
 ## Native policy format
 
@@ -102,6 +102,6 @@ zig-out/bin/blackice policy check examples/agent.json
 zig test src/core/sandbox_import.zig
 ```
 
-The importer command runs 69 acceptance/rejection vectors plus capability, ownership, resource-limit and allocation-failure tests. These are deterministic software tests, not traffic evidence. They must not be entered as a passing native checkpoint in `evidence/`.
+Both `zig build test` and the standalone importer test command run 69 acceptance/rejection vectors plus capability, ownership, resource-limit and allocation-failure tests. These are deterministic software tests, not traffic evidence. They must not be entered as a passing native checkpoint in `evidence/`.
 
-When integrating into the main build, import `sandbox_import.zig` from the root test module and include `tests/` in the package paths so the vectors remain available. Native support must be qualified separately on each OS.
+The root test module imports `sandbox_import.zig`, and the package manifest includes `tests/` so the vectors remain available in a packaged checkout. This test integration does not activate imported policies. Native support must be qualified separately on each OS.

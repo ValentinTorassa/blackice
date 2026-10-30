@@ -91,6 +91,7 @@ fn policyCheck(gpa: std.mem.Allocator, io: Io, path: []const u8, out: *Io.Writer
 
 test {
     _ = policy;
+    _ = @import("core/sandbox_import.zig");
     _ = receipt;
     _ = scope;
     _ = backend;
