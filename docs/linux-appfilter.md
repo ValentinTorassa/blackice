@@ -142,6 +142,10 @@ make arming or recovery refuse. The dedicated IPv4/IPv6 socket test checks the o
 `TIME_WAIT`, rebinds immediately and rejects a competing live listener. It is compiled separately from the
 pure unit suite and runs only in a disposable QEMU VM; the full crash/restart check still belongs to the VM gate.
 
+The service restarts after a crash with a backoff, from 1 s up to 60 s over five steps, and keeps the pins while it
+is down. A refused start (exit 125) is not retried. The start limit (60 starts in 10 minutes) is only a backstop:
+while the filter is off, every control request starts the service once, so a low limit would stop the socket.
+
 ## Limits to review before installation
 
 - Fresh arming requires the five user.slice hooks and the two root connect hooks to be vacant. Restart also
