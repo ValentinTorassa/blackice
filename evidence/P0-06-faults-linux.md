@@ -2,8 +2,10 @@
 
 **Claim.** On the Linux host below, and in a disposable virtual machine with the same kernel and the same helper
 binary, this run stopped, killed or starved the parts of a task scope one at a time and recorded what each fault
-did. Enforcement held in every case: no scoped connection that the policy refuses got out. Recovery and the
-receipts did not always hold, and those cases are written down as failures: four findings, P6-1 to P6-4.
+did. No scoped connection left the host in any case. After a helper kill (F3b, VM), a surviving process reached a
+local program that took the dead proxy's port (P6-1): a refused destination reached on the same machine, which
+would have let the traffic out if that program had been a relay. Recovery and the receipts did not always hold
+either. Those cases are written down as failures: four findings, P6-1 to P6-4.
 Checkpoint P0-06. **This is a run, not a pass.** P0-06 is not in v0's acceptance list; it is recorded as an extra.
 
 **Platform.**
