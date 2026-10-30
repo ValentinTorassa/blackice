@@ -26,6 +26,10 @@ before anyone runs it with sudo.
 `macos-latest` (arm64): `zig fmt --check` (Linux only), `zig build`, `zig build test`, and a cross-build for the
 other OS.
 
+On Linux, the tests run with `kernel.apparmor_restrict_unprivileged_userns=0`. The Ubuntu runner image sets it to
+`1`, which leaves a process with no capabilities in a user namespace it creates without privilege, so the
+confinement tests cannot mount. The step logs the old value. Only the throwaway runner is changed.
+
 Rules for every workflow in this repository:
 
 - The token is read-only (`permissions: contents: read`), and checkout does not keep it (`persist-credentials: false`).
