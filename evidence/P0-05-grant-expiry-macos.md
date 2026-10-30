@@ -167,7 +167,7 @@ buffer in the first seconds of the grant.
   `connection_reset` describes what the proxy does.
 - Neither run shows a non-empty proxy queue being dropped: the proxy had nothing queued (Send-Q 0 in the
   follow-up). Dropping a queued backlog at the reset is shown by the proxy's unit test for it (a flooding
-  upstream, Linux), not here.
+  upstream; it passes on Linux and on this Mac), not here.
 - The watchdog wakes at least every 200 ms; here it acted 11 ms after the end (10 ms in the follow-up check).
 - Revoking a grant and a plain HTTP exchange cut by an expiry are covered by the proxy's unit tests, and
   extending a grant by the grant table's tests. This run shows none of them.
