@@ -915,11 +915,34 @@ def armed_check(prefix):
 
 
 def main_pid():
-    """The service's main pid, starting it through its socket if it is not running."""
+    """The service's main pid, starting it through its socket if it is not running. Never 0: `kill -9 0` would
+    signal the harness's own process group."""
     if unit_show().get("MainPID", "0") == "0":
         cli_status()
         wait_active()
-    return int(unit_show().get("MainPID", "0"))
+    pid = int(unit_show().get("MainPID", "0"))
+    if pid <= 1:
+        raise RuntimeError("the service is not running (MainPID 0)")
+    return pid
+
+
+def ensure_service(tag):
+    """Lets one product failure not mask the cases after it. If the control socket does not answer, wait until
+    no TIME_WAIT socket holds a listener port (up to 75 s), reset-failed both units and start the socket. Recorded
+    as a harness recovery; the failure itself stays recorded in the case that caused it."""
+    status = cli_status()
+    if status.startswith("OK "):
+        return True
+    tw = time_wait_on_listener_ports()
+    end = time.time() + 75
+    while time_wait_on_listener_ports() and time.time() < end:
+        time.sleep(2)
+    run(["systemctl", "reset-failed", UNIT, "blackice-appfilter.socket"], timeout=15)
+    run(["systemctl", "start", "blackice-appfilter.socket"], timeout=30)
+    after = cli_status()
+    record(f"{tag}.harness-recovery", "harness", "service was down before this case: waited for TIME_WAIT to clear, reset-failed, started the socket",
+           {"status_before": status, "time_wait_sockets": len(tw), "status_after": after}, "OBSERVE")
+    return after.startswith("OK ")
 
 
 def wait_active(seconds=20):
@@ -1453,9 +1476,12 @@ def phase_restart(_args):
         check("F01.restart-receipt", "test7", "app_filter_restart receipt", count_receipts(event="app_filter_restart"), count_receipts(event="app_filter_restart") >= 1)
         rc, out, _ = run(as_user(OWNER, curl), timeout=40)
         check("F01.works", "test7", "curl 200 after the restart", [rc, out.strip()], rc == 0 and out.strip() == "200")
-        journal("crash", since)
+        text = journal("crash", since)
+        record("F01.restart-errors", "test7", "service errors after the kill (journal-crash.txt)",
+               [l for l in text.splitlines() if "blackice app filter:" in l or "start-limit" in l or "Start request repeated" in l][:8], "OBSERVE")
         ok &= not case.failed
     with Case("F02-stop-start", "systemctl stop keeps the pins; the next control call starts it armed", "test7") as case:
+        ensure_service("F02")
         before = cgroup_attachments()
         run(["systemctl", "stop", UNIT], timeout=60)
         down = cgroup_attachments()
@@ -1464,6 +1490,7 @@ def phase_restart(_args):
         armed_check("F02")  # the status call socket-activates the service
         ok &= not case.failed
     with Case("F02b-proxy-child-kill", "SIGKILL the proxy child: the service exits, pins hold, tagged traffic fails closed, the restart restores it", "M5") as case:
+        ensure_service("F02b")
         reset_start_limit()
         child, kids = proxy_child()
         if check("F02b.child", "M5", "one proxy child", kids, child is not None):
@@ -1498,6 +1525,51 @@ def phase_restart(_args):
             check("F02b.works", "M5", "curl 200 after the restart", [rc, out.strip()], rc == 0 and out.strip() == "200")
             journal("proxy-kill", since)
         ok &= not case.failed
+    with Case("F02c-start-limit", "crash restarts past the start limit: the unit fails, pins and filtering stay; reset-failed restores it", "A3") as case:
+        limits = dict(l.split("=", 1) for l in run(["systemctl", "show", UNIT, "-p", "StartLimitBurst", "-p", "StartLimitIntervalUSec"], timeout=10)[1].split())
+        burst = int(limits.get("StartLimitBurst", "5"))
+        ensure_service("F02c")
+        reset_start_limit()
+        before, since, kills = cgroup_attachments(), time.time(), []
+        for i in range(burst + 2):
+            unit = unit_show()
+            if unit.get("ActiveState") != "active" or unit.get("MainPID", "0") == "0":
+                break
+            pid = unit["MainPID"]
+            run(["/usr/bin/kill", "-9", pid])
+            outcome, t0 = "timeout", time.time()
+            while time.time() - t0 < 20:
+                u = unit_show()
+                if u.get("ActiveState") == "active" and u.get("MainPID") not in (pid, "0"):
+                    outcome = "restarted"
+                    break
+                if u.get("ActiveState") == "failed":
+                    outcome = "failed"
+                    break
+                time.sleep(0.1)
+            kills.append({"kill": i + 1, "pid": pid, "outcome": outcome, "seconds": round(time.time() - t0, 2)})
+            if outcome != "restarted":
+                break
+            time.sleep(0.5)
+        result = run(["systemctl", "show", UNIT, "-p", "ActiveState", "-p", "Result", "-p", "NRestarts"], timeout=10)[1].split()
+        socket_state = run(["systemctl", "show", "blackice-appfilter.socket", "-p", "ActiveState", "-p", "Result"], timeout=10)[1].split()
+        check("F02c.unit-failed", "A3", f"after {burst} restarts the next start is refused: failed, start-limit-hit",
+              {"kills": kills, "unit": result, "socket": socket_state}, "ActiveState=failed" in result and "Result=start-limit-hit" in result,
+              limits=limits)
+        down = cgroup_attachments()
+        check("F02c.pins-hold", "A3", "same seven attachment ids", sorted(r["id"] for r in ours(down)),
+              sorted(r["id"] for r in ours(down)) == sorted(r["id"] for r in ours(before)) and len(ours(down)) == 7)
+        rc, out, err = run(as_user(OWNER, CURL + ["--max-time", "5", "https://example.com/"]), timeout=20)
+        check("F02c.still-filtered", "A3", "tagged curl fails while the unit is failed", [rc, out.strip(), err.strip()[:160]], rc != 0)
+        untagged = json_lines(run(as_user(OWNER, probe_cmd("connect", "--addr", "127.0.0.1", "--port", "760")), timeout=20)[1])
+        check("F02c.guard-holds", "A3", "untagged 127.0.0.1:760 EPERM (root guard still attached)", untagged, bool(untagged) and untagged[0]["outcome"] == "EPERM")
+        run(["systemctl", "reset-failed", UNIT, "blackice-appfilter.socket"], timeout=15)
+        run(["systemctl", "start", "blackice-appfilter.socket"], timeout=30)
+        armed_check("F02c.recovered")  # `app status` through the socket starts the service again
+        rc, out, _ = run(as_user(OWNER, CURL + ["https://example.com/"]), timeout=40)
+        check("F02c.works", "A3", "curl 200 after the recovery", [rc, out.strip()], rc == 0 and out.strip() == "200")
+        journal("start-limit", since)
+        ok &= not case.failed
     return ok
 
 
@@ -1507,6 +1579,7 @@ def phase_kill_fork(_args):
         if os.path.exists(path):
             os.remove(path)
     with Case("G01-kill-then-fork", "with the service killed and stopped, forks and execs stay classified", "R2/test7") as case:
+        ensure_service("G01")
         p = subprocess.Popen(as_user(OWNER, launched(1, probe_cmd("forker", "--app", "1", "--trigger", trigger, "--out", out))), stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
         try:
             return kill_then_fork(p, trigger, out)
@@ -1571,6 +1644,7 @@ def phase_off(_args):
         if os.path.exists(POLKIT_RULE):
             os.remove(POLKIT_RULE)
             time.sleep(2)
+        ensure_service("F03")
         check("F03.no-rule", "L10", "no aftest rule in rules.d", rules_listing(), not os.path.exists(POLKIT_RULE))
         if not armed_check("F03.pre"):
             return False  # refusals from a dead service would prove nothing
@@ -1649,6 +1723,7 @@ def phase_kill_phases(_args):
     ok = True
     for target in ("maps", "cgroup", "listeners", "tracking", "armed"):
         with Case(f"G1{PHASES_ARMING[target]}-kill-at-{target}", f"SIGKILL while the pinned phase is '{target}'; the restart cleans up", "arming-recovery") as case:
+            ensure_service(f"G.{target}")
             if status_label() != "off":
                 rc, text = authorized_off()
                 check(f"G.{target}.precondition-off", "harness", "OK off", text, rc == 0)
@@ -1704,6 +1779,7 @@ def phase_host_like(_args):
     """The owner's host commands with a curl-only policy: on, off through polkit, on again (teardown follows)."""
     ok = True
     with Case("F06-host-arm-curl", "arm with the curl-only policy", "host-like") as case:
+        ensure_service("F06")
         if status_label() == "armed":
             rc, text = authorized_off()
             check("F06.precondition-off", "harness", "OK off", text, rc == 0 and text == "OK off")
@@ -1733,12 +1809,37 @@ def phase_host_like(_args):
     return ok
 
 
+AGENT_ASIDE = WORK + "/pkttyagent.aside"
+ADMIN_RULE = "/etc/polkit-1/rules.d/49-blackice-appfilter-admin.rules"
+ADMIN_RULE_SRC = ROOT + "/b9/49-blackice-appfilter-admin.rules.test"
+STRACE_OUT = f"{DROP}/{OWNER}/b7-strace.txt"
+# case id -> (title, expect with the agent, password prompt: yes/no/observe, typed command)
 INTERACTIVE = {
-    "B1-off-correct-password": "real polkit path over ssh -t: the correct password turns the filter off",
-    "B2-off-wrong-password": "real polkit path over ssh -t: a wrong password is refused",
-    "B3-off-ctrl-c": "real polkit path over ssh -t: Ctrl-C at the prompt is refused",
-    "B4-off-no-answer": "real polkit path over ssh -t: no answer is refused after the service's reply timeout",
+    "B1-off-correct-password": ("ssh -t, app off, the correct password: the filter turns off", "off", "yes", "off"),
+    "B2-off-wrong-password": ("ssh -t, app off, a wrong password: refused", "armed", "yes", "off"),
+    "B3-off-ctrl-c": ("ssh -t, app off, Ctrl-C at the prompt: refused, terminal echo restored", "armed", "yes", "off"),
+    "B4-off-no-answer": ("ssh -t, app off, no answer: refused at the 15 s polkit budget", "armed", "yes", "off"),
+    "B5-off-no-tty": ("app off </dev/null without a tty: no agent, refused with no prompt", "armed", "no", "off"),
+    "B7-off-agent-missing": ("pkttyagent moved aside: app off fails before contacting the service", "armed", "no", "off"),
+    "B8-off-owner-not-admin": ("owner removed from group sudo (as on valendebian): app off is refused", "armed", "observe", "off"),
+    "B9a-admin-rule-correct": ("security's admin rule, owner not in sudo: the owner's own password turns it off", "off", "yes", "off"),
+    "B9b-admin-rule-wrong": ("security's admin rule: a wrong password is refused", "armed", "yes", "off"),
+    "B9c-admin-rule-pkexec": ("security's admin rule: pkexec true with the owner's password is still refused", "armed", "observe", "pkexec"),
 }
+
+
+def agent_processes():
+    return run(["/usr/bin/pgrep", "-a", "-u", OWNER, "pkttyagent"], timeout=10, quiet=True)[1].strip().splitlines()
+
+
+def sudo_group():
+    return run(["/usr/bin/getent", "group", "sudo"], timeout=10, quiet=True)[1].strip()
+
+
+def file_facts(path):
+    st = os.stat(path)
+    with open(path, "rb") as f:
+        return {"sha256": hashlib.sha256(f.read()).hexdigest(), "uid": st.st_uid, "gid": st.st_gid, "mode": oct(st.st_mode & 0o7777)}
 
 
 def phase_interactive_setup(args):
@@ -1762,35 +1863,83 @@ def phase_interactive_setup(args):
 
 
 def phase_interactive_pre(args):
-    with Case(args.case, INTERACTIVE[args.case], "L10", after=False) as case:
+    cid = args.case
+    with Case(cid, INTERACTIVE[cid][0], "L10", after=False) as case:
+        ensure_service(cid)
+        pre = {"t": time.time(), "agents_before": agent_processes()}
+        if cid == "B7-off-agent-missing":
+            pre["agent_file"] = file_facts("/usr/bin/pkttyagent")
+            if os.path.exists(STRACE_OUT):
+                os.remove(STRACE_OUT)
+            os.rename("/usr/bin/pkttyagent", AGENT_ASIDE)
+            check(f"{cid}.agent-aside", "L10", "/usr/bin/pkttyagent moved aside by root", os.path.exists("/usr/bin/pkttyagent"),
+                  not os.path.exists("/usr/bin/pkttyagent"), facts=pre["agent_file"])
+        if cid == "B8-off-owner-not-admin":
+            pre["sudo_group_before"] = sudo_group()
+            run(["/usr/sbin/gpasswd", "-d", OWNER, "sudo"], timeout=10)
+            pre["sudo_group_after"] = sudo_group()
+            check(f"{cid}.owner-not-in-sudo", "L10", "getent group sudo has no owner", pre,
+                  OWNER not in pre["sudo_group_after"].split(":")[-1].split(","))
+        if cid == "B9a-admin-rule-correct":
+            pre["rules_d_before"] = rules_listing()
+            pre["rule_source"] = file_facts(ADMIN_RULE_SRC)
+            run(["/usr/bin/install", "-o", "root", "-g", "root", "-m", "0644", ADMIN_RULE_SRC, ADMIN_RULE], timeout=10, check=True)
+            time.sleep(2)  # polkitd reloads rules on inotify
+            pre["rule_installed"] = file_facts(ADMIN_RULE)
+            pre["rules_d_after_install"] = rules_listing()
+            check(f"{cid}.rule-installed", "L10", "root:root 0644, sha256 0b943244... (security's file with valen->test)", pre["rule_installed"],
+                  pre["rule_installed"] == {**pre["rule_installed"], "uid": 0, "gid": 0, "mode": "0o644",
+                                            "sha256": "0b9432442412bac510fe4e56fc6d14964c179c00c6c932a57a89ef399b228cac"})
+            check(f"{cid}.owner-not-in-sudo", "L10", "the owner is not in group sudo", sudo_group(), OWNER not in sudo_group().split(":")[-1].split(","))
         if status_label() != "armed":
-            rc, text = arm(f"{args.case}-arm", POLICY_HOST)
-            check(f"{args.case}.arm", "host-like", "OK armed (curl-only policy)", text, rc == 0 and text.startswith("OK armed"))
-        armed_check(f"{args.case}.pre")
+            rc, text = arm(f"{cid}-arm", POLICY_HOST)
+            check(f"{cid}.arm", "host-like", "OK armed (curl-only policy)", text, rc == 0 and text.startswith("OK armed"))
+        armed_check(f"{cid}.pre")
         unit = unit_show()
-        pre = {"main_pid": unit.get("MainPID"), "restarts": unit.get("NRestarts"),
-               "off_receipts": count_receipts(event="app_filter_off"), "t": time.time()}
-        save(f"cases/{args.case}/pre.json", json.dumps(pre))
-        note(f"  pre-state: {pre}\n  now the host runs the ssh -t session\n")
+        pre.update(main_pid=unit.get("MainPID"), restarts=unit.get("NRestarts"), off_receipts=count_receipts(event="app_filter_off"))
+        save(f"cases/{cid}/pre.json", json.dumps(pre))
+        note(f"  pre-state: {pre}\n  now the host runs the ssh session\n")
         return not case.failed
 
 
 def phase_interactive_post(args):
     host = json.loads(base64.b64decode(args.host_result))
     cid = args.case
-    with Case(cid, INTERACTIVE[cid], "L10", before=False, resume=True) as case:
+    title, expect_with_agent, prompt_rule, kind = INTERACTIVE[cid]
+    expect = expect_with_agent if args.agent == "yes" else "armed"
+    with Case(cid, title, "L10", before=False, resume=True) as case:
         with open(f"{case.dir}/pre.json") as f:
             pre = json.load(f)
         with open(f"{case.dir}/transcript.txt", "w") as f:
             f.write(host.pop("transcript", ""))
-        record(f"{cid}.session", "L10", "what the ssh -t session showed (transcript.txt, password scrubbed)", host, "OBSERVE")
-        if args.agent == "yes":
+        record(f"{cid}.session", "L10", "what the ssh session showed (transcript.txt, password scrubbed)", host, "OBSERVE")
+        if cid == "B7-off-agent-missing":
+            if os.path.exists(AGENT_ASIDE) and not os.path.exists("/usr/bin/pkttyagent"):
+                os.rename(AGENT_ASIDE, "/usr/bin/pkttyagent")
+            restored = file_facts("/usr/bin/pkttyagent") if os.path.exists("/usr/bin/pkttyagent") else None
+            check(f"{cid}.agent-restored", "L10", "same sha256, owner and mode as before", restored, restored == pre.get("agent_file"))
+            trace = open(STRACE_OUT).read() if os.path.exists(STRACE_OUT) else ""
+            with open(f"{case.dir}/strace.txt", "w") as f:
+                f.write(trace)
+            control = [l for l in trace.splitlines() if "connect(" in l and "/run/blackice-appfilter/control.sock" in l]
+            check(f"{cid}.no-service-contact", "L10", "strace: no connect() to /run/blackice-appfilter/control.sock",
+                  control, bool(trace) and not control, execve=[l for l in trace.splitlines() if "execve(" in l][:6])
+            record(f"{cid}.error", "L10", "the CLI's error (a PolkitAgent... error expected)", host.get("output_tail", "")[-400:], "OBSERVE")
+        if prompt_rule == "yes" and args.agent == "yes":
             check(f"{cid}.prompt", "L10", "pkttyagent password prompt in the ssh -t session", host.get("prompt_seen"), host.get("prompt_seen") is True)
+        elif prompt_rule == "no" or args.agent == "no":
+            check(f"{cid}.prompt", "L10", "no agent: refused with no prompt", host.get("prompt_seen"), host.get("prompt_seen") is False)
         else:
-            check(f"{cid}.prompt", "L10", "this build starts no agent: refused with no prompt", host.get("prompt_seen"), host.get("prompt_seen") is False)
+            record(f"{cid}.prompt", "L10", "what the agent showed (prompt, identity)", {"prompt_seen": host.get("prompt_seen"),
+                   "events": host.get("events"), "sent": host.get("sent")}, "OBSERVE")
         out = host.get("output_tail", "")
-        if args.expect == "off":
-            check(f"{cid}.cli", "L10", "exit 0 and OK off", [host.get("exit_status"), out[-200:]], host.get("exit_status") == 0 and "OK off" in out)
+        rc = host.get("exit_status")
+        if kind == "pkexec":
+            check(f"{cid}.pkexec-refused", "L10", "pkexec true is refused (different action, admin group empty)", [rc, out[-300:]],
+                  isinstance(rc, int) and rc != 0)
+            armed_check(cid)
+        elif expect == "off":
+            check(f"{cid}.cli", "L10", "exit 0 and OK off", [rc, out[-300:]], rc == 0 and "OK off" in out)
             status = cli_status()
             check(f"{cid}.status", "L10", "OK off", status, status_label(status) == "off")
             clean_check(cid)
@@ -1798,22 +1947,34 @@ def phase_interactive_post(args):
             check(f"{cid}.off-receipt", "L10", "one more app_filter_off receipt", [pre["off_receipts"], n], n == pre["off_receipts"] + 1)
             curl_pair(cid, filtered=False)
         else:
-            check(f"{cid}.cli", "L10", "refused: non-zero exit, no OK off", [host.get("exit_status"), out[-200:]],
-                  host.get("exit_status") not in (0, None) and "OK off" not in out)
+            check(f"{cid}.cli", "L10", "refused: non-zero exit, no OK off", [rc, out[-300:]], isinstance(rc, int) and rc != 0 and "OK off" not in out)
             armed_check(cid)
             n = count_receipts(event="app_filter_off")
             check(f"{cid}.no-off-receipt", "L10", "no new app_filter_off receipt", [pre["off_receipts"], n], n == pre["off_receipts"])
             curl_pair(cid, filtered=True)
+        if "echo_restored" in host:
+            check(f"{cid}.echo-restored", "L10", "terminal echo on afterwards: stty shows echo and the typed token shows",
+                  {"stty_before": host.get("stty_before"), "stty_after": host.get("stty_after"), "typed_token_seen": host.get("echo_restored")},
+                  host.get("stty_after") == "echo" and host.get("echo_restored") is True)
         if args.agent == "yes" and cid == "B4-off-no-answer":
             check(f"{cid}.budget", "L10/A2", "refused at about 15 s (one polkit budget for the whole exchange)", host.get("seconds"),
-                  10 <= (host.get("seconds") or 0) <= 40)
-        if args.agent == "yes" and cid == "B1-off-correct-password":
+                  10 <= (host.get("seconds") or 0) <= 40, status_probe=host.get("status_probe_from_second_session"))
+        if args.agent == "yes" and cid in ("B1-off-correct-password", "B9a-admin-rule-correct"):
             first = next((e["t"] for e in host.get("events", []) if e.get("event") == "password-prompt"), None)
-            record(f"{cid}.timing", "L10/A2", "prompt and answer inside the 15 s budget", {"prompt_at": first, "session_seconds": host.get("seconds")}, "OBSERVE")
+            record(f"{cid}.timing", "L10/A2", "prompt and answer inside the 15 s budget", {"prompt_at": first, "command_seconds": host.get("seconds")}, "OBSERVE")
+        agents = agent_processes()
+        check(f"{cid}.no-agent-left", "L10", "pgrep -a -u owner pkttyagent: nothing after the session", {"before": pre.get("agents_before"), "after": agents}, not agents)
         unit = unit_show()
         check(f"{cid}.service-kept-serving", "L10", "same MainPID and NRestarts as before the session",
               [pre["main_pid"], unit.get("MainPID"), pre["restarts"], unit.get("NRestarts")],
               unit.get("MainPID") == pre["main_pid"] and unit.get("NRestarts") == pre["restarts"])
+        if cid == "B9c-admin-rule-pkexec":
+            os.remove(ADMIN_RULE)
+            time.sleep(2)
+            check(f"{cid}.rule-removed", "L10", "admin rule removed", rules_listing(), not os.path.exists(ADMIN_RULE))
+            before = sudo_group()
+            run(["/usr/sbin/gpasswd", "-a", OWNER, "sudo"], timeout=10)
+            record(f"{cid}.sudo-restored", "harness", "owner put back in group sudo for the rest of the run", {"before": before, "after": sudo_group()}, "OBSERVE")
         journal(cid, pre["t"])
         polkit_log = run(["journalctl", "--no-pager", "-o", "short-iso-precise", "--since", f"@{int(pre['t'])}", "-u", "polkit"], timeout=30, quiet=True)[1]
         with open(f"{case.dir}/journal-polkit.txt", "w") as f:
@@ -1823,6 +1984,7 @@ def phase_interactive_post(args):
 
 def phase_teardown(_args):
     with Case("F09-teardown-armed", "teardown script while all seven hooks are attached", "test7/N2") as case:
+        ensure_service("F09")
         armed_check("F09.before")
         rc, out, err = run(["/bin/bash", CANDIDATE + "/scripts/linux-appfilter-teardown.sh"], timeout=300)
         check("F09.rc", "test7", 0, rc, rc == 0)
@@ -1987,7 +2149,7 @@ def caps_report(pid):
 
 
 def proxy_child():
-    kids = children_of(main_pid())
+    kids = children_of(main_pid())  # main_pid() raises rather than return 0
     return kids[0] if len(kids) == 1 else None, kids
 
 

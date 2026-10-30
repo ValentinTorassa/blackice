@@ -1,11 +1,12 @@
 #!/usr/bin/python3 -I
-"""Host side of security's case B: `blackice app off` in a fresh `ssh -t` session to the test VM, under a pty,
-answering the polkit text agent's prompt the way a person would (correct password, wrong password, Ctrl-C, or
-nothing). Prints one JSON object (also written to --out). The password never reaches the output: it is read
-from a 0600 file and scrubbed from the transcript.
+"""Host side of security's case B: `blackice app off` typed into an interactive `ssh -t` login shell on the test
+VM, under a pty, answering the polkit text agent the way a person would (correct password, wrong password,
+Ctrl-C, or nothing). After the command returns, the same shell records `stty` and types a token to show whether
+terminal echo was restored. Also a no-tty variant (`app off </dev/null` without -t).
 
-Runs on the host and talks only to the VM through its ssh wrapper. run.sh calls it between the VM phases
-`interactive-pre` and `interactive-post`, which record the state before and after.
+Prints one JSON object (also written to --out). The password never reaches the output: it is read from a 0600
+file and scrubbed from the transcript. Runs on the host and talks to the VM only through its ssh wrapper.
+run.sh calls it between the VM phases `interactive-pre` and `interactive-post`.
 """
 import argparse
 import json
@@ -22,6 +23,52 @@ import time
 PROMPT = re.compile(rb"password[^\n]*:\s*$", re.I)
 IDENTITY = re.compile(rb"Choose identity to authenticate as \(1-(\d+)\):\s*$")
 IDENTITY_ROW = re.compile(rb"^\s*(\d+)\.\s+(.*?)\s*$", re.M)
+STTY = "stty -a | tr ' ;' '\\n\\n' | grep -x -e echo -e -echo | sed 's/^/{tag}=/'"
+
+
+def line(tag):
+    return re.compile(rb"(?m)^" + re.escape(tag.encode()) + rb"=?([^\r\n]*)\r?$")
+
+
+class Pty:
+    def __init__(self, argv):
+        self.pid, self.fd = pty.fork()
+        if self.pid == 0:
+            os.execv(argv[0], argv)
+        self.buf, self.eof, self.t0 = b"", False, time.time()
+
+    def pump(self, wait):
+        r, _, _ = select.select([self.fd], [], [], wait)
+        if self.fd in r:
+            try:
+                chunk = os.read(self.fd, 4096)
+            except OSError:
+                chunk = b""
+            if not chunk:
+                self.eof = True
+            self.buf += chunk
+
+    def until(self, regex, start, timeout):
+        end = time.time() + timeout
+        while time.time() < end and not self.eof:
+            m = regex.search(self.buf, start)
+            if m:
+                return m
+            self.pump(0.2)
+        return regex.search(self.buf, start)
+
+    def send(self, data):
+        os.write(self.fd, data)
+
+    def close(self):
+        end = time.time() + 5
+        while time.time() < end and not self.eof:
+            self.pump(0.2)
+        done, status = os.waitpid(self.pid, os.WNOHANG)
+        if not done:
+            os.kill(self.pid, signal.SIGKILL)  # our own pty child (the local ssh client)
+            _, status = os.waitpid(self.pid, 0)
+        return os.waitstatus_to_exitcode(status)
 
 
 def status_probe(vssh, cli, result):
@@ -35,121 +82,137 @@ def status_probe(vssh, cli, result):
     result["seconds"] = round(time.time() - t0, 2)
 
 
+def no_tty(args):
+    t0 = time.time()
+    p = subprocess.run([args.vssh, f"{args.cli} app off </dev/null; echo AFTEST-RC=$?"], stdin=subprocess.DEVNULL,
+                       capture_output=True, timeout=120)
+    text = (p.stdout + p.stderr).decode(errors="replace")
+    m = re.search(r"(?m)^AFTEST-RC=(\d+)", text)
+    return {"attempt": "no-tty", "command": f"ssh {args.owner}@<vm> '{args.cli} app off </dev/null' (no -t)",
+            "prompt_seen": bool(PROMPT.search(text.encode())) or "AUTHENTICATING" in text, "password_prompts": 0, "sent": [],
+            "events": [], "exit_status": int(m.group(1)) if m else None, "seconds": round(time.time() - t0, 2),
+            "output_tail": text[-3000:], "transcript": text}
+
+
+def interactive(args, password, wrong):
+    tok = "AFTEST-T-" + secrets.token_hex(6)
+    s = Pty([args.vssh, "-t"])  # an interactive login shell, as a person would get
+    s.send(("export LC_ALL=C; " + STTY.format(tag="AFTEST-STTY0") + "; echo AFTEST-READY\n").encode())
+    ready = s.until(line("AFTEST-READY"), 0, 30)
+    events, sent, prompts, probe, probe_thread = [], [], 0, {}, None
+    if not ready:
+        events.append({"event": "shell not ready"})
+    mark = len(s.buf)
+    target = "pkexec true" if args.attempt == "pkexec" else f"{args.prefix}{args.cli} app off"
+    command = f"{target}; echo AFTEST-RC=$?"
+    s.send((command + "\n").encode())
+    t_cmd = time.time()
+    rc_re = line("AFTEST-RC")
+    rc = None
+    while time.time() - t_cmd < args.limit and not s.eof:
+        m = rc_re.search(s.buf, mark)
+        if m:
+            rc = int(m.group(1)) if m.group(1).isdigit() else m.group(1).decode(errors="replace")
+            break
+        s.pump(0.3)
+        tail = s.buf[mark:]
+        if IDENTITY.search(tail):
+            rows = {int(n): name.decode(errors="replace") for n, name in IDENTITY_ROW.findall(tail)}
+            choice = next((n for n, name in rows.items() if args.owner in name.split()), 1)
+            events.append({"t": round(time.time() - t_cmd, 2), "event": "identity-prompt", "rows": rows, "chose": choice})
+            s.send(f"{choice}\n".encode())
+            mark = len(s.buf)
+        elif PROMPT.search(tail):
+            prompts += 1
+            mark = len(s.buf)
+            events.append({"t": round(time.time() - t_cmd, 2), "event": "password-prompt", "n": prompts})
+            if args.attempt in ("correct", "pkexec"):
+                if prompts <= 3:
+                    s.send(password.encode() + b"\n")
+                    sent.append("the owner's password")
+                else:
+                    s.send(b"\x03")
+                    sent.append("Ctrl-C after three prompts")
+            elif args.attempt == "wrong":
+                s.send((wrong if prompts <= 3 else "\x03").encode() + (b"\n" if prompts <= 3 else b""))
+                sent.append("wrong password" if prompts <= 3 else "Ctrl-C after three wrong passwords")
+            elif args.attempt == "ctrl-c":
+                time.sleep(1)
+                s.send(b"\x03")
+                sent.append("Ctrl-C")
+            else:
+                sent.append("nothing")
+                if probe_thread is None:
+                    def later():
+                        time.sleep(args.status_probe_after)
+                        status_probe(args.vssh, args.cli, probe)
+                    probe_thread = threading.Thread(target=later, daemon=True)
+                    probe_thread.start()
+    seconds = round(time.time() - t_cmd, 2)
+    if rc is None:
+        events.append({"t": seconds, "event": f"no AFTEST-RC within {args.limit} s; sending Ctrl-C to reach the shell"})
+        s.send(b"\x03")
+        time.sleep(1)
+    after = len(s.buf)
+    s.send((STTY.format(tag="AFTEST-STTY") + "\n").encode())
+    s.send(f"true {tok}\n".encode())
+    s.send(b"echo AFTEST-END\n")
+    s.until(line("AFTEST-END"), after, 20)
+    s.send(b"exit\n")
+    session_exit = s.close()
+    if probe_thread is not None:
+        probe_thread.join(timeout=160)
+    text = s.buf
+    for secret in (password.encode(), wrong.encode()):
+        text = text.replace(secret, b"[scrubbed]")
+    stty0 = line("AFTEST-STTY0").search(text)
+    stty1 = line("AFTEST-STTY").search(text, after)
+    text_after = text[after:]
+    result = {
+        "attempt": args.attempt, "command": f"ssh -t {args.owner}@<vm>, then typed: {command}",
+        "prompt_seen": prompts > 0, "password_prompts": prompts, "sent": sent, "events": events,
+        "exit_status": rc, "seconds": seconds, "session_exit": session_exit,
+        "stty_before": stty0.group(1).decode() if stty0 else None, "stty_after": stty1.group(1).decode() if stty1 else None,
+        "echo_restored": tok.encode() in text_after, "echo_token": tok,
+        "output_tail": text[max(0, after - 3000):after].decode(errors="replace"), "transcript": text.decode(errors="replace"),
+    }
+    if probe:
+        result["status_probe_from_second_session"] = probe
+    return result
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--vssh", required=True)
     ap.add_argument("--cli", required=True)
     ap.add_argument("--owner", required=True)
-    ap.add_argument("--attempt", required=True, choices=["correct", "wrong", "ctrl-c", "no-answer"])
+    ap.add_argument("--attempt", required=True, choices=["correct", "wrong", "ctrl-c", "no-answer", "no-tty", "agent-missing", "pkexec"])
+    ap.add_argument("--prefix", default="", help="typed before the CLI, e.g. an strace wrapper")
     ap.add_argument("--password-file", required=True)
     ap.add_argument("--out", required=True)
-    ap.add_argument("--status-probe-after", type=float, default=20.0, help="no-answer only")
-    ap.add_argument("--limit", type=float, default=200.0)
+    ap.add_argument("--status-probe-after", type=float, default=8.0, help="no-answer only")
+    ap.add_argument("--limit", type=float, default=150.0)
     args = ap.parse_args()
 
-    st = os.stat(args.password_file)
-    if st.st_mode & 0o077:
+    if os.stat(args.password_file).st_mode & 0o077:
         raise SystemExit("password file must be 0600")
     with open(args.password_file) as f:
         password = f.read().strip()
     wrong = "wrong-" + secrets.token_urlsafe(12)
-    secrets_out = [password.encode(), wrong.encode()]
-
-    cmd = [args.vssh, "-t", f"{args.cli} app off"]
-    t0 = time.time()
-    pid, fd = pty.fork()
-    if pid == 0:
-        os.execv(cmd[0], cmd)
-    buf, mark = b"", 0  # mark: everything before it has been answered
-    events, prompts, sent = [], 0, []
-    probe, probe_thread = {}, None
-    status = None
-    while True:
-        if time.time() - t0 > args.limit:
-            os.kill(pid, signal.SIGKILL)  # our own pty child (the local ssh client)
-            events.append({"t": round(time.time() - t0, 2), "event": f"killed the local ssh after {args.limit} s"})
-            break
-        r, _, _ = select.select([fd], [], [], 0.5)
-        if fd in r:
-            try:
-                chunk = os.read(fd, 4096)
-            except OSError:
-                chunk = b""
-            if not chunk:
-                break
-            buf += chunk
-            tail = buf[mark:]
-            m = IDENTITY.search(tail)
-            if m:
-                rows = {int(n): name.decode(errors="replace") for n, name in IDENTITY_ROW.findall(tail)}
-                choice = next((n for n, name in rows.items() if args.owner in name.split()), 1)
-                events.append({"t": round(time.time() - t0, 2), "event": "identity-prompt", "rows": rows, "chose": choice})
-                os.write(fd, f"{choice}\n".encode())
-                mark = len(buf)
-                continue
-            if PROMPT.search(tail):
-                prompts += 1
-                mark = len(buf)
-                events.append({"t": round(time.time() - t0, 2), "event": "password-prompt", "n": prompts})
-                if args.attempt == "correct":
-                    os.write(fd, password.encode() + b"\n")
-                    sent.append("correct password")
-                elif args.attempt == "wrong":
-                    if prompts <= 3:
-                        os.write(fd, wrong.encode() + b"\n")
-                        sent.append("wrong password")
-                    else:
-                        os.write(fd, b"\x03")
-                        sent.append("Ctrl-C after three wrong passwords")
-                elif args.attempt == "ctrl-c":
-                    time.sleep(1)
-                    os.write(fd, b"\x03")
-                    sent.append("Ctrl-C")
-                else:
-                    sent.append("nothing")
-                    if probe_thread is None:
-                        def later():
-                            time.sleep(args.status_probe_after)
-                            status_probe(args.vssh, args.cli, probe)
-                        probe_thread = threading.Thread(target=later, daemon=True)
-                        probe_thread.start()
-        done, wstatus = os.waitpid(pid, os.WNOHANG)
-        if done:
-            status = wstatus
-            # drain what is left
-            while True:
-                r, _, _ = select.select([fd], [], [], 0.3)
-                if fd not in r:
-                    break
-                try:
-                    chunk = os.read(fd, 4096)
-                except OSError:
-                    break
-                if not chunk:
-                    break
-                buf += chunk
-            break
-    if status is None:
-        _, status = os.waitpid(pid, 0)
-    duration = round(time.time() - t0, 2)
-    if probe_thread is not None:
-        probe_thread.join(timeout=160)
-    text = buf
-    for s in secrets_out:
-        text = text.replace(s, b"[scrubbed]")
-    text = text.decode(errors="replace")
-    result = {
-        "attempt": args.attempt, "command": f"ssh -t {args.owner}@<vm> '{args.cli} app off'",
-        "prompt_seen": prompts > 0, "password_prompts": prompts, "sent": sent, "events": events,
-        "exit_status": os.waitstatus_to_exitcode(status), "seconds": duration,
-        "output_tail": text[-3000:], "transcript": text,
-    }
-    if probe:
-        result["status_probe_from_second_session"] = probe
+    if args.attempt == "no-tty":
+        result = no_tty(args)
+    else:
+        if args.attempt == "agent-missing":
+            args.attempt = "correct"  # answer a prompt if one appears anyway; none should
+            result = interactive(args, password, wrong)
+            result["attempt"] = "agent-missing"
+        else:
+            result = interactive(args, password, wrong)
+    for key in ("transcript", "output_tail"):
+        result[key] = result[key].replace(password, "[scrubbed]").replace(wrong, "[scrubbed]")
     with open(args.out, "w") as f:
         json.dump(result, f, indent=1)
-    summary = {k: v for k, v in result.items() if k != "transcript"}
-    print(json.dumps(summary, indent=1))
+    print(json.dumps({k: v for k, v in result.items() if k != "transcript"}, indent=1))
 
 
 if __name__ == "__main__":

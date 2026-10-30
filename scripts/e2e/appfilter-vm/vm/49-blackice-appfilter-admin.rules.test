@@ -1,0 +1,6 @@
+polkit.addAdminRule(function(action, subject) {
+    if (action.id == "org.blackice.appfilter.change" && subject.user == "test") {
+        return ["unix-user:test"];
+    }
+    return null;
+});
