@@ -1,8 +1,11 @@
 # Linux task scopes
 
-This backend is an experimental managed-command implementation. It is not an app/host firewall. The helper,
-launch handshake, BPF programs and receipt transport are implemented; privileged kernel enforcement still
-needs an installed-helper run and receiver-side evidence. A passing build or namespace test is not P0-02.
+This backend is an experimental managed-command implementation. It is not an app/host firewall. An actual
+installed-helper run on Debian x86_64, kernel 6.12.113, recorded
+[policy-before-exec](https://github.com/ValentinTorassa/blackice/blob/aa5a048e1762a0c3c3c56cc8e7a0bf6c4473b0f8/evidence/P0-01-policy-before-exec-linux.md)
+and [off-host TCP/UDP denial](https://github.com/ValentinTorassa/blackice/blob/aa5a048e1762a0c3c3c56cc8e7a0bf6c4473b0f8/evidence/P0-02-real-deny-linux.md)
+with immediate and double-forked senders over IPv4 LAN and IPv6 Tailscale. Those entries identify the exact
+launcher/helper hashes and test limits; a passing build or namespace test alone is not P0-02 evidence.
 
 ## Boundary
 
@@ -19,7 +22,8 @@ The core starts its proxy outside the workload and supplies its loopback ports. 
 | Filesystem and abstract Unix socket creation | Refused by seccomp; intra-workload socketpair remains available |
 | Bind/listen, namespace creation, ptrace, BPF, io_uring | Refused by seccomp |
 
-These are implementation semantics, pending the privileged traffic matrix. IPv6 and UDP have no allow path.
+These are implementation semantics; the evidence above covers the TCP/UDP cases it explicitly lists.
+IPv6 and UDP have no allow path.
 Names and allowed remote destinations belong to the external proxy; the kernel does not resolve names.
 Direct DNS cannot use UDP or arbitrary TCP. Resolver and service-manager IPC is also restricted.
 Neither nftables rules nor unrelated host networking configuration is modified.
@@ -84,6 +88,11 @@ Required: Zig 0.17.0, Linux with unified cgroup v2, cgroup BPF socket-address ho
 namespaces, pidfds, `cgroup.kill`, `openat2`, `statx` mount IDs, `mount_setattr`, seccomp and Landlock ABI 6. Linux 6.12 is the initial target;
 version alone does not prove the required kernel configuration. The helper refuses missing capabilities.
 Source supports x86_64 and aarch64; only x86_64 has been exercised locally so far.
+
+Host security policy must permit the private user namespace and its mount operations. AppArmor restrictions
+can refuse those mounts even when the kernel supports them; launch then fails closed during child
+containment. Ubuntu CI currently reports `PermissionDenied` in namespace mount tests, and the installed
+helper has not been validated on Ubuntu. Setup does not change AppArmor policy or host sysctls.
 
 Build as the normal user:
 
@@ -178,10 +187,11 @@ zig-out/bin/blackice-linux-probe 18780 out/linux-probe/receipts.local.jsonl -- C
 ```
 
 This harness treats the supplied ports as controlled receivers; it is not a domain policy proxy. Use fresh
-receipts and controlled destinations for each run. Before recording P0-02, test immediate/forked execution,
-both UDP modes and families, direct DNS, daemon IPC, inherited sockets, cgroup migration, SCTP/ping sockets,
-descendant cleanup and failure recovery. An off-host receiver must observe positive controls and no denied
-traffic. No P0 evidence file should be created until that real run exists.
+receipts and controlled destinations for each run. The broader regression matrix includes immediate/forked
+execution, both UDP modes and families, direct DNS, daemon IPC, inherited sockets, cgroup migration,
+SCTP/ping sockets, descendant cleanup and failure recovery. Evidence entries must distinguish executed
+cases from untested ones. Off-host denial evidence requires observed positive controls and no denied
+traffic; the recorded run above does not include the crash tests.
 
 After the reviewed helper is installed, the Python standard-library harness runs local receiver controls
 and actual backend cases. It checks TCP, both UDP modes/families, SCTP, unconnected ping sockets, the ping
