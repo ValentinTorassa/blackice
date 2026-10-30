@@ -149,6 +149,10 @@ pub const Log = struct {
         const bytes = w.buffered();
         log.mutex.lockUncancelable(log.io);
         defer log.mutex.unlock(log.io);
+        // A cancel that lands during the write (for example a proxy stop) must neither lose the line nor
+        // consume the task's cancel request, so the write runs with cancelation blocked.
+        const old = log.io.swapCancelProtection(.blocked);
+        defer _ = log.io.swapCancelProtection(old);
         log.file.writePositionalAll(log.io, bytes, log.offset) catch {
             log.failures += 1;
             return;
