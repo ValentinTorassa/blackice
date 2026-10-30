@@ -36,7 +36,7 @@ Only the two agent-task cells have evidence entries ([Evidence](#evidence)). Eve
 | | Apps | Agent tasks |
 |---|---|---|
 | macOS | Network Extension content filter: built, unsigned, in [#8](https://github.com/ValentinTorassa/blackice/pull/8), not merged yet. It cannot run until it is signed with a Developer ID. | Seatbelt task scope with a local proxy, experimental ([#7](https://github.com/ValentinTorassa/blackice/pull/7)). Evidence entries P0-01 to P0-05 and P0-07 |
-| Linux | Not built. Grouping apps by the desktop's systemd scopes still has to be proven. | cgroup v2 with eBPF socket programs and a small privileged helper, installed once with a setup script run with sudo, plus a local proxy ([#6](https://github.com/ValentinTorassa/blackice/pull/6)). Evidence entries P0-01 to P0-05. Tested on Debian 13 (kernel 6.12). On Ubuntu 23.10+, where `kernel.apparmor_restrict_unprivileged_userns=1` is the default, scopes fail closed. |
+| Linux | Not built. Grouping apps by the desktop's systemd scopes still has to be proven. | cgroup v2 with eBPF socket programs and a small privileged helper, installed once with a setup script run with sudo, plus a local proxy ([#6](https://github.com/ValentinTorassa/blackice/pull/6)). Evidence entries P0-01 to P0-05. Tested on Debian 13 (kernel 6.12). On Ubuntu 24.04 and later, where `kernel.apparmor_restrict_unprivileged_userns=1` is the default, scopes are expected to fail closed (not tested on Ubuntu). |
 | Windows | Later, not part of the first release | Later, not part of the first release |
 
 ## Evidence

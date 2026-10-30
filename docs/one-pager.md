@@ -50,7 +50,7 @@ means the code compiles and its tests pass, not that it was shown working.
 | | Agent tasks (task scopes) | Apps (app scopes) |
 |---|---|---|
 | **macOS** | Built, experimental: a Seatbelt sandbox profile plus the local proxy. Shown on one Mac in the entries above. Not shown yet: launches through `open` or Apple Events refused, fx with a real model. | Built, unsigned, in #8 (not merged yet): a Network Extension filter. It has never been activated. Needs an Apple Developer ID, a signed Network Extension, tests on a live system, and receipts written through blackice. |
-| **Linux** | Built: cgroup v2 with eBPF socket programs, and a small helper installed once by a setup script run with sudo. Shown on one Debian 13 machine (kernel 6.12, x86_64) in the entries above; the first two real runs on 30 Oct failed closed before the command ran, and were fixed. Not shown yet: other distributions (on Ubuntu 23.10+, where `kernel.apparmor_restrict_unprivileged_userns=1` is the default, scopes fail closed), aarch64, fx. | Not built. Identifying an app by its desktop or service group still has to be proven. |
+| **Linux** | Built: cgroup v2 with eBPF socket programs, and a small helper installed once by a setup script run with sudo. Shown on one Debian 13 machine (kernel 6.12, x86_64) in the entries above; the first two real runs on 30 Oct failed closed before the command ran, and were fixed. Not shown yet: other distributions (on Ubuntu 24.04 and later, where `kernel.apparmor_restrict_unprivileged_userns=1` is the default, scopes are expected to fail closed; not tested on Ubuntu), aarch64, fx. | Not built. Identifying an app by its desktop or service group still has to be proven. |
 
 Windows is planned for after macOS and Linux. Nothing is built for it.
 
