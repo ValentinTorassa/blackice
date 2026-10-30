@@ -33,6 +33,8 @@ blackice exits with the command's own status, so it can sit in front of any comm
 | scope-core.R9 | When `--name N` is given, blackice shall record N in the `scope_start` receipt as a label only; a name never selects or widens a policy. | P0-09 |
 | scope-core.R10 | blackice shall make the scope's state directory read-only, or hidden, for the command and every process it starts, and shall load the policy into memory once, never re-reading it from that directory. | P0-04 |
 | scope-core.R11 | When CMD starts, blackice shall give it a clean environment: only a short pass list (`PATH`, `HOME`, `TERM`, the locale and XDG base-directory variables, `AI_AGENT`), the names given with `--env NAME`, `BLACKICE_SCOPE` and the proxy variables. Nothing else from the caller's environment shall pass. | P0-07 |
+| scope-core.R12 | blackice shall keep its own executable, the policy file and each `--protect PATH` (at most 8) unchanged inside the scope: writes to them, and renames or removals of their parent directories and of every symlink on the way to them, shall be refused. If the platform backend cannot do this, `blackice run` shall refuse to start. | P0-01 |
+| scope-core.R13 | When `--policy-sha256 HEX` is given, blackice shall refuse to start unless the policy file's SHA-256 is HEX. | P0-01 |
 
 ## Design
 
@@ -85,6 +87,8 @@ loopback ports; names and addresses are then decided by the proxy.
 | Proxy variables and the clean environment | lead | done | |
 | `scope_start` and `scope_end` receipts, with the failed-write count | lead | done | |
 | Decide and document what happens to processes left running after CMD exits | lead | todo | |
+| Protected paths (`protected_paths` in the launch contract, `--protect`, symlink components) and `--policy-sha256`; macOS honors them (PR #7, b958046) | lead | done | |
+| Linux backend honors protected paths (`protects_paths = true`); until then `run` refuses on Linux | codex-linux | doing | |
 | Create each scope's state directory exclusively (0700), with a new id on a clash | lead | done | |
 | Linux enforcing backend behind the same contract (`run` refuses on Linux until it lands) | codex-linux | doing | |
 

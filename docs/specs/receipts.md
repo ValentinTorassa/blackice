@@ -50,7 +50,8 @@ and `jq` are enough to read it.
 
 - Fields: `ts`, `scope`, `policy`, `gen`, `point`, `event`, and when they apply `verdict` (`allow` or
   `deny`), `reason`, `rule`, `host`, `ip`, `port`, `detail`.
-- `event`: `connect`, `http`, `scope_start`, `scope_end`, `grant`, `relay_call`, `kernel_drop`, `warning`.
+- `event`: `connect`, `http`, `scope_start`, `backend_armed`, `scope_end`, `grant`, `relay_call`, `kernel_drop`,
+  `warning`. On macOS, `kernel_drop` comes from the kernel log ([macos-task-scope](macos-task-scope.md) R12).
 - `reason`: a policy reason code (see [policy](policy.md)) or a short error name for `warning` events.
 - `policy`: the first 12 hex digits of the SHA-256 of the policy file. `gen` starts at 1 and goes up by one
   with each accepted grant or expiry ([grant](grant.md)).

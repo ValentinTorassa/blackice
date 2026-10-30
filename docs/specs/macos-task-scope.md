@@ -34,6 +34,7 @@ control that a signed Network Extension will provide later (see [app-scopes](app
 | macos-task-scope.R9 | When the same policy and the same test destinations run in a macOS and a Linux task scope, blackice shall reach the same verdict for each destination. The receipts may differ only in the enforcement point. | P0-08 |
 | macos-task-scope.R10 | A process inside a macOS task scope shall not be able to write the blackice state directory: receipts, the policy copy or the control socket. | P0-04 |
 | macos-task-scope.R11 | A process inside a macOS task scope shall not be able to bind a socket or accept a connection on any address, loopback included: task scopes are clients only. | P0-02 |
+| macos-task-scope.R12 | When the sandbox refuses something a process in the scope tried, blackice shall write a `kernel_drop` receipt with a reason (`loopback_proxy_only`, `clients_only`, `protected_path`, `launch_outside_scope`, or `seatbelt_refused` with the raw line when it cannot be parsed). If receipts are folded, lost or cannot be read, it shall say so in a `warning` receipt (`kernel_receipts_folded`, `kernel_receipts_lost`, `kernel_receipts_off`). | P0-02 |
 
 ## Design
 
@@ -82,7 +83,10 @@ or addresses, only "any host" or "localhost", so every decision about names happ
   - The proxy port: what happens if the proxy restarts or another local process takes its port, and how one
     scope's proxy is kept from serving another, belong to [proxy](proxy.md) and are untested.
   - Inherited sockets (R7) are untested.
-  - A connection the sandbox refuses leaves no receipt yet: only the proxy's decisions are receipted on macOS.
+  - Sandbox refusals reach the receipts by reading the kernel log (`log stream`, filtered to the scope's tag).
+    Other processes of the same user can tag their own profiles, so receipts can be added to but not removed;
+    bursts lose lines in the kernel log (239 of 300 in a tight loop), and repeats of one refusal are folded
+    and counted.
   - The state root's parent directories are also denied rename, hard links to files in the state root are refused,
     and the root is checked by its real path. An earlier build let a command rename a parent and then write
     its own receipts.
@@ -93,7 +97,7 @@ or addresses, only "any host" or "localhost", so every decision about names happ
 |---|---|---|---|
 | Profile generator and launch through sandbox-exec | lead | done | |
 | Wire `blackice run` on macOS: scope, proxy, receipts, launch (PR #7) | lead | done | |
-| Receipts for refusals made by the sandbox (today only proxy decisions leave one) | lead | todo | |
+| Receipts for refusals made by the sandbox, read from the kernel log (818a3ae, ca62d58) | lead | done | |
 | Protect the state root's parent directories against rename | lead | done | |
 | Cross-build for aarch64-macos | lead | done | |
 | End-to-end run on the Mac with SIP on, with receipts, an off-host receiver that sees nothing, and an evidence entry | lead | todo | |
