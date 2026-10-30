@@ -58,9 +58,8 @@ export function releaseManifest(releaseDir, version = '0.1.0') {
   }
   const source = realpathSync(releaseDir);
   const binaries = platforms.map(p => `blackice-${version}-${p.target}`);
-  // A full release manifest can also describe the separate root setup. Never pack those assets.
-  const allowed = [...binaries, 'linux-setup.sh', 'linux-teardown.sh',
-    `blackice-linux-helper-${version}-x86_64-linux`, `blackice-linux-helper-${version}-aarch64-linux`];
+  // The release also contains the x86_64 helper. Scripts come from the tag checkout, never release assets.
+  const allowed = [...binaries, `blackice-linux-helper-${version}-x86_64-linux`];
   const bytes = readRegular(join(source, 'SHA256SUMS'), 64 * 1024);
   return { source, binaries, bytes, sums: checksums(bytes, binaries, allowed) };
 }
@@ -119,28 +118,40 @@ export function prepare({ releaseDir, outDir, version = '0.1.0', scope = '@legio
       const mappings = [[`blackice-${version}-${platform.target}`, 'bin/blackice']];
       let readme = `# ${pkg.name}\n\nNative blackice ${version} for ${platform.os}/${platform.cpu}. Installed by ${name}'s optional dependencies. No JavaScript or install scripts.\n`;
       if (platform.os === 'linux') {
-        const verification = file => `gh attestation verify ${file} --repo ValentinTorassa/blackice --signer-workflow ValentinTorassa/blackice/.github/workflows/release.yml --source-ref refs/tags/v${version} --deny-self-hosted-runners`;
         readme += `
 ## Separate Linux setup
 
-This npm package contains the CLI only. The helper and setup scripts are not npm payloads. Obtain them separately from the [matching release](https://github.com/ValentinTorassa/blackice/releases/tag/v${version}) or its checkout. Linux arm64 has no supported task scopes until a reviewed helper and runtime evidence exist for that CPU.
+This npm package contains the CLI only. The [matching release](https://github.com/ValentinTorassa/blackice/releases/tag/v${version}) contains four CLIs, the x86_64 helper and SHA256SUMS. Setup and teardown scripts come from the tag checkout; they are not release assets and have no separate attestations. Their integrity comes from that checkout. See [docs/linux.md](https://github.com/ValentinTorassa/blackice/blob/v${version}/docs/linux.md).
 
-For a release that provides a reviewed x86_64 helper, verify the downloaded files before following [docs/linux.md](https://github.com/ValentinTorassa/blackice/blob/v${version}/docs/linux.md). Run these checks from the release download directory:
-
-\`\`\`sh
-${verification(`blackice-linux-helper-${version}-x86_64-linux`)}
-${verification('linux-setup.sh')}
-${verification('linux-teardown.sh')}
-\`\`\`
-
-The release publishes the scripts as flat assets. If using their copies in the matching source checkout, verify those exact files from the checkout root as well:
+Linux arm64 has no supported task scopes until a reviewed helper and runtime evidence exist for that CPU. No helper or setup bundle is shipped in npm, and npm installation runs no setup or privilege changes.
+`;
+        if (platform.cpu === 'x64') readme += `
+On Linux x86_64, use the Zig version required by the tag. Check out v${version}, attest-verify its checksum manifest, check the downloaded files, then build the helper in that checkout. The built helper must match the manifest's blackice-linux-helper-${version}-x86_64-linux entry before the explicit setup command can run:
 
 \`\`\`sh
-${verification('scripts/linux-setup.sh')}
-${verification('scripts/linux-teardown.sh')}
+(
+  set -eu
+  test "$(uname -s)" = Linux
+  test "$(uname -m)" = x86_64
+  git clone --branch v${version} --depth 1 https://github.com/ValentinTorassa/blackice.git blackice-v${version}
+  cd blackice-v${version}
+  release_dir="$PWD/out/release-v${version}"
+  mkdir -p "$release_dir"
+  gh release download v${version} --repo ValentinTorassa/blackice --dir "$release_dir"
+  (
+    cd "$release_dir"
+    gh attestation verify SHA256SUMS --repo ValentinTorassa/blackice --signer-workflow ValentinTorassa/blackice/.github/workflows/release.yml --source-ref refs/tags/v${version}
+    sha256sum -c SHA256SUMS
+  )
+  zig build -Doptimize=ReleaseSafe
+  helper_sha256="$(awk '$2 == "blackice-linux-helper-${version}-x86_64-linux" { print $1 }' "$release_dir/SHA256SUMS")"
+  test "\${#helper_sha256}" -eq 64
+  printf '%s  zig-out/bin/blackice-linux-helper\\n' "$helper_sha256" | sha256sum -c -
+  sudo ./scripts/linux-setup.sh "$USER" "$helper_sha256"
+)
 \`\`\`
 
-The setup digest must come from the independently verified release manifest, never from npm. Review the separate setup procedure yourself. No setup, privilege change or lifecycle script runs during npm installation.
+The subshell stops on any failed check. The setup digest comes from the independently verified release manifest, never from npm metadata. Review the checkout's scripts before running this operator-only setup. These commands are instructions, not npm install hooks.
 `;
       }
       readme += '\n| Release asset | Installed path | SHA-256 |\n| --- | --- | --- |\n';

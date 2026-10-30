@@ -11,7 +11,7 @@ npm install --global --ignore-scripts {{NAME}}@{{VERSION}}
 blackice version
 ```
 
-On Linux, npm supplies only the CLI. Obtain the reviewed helper and root setup separately from the matching release or checkout; follow the platform package's README to verify them and run setup manually. npm contains no helper or setup scripts and never runs setup, sudo or setcap.
+On Linux, npm supplies only the CLI. For x86_64 setup, check out the matching tag, verify the release checksum manifest, and build a helper whose hash matches that manifest before running the checkout's setup script. Follow the platform package's README for the steps. Scripts come from the tag checkout, not release assets or script attestations. Linux arm64 remains CLI-only. npm contains no helper or setup scripts and never runs setup, sudo or setcap.
 
 The launcher preserves command arguments, standard input/output/error and numeric exit status. A binary terminated by a signal causes the launcher to re-emit that signal. Terminal signals reach the shared foreground process group. A signal sent only to the Node launcher PID is not forwarded while `spawnSync` blocks; supervisors must signal the process group or run the native binary directly.
 

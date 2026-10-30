@@ -38,10 +38,8 @@ function fixture(t, version = '0.1.0') {
   const assets = new Map();
   for (const p of platforms) {
     assets.set(`blackice-${version}-${p.target}`, Buffer.from(fixtureBinary));
-    if (p.os === 'linux') assets.set(`blackice-linux-helper-${version}-${p.target}`, Buffer.from(`test-only helper ${p.target}\n`));
+    if (p.id === 'linux-x64') assets.set(`blackice-linux-helper-${version}-${p.target}`, Buffer.from(`test-only helper ${p.target}\n`));
   }
-  assets.set('linux-setup.sh', Buffer.from('#!/bin/bash\n# test-only setup data\nexit 0\n'));
-  assets.set('linux-teardown.sh', Buffer.from('#!/bin/bash\n# test-only teardown data\nexit 0\n'));
   for (const [file, bytes] of assets) writeFileSync(join(releaseDir, file), bytes);
   writeFileSync(join(releaseDir, 'SHA256SUMS'), [...assets].map(([file, bytes]) => `${hash(bytes)}  ${file}\n`).join(''));
   return { root, releaseDir, outDir, version, assets };
@@ -114,7 +112,7 @@ test('all five manifests, exact pins and unchanged release bytes', t => {
 test('CLI-only releases need no Linux helper or setup assets', t => {
   const f = fixture(t);
   for (const [name] of f.assets) {
-    if (name.includes('helper') || name.endsWith('.sh')) {
+    if (name.includes('helper')) {
       f.assets.delete(name);
       rmSync(join(f.releaseDir, name));
     }
@@ -123,19 +121,44 @@ test('CLI-only releases need no Linux helper or setup assets', t => {
   assert.equal(prepare(f).packages.length, 5);
 });
 
-test('Linux package READMEs verify separate release and checkout setup files without a sudo command', t => {
+test('release manifest refuses scripts and the unreleased ARM helper', t => {
+  const f = fixture(t);
+  const file = join(f.releaseDir, 'SHA256SUMS');
+  const original = readFileSync(file, 'utf8');
+  for (const asset of ['linux-setup.sh', 'linux-teardown.sh', 'blackice-linux-helper-0.1.0-aarch64-linux']) {
+    writeFileSync(file, original + `${hash('unreleased asset')}  ${asset}\n`);
+    assert.throws(() => prepare(f), /unexpected SHA256SUMS entry/);
+    assert.equal(existsSync(f.outDir), false);
+  }
+});
+
+test('Linux READMEs derive setup from the tag and attested helper checksum; ARM stays CLI-only', t => {
   const f = fixture(t);
   prepare(f);
   for (const id of ['linux-x64', 'linux-arm64']) {
     const readme = readFileSync(join(f.outDir, id, 'README.md'), 'utf8');
     assert.ok(readme.includes('https://github.com/ValentinTorassa/blackice/releases/tag/v0.1.0'));
     assert.ok(readme.includes('https://github.com/ValentinTorassa/blackice/blob/v0.1.0/docs/linux.md'));
-    for (const file of ['blackice-linux-helper-0.1.0-x86_64-linux', 'linux-setup.sh', 'linux-teardown.sh', 'scripts/linux-setup.sh', 'scripts/linux-teardown.sh']) {
-      assert.ok(readme.includes(`gh attestation verify ${file} --repo ValentinTorassa/blackice --signer-workflow ValentinTorassa/blackice/.github/workflows/release.yml`));
-    }
-    assert.doesNotMatch(readme, /^\s*sudo\b/m);
     assert.match(readme, /Linux arm64 has no supported task scopes/);
+    assert.doesNotMatch(readme, /gh attestation verify [^\n]*(?:setup|teardown)\.sh/);
+    if (id === 'linux-arm64') assert.doesNotMatch(readme, /^\s*sudo\b/m);
   }
+  const readme = readFileSync(join(f.outDir, 'linux-x64', 'README.md'), 'utf8');
+  const command = readme.match(/```sh\n([\s\S]*?)```/)[1];
+  const guide = readFileSync(new URL('./README.md', import.meta.url), 'utf8').split('## Manual Linux setup')[1].split('## Validation')[0];
+  assert.equal(guide.match(/```sh\n([\s\S]*?)```/)[1], command, 'the two setup command blocks must agree');
+  assert.doesNotMatch(guide, /gh attestation verify [^\n]*(?:setup|teardown)\.sh/);
+  const ordered = ['git clone --branch v0.1.0', 'gh attestation verify SHA256SUMS', 'sha256sum -c SHA256SUMS',
+    'zig build -Doptimize=ReleaseSafe', 'blackice-linux-helper-0.1.0-x86_64-linux', 'sha256sum -c -',
+    'sudo ./scripts/linux-setup.sh "$USER" "$helper_sha256"'];
+  let previous = -1;
+  for (const step of ordered) {
+    const offset = command.indexOf(step);
+    assert.ok(offset > previous, `setup step missing or out of order: ${step}`);
+    previous = offset;
+  }
+  const parsed = spawnSync('sh', ['-n'], { input: command, encoding: 'utf8' });
+  assert.equal(parsed.status, 0, parsed.stderr);
 });
 
 test('scope, main name and version can change together without changing the command name', t => {

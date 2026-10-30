@@ -26,7 +26,7 @@ blackice-0.1.0-aarch64-linux
 SHA256SUMS
 ```
 
-The manifest may also list `linux-setup.sh`, `linux-teardown.sh` and `blackice-linux-helper-0.1.0-{x86_64-linux,aarch64-linux}` from the separate root setup. The preparer never reads or copies those payloads. The publish workflow verifies every asset listed in the full release manifest, including those outside npm. An absent ARM helper does not block CLI packaging.
+The full release also contains `blackice-linux-helper-0.1.0-x86_64-linux`, which may appear in the manifest but is never read or copied into npm. The preparer also accepts a CLI-only manifest. Setup/teardown scripts and an ARM helper are not release assets and are rejected as manifest entries. Scripts come from the tag checkout. An absent ARM helper does not block CLI packaging.
 
 Verify release attestations before preparing public packages. The preparer checks CLI integrity, not provenance: its output records `verification: "sha256-only"`. A locally produced checksum file does not establish release identity. Label local fixtures as test inputs, not attested releases.
 
@@ -51,28 +51,34 @@ The packer checks exact identities, versions, platform selectors, dependency pin
 
 ## Manual Linux setup
 
-npm installation does not establish the Linux enforcement boundary. Obtain the reviewed helper and scripts separately from the matching GitHub release or its source checkout, and review the [Linux backend setup instructions](../../docs/linux.md). For x86_64, first verify the downloaded manifest and root setup assets against the release workflow and tag:
+npm installation does not establish the Linux enforcement boundary. On Linux x86_64, check out the matching tag and use the Zig version it requires. Verify the release's `SHA256SUMS` attestation and downloaded files, build the helper in the checkout, and compare its SHA-256 with the manifest's `blackice-linux-helper-0.1.0-x86_64-linux` entry. Only after that match should the checkout's setup script run with that digest as its second argument. Review [docs/linux.md](../../docs/linux.md) and the checkout's scripts first.
+
+The following block uses a fresh checkout and stops on any failed check. It performs an explicit operator setup; npm installation never executes it. Linux arm64 remains CLI-only and must not use this x86_64 procedure.
 
 ```sh
-# Run in the directory containing the separately downloaded v0.1.0 release assets.
-gh attestation verify SHA256SUMS --repo ValentinTorassa/blackice \
-  --signer-workflow ValentinTorassa/blackice/.github/workflows/release.yml \
-  --source-ref refs/tags/v0.1.0 --deny-self-hosted-runners
-sha256sum -c SHA256SUMS
-
-gh attestation verify blackice-linux-helper-0.1.0-x86_64-linux \
-  --repo ValentinTorassa/blackice \
-  --signer-workflow ValentinTorassa/blackice/.github/workflows/release.yml \
-  --source-ref refs/tags/v0.1.0 --deny-self-hosted-runners
-gh attestation verify linux-setup.sh --repo ValentinTorassa/blackice \
-  --signer-workflow ValentinTorassa/blackice/.github/workflows/release.yml \
-  --source-ref refs/tags/v0.1.0 --deny-self-hosted-runners
-gh attestation verify linux-teardown.sh --repo ValentinTorassa/blackice \
-  --signer-workflow ValentinTorassa/blackice/.github/workflows/release.yml \
-  --source-ref refs/tags/v0.1.0 --deny-self-hosted-runners
+(
+  set -eu
+  test "$(uname -s)" = Linux
+  test "$(uname -m)" = x86_64
+  git clone --branch v0.1.0 --depth 1 https://github.com/ValentinTorassa/blackice.git blackice-v0.1.0
+  cd blackice-v0.1.0
+  release_dir="$PWD/out/release-v0.1.0"
+  mkdir -p "$release_dir"
+  gh release download v0.1.0 --repo ValentinTorassa/blackice --dir "$release_dir"
+  (
+    cd "$release_dir"
+    gh attestation verify SHA256SUMS --repo ValentinTorassa/blackice --signer-workflow ValentinTorassa/blackice/.github/workflows/release.yml --source-ref refs/tags/v0.1.0
+    sha256sum -c SHA256SUMS
+  )
+  zig build -Doptimize=ReleaseSafe
+  helper_sha256="$(awk '$2 == "blackice-linux-helper-0.1.0-x86_64-linux" { print $1 }' "$release_dir/SHA256SUMS")"
+  test "${#helper_sha256}" -eq 64
+  printf '%s  zig-out/bin/blackice-linux-helper\n' "$helper_sha256" | sha256sum -c -
+  sudo ./scripts/linux-setup.sh "$USER" "$helper_sha256"
+)
 ```
 
-Use the independently verified manifest's helper digest when following that separate setup procedure. Setup is an explicit operator action outside npm, using the reviewed checkout layout and architecture. Do not source a root-install digest from npm metadata. If no reviewed helper exists for the host CPU, installing a CLI package does not make task scopes supported. These are future release instructions, not a claim that version 0.1.0 is already published.
+The release contains four CLIs, the x86_64 helper and `SHA256SUMS`. Scripts are neither flat release assets nor separately attested: their integrity comes from the tag checkout. The root-install digest comes from the independently verified manifest, never from npm metadata. These are instructions for the corresponding published release, not a claim that version 0.1.0 is already available.
 
 ## Validation and launcher behavior
 
@@ -86,9 +92,9 @@ To exercise a real local binary, prepare a clearly labeled local build fixture, 
 
 The launcher uses `spawnSync` with inherited stdio and no shell. It mirrors numeric exit status and re-emits the child's termination signal. Terminal signals reach both processes through their shared foreground process group. Because synchronous spawning blocks JavaScript signal handlers, a signal addressed only to the launcher PID is not forwarded while its child runs. Use a supervisor that signals the process group or invoke the native binary directly; immediate PID-only forwarding would require an asynchronous launcher. See [Node's synchronous child-process contract](https://nodejs.org/api/child_process.html#child_processspawnsynccommand-args-options).
 
-## Release-triggered publication
+## Publication handoff
 
-[npm-publish.yml](../../.github/workflows/npm-publish.yml) runs only on `release: published`, after the operator publishes a reviewed draft. It refuses prereleases and requires the release tag's commit to be on `main`. There is no dispatch, push or pull-request trigger. Security reviews changes to this workflow before use.
+Security owns `release.yml` and `npm-publish.yml`; they are reviewed separately from this packaging change. Publication is authorized by the operator publishing the reviewed draft release, followed by approval of the protected `npm` environment. Use the reviewed workflows as the source of truth for job permissions and toolchain pins.
 
 Required operator configuration:
 
@@ -96,10 +102,10 @@ Required operator configuration:
 2. Create GitHub environment **npm**, require the operator's review, and restrict deployment refs to approved release tags. The YAML selects this environment; its protection rules are repository settings.
 3. Configure each of the five npm packages' trusted publishers for repository `ValentinTorassa/blackice`, workflow filename **npm-publish.yml**, environment **npm**, with direct `npm publish` allowed. Initial package setup and ownership verification are operator work; this branch does neither.
 
-The job uses only `contents: read` and `id-token: write`, SHA-pinned actions, Node 22.23.3 and npm 12.2.0. [npm trusted publishing](https://docs.npmjs.com/trusted-publishers/) uses OIDC on a GitHub-hosted runner; there is no npm token, login or credential fallback. npm user/global configuration files and its cache are isolated for the job.
+[npm trusted publishing](https://docs.npmjs.com/trusted-publishers/) uses OIDC on a GitHub-hosted runner. Publication must use the reviewed, pinned toolchain and no npm token, login or credential fallback. These local packaging scripts never request an identity token or publish.
 
-Before packing, the job downloads the tag's assets with `gh release download`, verifies the checksum manifest's attestation, validates its filenames, and runs `sha256sum -c SHA256SUMS`. It then verifies [GitHub attestations](https://cli.github.com/manual/gh_attestation_verify) for **every listed asset**, binding them to `release.yml`, the source repository, exact tag and checked-out commit, and refusing self-hosted build runners. Only then does it run the host CLI to require `blackice 0.1.0` (or the corresponding tag version).
+Before packing, the publication workflow must download the tag's assets, validate the manifest and file set, check the checksums, and verify [GitHub attestations](https://cli.github.com/manual/gh_attestation_verify) against `release.yml`, the repository, tag and commit. Only verified binaries may be run or packaged; the CLI's version must match the release tag. Scripts are not release assets and do not have script attestations.
 
-After all five archives pass the packer's checks, the job publishes the four platform tarballs first and the launcher last with `npm publish --provenance --access public --ignore-scripts`. A failed platform publish stops before the launcher. npm versions are immutable; a partial publication needs operator reconciliation rather than an automatic overwrite or name change. Publishing is never part of the local tests.
+After all five archives pass the packer's checks, publish the four platform tarballs first and the launcher last with `npm publish --provenance --access public --ignore-scripts`. A failed platform publish must stop before the launcher. npm versions are immutable; a partial publication needs operator reconciliation rather than an automatic overwrite or name change. Publishing is never part of the local tests.
 
 Release attestations establish where the native bytes came from; npm provenance establishes where their packages were assembled. Local tests and mocked workflow checks do not verify live OIDC, registry ownership or release attestations. Those require the configured environment and a real reviewed release.
