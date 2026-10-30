@@ -124,15 +124,26 @@ blackice version
 If another program will start blackice for you, for example an agent tool's launch hook, install it root-owned
 instead and point that program at this path. A binary in your home directory can be replaced by anything that
 runs as you outside a scope, such as the agent's own file-editing tools, and the next launch would then run
-whatever was put there. A root-owned copy cannot be changed without `sudo`:
+whatever was put there.
+
+A root-owned file is only safe if every directory above it is root-owned and not writable by you as well.
+Otherwise you can still rename or delete the file and put another one under the same name. So use a directory
+of blackice's own, created root-owned, rather than a shared one: on an Intel Mac with Homebrew, `/usr/local/bin`
+belongs to you, and on Apple silicon it may not exist.
 
 ```sh
-sudo install -m 0755 -o root -g wheel blackice-aarch64-macos /usr/local/bin/blackice   # macOS
-sudo install -m 0755 -o root -g root blackice-x86_64-linux /usr/local/bin/blackice     # Linux
+# macOS (on Linux, use -g root and the blackice-<arch>-linux binary)
+sudo install -d -m 0755 -o root -g wheel /usr/local/libexec/blackice
+sudo install -m 0755 -o root -g wheel blackice-aarch64-macos /usr/local/libexec/blackice/blackice
+ls -ld / /usr /usr/local /usr/local/libexec /usr/local/libexec/blackice
 ```
 
-Give the policy file that program passes the same treatment (root-owned, mode 0644), and keep both outside the
-agent's workspace.
+Check every line of the `ls`: owner root, and no `w` in the group or other columns. `install -d` sets the owner
+and mode of the last directory only, so the parents need this check.
+
+The policy file that program passes needs the same: put it in that directory (root-owned, mode 0644), or in
+another directory whose whole chain is root-owned, and never inside the agent's workspace. A root-owned policy
+in a directory you own can be replaced like the binary.
 
 ## macOS
 
