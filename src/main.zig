@@ -9,10 +9,10 @@ pub const seatbelt = @import("macos/seatbelt.zig");
 pub const run_cmd = @import("cli/run.zig");
 pub const grant_cmd = @import("cli/grant.zig");
 
-pub const version = "0.0.0-poc";
+pub const version = "0.1.0";
 
 const usage =
-    \\blackice: network permissions for apps and agent tasks (proof of concept)
+    \\blackice: network permissions for apps and agent tasks
     \\
     \\usage:
     \\  blackice version
