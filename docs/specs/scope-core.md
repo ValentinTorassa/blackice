@@ -92,6 +92,8 @@ loopback ports; names and addresses are then decided by the proxy.
 | Protected paths (`protected_paths` in the launch contract, `--protect`, symlink components) and `--policy-sha256`; macOS honors them (PR #7, b958046) | lead | done | |
 | Linux backend honors protected paths (`protects_paths = true`), helper protocol v2 (PR #6, 89a5f49; reviewed safe, pinned at 35ae1f8) | codex-linux | done | |
 | Create each scope's state directory exclusively (0700), with a new id on a clash | lead | done | |
+| `run` handles INT, TERM and HUP: cancel through the backend, wait for its cleanup, write `scope_end` as cancelled. Today SIGTERM and Ctrl-C leave no `scope_end` (P0-06 finding P6-2) | lead | todo | |
+| A helper or launch failure exits 125 (cannot set up the scope), not 127 (P0-06 finding P6-3) | lead | todo | |
 | Linux enforcing backend behind the same contract (PR #6, not merged; `run` refuses on Linux until it lands) | codex-linux | done | |
 
 ## Evidence
