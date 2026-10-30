@@ -63,10 +63,6 @@ code, pre, .mono { font-family: var(--mono); }
 .nav-gh { display: inline-flex; }
 .nav-right { display: flex; align-items: center; gap: 20px; }
 /* The demo's caption languages: Argentina for Spanish, the United States for English */
-.flags { display: inline-flex; align-items: center; gap: 2px; padding-right: 18px; border-right: 1px solid var(--line); }
-.flag-btn { display: grid; place-items: center; width: 34px; height: 28px; padding: 0; border: 1px solid transparent; border-radius: 8px; background: transparent; cursor: pointer; transition: background 0.15s, border-color 0.15s; }
-.flag-btn:hover { background: var(--bg-2); }
-.flag-btn[aria-pressed='true'] { border-color: var(--line-2); background: var(--bg-1); }
 .flag { display: inline-flex; flex: none; width: 21px; height: 14px; border-radius: 3px; overflow: hidden; box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.16); }
 .flag svg { display: block; width: 100%; height: 100%; }
 
@@ -180,7 +176,6 @@ h1 {
 .tag-allow { color: #4ade80; }
 .tag-deny { color: #ff6b70; }
 .caption { margin: 12px 0 0; font: 12px var(--mono); color: var(--fg-3); }
-.demo-section { padding-top: 96px; padding-bottom: 96px; }
 .demo { margin: 32px 0 0; }
 .demo-video { display: block; width: 100%; max-width: 100%; aspect-ratio: 16 / 9; background: #000; }
 .demo-langs { display: inline-flex; gap: 4px; }
@@ -658,8 +653,6 @@ td p { margin: 8px 0 0; color: var(--fg-2); font-size: 14px; line-height: 1.55; 
   .container { padding: 0 16px; }
   .nav-right { gap: 12px; }
   .nav-links { gap: 14px; }
-  .flags { padding-right: 10px; }
-  .flag-btn { width: 30px; }
   .badge { height: auto; min-height: 26px; padding: 5px 10px; white-space: normal; line-height: 1.4; }
   .hero { padding: 76px 0 52px; }
   .br { display: none; }
@@ -701,4 +694,12 @@ td p { margin: 8px 0 0; color: var(--fg-2); font-size: 14px; line-height: 1.55; 
   .ring-2 { opacity: 0.4; transform: translateZ(calc(var(--gap) * 3)) scale(2); }
   .pkt-tag { opacity: 1; }
   .plane-flash { opacity: 0.85; }
+}
+
+/* Why I built it, with the walkthrough next to it */
+.about-grid { display: grid; grid-template-columns: minmax(0, 0.95fr) minmax(0, 1.15fr); gap: 56px; align-items: center; }
+.about-grid .sub { max-width: none; }
+.about-video .demo { margin: 0; }
+@media (max-width: 960px) {
+  .about-grid { grid-template-columns: minmax(0, 1fr); gap: 32px; }
 }
