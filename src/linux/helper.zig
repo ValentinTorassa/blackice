@@ -60,8 +60,17 @@ pub fn main(init: std.process.Init) u8 {
 fn run(init: std.process.Init, out: *Output, stage: *[]const u8) !void {
     const gpa = init.arena.allocator();
     const args = try init.minimal.args.toSlice(gpa);
-    if (args.len < 7 or !std.mem.eql(u8, args[1], "--protocol-v1") or !std.mem.eql(u8, args[5], "--") or !wire.validScope(args[2])) return error.InvalidArguments;
-    if (args[4].len < 2 or args[4][0] != '/') return error.InvalidStateDirectory;
+    if (args.len < 8 or !std.mem.eql(u8, args[1], wire.launch_version) or !wire.validScope(args[2])) return error.HelperProtocolV2Required;
+    if (!wire.validPath(args[4])) return error.InvalidStateDirectory;
+    const protected_count = try wire.parseProtectedCount(args[5]);
+    if (protected_count > wire.max_protected or args.len < protected_count + 8 or !std.mem.eql(u8, args[6 + protected_count], "--")) return error.InvalidArguments;
+    var protected_buf: [wire.max_protected][:0]const u8 = undefined;
+    for (args[6..][0..protected_count], 0..) |path, i| {
+        if (!wire.validPath(path)) return error.InvalidProtectedPath;
+        protected_buf[i] = try gpa.dupeSentinel(u8, path, 0);
+    }
+    const protected = protected_buf[0..protected_count];
+    const command = args[7 + protected_count ..];
     const state = try gpa.dupeSentinel(u8, args[4], 0);
     var ports_buf: [wire.max_ports]u16 = undefined;
     const ports = try wire.parsePorts(args[3], &ports_buf);
@@ -108,9 +117,9 @@ fn run(init: std.process.Init, out: *Output, stage: *[]const u8) !void {
     defer ring.close();
 
     // All allocation and PATH resolution precedes fork; child uses only stack storage and syscalls.
-    const argv = try makeArgv(gpa, args[6..]);
+    const argv = try makeArgv(gpa, command);
     const env = try init.environ_map.createPosixBlock(gpa, .{ .zig_progress_fd = -1 });
-    const exe = try resolve(gpa, args[6], init.environ_map.get("PATH") orelse "/usr/local/bin:/usr/bin:/bin");
+    const exe = try resolve(gpa, command[0], init.environ_map.get("PATH") orelse "/usr/local/bin:/usr/bin:/bin");
     const gate = try sys.pipe();
     defer sys.close(gate[1]);
     const report = try sys.pipe();
@@ -120,7 +129,7 @@ fn run(init: std.process.Init, out: *Output, stage: *[]const u8) !void {
     const gid = l.getgid();
     stage.* = "paused_child";
     const child: l.pid_t = @intCast(try sys.check(l.fork()));
-    if (child == 0) childMain(gate, report, helper_pid, uid, gid, state, exe, argv, env.slice);
+    if (child == 0) childMain(gate, report, helper_pid, uid, gid, state, protected, exe, argv, env.slice);
     sys.close(gate[0]);
     sys.close(report[1]);
     var reaped = false;
@@ -137,8 +146,14 @@ fn run(init: std.process.Init, out: *Output, stage: *[]const u8) !void {
     var ready = [_]l.pollfd{ .{ .fd = report[0], .events = l.POLL.IN, .revents = 0 }, .{ .fd = parentfd, .events = l.POLL.IN, .revents = 0 } };
     if (try sys.poll(&ready, 10000) == 0 or ready[1].revents != 0) return error.LaunchTimeout;
     var ack: [1]u8 = undefined;
-    if (try sys.read(report[0], &ack) != 1 or ack[0] != 'R') return error.ChildContainmentFailed;
-    try out.send(wire.Event.init(.armed, "cgroup_sock_addr; landlock_abi6; seccomp; private_mounts"), true);
+    if (try sys.read(report[0], &ack) != 1) return error.ChildContainmentFailed;
+    if (ack[0] == 'E') {
+        var detail: [80]u8 = undefined;
+        if (try sys.readFull(report[0], &detail)) try out.send(wire.Event.init(.failure, std.mem.sliceTo(&detail, 0)), true);
+        return error.ChildContainmentFailed;
+    }
+    if (ack[0] != 'R') return error.ChildContainmentFailed;
+    try out.send(wire.Event.init(.armed, "cgroup_sock_addr; landlock_abi6; seccomp; protected_paths; private_mounts"), true);
     stage.* = "exec";
     try sys.writeAll(gate[1], "G");
     // report[1] is CLOEXEC: EOF acknowledges successful exec; an error writes E instead.
@@ -180,14 +195,18 @@ fn run(init: std.process.Init, out: *Output, stage: *[]const u8) !void {
     try out.send(event, true);
 }
 
-fn childMain(gate: [2]l.fd_t, report: [2]l.fd_t, parent: l.pid_t, uid: u32, gid: u32, state: [:0]const u8, exe: [:0]const u8, argv: [:null]?[*:0]const u8, env: [:null]const ?[*:0]const u8) noreturn {
+fn childMain(gate: [2]l.fd_t, report: [2]l.fd_t, parent: l.pid_t, uid: u32, gid: u32, state: [:0]const u8, protected: []const [:0]const u8, exe: [:0]const u8, argv: [:null]?[*:0]const u8, env: [:null]const ?[*:0]const u8) noreturn {
     sys.close(gate[1]);
     sys.close(report[0]);
-    childSetup(gate[0], report[1], parent, uid, gid, state) catch |err| {
+    childSetup(gate[0], report[1], parent, uid, gid, state, protected) catch |err| {
+        var report_error: [81]u8 = @splat(0);
+        report_error[0] = 'E';
+        const name = @errorName(err);
+        @memcpy(report_error[1..][0..@min(name.len, 79)], name[0..@min(name.len, 79)]);
+        sys.writeAll(5, &report_error) catch {};
         sys.writeAll(2, "blackice child containment: ") catch {};
-        sys.writeAll(2, @errorName(err)) catch {};
+        sys.writeAll(2, name) catch {};
         sys.writeAll(2, "\n") catch {};
-        sys.writeAll(5, "E") catch {};
         l.exit_group(125);
     };
     _ = l.execve(exe, argv, env);
@@ -195,7 +214,7 @@ fn childMain(gate: [2]l.fd_t, report: [2]l.fd_t, parent: l.pid_t, uid: u32, gid:
     l.exit_group(127);
 }
 
-fn childSetup(gate: l.fd_t, report: l.fd_t, parent: l.pid_t, uid: u32, gid: u32, state: [:0]const u8) !void {
+fn childSetup(gate: l.fd_t, report: l.fd_t, parent: l.pid_t, uid: u32, gid: u32, state: [:0]const u8, protected: []const [:0]const u8) !void {
     // Close every fd except stdio and the two handshake pipes, including the receipt writer and BPF maps.
     // dup3 is collision-free because both original pipes are >= 4 and copied above the reserved descriptors.
     const gate_copy = try sys.fd(l.fcntl(gate, l.F.DUPFD_CLOEXEC, 100));
@@ -208,7 +227,7 @@ fn childSetup(gate: l.fd_t, report: l.fd_t, parent: l.pid_t, uid: u32, gid: u32,
     _ = try sys.check(l.sigprocmask(l.SIG.SETMASK, &empty, null));
     var ack: [1]u8 = undefined;
     if (!try sys.readFull(4, &ack) or ack[0] != 'A') return error.EnrollmentMissing;
-    try confinement.arm(uid, gid, state);
+    try confinement.arm(uid, gid, state, protected);
     _ = try sys.check(l.prctl(@backingInt(l.PR.SET_PDEATHSIG), @backingInt(l.SIG.KILL), 0, 0, 0));
     if (l.getppid() != parent) return error.ParentMissing;
     try sys.writeAll(5, "R");

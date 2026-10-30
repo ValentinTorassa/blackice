@@ -3,6 +3,23 @@ const std = @import("std");
 pub const helper_path = "/usr/local/libexec/blackice-linux-helper";
 pub const cgroup_root = "/sys/fs/cgroup/blackice";
 pub const max_ports = 8;
+pub const max_protected = 48;
+pub const launch_version = "--protocol-v2";
+
+pub fn parseProtectedCount(s: []const u8) !usize {
+    if (s.len == 0 or s.len > 2) return error.InvalidProtectedCount;
+    for (s) |c| if (!std.ascii.isDigit(c)) return error.InvalidProtectedCount;
+    const count = try std.fmt.parseInt(usize, s, 10);
+    if (count > max_protected) return error.InvalidProtectedCount;
+    return count;
+}
+
+pub fn validPath(path: []const u8) bool {
+    if (path.len < 2 or path.len >= 4096 or path[0] != '/' or std.mem.findScalar(u8, path, 0) != null) return false;
+    var parts = std.mem.splitScalar(u8, path[1..], '/');
+    while (parts.next()) |part| if (part.len == 0 or std.mem.eql(u8, part, ".") or std.mem.eql(u8, part, "..")) return false;
+    return true;
+}
 pub const magic: u32 = 0x42494345;
 pub const Kind = enum(u16) { armed = 1, drop = 2, loss = 3, failure = 4, exited = 5, signaled = 6, cleanup = 7 };
 pub const Event = extern struct {
@@ -61,4 +78,8 @@ test "protocol rejects path injection, zero ports and ambiguous port lists" {
     try t.expectEqual(@as(usize, 0), (try parsePorts("-", &buf)).len);
     for ([_][]const u8{ "", "0", "+1", "1,", "1,1", "65536", "1\n2", "1;2" }) |s| try t.expectError(error.InvalidPorts, parsePorts(s, &buf));
     try t.expectEqual(@as(usize, 128), @sizeOf(Event));
+    try t.expectEqual(@as(usize, 48), try parseProtectedCount("48"));
+    for ([_][]const u8{ "", "-1", "+1", "49", "999", "1x" }) |s| try t.expectError(error.InvalidProtectedCount, parseProtectedCount(s));
+    for ([_][]const u8{ "relative", "/", "/x/", "/x//y", "/x/../y", "/./x", "/x\x00y" }) |s| try t.expect(!validPath(s));
+    try t.expect(validPath("/home/user/a file"));
 }

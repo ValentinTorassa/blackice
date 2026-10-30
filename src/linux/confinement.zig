@@ -3,18 +3,45 @@ const std = @import("std");
 const builtin = @import("builtin");
 const sys = @import("sys.zig");
 const l = sys.l;
+const protection = @import("protection.zig");
 
-pub fn namespaces(uid: u32, gid: u32, state: [:0]const u8) !void {
+pub fn namespaces(uid: u32, gid: u32, state: [:0]const u8, protected: []const [:0]const u8) !void {
     var cwd_buf: [4096]u8 = undefined;
     const cwd_len = try sys.check(l.getcwd(&cwd_buf, cwd_buf.len));
     if (cwd_len < 2) return error.WorkingDirectoryUnavailable;
     const cwd = cwd_buf[0 .. cwd_len - 1 :0];
+    if (protection.below(cwd, "/run") or protection.below(cwd, "/var/run")) return error.WorkingDirectoryUnavailable;
     var temporary_root: ?[]const u8 = null;
     for ([_][]const u8{ "/tmp", "/var/tmp" }) |root| {
         // Restoring a whole temporary root would expose unrelated daemon paths again.
         if (std.mem.eql(u8, cwd, root)) return error.WorkingDirectoryAtTemporaryRoot;
         if (std.mem.startsWith(u8, cwd, root) and cwd.len > root.len and cwd[root.len] == '/') temporary_root = root;
     }
+    try isolate(uid, gid);
+    var guarded = try protection.Prepared.init(state, protected);
+    defer guarded.close();
+    try guarded.protectState();
+    // Resolve through the new state mount before pinning the project, so a nested state root stays read-only.
+    const project = if (temporary_root != null)
+        try protection.pin(cwd)
+    else
+        -1;
+    defer if (project >= 0) sys.close(project);
+    if (project >= 0 and (try sys.stat(project)).mode & 0o170000 != 0o040000) return error.WorkingDirectoryChanged;
+    // /var/run normally points at /run. A separate /var/run is masked as well.
+    try maskDir("/run");
+    try maskDir("/var/run");
+    try maskDir("/tmp");
+    try maskDir("/var/tmp");
+    if (temporary_root) |root| try restoreProject(project, cwd, root.len);
+    try guarded.restore(cwd);
+    try guarded.finish();
+    // Reopen cwd by path, so an inherited cwd cannot retain a reference into a masked mount.
+    _ = try sys.check(l.chdir("/"));
+    _ = try sys.check(l.chdir(cwd));
+}
+
+pub fn isolate(uid: u32, gid: u32) !void {
     try sys.dropCapabilities();
     // Retain the caller's numeric IDs. Only this uid/gid is mapped in the private user namespace.
     _ = try sys.check(l.unshare(l.CLONE.NEWUSER | l.CLONE.NEWNS));
@@ -23,27 +50,6 @@ pub fn namespaces(uid: u32, gid: u32, state: [:0]const u8) !void {
     try sys.writeFileAt(l.AT.FDCWD, "/proc/self/uid_map", try std.fmt.bufPrint(&buf, "{d} {d} 1\n", .{ uid, uid }));
     try sys.writeFileAt(l.AT.FDCWD, "/proc/self/gid_map", try std.fmt.bufPrint(&buf, "{d} {d} 1\n", .{ gid, gid }));
     _ = try sys.check(l.mount(null, "/", null, l.MS.REC | l.MS.PRIVATE, 0));
-    // Protect the whole state root, including submounts. An alias through a pre-opened fd is closed
-    // by the launch handshake. The broader same-user filesystem/IPC threat remains a declared limit.
-    _ = try sys.check(l.mount(state, state, null, l.MS.BIND | l.MS.REC, 0));
-    const MountAttr = extern struct { set: u64 = 15, clear: u64 = 0, propagation: u64 = 0, userns: u64 = 0 };
-    const attr: MountAttr = .{}; // RDONLY | NOSUID | NODEV | NOEXEC
-    _ = try sys.check(l.syscall5(.mount_setattr, @bitCast(@as(isize, l.AT.FDCWD)), @intFromPtr(state.ptr), 0x8000, @intFromPtr(&attr), @sizeOf(MountAttr)));
-    // Resolve through the new state mount before pinning the project, so a nested state root stays read-only.
-    const project = if (temporary_root != null)
-        try sys.fd(l.open(cwd, .{ .PATH = true, .DIRECTORY = true, .CLOEXEC = true, .NOFOLLOW = true }, 0))
-    else
-        -1;
-    defer if (project >= 0) sys.close(project);
-    // /var/run normally points at /run. A separate /var/run is masked as well.
-    try maskDir("/run");
-    try maskDir("/var/run");
-    try maskDir("/tmp");
-    try maskDir("/var/tmp");
-    if (temporary_root) |root| try restoreProject(project, cwd, root.len);
-    // Reopen cwd by path, so an inherited cwd cannot retain a reference into a masked mount.
-    _ = try sys.check(l.chdir("/"));
-    _ = try sys.check(l.chdir(cwd));
 }
 
 fn restoreProject(project: l.fd_t, cwd: [:0]const u8, root_len: usize) !void {
@@ -167,8 +173,8 @@ pub fn seccomp() !void {
     _ = try sys.check(l.prctl(@backingInt(l.PR.SET_SECCOMP), l.SECCOMP.MODE.FILTER, @intFromPtr(&p), 0, 0));
 }
 
-pub fn arm(uid: u32, gid: u32, state: [:0]const u8) !void {
-    try namespaces(uid, gid, state);
+pub fn arm(uid: u32, gid: u32, state: [:0]const u8, protected: []const [:0]const u8) !void {
+    try namespaces(uid, gid, state, protected);
     try landlock();
     try sys.dropCapabilities();
     try sys.nonDumpable();
@@ -188,7 +194,7 @@ test "private mounts preserve uid and cwd, hide daemon paths, and protect state 
     const gid = l.getgid();
     const pid: l.pid_t = @intCast(try sys.check(l.fork()));
     if (pid == 0) {
-        arm(uid, gid, state) catch |err| {
+        arm(uid, gid, state, &.{}) catch |err| {
             sys.writeAll(2, @errorName(err)) catch {};
             l.exit_group(1);
         };
@@ -241,7 +247,7 @@ fn testTemporaryProject(root: [:0]const u8) !void {
     const pid: l.pid_t = @intCast(try sys.check(l.fork()));
     if (pid == 0) {
         _ = sys.check(l.chdir(cwd)) catch l.exit_group(1);
-        arm(uid, gid, state) catch |err| {
+        arm(uid, gid, state, &.{}) catch |err| {
             sys.writeAll(2, @errorName(err)) catch {};
             l.exit_group(2);
         };
@@ -268,12 +274,16 @@ test "a whole temporary root cannot be restored as the project" {
         const pid: l.pid_t = @intCast(try sys.check(l.fork()));
         if (pid == 0) {
             _ = sys.check(l.chdir(root)) catch l.exit_group(1);
-            namespaces(l.getuid(), l.getgid(), "/unused") catch |err|
+            namespaces(l.getuid(), l.getgid(), "/unused", &.{}) catch |err|
                 l.exit_group(if (err == error.WorkingDirectoryAtTemporaryRoot) 0 else 2);
             l.exit_group(3);
         }
         try std.testing.expectEqual(@as(u32, 0), try sys.wait(pid));
     }
+}
+
+test {
+    _ = @import("protection_test.zig");
 }
 
 test "seccomp installs and refuses Unix sockets, namespaces and io_uring in a disposable child" {

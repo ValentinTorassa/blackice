@@ -32,9 +32,10 @@ attachments, and holds the child behind a two-stage pipe handshake until contain
 Before exec, the child closes all unexpected descriptors, drops host capabilities, creates private user/mount
 namespaces, and masks `/run`, `/var/run`, `/tmp` and `/var/tmp`. The caller's numeric uid/gid and working
 directory are preserved, reopening cwd through the new mounts. When cwd is below `/tmp` or `/var/tmp`, only
-that directory and its descendants are restored from a pinned descriptor; unrelated temporary paths,
-including siblings and files in the old parent, remain hidden. Run from the project root if commands need
-its whole tree. Cwd equal to `/tmp` or `/var/tmp` is refused, as are unavailable paths under `/run`.
+that directory and its descendants are restored from a pinned descriptor. Explicitly protected objects and
+the state root outside cwd are also restored at their own paths; unrelated temporary siblings and parent
+contents remain hidden. Run from the project root if commands need its whole tree. Cwd equal to `/tmp` or
+`/var/tmp`, or anywhere under `/run`, is refused.
 The complete blackice state root, including every scope's
 receipts, policy copies and control sockets, is recursively mounted read-only.
 Landlock ABI 6 scopes abstract Unix sockets and signals. Finally, all capabilities are dropped and an
@@ -46,10 +47,33 @@ path refuses launch. The standalone receiver probe protects its receipt director
 The seccomp prohibition on Unix socket creation prevents connections to `control.sock`; a read-only mount
 alone does not prevent connecting to an existing socket.
 
+## Protected files and state ancestors
+
+`LaunchSpec.protected_paths` supplies the executable, policy and `--protect` files, including symlink entries
+on the way to their resolved targets. The helper pins each object with `openat2`, refusing intermediate
+symlinks and magic links. It bind-mounts the pinned file or final symlink node read-only, with `nosuid` and
+`nodev`. Protected executables can still run. Every ancestor of these objects and of the state root becomes
+a mount point, so renaming, removing or replacing an ancestor fails with `EBUSY`. Ancestors stay writable:
+creating, editing, renaming and removing neighboring files still works.
+
+A plain read-only bind leaves existing hard links and alternate mounts writable. This implementation
+refuses protected files or symlinks with a link count other than one (`ProtectedFileHasHardLinks`), and
+requires exactly one initial mount-table entry for each filesystem containing protected objects or the
+state root (`ProtectionFilesystemHasAliases`). This is deliberately conservative: multiple mounts of a
+filesystem, including otherwise legitimate subvolume arrangements, may refuse launch. The limits are 48
+protected paths, 256 distinct ancestors and a 64 KiB mount table; exceeding a limit refuses before exec.
+Standard descriptors cannot be directories or refer to a protected inode or a file within the state root;
+an old open descriptor would otherwise retain access through its original mount.
+
+These mounts are applied after dropping host capabilities, in the child's private namespaces. The launch
+uses helper protocol v2; an older installed helper refuses it before running the command, and the core
+records `linux_helper_upgrade_required`. There is no fallback that omits protected paths. This requires a
+fresh reviewed helper build and owner installation; the earlier a6a9a95 helper cannot honor this contract.
+
 ## Build and install
 
 Required: Zig 0.17.0, Linux with unified cgroup v2, cgroup BPF socket-address hooks and ring buffers, user/mount
-namespaces, pidfds, `cgroup.kill`, `mount_setattr`, seccomp and Landlock ABI 6. Linux 6.12 is the initial target;
+namespaces, pidfds, `cgroup.kill`, `openat2`, `statx` mount IDs, `mount_setattr`, seccomp and Landlock ABI 6. Linux 6.12 is the initial target;
 version alone does not prove the required kernel configuration. The helper refuses missing capabilities.
 Source supports x86_64 and aarch64; only x86_64 has been exercised locally so far.
 
@@ -107,7 +131,10 @@ Kernel admission refusals enter a per-scope 64 KiB ring buffer. They carry the d
 hook and kernel-observed process ID. The helper forwards fixed-size, versioned records on a private pipe;
 only the blackice process writes JSON receipts. `kernel_drop` with `point: kernel` means the socket operation
 was refused before transmission; it is not a claim that a packet reached an nftables hook. Seccomp refusals
-at socket creation are not individual destination receipts, because no destination exists at that point.
+at socket creation, including `ping`, SCTP and ICMP `sendto` attempts, return `EPERM` without an individual
+`kernel_drop` receipt. No socket-create BPF hook is installed. Protected-path mutation failures return the
+kernel's errno (usually `EROFS`, `EBUSY` or `EXDEV`); they do not each generate a receipt. Containment setup
+failures produce a kernel warning receipt and prevent command execution.
 
 Ring overflow increments an independent atomic loss counter. Nonblocking receipt-pipe overflow is counted
 separately by the helper; their total is reported at shutdown. Neither kind of loss changes a deny verdict.
@@ -125,8 +152,13 @@ lifetime/reuse are core/proxy responsibilities; this backend does not claim cont
 `zig build test` includes actual unprivileged namespace, Landlock and seccomp tests. The test runner must
 allow ordinary socket creation and unprivileged user namespaces. Tool sandboxes and some CI hosts may
 disable these facilities. Tests never invoke sudo or install a helper. Temporary-project tests cover cwd,
-project writes and executable files, hidden siblings and read-only state for multiple scopes. Generated BPF
-branch bounds and invalid launch inputs also have unit checks.
+project writes and executable files, hidden siblings and read-only state for multiple scopes. Protection
+fixtures run 58 mutation attempts in each of a normal directory, `/tmp` and `/var/tmp`: file content and
+metadata, symlink metadata, rename-over and rename-exchange, file and ancestor removal, state writes, new
+hard links and outside-process `/proc` aliases. They also check neighboring writes and protected execution.
+Separate tests reject existing hard links, intermediate symlinks, an actual alternate bind mount, and
+inherited standard descriptors that would bypass protection. Generated BPF branch bounds and invalid
+launch inputs also have unit checks.
 
 `zig build linux-probe` installs an explicit backend harness for receiver tests:
 
@@ -156,10 +188,12 @@ intentionally retains an empty cgroup for owner teardown afterward. Logs are sto
 does not install anything, run sudo or create an evidence entry. These local tests do not replace the off-host
 receiver required for P0-02. A missing helper is reported as blocked, never passed.
 
-This is a network boundary, not a general filesystem or same-user sandbox. Filesystem triggers, shared
-files, terminal output, preexisting filesystem aliases, and cooperation from an unrelated outside process
-are not comprehensively isolated. Scope state is read-only through its mounted path, not a general promise
-about all aliases accessible to the same uid. Allowed endpoints may receive arbitrary permitted payloads.
+This provides a network boundary and protection of the explicit trusted paths, not a general filesystem or
+same-user sandbox. Filesystem triggers, other shared files, terminal output, and cooperation from an
+unrelated outside process are not comprehensively isolated. The state root and its ancestors are protected
+through their mounted paths; pre-existing hard links to individual state files elsewhere are not scanned.
+Protected-file hard links and filesystem mount aliases are refused as described above. Allowed endpoints
+may receive arbitrary permitted payloads.
 Root resistance, arbitrary container/network namespaces, application identity and host-wide filtering are
 not provided. Proxy port ownership, policy/grant authority and model-relay authentication require their own
 evidence.
@@ -168,4 +202,5 @@ Kernel references: [BPF UAPI](https://github.com/torvalds/linux/blob/v6.12/inclu
 [ring buffer](https://docs.kernel.org/bpf/ringbuf.html),
 [cgroup v2](https://docs.kernel.org/admin-guide/cgroup-v2.html),
 [Landlock](https://docs.kernel.org/userspace-api/landlock.html), and
-[seccomp](https://docs.kernel.org/userspace-api/seccomp_filter.html).
+[seccomp](https://docs.kernel.org/userspace-api/seccomp_filter.html), and
+[openat2 path resolution](https://man7.org/linux/man-pages/man2/openat2.2.html).

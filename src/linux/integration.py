@@ -83,7 +83,7 @@ def worker(args):
     elif kind == 'reentry':
         marker = log_path + '.must-not-exist'
         try:
-            run = subprocess.run([str(HELPER), '--protocol-v1', 's-00000001', '-', str(Path(log_path).parent),
+            run = subprocess.run([str(HELPER), '--protocol-v2', 's-00000001', '-', str(Path(log_path).parent), '0',
                                   '--', '/usr/bin/touch', marker], capture_output=True, text=True)
             assert run.returncode == 125 and 'PermissionDenied' in run.stderr, (run.returncode, run.stderr)
             result['stderr'] = run.stderr.strip()

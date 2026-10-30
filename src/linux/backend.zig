@@ -6,6 +6,7 @@ const launch_io = @import("launch_io.zig");
 const l = sys.l;
 const wire = @import("protocol.zig");
 pub const available = true;
+pub const protects_paths = true;
 pub fn launch(gpa: std.mem.Allocator, io: std.Io, spec: backend.LaunchSpec) backend.Error!backend.Exit {
     _ = io;
     return launchInner(gpa, spec) catch |err| {
@@ -30,11 +31,19 @@ fn launchInner(gpa: std.mem.Allocator, spec: backend.LaunchSpec) !backend.Exit {
         try writer.print("{d}", .{port});
     }
     const state = spec.state_dir;
-    if (state.len < 2 or state[0] != '/' or std.mem.findScalar(u8, state, 0) != null) return error.InvalidStateDirectory;
-    const args = try alloc.alloc(?[*:0]const u8, spec.argv.len + 7);
-    const prefix = [_][]const u8{ wire.helper_path, "--protocol-v1", spec.scope_id, writer.buffered(), state, "--" };
+    if (!wire.validPath(state)) return error.InvalidStateDirectory;
+    if (spec.protected_paths.len > wire.max_protected) return error.TooManyProtectedPaths;
+    var count_buf: [8]u8 = undefined;
+    const count = try std.fmt.bufPrint(&count_buf, "{d}", .{spec.protected_paths.len});
+    const args = try alloc.alloc(?[*:0]const u8, spec.argv.len + spec.protected_paths.len + 8);
+    const prefix = [_][]const u8{ wire.helper_path, wire.launch_version, spec.scope_id, writer.buffered(), state, count };
     for (prefix, 0..) |a, i| args[i] = (try alloc.dupeSentinel(u8, a, 0)).ptr;
-    for (spec.argv, 6..) |a, i| {
+    for (spec.protected_paths, 6..) |path, i| {
+        if (!wire.validPath(path)) return error.InvalidProtectedPath;
+        args[i] = (try alloc.dupeSentinel(u8, path, 0)).ptr;
+    }
+    args[6 + spec.protected_paths.len] = "--";
+    for (spec.argv, 7 + spec.protected_paths.len..) |a, i| {
         if (std.mem.findScalar(u8, a, 0) != null) return error.InvalidLaunchSpec;
         args[i] = (try alloc.dupeSentinel(u8, a, 0)).ptr;
     }
@@ -100,7 +109,8 @@ fn launchInner(gpa: std.mem.Allocator, spec: backend.LaunchSpec) !backend.Exit {
             },
             .failure => {
                 failed = true;
-                spec.receipts.write(.{ .event = "warning", .point = .kernel, .verdict = .deny, .reason = "linux_helper_failure", .detail = event.text() });
+                const obsolete = std.mem.eql(u8, event.text(), "arguments: InvalidArguments");
+                spec.receipts.write(.{ .event = "warning", .point = .kernel, .verdict = .deny, .reason = if (obsolete) "linux_helper_upgrade_required" else "linux_helper_failure", .detail = if (obsolete) "Installed helper refused protocol v2; protected paths require the reviewed replacement" else event.text() });
             },
             .cleanup => {
                 clean = true;

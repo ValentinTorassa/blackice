@@ -1,7 +1,7 @@
 //! `blackice run`: runs one command in a new task scope.
 //!
-//!     blackice run --policy FILE [--env NAME]... [--relay --model ID [--model ID]... [--upstream URL]
-//!                  [--max-requests N]] -- CMD [ARG]...
+//!     blackice run --policy FILE [--policy-sha256 HEX] [--protect PATH]... [--env NAME]...
+//!                  [--relay --model ID [--model ID]... [--upstream URL] [--max-requests N]] -- CMD [ARG]...
 //!
 //! Order: the policy is read and checked, the scope directory is created (receipts and an exact copy of the
 //! policy), the proxy and the owner's control socket start (and the relay, when asked), and only then does the
@@ -14,6 +14,11 @@
 //! With --relay, the provider key is read from stdin, never from argv, the environment or a file, after the
 //! process has been made non-dumpable. CMD reaches the model at BLACKICE_RELAY_URL with the relay's per-scope
 //! token in BLACKICE_RELAY_TOKEN (a bearer token for the relay only; the provider key never enters the scope).
+//!
+//! CMD cannot change blackice's own executable, the policy file, or the files named with --protect (the
+//! backend refuses writes to them and renames of their parent directories), so a scoped command cannot swap
+//! in what the next scope runs. With --policy-sha256 the policy must also hash to that value, or nothing runs:
+//! an agent harness pins the policy once and every later scope uses exactly that policy.
 //!
 //! Exit status: CMD's own status (128 + signal when it was killed), 125 when blackice could not set up the
 //! scope, 127 when the backend could not start CMD.
@@ -29,8 +34,8 @@ const relay = @import("../relay/relay.zig");
 const control = @import("../control/control.zig");
 
 pub const usage =
-    \\usage: blackice run --policy FILE [--env NAME]... [--relay --model ID... [--upstream URL] [--max-requests N]]
-    \\                    -- CMD [ARG]...
+    \\usage: blackice run --policy FILE [--policy-sha256 HEX] [--protect PATH]... [--env NAME]...
+    \\                    [--relay --model ID... [--upstream URL] [--max-requests N]] -- CMD [ARG]...
     \\
 ;
 
@@ -47,9 +52,16 @@ pub const pass_env = [_][]const u8{
 
 const max_models = 16;
 const max_env = 32;
+const max_protect = 8;
+/// Protected files plus the symlinks on the way to them.
+const max_protected = 48;
 
 pub const Options = struct {
     policy_path: []const u8 = "",
+    /// 64 lowercase hex digits.
+    policy_sha256: ?[]const u8 = null,
+    protect: [max_protect][]const u8 = undefined,
+    protect_count: usize = 0,
     env_names: [max_env][]const u8 = undefined,
     env_count: usize = 0,
     relay: bool = false,
@@ -70,7 +82,7 @@ pub fn parseArgs(args: []const []const u8, err: *[]const u8) error{Usage}!Option
             o.argv = args[i + 1 ..];
             break;
         }
-        const value_flags = [_][]const u8{ "--policy", "--env", "--model", "--upstream", "--max-requests" };
+        const value_flags = [_][]const u8{ "--policy", "--policy-sha256", "--protect", "--env", "--model", "--upstream", "--max-requests" };
         var takes_value = false;
         for (value_flags) |f| takes_value = takes_value or std.mem.eql(u8, a, f);
         if (takes_value and i + 1 >= args.len) {
@@ -80,6 +92,21 @@ pub fn parseArgs(args: []const []const u8, err: *[]const u8) error{Usage}!Option
         if (std.mem.eql(u8, a, "--policy")) {
             i += 1;
             o.policy_path = args[i];
+        } else if (std.mem.eql(u8, a, "--policy-sha256")) {
+            i += 1;
+            if (!isSha256Hex(args[i])) {
+                err.* = "--policy-sha256 takes 64 lowercase hex digits";
+                return error.Usage;
+            }
+            o.policy_sha256 = args[i];
+        } else if (std.mem.eql(u8, a, "--protect")) {
+            i += 1;
+            if (o.protect_count == max_protect or args[i].len == 0 or args[i][0] != '/') {
+                err.* = "--protect takes an absolute path (at most 8 of them)";
+                return error.Usage;
+            }
+            o.protect[o.protect_count] = args[i];
+            o.protect_count += 1;
         } else if (std.mem.eql(u8, a, "--env")) {
             i += 1;
             if (o.env_count == max_env or args[i].len == 0 or std.mem.findScalar(u8, args[i], '=') != null) {
@@ -131,6 +158,86 @@ pub fn parseArgs(args: []const []const u8, err: *[]const u8) error{Usage}!Option
     return o;
 }
 
+fn isSha256Hex(s: []const u8) bool {
+    if (s.len != 64) return false;
+    for (s) |c| if (!std.ascii.isDigit(c) and !(c >= 'a' and c <= 'f')) return false;
+    return true;
+}
+
+/// sha256 of `bytes` as 64 lowercase hex digits.
+pub fn sha256Hex(bytes: []const u8) [64]u8 {
+    var digest: [32]u8 = undefined;
+    std.crypto.hash.sha2.Sha256.hash(bytes, &digest, .{});
+    return std.fmt.bytesToHex(digest, .lower);
+}
+
+/// The files CMD must not change: blackice's own executable, the policy file, the --protect paths. Each is
+/// kept as the file it resolves to plus every symlink on the way to it, as the directory entry the kernel
+/// sees (its parent resolved), so no link can be re-pointed: not a Homebrew-style link to blackice, not a
+/// symlinked directory such as ~/bin -> ~/tools/bin.
+const Protected = struct {
+    store: [max_protected][]u8 = undefined,
+    n: usize = 0,
+
+    fn deinit(p: *Protected, gpa: std.mem.Allocator) void {
+        for (p.store[0..p.n]) |s| gpa.free(s);
+        p.n = 0;
+    }
+
+    /// Resolves `path` (relative to the current directory when not absolute) and records the file and every
+    /// symlink on the way.
+    fn add(p: *Protected, gpa: std.mem.Allocator, io: Io, path: []const u8) !void {
+        try p.record(gpa, try realAlloc(gpa, io, path));
+        var end: usize = 1;
+        while (end <= path.len) : (end += 1) {
+            if (end != path.len and path[end] != '/') continue;
+            const prefix = path[0..end];
+            const name = std.fs.path.basename(prefix);
+            if (name.len == 0 or std.mem.eql(u8, name, ".") or std.mem.eql(u8, name, "..")) continue;
+            const parent = std.fs.path.dirname(prefix) orelse ".";
+            const real_parent = try realAlloc(gpa, io, if (parent.len == 0) "/" else parent);
+            defer gpa.free(real_parent);
+            const real_prefix = try realAlloc(gpa, io, prefix);
+            defer gpa.free(real_prefix);
+            const entry = try std.fs.path.join(gpa, &.{ real_parent, name });
+            if (std.mem.eql(u8, entry, real_prefix)) gpa.free(entry) else try p.record(gpa, entry);
+        }
+    }
+
+    /// Takes ownership of `path`.
+    fn record(p: *Protected, gpa: std.mem.Allocator, path: []u8) !void {
+        if (p.has(path)) return gpa.free(path);
+        if (p.n == p.store.len) {
+            gpa.free(path);
+            return error.TooManyProtectedPaths;
+        }
+        p.store[p.n] = path;
+        p.n += 1;
+    }
+
+    fn realAlloc(gpa: std.mem.Allocator, io: Io, path: []const u8) ![]u8 {
+        const z = try Io.Dir.cwd().realPathFileAlloc(io, path, gpa);
+        defer gpa.free(z);
+        return gpa.dupe(u8, z);
+    }
+
+    fn paths(p: *const Protected) []const []const u8 {
+        return p.store[0..p.n];
+    }
+
+    fn has(p: *const Protected, path: []const u8) bool {
+        for (p.store[0..p.n]) |s| if (std.mem.eql(u8, s, path)) return true;
+        return false;
+    }
+};
+
+/// Why a scope cannot start on this backend, or null. Protected paths need a backend that honors them.
+pub fn protectionProblem(protected_count: usize, backend_protects: bool) ?[]const u8 {
+    if (protected_count > 0 and !backend_protects)
+        return "this backend cannot yet keep blackice and the policy unchanged inside the scope";
+    return null;
+}
+
 /// Builds CMD's environment: the passed variables that exist, the --env ones, BLACKICE_SCOPE, then the proxy
 /// variables (which win over anything with the same name).
 pub fn buildEnv(
@@ -153,7 +260,31 @@ fn basename(path: []const u8) []const u8 {
     return if (std.mem.findScalarLast(u8, path, '/')) |i| path[i + 1 ..] else path;
 }
 
-pub fn run(gpa: std.mem.Allocator, io: Io, parent_env: *const std.process.Environ.Map, args: []const []const u8, errw: *Io.Writer) !u8 {
+/// The path a shell used to start blackice, from argv[0]: argv[0] itself when it has a slash, else the first
+/// PATH entry that holds it. Only a path that resolves to `exe_real` (this very executable) counts. Null when
+/// none does. Caller owns the result.
+pub fn invokedPath(gpa: std.mem.Allocator, io: Io, argv0: []const u8, path_env: ?[]const u8, exe_real: []const u8) ?[]u8 {
+    if (argv0.len == 0) return null;
+    if (std.mem.findScalar(u8, argv0, '/') != null) {
+        return if (resolvesTo(gpa, io, argv0, exe_real)) gpa.dupe(u8, argv0) catch null else null;
+    }
+    var it = std.mem.splitScalar(u8, path_env orelse return null, ':');
+    while (it.next()) |dir| {
+        if (dir.len == 0 or dir[0] != '/') continue;
+        const candidate = std.fs.path.join(gpa, &.{ dir, argv0 }) catch return null;
+        if (resolvesTo(gpa, io, candidate, exe_real)) return candidate;
+        gpa.free(candidate);
+    }
+    return null;
+}
+
+fn resolvesTo(gpa: std.mem.Allocator, io: Io, path: []const u8, want: []const u8) bool {
+    const real = Io.Dir.cwd().realPathFileAlloc(io, path, gpa) catch return false;
+    defer gpa.free(real);
+    return std.mem.eql(u8, real, want);
+}
+
+pub fn run(gpa: std.mem.Allocator, io: Io, parent_env: *const std.process.Environ.Map, argv0: []const u8, args: []const []const u8, errw: *Io.Writer) !u8 {
     var why: []const u8 = "";
     const o = parseArgs(args, &why) catch {
         try errw.print("blackice run: {s}\n{s}", .{ why, usage });
@@ -179,6 +310,56 @@ pub fn run(gpa: std.mem.Allocator, io: Io, parent_env: *const std.process.Enviro
     defer pol.deinit();
     if (pol.ignoredAllowCount() > 0) {
         try errw.print("blackice run: warning: mode {s} ignores the {d} allow entries\n", .{ pol.mode.label(), pol.ignoredAllowCount() });
+    }
+    if (o.policy_sha256) |want| {
+        const got = sha256Hex(bytes);
+        if (!std.mem.eql(u8, &got, want)) {
+            try errw.print("blackice run: {s} does not match --policy-sha256 (it changed after it was pinned); the command was not run\n", .{o.policy_path});
+            return status_setup_failed;
+        }
+    }
+
+    // The files CMD must not change, resolved before any scope exists. The backends match resolved paths.
+    var prot: Protected = .{};
+    defer prot.deinit(gpa);
+    {
+        const exe = std.process.executablePathAlloc(io, gpa) catch |err| {
+            try errw.print("blackice run: cannot find blackice's own executable: {s}\n", .{@errorName(err)});
+            return status_setup_failed;
+        };
+        defer gpa.free(exe);
+        prot.add(gpa, io, exe) catch |err| {
+            try errw.print("blackice run: cannot resolve blackice's own executable {s}: {s}\n", .{ exe, @errorName(err) });
+            return status_setup_failed;
+        };
+        // The OS reports the resolved file; a symlink the shell went through (a Homebrew-style link on PATH)
+        // is found from argv[0], so it cannot be re-pointed either.
+        const exe_real = Io.Dir.cwd().realPathFileAlloc(io, exe, gpa) catch |err| {
+            try errw.print("blackice run: cannot resolve blackice's own executable {s}: {s}\n", .{ exe, @errorName(err) });
+            return status_setup_failed;
+        };
+        defer gpa.free(exe_real);
+        if (invokedPath(gpa, io, argv0, parent_env.get("PATH"), exe_real)) |invoked| {
+            defer gpa.free(invoked);
+            prot.add(gpa, io, invoked) catch |err| {
+                try errw.print("blackice run: cannot protect {s}: {s}\n", .{ invoked, @errorName(err) });
+                return status_setup_failed;
+            };
+        }
+    }
+    prot.add(gpa, io, o.policy_path) catch |err| {
+        try errw.print("blackice run: cannot resolve {s}: {s}\n", .{ o.policy_path, @errorName(err) });
+        return status_setup_failed;
+    };
+    for (o.protect[0..o.protect_count]) |path| {
+        prot.add(gpa, io, path) catch |err| {
+            try errw.print("blackice run: cannot resolve --protect {s}: {s}\n", .{ path, @errorName(err) });
+            return status_setup_failed;
+        };
+    }
+    if (protectionProblem(prot.n, backend.protects_paths)) |problem| {
+        try errw.print("blackice run: {s} ({s}); the command was not run\n", .{ problem, backend.name });
+        return status_setup_failed;
     }
 
     // 2. The relay key, before any scope exists, and only after the process cannot be inspected. A terminal
@@ -292,11 +473,13 @@ pub fn run(gpa: std.mem.Allocator, io: Io, parent_env: *const std.process.Enviro
     }
 
     var detail_buf: [160]u8 = undefined;
-    const start_detail = std.fmt.bufPrint(&detail_buf, "backend {s}; command {s}; proxy port {d}{s}", .{
+    const start_detail = std.fmt.bufPrint(&detail_buf, "backend {s}; command {s}; proxy port {d}{s}; {d} protected files{s}", .{
         backend.name,
         basename(o.argv[0]),
         proxy_port,
         if (svc.rl != null) "; relay on" else "",
+        prot.n,
+        if (o.policy_sha256 != null) "; policy pinned" else "",
     }) catch "backend";
     log.write(.{ .event = "scope_start", .point = .control, .detail = start_detail });
     try errw.print("blackice: scope {s} (policy {s}, {s}); receipts: {s}/receipts.jsonl\n", .{ sid, pol.id(), backend.name, created.path });
@@ -310,6 +493,7 @@ pub fn run(gpa: std.mem.Allocator, io: Io, parent_env: *const std.process.Enviro
         .environ = &env,
         .allowed_loopback_ports = ports,
         .state_dir = state_root,
+        .protected_paths = prot.paths(),
         .receipts = &log,
         .stdin = if (o.relay) .null_device else .inherit,
     }) catch |err| {
@@ -379,6 +563,77 @@ test parseArgs {
     try testing.expectError(error.Usage, parseArgs(&.{ "--policy", "p", "--relay", "--", "fx" }, &why));
     try testing.expectError(error.Usage, parseArgs(&.{ "--policy", "p", "--model", "m", "--", "fx" }, &why));
     try testing.expectError(error.Usage, parseArgs(&.{"--policy"}, &why));
+
+    const pinned = try parseArgs(&.{ "--policy", "p", "--policy-sha256", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "--protect", "/usr/local/bin/fx", "--", "sh" }, &why);
+    try testing.expectEqualStrings("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", pinned.policy_sha256.?);
+    try testing.expectEqualStrings("/usr/local/bin/fx", pinned.protect[0]);
+    try testing.expectError(error.Usage, parseArgs(&.{ "--policy", "p", "--policy-sha256", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "--", "sh" }, &why));
+    try testing.expectError(error.Usage, parseArgs(&.{ "--policy", "p", "--policy-sha256", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "--", "sh" }, &why));
+    try testing.expectError(error.Usage, parseArgs(&.{ "--policy", "p", "--protect", "relative", "--", "sh" }, &why));
+}
+
+test protectionProblem {
+    try testing.expect(protectionProblem(2, false) != null);
+    try testing.expect(protectionProblem(2, true) == null);
+    try testing.expect(protectionProblem(0, false) == null);
+    // The shipped backends: macOS protects; anything that does not refuses (core run always protects at
+    // least blackice itself and the policy).
+    if (@import("builtin").os.tag == .macos) try testing.expect(backend.protects_paths);
+    if (!backend.protects_paths) try testing.expect(protectionProblem(2, backend.protects_paths) != null);
+}
+
+test "Protected keeps a symlinked file twice: the link and its target" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const io = testing.io;
+    try tmp.dir.writeFile(io, .{ .sub_path = "real-file", .data = "x" });
+    try tmp.dir.symLink(io, "real-file", "link", .{});
+    const base = try tmp.dir.realPathFileAlloc(io, ".", testing.allocator);
+    defer testing.allocator.free(base);
+    const link = try std.fs.path.join(testing.allocator, &.{ base, "link" });
+    defer testing.allocator.free(link);
+    const target = try std.fs.path.join(testing.allocator, &.{ base, "real-file" });
+    defer testing.allocator.free(target);
+
+    var p: Protected = .{};
+    defer p.deinit(testing.allocator);
+    try p.add(testing.allocator, io, link);
+    try p.add(testing.allocator, io, target);
+    try testing.expectEqual(@as(usize, 2), p.n);
+    try testing.expectEqualStrings(target, p.paths()[0]);
+    try testing.expectEqualStrings(link, p.paths()[1]);
+
+    // argv[0] with a slash is used as given; a bare name is looked up on PATH. Only paths that lead to the
+    // executable itself count.
+    const via_path = invokedPath(testing.allocator, io, "link", base, target).?;
+    defer testing.allocator.free(via_path);
+    try testing.expectEqualStrings(link, via_path);
+    try testing.expect(invokedPath(testing.allocator, io, "missing-name", base, target) == null);
+    try testing.expect(invokedPath(testing.allocator, io, "link", base, "/somewhere/else") == null);
+    const direct = invokedPath(testing.allocator, io, link, null, target).?;
+    defer testing.allocator.free(direct);
+    try testing.expectEqualStrings(link, direct);
+
+    // A symlinked directory on the way is protected as its own entry.
+    try tmp.dir.createDirPath(io, "tools/bin");
+    try tmp.dir.writeFile(io, .{ .sub_path = "tools/bin/tool", .data = "x" });
+    try tmp.dir.symLink(io, "tools/bin", "bin", .{ .is_directory = true });
+    const via_dir = try std.fs.path.join(testing.allocator, &.{ base, "bin", "tool" });
+    defer testing.allocator.free(via_dir);
+    var q: Protected = .{};
+    defer q.deinit(testing.allocator);
+    try q.add(testing.allocator, io, via_dir);
+    const dir_link = try std.fs.path.join(testing.allocator, &.{ base, "bin" });
+    defer testing.allocator.free(dir_link);
+    try testing.expect(q.has(dir_link));
+    const tool_real = try std.fs.path.join(testing.allocator, &.{ base, "tools", "bin", "tool" });
+    defer testing.allocator.free(tool_real);
+    try testing.expect(q.has(tool_real));
+    try testing.expectEqual(@as(usize, 2), q.n);
+}
+
+test sha256Hex {
+    try testing.expectEqualStrings("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", &sha256Hex(""));
 }
 
 test buildEnv {
