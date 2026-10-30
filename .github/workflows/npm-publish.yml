@@ -1,6 +1,5 @@
 # Publish the npm packages of a release. Rules and assumptions: docs/security-review/README.md ("npm").
-# Version 0.1.0 is published manually, without npm provenance. This workflow excludes that tag.
-# Publishing a later reviewed draft release starts this workflow. The publish job waits for the owner's approval in the
+# Publishing a reviewed draft release starts this workflow. The publish job waits for the owner's approval in the
 # "npm" environment, and only that job can request an OIDC token.
 name: npm publish
 
@@ -29,7 +28,7 @@ env:
 jobs:
   prepare:
     name: verify the release and pack
-    if: github.repository == 'ValentinTorassa/blackice' && github.event.release.tag_name != 'v0.1.0' && !github.event.release.draft && !github.event.release.prerelease
+    if: github.repository == 'ValentinTorassa/blackice' && !github.event.release.draft && !github.event.release.prerelease
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:

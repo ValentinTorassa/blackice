@@ -17,7 +17,7 @@ export const platforms = [
 ];
 const digest = bytes => createHash('sha256').update(bytes).digest('hex');
 
-export function readRegular(file, limit = 128 * 1024 * 1024) {
+function readRegular(file, limit = 128 * 1024 * 1024) {
   const fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   try {
     const stat = fstatSync(fd);
