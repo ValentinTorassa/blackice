@@ -174,7 +174,7 @@ export const DOCS = [
           everything, and nested scopes will only be able to narrow it.
         </p>
         <H2>Quick look</H2>
-        <Code title="terminal" label="Illustrative · CLI not frozen">{`$ ${SITE.name} run --policy policy.json -- npm test
+        <Code title="terminal" label="Illustrative · CLI not frozen">{`$ ${SITE.name} run --policy policy.json -- npm ci
 # from outside the scope, as the owner:
 $ ${SITE.name} grant ${SCOPE} api.example.com --for 10m
 $ tail -f ~/.local/state/${SITE.name}/scopes/${SCOPE}/receipts.jsonl`}</Code>
@@ -583,9 +583,9 @@ ${SITE.name} revoke <scope> <host>`}</Code>
         </Note>
         <H2>A scope per command</H2>
         <Code title="fx with a small blackice hook patch (not upstream)" label="Illustrative">{`# fx's shell tool asks to run:
-npm test
+npm ci
 # the hook runs it as:
-${SITE.name} run --policy policy.json -- npm test`}</Code>
+${SITE.name} run --policy policy.json -- npm ci`}</Code>
         <p>
           A small, declared patch adds a built-in PreToolUse handler to{' '}
           <a href="https://github.com/vercel-labs/fx">fx</a>. For the shell tool, it rewrites each call to run through{' '}
