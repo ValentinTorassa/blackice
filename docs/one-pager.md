@@ -30,13 +30,13 @@ it, and every decision is written down. It runs locally, headless, with no accou
 
 | Checkpoint | What it shows | Evidence |
 |---|---|---|
-| P0-01 Policy before execution | A command cannot connect before its scope is armed, even at its first instruction. | macOS: [entry](../evidence/P0-01-policy-before-exec-macos.md). Linux: pending |
-| P0-02 Real deny | A direct connection is refused by the OS, and a receiver on another machine sees nothing. Each protocol and address family is stated separately. | macOS, TCP and UDP over IPv4 and IPv6, name lookup, listening and launchd jobs: [entry](../evidence/P0-02-real-deny-macos.md). Linux: pending |
-| P0-03 Small explicit allow | One allowed destination works through the proxy; another is refused. | macOS: [entry](../evidence/P0-03-explicit-allow-macos.md). Linux: pending |
-| P0-04 Authorized change | The owner widens a scope from outside; the same request from inside fails. | macOS: [entry](../evidence/P0-04-owner-grant-macos.md). Linux: pending |
-| P0-05 Bounded grant | The extra access ends at its expiry or when the scope ends. | macOS, expiry: [entry](../evidence/P0-05-grant-expiry-macos.md). Linux: pending |
+| P0-01 Policy before execution | A command cannot connect before its scope is armed, even at its first instruction. | macOS: [entry](../evidence/P0-01-policy-before-exec-macos.md). Linux: [entry](../evidence/P0-01-policy-before-exec-linux.md) |
+| P0-02 Real deny | A direct connection is refused by the OS, and a receiver on another machine sees nothing. Each protocol and address family is stated separately. | macOS, TCP and UDP over IPv4 and IPv6, name lookup, listening and launchd jobs: [entry](../evidence/P0-02-real-deny-macos.md). Linux, TCP and UDP over IPv4 and IPv6, including a descendant that double-forked: [entry](../evidence/P0-02-real-deny-linux.md) |
+| P0-03 Small explicit allow | One allowed destination works through the proxy; another is refused. | macOS: [entry](../evidence/P0-03-explicit-allow-macos.md). Linux: [entry](../evidence/P0-03-explicit-allow-linux.md) |
+| P0-04 Authorized change | The owner widens a scope from outside; the same request from inside fails. | macOS: [entry](../evidence/P0-04-owner-grant-macos.md). Linux: [entry](../evidence/P0-04-owner-grant-linux.md) |
+| P0-05 Bounded grant | The extra access ends at its expiry or when the scope ends. | macOS, expiry: [entry](../evidence/P0-05-grant-expiry-macos.md). Linux, expiry: [entry](../evidence/P0-05-grant-expiry-linux.md) |
 | P0-07 fx | fx runs with blackice and its commands are confined, with receipts. The fx version is pinned. | macOS, scripted model, full-access mode: [entry](../evidence/P0-07-fx-hook-scripted-macos.md). Real model: pending. Linux: pending |
-| P0-08 Second platform | The same checks on the other OS, or the exact blocker. | pending |
+| P0-08 Second platform | The same checks on the other OS, or the exact blocker. | pending (Linux has entries for P0-01 to P0-05; P0-07 on Linux has none) |
 | P0-09 Forwardable proof | Evidence entries, a short recording and this page. | pending |
 | P0-10 Release gap | The table below. | this page |
 
@@ -50,7 +50,7 @@ means the code compiles and its tests pass, not that it was shown working.
 | | Agent tasks (task scopes) | Apps (app scopes) |
 |---|---|---|
 | **macOS** | Built, experimental: a Seatbelt sandbox profile plus the local proxy. Shown on one Mac in the entries above. Not shown yet: launches through `open` or Apple Events refused, fx with a real model. | Built, unsigned, in #8 (not merged yet): a Network Extension filter. It has never been activated. Needs an Apple Developer ID, a signed Network Extension, tests on a live system, and receipts written through blackice. |
-| **Linux** | Built in #6 (not merged yet; on main, `blackice run` refuses on Linux): cgroup v2 with eBPF socket programs, and a small helper installed once by a setup script run with sudo. Not shown yet: no evidence entry so far. The first two real runs (30 Oct) failed closed before the command ran; the fixes are in review. | Not built. Identifying an app by its desktop or service group still has to be proven. |
+| **Linux** | Built: cgroup v2 with eBPF socket programs, and a small helper installed once by a setup script run with sudo. Shown on one Debian 13 machine (kernel 6.12, x86_64) in the entries above; the first two real runs on 30 Oct failed closed before the command ran, and were fixed. Not shown yet: other distributions (on Ubuntu 24.04 and later, where `kernel.apparmor_restrict_unprivileged_userns=1` is the default, scopes are expected to fail closed; not tested on Ubuntu), aarch64, fx. | Not built. Identifying an app by its desktop or service group still has to be proven. |
 
 Windows is planned for after macOS and Linux. Nothing is built for it.
 
@@ -61,6 +61,8 @@ HTTPS through the proxy, observe mode, and recovery after faults.
 
 - Network only. Files, processes and credentials need their own controls. On macOS, in the recorded build (58e73cc),
   a command in a scope can read and write the clipboard; refused since e6dcd3f, merged into main as part of 727a5db.
+- On Linux, sockets other than TCP and UDP (ping, SCTP, raw) are refused before any address is chosen, so they
+  leave no receipt.
 - It does not detect prompt injection. It blocks connections the policy does not allow. Data sent to an allowed
   destination is out of scope.
 - With the fx hook, fx itself runs outside the scopes. Its file tools are kept inside the workspace, so

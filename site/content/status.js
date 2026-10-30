@@ -30,6 +30,7 @@ export const MATRIX = [
       builtWhen: /^pub const available = true;/m,
       evidence: /^P0-02-.*linux/i,
       how: 'A cgroup v2 per task, with eBPF programs that let the command reach only a local proxy, which applies the policy.',
+      note: 'Tested on Debian 13 (kernel 6.12). On Ubuntu 24.04 and later, where kernel.apparmor_restrict_unprivileged_userns=1 is the default, scopes are expected to fail closed (not tested on Ubuntu).',
     },
   },
 ];
