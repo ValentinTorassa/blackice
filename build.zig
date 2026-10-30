@@ -32,9 +32,15 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_tests.step);
 
     if (target.result.os.tag == .linux) {
+        // Match linux-build-helper.sh even when the main executable targets the native CPU.
+        const helper_target = b.resolveTargetQuery(.{
+            .cpu_arch = target.result.cpu.arch,
+            .cpu_model = .baseline,
+            .os_tag = .linux,
+        });
         const helper_root = b.createModule(.{
             .root_source_file = b.path("src/linux/helper.zig"),
-            .target = target,
+            .target = helper_target,
             .optimize = .ReleaseSafe,
             .strip = true,
         });

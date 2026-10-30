@@ -86,10 +86,12 @@ zig build linux-probe
 ./scripts/linux-build-helper.sh
 ```
 
-The helper always uses ReleaseSafe with stripped debug information. Its panic path does not symbolize or
-read source files, and Zig's segmentation-fault handler is disabled. The separate build script prints the
-binary's SHA-256. Before installation, have the privileged helper and scripts reviewed, and compare that hash
-with an independent build of the reviewed commit.
+The helper always uses ReleaseSafe with stripped debug information and an explicit `x86_64-linux` or
+`aarch64-linux` target with the baseline CPU. Both `zig build` and the separate helper script use that target,
+so host CPU features do not change the reviewed artifact. Its panic path does not symbolize or read source
+files, and Zig's segmentation-fault handler is disabled. The helper script prints the target and binary's
+SHA-256. Before installation, have the privileged helper and scripts reviewed, and compare that hash with an
+independent build of the reviewed commit.
 
 The owner runs the reviewed script manually, supplying that expected hash:
 

@@ -8,6 +8,7 @@ pub fn prepareStdin(null_device: bool) !?l.fd_t {
     if (!null_device) return null;
     const fd = try sys.fd(l.open("/dev/null", .{ .CLOEXEC = true, .NOFOLLOW = true }, 0));
     errdefer sys.close(fd);
+    if (fd == 1 or fd == 2) return error.InvalidState;
     const stat = try sys.stat(fd);
     if (stat.mode & 0o170000 != 0o020000 or stat.rdev_major != 1 or stat.rdev_minor != 3) return error.NullDeviceRequired;
     return fd;
@@ -92,4 +93,20 @@ test "replacement stdin survives exec when open returned descriptor zero" {
         l.exit_group(4);
     }
     try std.testing.expectEqual(@as(u32, 0), try sys.wait(pid));
+}
+
+test "replacement stdin refuses closed output descriptors in the launcher" {
+    for ([_]l.fd_t{ 1, 2 }) |output| {
+        const pid: l.pid_t = @intCast(try sys.check(l.fork()));
+        if (pid == 0) {
+            sys.close(output);
+            if (prepareStdin(true)) |_| {
+                l.exit_group(1);
+            } else |err| if (err != error.InvalidState) l.exit_group(2);
+            // The failed replacement must not leave /dev/null in the missing output slot.
+            if (l.errno(l.fcntl(output, l.F.GETFD, 0)) != .BADF) l.exit_group(3);
+            l.exit_group(0);
+        }
+        try std.testing.expectEqual(@as(u32, 0), try sys.wait(pid));
+    }
 }
