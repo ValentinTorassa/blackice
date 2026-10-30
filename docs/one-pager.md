@@ -59,6 +59,9 @@ HTTPS through the proxy, observe mode, and recovery after faults.
 - Network only. Files, processes and credentials need their own controls.
 - It does not detect prompt injection. It blocks connections the policy does not allow. Data sent to an allowed
   destination is out of scope.
+- With the fx hook, only the first command of an fx session is sure to be confined until three known gaps are
+  closed: fx's login shell runs the user's startup files outside the scope, the policy and the binary can be
+  changed from inside a scope, and some fx tools reach the network themselves.
 - In v0, any process of the same user that runs outside every scope counts as the owner.
 - Work handed to a service outside the scope (launchd, `open`, `systemd-run --user`, Docker) is refused only
   where a test shows it; otherwise it is a stated limit.
