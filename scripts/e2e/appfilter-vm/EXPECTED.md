@@ -6,9 +6,14 @@ every privileged step happens inside the VM over its ssh wrapper.
 
 ```
 scripts/e2e/appfilter-vm/run.sh --vm <vm dir with vssh> --commit <sha> \
-    --binary-sha <service sha256> --bundle-sha <bundle sha256> \
-    --label dry-run|evidence --results <dir> [--agent yes|no] [--extra] [--skip phase,...] [--secret-dir <dir>]
+    --binary-sha <service sha256> --bundle-sha <bundle sha256> [--cli-sha <release CLI sha256>] \
+    --label dry-run|evidence --results <dir> [--agent yes|no] [--extra] [--skip phase,...] [--secret-dir <dir>] \
+    [--only interactive,reboot,teardown]
 ```
+
+`--only` re-runs blocks against the kit already installed and verified in the VM, after a harness fix. It
+refreshes `aftest.py` only, never a product file, and its results directory ends in `-rerun`. Say so whenever
+it is used for evidence.
 
 `--agent yes` means the commit's CLI starts `pkttyagent` for `app off` on a terminal, so the interactive cases
 expect a password prompt. Use `--agent no` for a commit without it: every interactive case then expects a
@@ -22,8 +27,9 @@ refusal with no prompt.
    nftables, polkitd, libcap2-bin, dbus-user-session), and copies Zig 0.17.0 in if it is missing.
 3. Copies `git archive <commit>` into the VM and records provenance: the source tree hash computed in the VM
    against the commit's tree, uname, the BTF sha256, the Debian version and the Zig version.
-4. Builds as the VM user, with `scripts/linux-build-appfilter.sh` and `zig build -Doptimize=ReleaseSafe` (the
-   CLI). It stops if the bundle or service binary hash differs from the reviewed hashes passed in.
+4. Builds as the VM user, with `scripts/linux-build-appfilter.sh`, and `zig build release` for the CLI
+   (`zig-out/release/blackice-x86_64-linux`). It stops if the bundle, service binary or CLI hash differs from
+   the reviewed hashes passed in.
 5. Moves aside what an earlier run left in the VM. It refuses if an app filter is still installed. It archives
    `/var/lib/blackice-appfilter`, which setup refuses to adopt, under `/var/tmp/aftest-archive/`, and moves
    earlier results aside.
@@ -177,6 +183,15 @@ The final commit limits the unit to 5 starts in 600 s (`StartLimitBurst`/`StartL
 P3). The harness kills the service on purpose many times, so it runs `systemctl reset-failed` before each
 deliberate kill. That clears the start counter only; it never restarts anything by itself.
 
+A failure that leaves the service down would also fail every later case. To stop that, the cases from F02 on
+start with a harness recovery when the control socket does not answer:
+- wait until no TIME_WAIT socket holds a listener port (up to 75 s);
+- `systemctl reset-failed` both units;
+- start the socket.
+
+Each recovery is recorded as `<case>.harness-recovery` (OBSERVE). The failure itself stays recorded in the
+case that caused it.
+
 - **F01 crash.** SIGKILL the service.
   - While it is down, the seven attachment ids are unchanged: the pins hold.
   - systemd restarts it within RestartSec=1 (`NRestarts`+1), still `OK armed`.
@@ -191,6 +206,13 @@ deliberate kill. That clears the start counter only; it never restarts anything 
     receipt, and curl gets 200 again.
   - The TIME_WAIT sockets on 760–774 at the kill are recorded (F01 too). On 6c849ec a restart right after
     proxied traffic failed with `ListenerPortOccupied` until the start limit was hit.
+- **F02c (A3), start limit.**
+  - Kill the service repeatedly with no traffic in between. After `StartLimitBurst` restarts, the next start is
+    refused: the unit is `failed` with `Result=start-limit-hit`, and the socket unit's state is recorded.
+  - The seven attachment ids are unchanged, a tagged curl fails, and an untagged connect to `127.0.0.1:760`
+    still gets EPERM.
+  - `systemctl reset-failed` on both units, starting the socket and an `app status` bring it back armed, and
+    curl gets 200 again.
 - **G01 kill-then-fork.** A tagged forker process stays alive while the service is SIGKILLed and stopped (the
   automatic restart is cancelled).
   - A fork while the service is down is still tagged: EPERM to the netns, ECONNREFUSED on its own port.
@@ -224,25 +246,45 @@ deliberate kill. That clears the start counter only; it never restarts anything 
     the baseline, with an `app_filter_off` receipt (reason `owner_authorized`). Both curl requests then succeed
     without the filter, and the polkit journal is kept.
   - F08: arm again.
-- **B00–B4: the real polkit path** (security case B). This runs after the last use of the rule, so no rule
-  exists during these cases.
+- **B00–B9: the real polkit path** (security case B). This runs after the last use of the VM-only rule, so that
+  rule does not exist during these cases.
   - B00 records the setup: the owner is in group `sudo` (Debian's admin rule is `unix-group:sudo`),
     `/usr/bin/pkttyagent` is present, the admin rule's text, and the owner's password state. The password is
     random per run, set with `chpasswd` from stdin, kept in a 0600 file outside the results, scrubbed from
     transcripts, and locked again afterwards.
-  - Each case opens a fresh `ssh -t` session as the owner, with no desktop, and runs `blackice app off` under a
-    pty on the host (`interactive_off.py`). The VM side records the state before, the transcript, and the
-    state after, with the before/after trees.
-  - B1 correct password: with `--agent yes`, a prompt, `OK off`, status off, a clean tree and an
-    `app_filter_off` receipt.
-  - B2 wrong password: refused, still armed, no new off receipt, curl still filtered.
-  - B3 Ctrl-C at the prompt: refused, still armed.
-  - B4 no answer: refused, still armed. From 5517189 on, polkit has one 15 s budget for the whole exchange,
-    password included, so with `--agent yes` the session must end between 10 and 40 s. While it waits, an
-    `app status` from a second session is timed (OBSERVE: shows whether the service blocks).
-  - B1 records when the prompt appeared and how long the session took (OBSERVE: inside the 15 s budget).
-  - Every B case: same MainPID and NRestarts as before the session (the service kept serving).
-  - With `--agent no` (a commit whose CLI starts no agent), every B case expects "no prompt, refused, still
+  - Each case opens a fresh interactive login shell with `ssh -t`, as the owner, with no desktop, under a pty on
+    the host (`interactive_off.py`). It types `blackice app off; echo AFTEST-RC=$?` and answers the agent the way
+    a person would. Afterwards the same shell records `stty` and types a random token, which shows whether
+    terminal echo came back. The VM side records the state before, the transcript, and the state after, with
+    the before/after trees.
+  - Cases:
+    - B1 correct password: a prompt, `OK off`, status off, a clean tree, an `app_filter_off` receipt, and both
+      curl requests unfiltered. The time from the prompt to the answer is recorded against the 15 s budget.
+    - B2 wrong password: refused, still armed, no new off receipt, and curl still filtered.
+    - B3 Ctrl-C at the prompt: refused and still armed.
+    - B4 no answer: refused between 10 and 40 s (one 15 s polkit budget for the whole exchange), still armed.
+      While it waits, an `app status` from a second session is timed (OBSERVE: shows whether the service
+      blocks).
+    - B5 `app off </dev/null` without `-t`: no agent starts, it is refused with no prompt, and it stays armed.
+    - B7: root moves `/usr/bin/pkttyagent` aside, and the owner types `app off` under
+      `strace -f -e trace=connect,execve`. It fails with no prompt and stays armed, and the trace has no
+      `connect()` to `/run/blackice-appfilter/control.sock`: it failed before contacting the service. The
+      file is moved back and must have the same sha256, owner and mode.
+    - B8: root removes the owner from group `sudo`, as on valendebian, where the group is empty. `app off` is
+      refused and the filter stays armed. Whatever the agent shows is recorded (no prompt, or a prompt for
+      another identity, which is answered with the owner's password).
+    - B9: security's reviewed admin rule, with valen→test (sha256 0b943244…), is installed root:root 0644 as
+      `/etc/polkit-1/rules.d/49-blackice-appfilter-admin.rules`, and the owner is still outside `sudo`.
+      - B9a: the owner's own password turns the filter off.
+      - B9b: re-armed, a wrong password is refused.
+      - B9c: `pkexec true` with the owner's password is still refused, because it is a different action and
+        the admin group is empty. The rule is then removed (`ls -la rules.d` is recorded before and after),
+        and the owner goes back into `sudo`.
+  - Every case except B5:
+    - terminal echo is on afterwards (`stty` shows `echo`, and the typed token appears);
+    - no `pkttyagent` of the owner is left (`pgrep -a -u test pkttyagent`, security's B6);
+    - the service kept the same MainPID and NRestarts.
+  - With `--agent no` (a commit whose CLI starts no agent), every case expects "no prompt, refused, still
     armed".
 - **R01 (M6), after a VM reboot.** run.sh reboots the VM and checks the kernel again.
   - Status is `disarmed_by_reboot`, and no hook is attached: nothing re-arms by itself.
