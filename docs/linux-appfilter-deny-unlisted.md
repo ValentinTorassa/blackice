@@ -58,8 +58,8 @@ a machine running agent sessions.** A separate exception design would need its o
 4. Add bounded, single-writer refusal summaries, labeled `comm (process-chosen)` rather than executable identity.
    LRU map eviction has no automatic overflow count; select and review an accounting strategy before claiming one.
    Root recovery cannot append behind the active service log writer.
-5. Resolve the base restart/TIME_WAIT correction and run the exact reviewed artifact in VM4, including a graphical
-   console. Unit tests and an SSH session do not prove console recovery.
+5. Run the exact reviewed artifact in the designated VM, including a graphical console. This branch includes the
+   base listener's TIME_WAIT recovery fix; unit tests and an SSH session do not prove console recovery.
 
 ## Acceptance evidence still required
 
