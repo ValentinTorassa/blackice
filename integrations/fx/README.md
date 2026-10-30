@@ -16,7 +16,7 @@ before fx validates, reviews or runs each tool call.
 
 | Tool call | What happens |
 |---|---|
-| `shell` that starts a command (`action: "run"`, or a `command` with no action) | The command becomes `'<blackice>' run --policy-sha256 '<hash>' --protect '<fx>' --policy '<policy>' -- '<shell>' '-f' '-c' '<command>'`, and the call gets `profile: "clean"`. It runs in a new task scope with its own proxy, receipts and a clean environment. |
+| `shell` that starts a command (`action: "run"`, or a `command` with no action) | The command becomes `'<blackice>' run --policy-sha256 '<hash>' --protect '<fx>' [--protect '<fx profile file>' …] --policy '<policy>' -- '<shell>' '-f' '-c' '<command>'`, and the call gets `profile: "clean"`. It runs in a new task scope with its own proxy, receipts and a clean environment. |
 | `shell` with `tty: true`, `reload: true` or a `shell` field | Blocked. A tty session runs fx's terminal bootstrap outside the scope, and reload re-reads startup files. |
 | `shell` `interact` / `stop` | Unchanged. These talk to a command that was already started inside a scope. |
 | `write_file`, `edit_file` | Allowed only with a relative path that has no `..` and does not start with `~`. fx then keeps the write inside the workspace (its working directory at start), symlinks included. Any other path is blocked: these tools run in fx, outside every scope, so they must not reach blackice, fx or the policy. |
@@ -34,6 +34,12 @@ Why one command cannot unscope the next:
 - Inside every scope, blackice refuses writes to its own executable, to the policy file and to
   fx's executable (fx re-runs its own binary for each command on macOS), and refuses renaming
   their parent directories.
+- Inside every scope, blackice also refuses writes to fx's profile files that choose the next
+  session's provider, model, credential and MCP servers: `~/.fx/settings.json`, `mcp.json`,
+  `auth.json`, `api-key`, `chatgpt-auth.json` and `grok-auth.json`, each one that exists when
+  fx starts.
+- fx starts no MCP servers in this mode. They would run outside every scope, and a command in a
+  scope can write their configuration (`~/.fx/mcp.json`, a project's `.mcp.json`).
 - `FX_BLACKICE_BIN` must be an absolute path with no symlinks, so the path fx runs is the one
   blackice protects.
 - fx's own `write_file` and `edit_file` run outside the scopes, so they may only write inside the
@@ -84,11 +90,15 @@ scope for a while, run `blackice grant <scope> <host> --for 10m` from outside it
 - fx's own reads (`read_file`, `glob_files`, `grep_files`) are not limited, and what they read
   goes to the model provider. blackice limits what scoped commands send over the network, not
   what the model can read.
-- fx's own network tools and MCP tools are blocked, not scoped. `fx acp` refuses to start
-  in this mode.
-- A command in a scope can still change ordinary files of the user, such as `~/.zshrc`. fx
-  never reads them in this mode, but the user's own terminal will. blackice limits the
-  network; it is not a file sandbox.
+- fx's own network tools and MCP tools are blocked, not scoped, and fx starts no MCP servers.
+  `fx acp` refuses to start in this mode.
+- Only fx profile files that exist when fx starts are protected. A command in a scope can create
+  a missing one, such as `~/.fx/api-key`, and the next fx session reads it. Create
+  `~/.fx/settings.json` before the first session.
+- A command in a scope can still change other files of the user. Some are read by the user's
+  own terminal (`~/.zshrc`; fx's outer shell skips them). Others are read by the next fx session
+  as instructions (`~/.fx/AGENTS.md`, skills, project files): the model may follow them, but the
+  commands it runs are still scoped. blackice limits the network; it is not a file sandbox.
 - fx's permission modes still apply, to the rewritten command. In `auto` mode, fx's
   classifier does not recognize `blackice run …`, so those commands go to fx's reviewer. In
   full-access mode they run directly.
@@ -127,10 +137,22 @@ On macOS 27.0.1 (26A434), arm64, with SIP on, using fx v0.0.16 with this patch, 
 - With fx started in the directory that holds blackice, every call was blocked with the
   "must be outside the workspace" message.
 
+Then with the MCP and profile-file change, the release build of blackice `claude/run` at 58e73cc
+and the same scripted model:
+
+- A server planted in `~/.fx/mcp.json` that leaves a marker file: plain fx (no blackice mode)
+  started it on its first frame; in blackice mode fx started no server and no marker appeared.
+- Commands in scopes tried to append to `~/.fx/settings.json`, overwrite `~/.fx/mcp.json`,
+  rename `settings.json` and rename `~/.fx`. All four were refused ("operation not
+  permitted", four `protected_path` receipts), and both files' hashes did not change. Each
+  scope_start says "5 protected files; policy pinned". A command could still create the missing
+  `~/.fx/api-key`, the limit stated above.
+
 ## License
 
 fx is licensed under Apache-2.0 by its authors. This patch modifies fx: it adds
 `src/builtins/hooks/blackice.zig` and registers that hook in `src/main.zig`,
 `src/core/cli/cli_ask.zig` and `src/builtins/hooks.zig`. The patch also makes
-`src/acp/server.zig` refuse to start in blackice mode. The patch is distributed under
+`src/acp/server.zig` refuse to start in blackice mode, and `src/builtins/mcp.zig` start no MCP
+servers in it. The patch is distributed under
 Apache-2.0, like the rest of blackice.

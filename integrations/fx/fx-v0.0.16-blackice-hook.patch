@@ -30,10 +30,10 @@ index 0ee675c..843ee71 100644
  pub fn Runtime(comptime App: type) type {
 diff --git a/src/builtins/hooks/blackice.zig b/src/builtins/hooks/blackice.zig
 new file mode 100644
-index 0000000..d0384f5
+index 0000000..bc53903
 --- /dev/null
 +++ b/src/builtins/hooks/blackice.zig
-@@ -0,0 +1,466 @@
+@@ -0,0 +1,532 @@
 +//! blackice task scopes for the commands fx runs.
 +//!
 +//! This file is a declared patch to fx v0.0.16, kept in the blackice repository (integrations/fx). It is not
@@ -54,19 +54,25 @@ index 0000000..d0384f5
 +//!   glob_files, grep_files) are not limited: what they read goes to the model provider. blackice limits what
 +//!   scoped commands send over the network, not what the model can read.
 +//! - `shell` run (action "run", or no action and a command) is rewritten to
-+//!       '<blackice>' run --policy-sha256 '<hash>' --protect '<fx>' --policy '<policy>' -- '<shell>' <flags> '-c' '<command>'
++//!       '<blackice>' run --policy-sha256 '<hash>' --protect '<fx>' [--protect '<profile file>' ...]
++//!           --policy '<policy>' -- '<shell>' <flags> '-c' '<command>'
 +//!   with profile "clean". The command starts in its own blackice task scope: network only through the
 +//!   scope's proxy, decided by the pinned policy, with receipts, and a clean environment. fx's own outer shell
 +//!   reads no startup files, because a scoped command can edit them (~/.zshrc) and the outer shell runs
 +//!   outside the scope. The inner shell is $SHELL when it is sh, bash or zsh, else /bin/sh, and also skips
 +//!   startup files. blackice refuses a policy whose hash changed, and inside the scope it refuses writes to
 +//!   itself, to the policy and to fx's executable (which fx re-runs for every command on macOS), so one
-+//!   command cannot unscope the next.
++//!   command cannot unscope the next. It also refuses writes to fx's profile files that pick the next
++//!   session's provider, model, credential and MCP servers (~/.fx/settings.json, mcp.json, auth.json,
++//!   api-key, chatgpt-auth.json, grok-auth.json), each one that exists when fx starts.
 +//! - `shell` reload, tty sessions and the `shell` field are blocked: reload re-reads startup files for the
 +//!   outer shell, and a tty session runs fx's bootstrap outside the scope.
 +//! - `shell` interact and stop: unchanged; they talk to a command started inside a scope.
 +//! - A call that cannot be read safely (a request wrapper, a command that is not a string or holds a NUL
 +//!   byte) is blocked, never run unscoped. A misconfiguration blocks every call.
++//!
++//! fx starts no MCP servers in this mode (src/builtins/mcp.zig asks `requested`): they would run outside every
++//! scope, from ~/.fx/mcp.json or a project's .mcp.json, which a scoped command can write.
 +//!
 +//! fx's own permission modes still apply, to the rewritten command. fx itself, its model traffic and its
 +//! own git calls (safe_git, at fixed system paths) stay outside the scopes. `fx acp` refuses to start in
@@ -77,6 +83,20 @@ index 0000000..d0384f5
 +const io_mod = @import("../../core/shared/io.zig");
 +
 +pub const handler_name = "blackice.scope_shell";
++
++/// fx's profile files under ~/.fx that pick the next session's provider, model, credential and MCP servers.
++/// Each one that exists when fx starts is protected inside every scope.
++const profile_file_names = [_][]const u8{ "settings.json", "mcp.json", "auth.json", "api-key", "chatgpt-auth.json", "grok-auth.json" };
++
++/// Whether blackice mode was asked for (FX_BLACKICE_POLICY is set, even when it is wrong). fx then starts no
++/// MCP servers.
++pub fn requested() bool {
++    return requestedBy(io_mod.getenv("FX_BLACKICE_POLICY"));
++}
++
++fn requestedBy(policy_env: ?[]const u8) bool {
++    return policy_env != null;
++}
 +
 +/// The tools that may run in blackice mode.
 +const allowed_tools = [_][]const u8{
@@ -97,6 +117,9 @@ index 0000000..d0384f5
 +    fx_exe_buf: [std.Io.Dir.max_path_bytes]u8 = undefined,
 +    /// $SHELL when it is a POSIX shell.
 +    default_shell: ?[]const u8 = null,
++    /// fx's profile files that exist (absolute paths), protected inside every scope.
++    profile: [profile_file_names.len][]const u8 = undefined,
++    profile_count: usize = 0,
 +
 +    pub fn initFromEnv(state: *State) void {
 +        state.configure(io_mod.getenv("FX_BLACKICE_POLICY"), io_mod.getenv("FX_BLACKICE_BIN"), io_mod.getenv("SHELL"));
@@ -154,6 +177,25 @@ index 0000000..d0384f5
 +        if (inside(workspace, state.bin) or inside(workspace, policy_real) or inside(workspace, fx_real)) {
 +            state.problem = "blackice: blackice, fx and the policy must be outside the workspace, where fx's own file tools could change them. Install them elsewhere (root-owned is best).";
 +            return;
++        }
++
++        // A scoped command must not pick the next session's provider, credential or MCP servers.
++        const home = io_mod.homeDir() orelse return;
++        if (!absolute(home)) {
++            state.problem = "blackice: HOME must be an absolute path.";
++            return;
++        }
++        for (profile_file_names) |name| {
++            const path = std.Io.Dir.path.join(gpa, &.{ home, ".fx", name }) catch {
++                state.problem = "blackice: out of memory.";
++                return;
++            };
++            _ = std.Io.Dir.cwd().statFile(io, path, .{ .follow_symlinks = false }) catch {
++                gpa.free(path);
++                continue;
++            };
++            state.profile[state.profile_count] = path;
++            state.profile_count += 1;
 +        }
 +    }
 +
@@ -248,6 +290,10 @@ index 0000000..d0384f5
 +    if (state.fx_exe.len > 0) {
 +        try out.appendSlice(gpa, " --protect ");
 +        try appendQuoted(&out, gpa, state.fx_exe);
++    }
++    for (state.profile[0..state.profile_count]) |path| {
++        try out.appendSlice(gpa, " --protect ");
++        try appendQuoted(&out, gpa, path);
 +    }
 +    try out.appendSlice(gpa, " --policy ");
 +    try appendQuoted(&out, gpa, state.policy);
@@ -435,6 +481,26 @@ index 0000000..d0384f5
 +    }
 +}
 +
++test "fx's existing profile files are protected in every scope" {
++    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
++    defer arena_state.deinit();
++    const arena = arena_state.allocator();
++    var s = testState();
++    s.profile[0] = "/home/example/.fx/settings.json";
++    s.profile[1] = "/home/example/.fx/api-key";
++    s.profile_count = 2;
++    const d = try decide(arena, &s, "shell", "{\"command\":\"ls\"}");
++    try testing.expect(std.mem.find(u8, d.rewrite, "--protect '/home/example/.local/bin/fx' --protect '/home/example/.fx/settings.json' --protect '/home/example/.fx/api-key' --policy ") != null);
++    // blackice run takes at most 8 --protect paths: fx plus every profile file fits.
++    try testing.expect(1 + profile_file_names.len <= 8);
++}
++
++test "blackice mode is asked for by FX_BLACKICE_POLICY, even when it is wrong" {
++    try testing.expect(!requestedBy(null));
++    try testing.expect(requestedBy("/home/example/policy.json"));
++    try testing.expect(requestedBy(""));
++}
++
 +test inside {
 +    try testing.expect(inside("/w", "/w"));
 +    try testing.expect(inside("/w", "/w/bin/blackice"));
@@ -500,6 +566,28 @@ index 0000000..d0384f5
 +    const d = try decide(arena, &f, "shell", "{\"command\":\"ls\"}");
 +    try testing.expect(std.mem.find(u8, d.rewrite, "--policy '/p.json' -- '/bin/sh' '-c' 'ls'") != null);
 +}
+diff --git a/src/builtins/mcp.zig b/src/builtins/mcp.zig
+index dbd510f..3459a53 100644
+--- a/src/builtins/mcp.zig
++++ b/src/builtins/mcp.zig
+@@ -3,6 +3,7 @@ const testing_allocator = @import("../core/shared/testing_allocator.zig");
+ 
+ const debug_trace = @import("../core/shared/debug_trace.zig");
+ const io_mod = @import("../core/shared/io.zig");
++const blackice_hook = @import("hooks/blackice.zig");
+ const mcp_contract = @import("../core/mcp/mcp_contract.zig");
+ const mcp_health = @import("../core/mcp/health.zig");
+ const project_config = @import("../core/mcp/project_config.zig");
+@@ -124,6 +125,9 @@ pub fn loadHost(
+     builtins: tool_dispatch.Registry,
+     extras: mcp_host.Extras,
+ ) !?*mcp_host.Host {
++    // blackice patch: MCP servers run outside every blackice scope, and a scoped command can write their
++    // config (~/.fx/mcp.json, a project's .mcp.json), so blackice mode starts none.
++    if (blackice_hook.requested()) return null;
+     var loaded = try loadNativeConfigs(alloc, workspace_root);
+     defer loaded.deinit(alloc);
+     const home = io_mod.homeDir() orelse return null;
 diff --git a/src/core/cli/cli_ask.zig b/src/core/cli/cli_ask.zig
 index b2fe6b1..e5ff336 100644
 --- a/src/core/cli/cli_ask.zig
