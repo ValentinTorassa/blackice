@@ -101,24 +101,25 @@ the system resolver's sockets do not exist, so it cannot ask a system service to
 |---|---|---|---|
 | Placeholder backend that refuses to run commands | lead | done | |
 | Backend design: socket-address admission programs instead of nftables | codex-linux | done | |
-| Privileged helper: fork a paused child, hold it by pidfd, enroll it in the scope cgroup, release when armed | codex-linux | doing | |
-| `blackice-linux-helper` build target in build.zig | codex-linux | doing | |
-| cgroup eBPF programs on connect4, connect6, sendmsg4 and sendmsg6 | codex-linux | doing | |
+| Privileged helper: fork a paused child, hold it by pidfd, enroll it in the scope cgroup, release when armed | codex-linux | done | |
+| `blackice-linux-helper` build target in build.zig | codex-linux | done | |
+| cgroup eBPF programs on connect4, connect6, sendmsg4 and sendmsg6 | codex-linux | done | |
 | Ring buffer reader that reports refusals to the receipt writer, with a lost-event count | codex-linux | todo | |
-| Private mount namespace that hides resolver and daemon sockets | codex-linux | doing | |
-| Landlock scoping and seccomp filter | codex-linux | doing | |
-| `scripts/linux-setup.sh` and `scripts/linux-teardown.sh` | codex-linux | doing | |
+| Private mount namespace that hides resolver and daemon sockets | codex-linux | done | |
+| Landlock scoping and seccomp filter | codex-linux | done | |
+| `scripts/linux-setup.sh` and `scripts/linux-teardown.sh` | codex-linux | done | |
 | Security review of the setup script before it runs | security | doing | |
 | Run the setup script with sudo, once it is reviewed | valen | todo | waits for: the scripts and their review |
 | Fixtures: immediate connect, fork and exec, TCP and both UDP modes on IPv4 and IPv6, migration, `systemd-run --user`, Docker socket, raw sockets, io_uring, `ping`, an SCTP connect, an unconnected ICMP `sendto`, `bind` and `listen`, DNS paths (`getent hosts`, `resolvectl query`, `busctl call org.freedesktop.resolve1`) | codex-linux | doing | |
 | End-to-end kernel deny with receipts, an off-host receiver that sees nothing per protocol and family, and an evidence entry | codex-linux | todo | |
-| docs/linux.md | codex-linux | todo | |
+| docs/linux.md | codex-linux | done | |
 | docs/threat-model.md | codex | done | |
 
 ## Evidence
 
 | Covers | Kind | Link | Note |
 |---|---|---|---|
+| linux-task-scope.R13 | test | `zig build test`, src/linux/: "all generated BPF branches stay in bounds; only IPv4 TCP has an allow branch", "seccomp installs and refuses Unix sockets, namespaces and io_uring in a disposable child", "private mounts preserve uid and cwd, hide daemon paths, and protect state before exec", "outside sockets cannot be used as workload stdio" | 18/18 passed at e4d9ac3, Zig 0.17.0, Debian 13 x86_64, no root. The mount test failed when the checkout was under /tmp. Nothing ran with the helper's capabilities or with programs attached to a cgroup |
 | linux-task-scope.R4 | probe | Name lookup from a network namespace with only loopback (bubblewrap), Debian 13, kernel 6.12, without blackice code | TCP to a public address was unreachable, but `example.com` still resolved through systemd-resolved's world-writable Unix socket. With a tmpfs over `/run/systemd/resolve`, resolution failed. A network namespace alone does not close DNS |
 | linux-task-scope.R2 | probe | fx 0.0.16 in the same kind of network namespace, scripted local model, stand-in proxy | A direct `curl` from a tool could not resolve the host; through the stand-in proxy it arrived as `CONNECT example.com:443`. Uses a network namespace, not cgroup rules, so it shows the proxy route, not the kernel rule |
 
