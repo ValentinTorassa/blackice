@@ -35,8 +35,8 @@ Nothing in this table is verified yet; see [`evidence/`](evidence/).
 
 | | Apps | Agent tasks |
 |---|---|---|
-| macOS | Network Extension content filter: built, unsigned (#8). It cannot run until it is signed with a Developer ID. | Seatbelt task scope with a local proxy, experimental (#7) |
-| Linux | Not built. Grouping apps by the desktop's systemd scopes still has to be proven. | cgroup v2 with eBPF socket programs and a small privileged helper, installed once with a setup script run with sudo, plus a local proxy (#6) |
+| macOS | Network Extension content filter: built, unsigned ([#8](https://github.com/ValentinTorassa/blackice/pull/8)). It cannot run until it is signed with a Developer ID. | Seatbelt task scope with a local proxy, experimental ([#7](https://github.com/ValentinTorassa/blackice/pull/7)) |
+| Linux | Not built. Grouping apps by the desktop's systemd scopes still has to be proven. | cgroup v2 with eBPF socket programs and a small privileged helper, installed once with a setup script run with sudo, plus a local proxy ([#6](https://github.com/ValentinTorassa/blackice/pull/6)) |
 | Windows | Later, not part of the first release | Later, not part of the first release |
 
 ## Limits
