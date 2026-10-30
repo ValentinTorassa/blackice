@@ -41,8 +41,9 @@ Only the macOS agent-task cell has evidence entries ([Evidence](#evidence)). Eve
 
 ## Evidence
 
-macOS agent tasks only: macOS 27.0.1 on Apple silicon with SIP on, release builds of `claude/run` at 58e73cc
-(P0-05 at 58b9491), run by the people who built it, with no video of the runs yet. Each entry states its own limits.
+macOS agent tasks only: macOS 27.0.1 on Apple silicon with SIP on, release builds of 58e73cc (P0-05: 58b9491),
+from before the code was merged into main, run by the people who built it, with no video of the runs yet. Each
+entry states its own limits.
 
 | Checkpoint | What the entry shows |
 |---|---|
