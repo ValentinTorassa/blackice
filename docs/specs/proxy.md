@@ -106,6 +106,7 @@ service by the program.
 
 | Covers | Kind | Link | Note |
 |---|---|---|---|
+| proxy.R2, proxy.R5, proxy.R6, proxy.R12 | entry | [P0-03 Linux](../../evidence/P0-03-explicit-allow-linux.md) | Linux, same launcher and helper, one run. `example.com` and `registry.npmjs.org` allowed (`sni_match`); github.com 403 (`no_matching_rule`); 169.254.169.254 403 (`local_or_private_address`); the proxy variables were set |
 | proxy.R9 | entry | [P0-02 macOS](../../evidence/P0-02-real-deny-macos.md) | macOS 27.0.1 arm64, SIP on, claude/run 58e73cc, Zig 0.17.0, one run, PR #11. curl through the proxy to port 47121 got 403 and a `deny` receipt with reason `port_not_allowed`; `https://example.com` was allowed (`sni_match`) |
 | proxy.R1, proxy.R2, proxy.R3, proxy.R6, proxy.R10, proxy.R12 | entry | [P0-03 macOS](../../evidence/P0-03-explicit-allow-macos.md) | macOS 27.0.1 arm64, SIP on, claude/run 58e73cc, Zig 0.17.0, one run, PR #10. example.com allowed over HTTPS (`sni_match`) and HTTP; github.com refused with 403 on both, deny receipts without a lookup |
 | proxy.R2 | probe | - | Feasibility only, no blackice code: on macOS 27.0.1 (SIP on and off) and Linux, a command confined to one loopback port reached a stand-in proxy, which received `CONNECT example.com:443` while direct DNS failed inside the sandbox |
