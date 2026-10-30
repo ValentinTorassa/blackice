@@ -93,8 +93,8 @@ asked for, then every address that name resolves to. The second step stops an al
 
 | Covers | Kind | Link | Note |
 |---|---|---|---|
-| policy.R2 | entry | [P0-01 macOS](../../evidence/P0-01-policy-before-exec-macos.md) | macOS 27.0.1 arm64, SIP on, claude/run 58e73cc, Zig 0.17.0, one run, PR #11 (not merged). The allow entry `*` was refused with `InvalidPattern` and the hint to use a name or `*.name` |
-| policy.R9 | entry | [P0-02 macOS](../../evidence/P0-02-real-deny-macos.md) | macOS 27.0.1 arm64, SIP on, claude/run 58e73cc, Zig 0.17.0, one run, PR #11 (not merged). A request through the proxy to port 47121 was refused with 403 and reason `port_not_allowed` |
+| policy.R2 | entry | [P0-01 macOS](../../evidence/P0-01-policy-before-exec-macos.md) | macOS 27.0.1 arm64, SIP on, claude/run 58e73cc, Zig 0.17.0, one run, PR #11. The allow entry `*` was refused with `InvalidPattern` and the hint to use a name or `*.name` |
+| policy.R9 | entry | [P0-02 macOS](../../evidence/P0-02-real-deny-macos.md) | macOS 27.0.1 arm64, SIP on, claude/run 58e73cc, Zig 0.17.0, one run, PR #11. A request through the proxy to port 47121 was refused with 403 and reason `port_not_allowed` |
 | policy.R1, policy.R2 | test | `zig build test`, src/core/policy.zig: "invalid policies fail closed" | 21/21 passed at 99e2f4e (PR #1), Zig 0.17.0, Linux x86_64; at 9426491 the same test also covers a repeated `mode` and a repeated `network` key (21/21) |
 | policy.R3 | test | `zig build test`, src/core/policy.zig: "deny-all and allow-all" | same run |
 | policy.R4 | test | `zig build test`, src/core/policy.zig: "allowlist: exact and wildcard names" | same run |
