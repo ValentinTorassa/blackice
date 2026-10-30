@@ -1,0 +1,89 @@
+---
+id: receipts
+title: Receipts
+owner: lead
+stage: poc
+paths: src/core/receipt.zig
+cases: P0-02, P0-03, P0-09
+depends: policy
+---
+
+# Receipts
+
+## What and why
+
+A receipt is one line of JSON that blackice writes every time it allows or refuses a connection, and when a
+scope starts or ends. It says which scope, which policy, where the decision was enforced, what was decided and
+why. Receipts are how a person, a script or an agent such as fx can see what blackice did, without trusting
+anyone's description of it. They record facts about connections, never their contents, so reading or sharing
+them does not leak what a program sent.
+
+## Requirements
+
+| ID | Requirement | Checks |
+|---|---|---|
+| receipts.R1 | blackice shall write each receipt as one JSON object on its own line, appended to the scope's `receipts.jsonl`, and never rewrite an earlier line. | P0-09 |
+| receipts.R2 | Every receipt shall carry `ts` (UTC, RFC 3339 with milliseconds), `scope`, `policy` (the policy identifier), `gen` (the policy generation), `point` and `event`. Fields that do not apply shall be omitted, never written as null. | P0-09 |
+| receipts.R3 | When the proxy, the kernel rules or the relay allows or refuses a connection, blackice shall write exactly one receipt for that decision, with `verdict`, `reason`, the policy `rule` when one decided, and the destination it saw (`host`, `ip`, `port`). | P0-02, P0-03 |
+| receipts.R4 | Every receipt shall name its enforcement point as one of `proxy`, `kernel`, `relay` or `control`. | P0-02 |
+| receipts.R5 | blackice shall have a single writer per scope, the `blackice` process; backends shall pass their events to it, so lines never interleave. | P0-09 |
+| receipts.R6 | If a receipt cannot be written, blackice shall leave the verdict unchanged, count the failure, and report the count in the scope's `scope_end` receipt. | P0-09 |
+| receipts.R7 | Receipts shall hold metadata only: no request or response bodies, no TLS content, no headers or credentials, no URL paths or query strings, no environment variables and no full command arguments. | P0-09 |
+| receipts.R8 | blackice shall keep reason codes stable; renaming or removing one is a recorded contract change. | P0-09 |
+
+## Design
+
+Every enforcement point reports to the same log, owned by the `blackice` process that runs the scope. A
+decision is made first and recorded second: a slow or failing write never delays or changes a decision, it only
+increments a counter that shows up at the end of the scope. The log is plain JSON Lines, so `tail -f`, `grep`
+and `jq` are enough to read it.
+
+**Technical.**
+
+- Location: `<state directory>/receipts.jsonl` (see [scope-core](scope-core.md)).
+- Example:
+
+  ```json
+  {"ts":"2026-10-30T04:12:33.123Z","scope":"s-1a2b3c4d","policy":"cae35a3beb20","gen":1,"point":"proxy","event":"connect","verdict":"deny","reason":"no_matching_rule","host":"attacker.test","port":443}
+  ```
+
+- Fields: `ts`, `scope`, `policy`, `gen`, `point`, `event`, and when they apply `verdict` (`allow` or
+  `deny`), `reason`, `rule`, `host`, `ip`, `port`, `detail`.
+- `event`: `connect`, `http`, `scope_start`, `scope_end`, `grant`, `relay_call`, `kernel_drop`, `warning`.
+- `reason`: a policy reason code (see [policy](policy.md)) or a short error name for `warning` events.
+- `policy`: the first 12 hex digits of the SHA-256 of the policy file. `gen` starts at 1 and goes up by one
+  with each accepted grant or expiry ([grant](grant.md)).
+- Writer: `receipt.Log` serialises each line into a fixed 4 KiB buffer and appends it under a lock. A line
+  that does not fit, or a failed write, increments `failures`.
+- Linux kernel drops reach the log through the `blackice` process, never by a second writer
+  ([linux-task-scope](linux-task-scope.md)).
+- Limits:
+  - Receipts are not tamper-proof. The file belongs to the user, and in v0 the scoped command runs as that
+    user.
+  - v0 has no per-line sequence number, so a gap inside the file is visible only through the failure count.
+  - No size or time limit on the file yet.
+  - A receipt explains a decision; it does not say whether traffic sent to an allowed destination was
+    harmful.
+
+## Tasks
+
+| Task | Owner | State | Blocked by |
+|---|---|---|---|
+| Receipt line format and single writer | lead | done | |
+| Count failed writes | lead | done | |
+| Report the failed-write count in `scope_end` | lead | todo | |
+| Proxy decisions write receipts | lead | todo | |
+| Relay calls and grants write receipts | lead | todo | |
+| Linux kernel drops (NFLOG) passed to the `blackice` process as receipts | codex-linux | todo | |
+
+## Evidence
+
+| Covers | Kind | Link | Note |
+|---|---|---|---|
+| receipts.R1, receipts.R2 | test | `zig build test`, src/core/receipt.zig: "receipt lines are JSON with nulls omitted" | One line per receipt, escaping, nulls omitted. 11/11 passed at 0c43c6f, Zig 0.17.0, Linux x86_64 |
+| receipts.R2 | test | `zig build test`, src/core/receipt.zig: "formatTimestamp" | Timestamp format. Same run |
+
+## Terms
+
+receipt, scope, policy, policy digest, policy generation, reason code, enforcement point, JSON Lines, CONNECT proxy
+proxy, relay, NFLOG, grant

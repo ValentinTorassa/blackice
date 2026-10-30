@@ -1,0 +1,102 @@
+---
+id: macos-task-scope
+title: macOS task scope (experimental)
+owner: lead
+stage: poc
+paths: src/macos/seatbelt.zig, src/core/backend.zig
+cases: P0-01, P0-02, P0-08, P0-10
+depends: policy, proxy, receipts
+---
+
+# macOS task scope (experimental)
+
+## What and why
+
+On macOS, `blackice run` starts the command inside the operating system's built-in sandbox. The sandbox lets the
+command, and everything it starts, connect to exactly two places: blackice's own proxy and relay on this
+machine. Every other connection fails inside the kernel, whether the program asks for a name, an IP address or
+another local port. The proxy then decides which names are allowed, using the policy. This mode is
+experimental: it uses a deprecated Apple tool, it covers commands that blackice starts, and it is not the app
+control that a signed Network Extension will provide later (see [app-scopes](app-scopes.md)).
+
+## Requirements
+
+| ID | Requirement | Checks |
+|---|---|---|
+| macos-task-scope.R1 | When `blackice run` starts a command on macOS, blackice shall apply the scope's sandbox profile before the command's first instruction, so the command never runs unconfined. | P0-01 |
+| macos-task-scope.R2 | While a command runs in a macOS task scope, the kernel shall let it and every process it starts open outbound connections only to the scope's proxy and relay ports on loopback. Connections to any other address, including raw IP addresses and other loopback ports, shall fail. | P0-02 |
+| macos-task-scope.R3 | While a command runs in a macOS task scope, a name lookup from inside the scope shall fail unless it is made by the proxy on the command's behalf. | P0-02 |
+| macos-task-scope.R4 | When a process in the scope starts a child, including a child that outlives its parent and is adopted by launchd, the child shall keep the same restrictions. | P0-01, P0-02 |
+| macos-task-scope.R5 | If the sandbox cannot be applied (sandbox-exec is missing, the profile is rejected, or the spawn fails), blackice shall not run the command, shall exit non-zero, and shall write a receipt with the reason. | P0-01 |
+| macos-task-scope.R6 | When hardening is on, blackice shall refuse attempts from inside the scope to have launchd, LaunchServices (`open`) or Apple Events (`osascript`) start a process outside the sandbox. | P0-02 |
+| macos-task-scope.R7 | When blackice starts a command on macOS, the command shall not inherit any network socket from blackice. | P0-02 |
+| macos-task-scope.R8 | blackice shall label this backend as experimental wherever it reports the backend: CLI help, the scope start receipt and the docs. | P0-10 |
+| macos-task-scope.R9 | When the same policy and the same test destinations run in a macOS and a Linux task scope, blackice shall reach the same verdict for each destination. The receipts may differ only in the enforcement point. | P0-08 |
+
+## Design
+
+blackice writes a short sandbox profile for each scope and starts the command through Apple's `sandbox-exec`
+tool. The profile refuses all outbound network use and then allows the scope's two loopback ports. Because the
+rule lives in the kernel and is inherited by every child, the command cannot step around it by ignoring proxy
+settings: a program that does not use the proxy simply gets no network. The sandbox cannot name remote hosts
+or addresses, only "any host" or "localhost", so every decision about names happens in the proxy.
+
+**Technical.**
+
+- Profile (`src/macos/seatbelt.zig`), for proxy port 18780 and relay port 18781:
+
+  ```scheme
+  (version 1)
+  (allow default)
+  (deny network-outbound)
+  (allow network-outbound (remote ip "localhost:18780"))
+  (allow network-outbound (remote ip "localhost:18781"))
+  ```
+
+  With hardening on, three more lines: `(deny job-creation)`, `(deny lsopen)`, `(deny appleevent-send)`.
+- Launch: `/usr/bin/sandbox-exec -p <profile> <command...>` with the environment the core prepared
+  (`HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY` and lowercase forms point at the proxy). The backend contract is
+  `src/core/backend.zig` (`LaunchSpec`, `launch`).
+- `(deny network-outbound)` also covers Unix-socket connections. That blocks the system DNS resolver socket
+  (mDNSResponder) and is expected to keep the scope away from blackice's own control socket (see
+  [grant](grant.md)); the second point still needs its own test.
+- `(allow default)` means files, processes and other IPC are not restricted. This is a network boundary only.
+- `sandbox-exec` is deprecated by Apple but still ships and still applies profiles. This backend stays
+  experimental for that reason and because it covers only commands blackice starts.
+- Limits until tested:
+  - Mach and XPC services: a process can still ask a system service to connect on its behalf. Such
+    connections run outside the scope.
+  - Processes started through launchd, `open` or `osascript` run outside the sandbox unless hardening is on and
+    tested.
+  - Name lookups through other system services (for example Directory Services) are untested.
+  - The proxy port: what happens if the proxy restarts or another local process takes its port, and how one
+    scope's proxy is kept from serving another, belong to [proxy](proxy.md) and are untested.
+  - Inherited sockets (R7) are untested.
+
+## Tasks
+
+| Task | Owner | State | Blocked by |
+|---|---|---|---|
+| Profile generator and launch through sandbox-exec | lead | done | |
+| Wire `blackice run` on macOS: scope, proxy, receipts, launch | lead | doing | |
+| Cross-build for aarch64-macos | lead | done | |
+| End-to-end run on the Mac with SIP on, with receipts and an evidence entry | lead | todo | |
+| Test hardening against launchd job creation (no window opens) | lead | todo | |
+| Test hardening against `open` and `osascript` | lead | blocked | Valen's OK: these tests open windows, so not while recording |
+| Test inherited sockets, proxy restart and port takeover | lead | todo | |
+| Test name lookups through other system services, with fresh random names | lead | todo | |
+| docs/macos.md | lead | todo | |
+
+## Evidence
+
+| Covers | Kind | Link | Note |
+|---|---|---|---|
+| macos-task-scope.R2 | test | `zig build test`, src/macos/seatbelt.zig: "profile" | Passed at 0c43c6f, Zig 0.17.0, run on Linux x86_64. Checks the profile text only, not enforcement |
+| macos-task-scope.R2 | probe | Sandbox probe on macOS 27.0.1 (26A434), Apple M4, SIP on, without blackice code | With only localhost allowed, a connection to a raw IP failed at once; with one loopback port allowed, another loopback port was blocked; a stand-in proxy on the allowed port received `CONNECT example.com:443` |
+| macos-task-scope.R3 | probe | Same probe | With all outbound network denied, `curl https://example.com` failed with "Could not resolve host" |
+| macos-task-scope.R4 | probe | Same probe | A background child, orphaned and adopted by launchd (parent PID 1), was still blocked |
+| macos-task-scope.R2 | probe | fx 0.0.16 inside the same kind of profile, scripted local model, stand-in proxy, SIP on | fx reached its model only on the allowed port; a direct `curl` from a tool could not resolve the host; through the stand-in proxy the request arrived as `CONNECT example.com:443` |
+
+## Terms
+
+task scope, Seatbelt, sandbox-exec, SIP, policy, CONNECT proxy, relay, receipt, DNS, Network Extension, app scope

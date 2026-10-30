@@ -1,0 +1,79 @@
+---
+id: app-scopes
+title: App scopes
+owner: lead, codex
+stage: release
+paths:
+cases: P0-10
+depends: policy, receipts
+---
+
+# App scopes
+
+## What and why
+
+A task scope covers a command that blackice starts. An app scope covers an app that is already on the machine
+and was started some other way: a browser, an editor, a chat client. It gives that app a policy of its own,
+checked from the app's first connection, so the owner can say "this app may reach only these places" without
+wrapping it. blackice needs both kinds before its first usable release, on macOS and on Linux. App scopes are
+not part of the proof of concept and are not built: on macOS they wait for a signed system extension, and on
+Linux the way to recognise an app still has to be proven.
+
+## Requirements
+
+| ID | Requirement | Checks |
+|---|---|---|
+| app-scopes.R1 | When an app that blackice did not start opens a new connection, blackice shall decide it by that app's policy, starting with the app's first connection. | - |
+| app-scopes.R2 | On macOS, blackice shall control apps through a signed Network Extension content filter, installed through Apple's supported activation flow on a Mac with normal security settings. | - |
+| app-scopes.R3 | On macOS, blackice shall identify an app from identity the operating system provides (for example its code signature), never from a display name or a file path alone. | - |
+| app-scopes.R4 | On Linux, blackice shall identify an app by the group the desktop or service manager put it in before it ran, and shall describe that identity as a grouping, not as proof of which program is running. | - |
+| app-scopes.R5 | When a command started from a terminal app connects without `blackice run`, blackice shall attribute the connection to the terminal app's scope and say so in the receipt. | - |
+| app-scopes.R6 | If blackice cannot establish an app's identity, it shall apply the owner's declared default for unknown apps and write a receipt. A missing identity shall never match an allow rule. | - |
+| app-scopes.R7 | When the owner changes an app scope's policy, blackice shall apply it to new connections and report what happens to connections that are already open. | - |
+| app-scopes.R8 | When a task scope runs inside an app scope, blackice shall allow a destination only if both allow it. | - |
+| app-scopes.R9 | The owner shall be able to turn app control off from outside every scope without removing unrelated firewall rules on the host. | - |
+| app-scopes.R10 | Until a platform's app scopes have evidence, blackice's status and docs shall show them on that platform as not available. | P0-10 |
+
+## Design
+
+App scopes are planned, not designed in detail. Each platform has one candidate mechanism.
+
+**Technical.**
+
+- macOS: a signed host app with a Network Extension content filter (`NEFilterDataProvider`). The filter sees
+  each new flow with the source app's identity from the system and checks it against an acknowledged local
+  copy of the policy; no model or shell runs inside the filter. Building it needs a paid Apple Developer
+  Program membership for signing and the matching entitlements, full Xcode, and user approval in System
+  Settings. Coexistence with other filters and VPNs already on the Mac (for example a VPN with a transparent
+  proxy, and Tailscale) has to be tested.
+- Linux: desktops such as GNOME and KDE start each app in its own systemd scope under the user's `app.slice`
+  (for example `app-<launcher>-<app-id>-<n>.scope`, or a snap or Flatpak scope). systemd places the process in
+  that cgroup before exec, and children inherit it. Rules can match that cgroup, or its ancestor level, with
+  the nftables socket match or cgroup eBPF programs.
+- Linux limits to qualify:
+  - The app id comes from a desktop entry or unit name. A user can create a unit with any name, so this is not
+    code integrity.
+  - Rules must cover a new app group before its first packet, not after blackice notices it.
+  - Commands run from a terminal belong to the terminal's group (R5).
+  - System services have unit identities; containers and other network namespaces are separate.
+- Both platforms: unknown apps, policy changes on open connections, and owner recovery are qualified per
+  platform. Per-executable identity (hashes, exec-time tagging) is a later capability.
+
+## Tasks
+
+| Task | Owner | State | Blocked by |
+|---|---|---|---|
+| macOS: Network Extension filter and host app | lead | blocked | No Apple Developer Program membership (signing), no full Xcode on the Mac |
+| Linux: qualify desktop app groups (first-packet coverage, unknown groups, user-created units, migration, terminal children) | codex | todo | |
+| Linux: choose the matching mechanism (nftables socket match or cgroup eBPF) for app groups | codex | todo | |
+| Show both app-scope cells as not available in status and docs | marketing | done | |
+
+## Evidence
+
+| Covers | Kind | Link | Note |
+|---|---|---|---|
+| app-scopes.R4 | probe | Read-only look at a GNOME desktop on Debian 13 | A terminal app ran in its own systemd scope under the user's `app.slice` (a snap scope). One grouping example; no rule was attached and no traffic was tested |
+
+## Terms
+
+app scope, task scope, scope, policy, receipt, Network Extension, cgroup v2, nftables, eBPF, host ceiling
