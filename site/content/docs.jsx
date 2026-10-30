@@ -202,28 +202,42 @@ $ tail -f ~/.local/state/${SITE.name}/scopes/${SCOPE}/receipts.jsonl`}</Code>
     slug: 'install',
     group: 'Overview',
     title: 'Install',
-    description: `Install the ${SITE.name} CLI from npm or Homebrew. On Debian 13, task scopes also need a helper, set up separately with sudo.`,
-    // Same wording as the v0.1.0 release notes, which security reviewed.
+    description: `Download the ${SITE.name} CLI from the v0.1.0 release and verify it. On Debian 13, task scopes also need a helper, set up separately with sudo.`,
+    // Same wording as the Install and Verify sections of the v0.1.0 release notes.
     body: () => (
       <>
         <Note>
-          <strong>v{RELEASE.version}</strong> is the first release. It is v0 and not ready for production. The{' '}
-          <a href={RELEASE.url}>release page</a> has the release notes, the checksums and the steps to verify each file.
+          <strong>v{RELEASE.version}</strong> is the first release. It is v0 and not ready for production.
         </Note>
-        <H2>npm</H2>
-        <Code title="terminal" label="Node.js 22 or later">{`$ ${RELEASE.npm}`}</Code>
+        <H2>Download</H2>
         <p>
-          <code>@legios/blackice</code> installs the <code>{SITE.name}</code> command, which runs the binary from one of
-          four platform packages: macOS on Apple silicon or Intel, and Linux on x86_64 or arm64.
+          Each platform's CLI is one file attached to the <a href={RELEASE.url}>v{RELEASE.version} release</a>. Verify
+          it as described below before running it. npm and Homebrew packages are not published yet.
         </p>
-        <H2>Homebrew</H2>
-        <Code title="terminal">{`$ ${RELEASE.brew}`}</Code>
+        <H2>Verify</H2>
+        <p>
+          Two builders (Linux and macOS runners) produced byte-identical files: Zig 0.17.0, ReleaseSafe, stripped, macOS
+          minimum 13.0. Before running a file:
+        </p>
+        <ol>
+          <li>
+            Integrity. On macOS, use <code>{RELEASE.integrityMac}</code>.
+            <Code title="terminal">{`$ ${RELEASE.integrity}`}</Code>
+          </li>
+          <li>
+            Provenance.
+            <Code title="terminal">{`$ ${RELEASE.provenance}`}</Code>
+          </li>
+          <li>
+            Independence: check out v{RELEASE.version}, install Zig 0.17.0, run{' '}
+            <code>zig build release -Dmacos-min=13.0</code>, and compare the hashes.
+          </li>
+        </ol>
         <H2>Linux helper</H2>
         <p>
-          Both install the CLI only. On Debian 13 (x86_64), task scopes also need a small helper, set up from a checkout
-          of v{RELEASE.version}. You verify the release, build the helper, check its hash against <code>SHA256SUMS</code>{' '}
-          and run the setup script with sudo, again after each reboot. Neither npm nor Homebrew runs it. The steps are in{' '}
-          <a href={RELEASE.linuxSetup}>docs/linux.md</a>.
+          On Debian 13 x86_64, task scopes also need the helper, set up from a checkout of v{RELEASE.version}. You verify
+          the release, build the helper, check its hash against <code>SHA256SUMS</code> and run the setup script with
+          sudo, again after each reboot. The steps are in <a href={RELEASE.linuxSetup}>docs/linux.md</a>.
         </p>
         <p>
           The helper keeps four file capabilities (<code>CAP_CHOWN</code>, <code>CAP_DAC_OVERRIDE</code>,{' '}

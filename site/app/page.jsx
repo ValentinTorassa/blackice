@@ -309,8 +309,8 @@ export default function Home() {
             </a>
           </div>
           <p className="sub">
-            v{RELEASE.version} is the first release. It is v0 and not ready for production. The release page has the
-            checksums and the steps to verify each file.
+            v{RELEASE.version} is the first release. It is v0 and not ready for production. Each platform's CLI is one
+            file attached to the release. Verify it before running it.
           </p>
           <Install />
         </section>

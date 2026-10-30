@@ -2,28 +2,38 @@ import CopyCommand from './CopyCommand';
 import { IconArrowRight, IconPenguin } from './Icons';
 import { RELEASE } from '../content/site';
 
-// The two install commands from the release notes, and the Linux step they do not cover.
+// The release ships one file per platform. Download, then the two checks from the release notes, then the Linux
+// step the file does not cover.
 export default function Install() {
   return (
     <div className="install">
       <div className="install-row">
         <p className="install-label">
-          npm <span>Node.js 22 or later</span>
+          Download <span>one file per platform</span>
         </p>
-        <CopyCommand command={RELEASE.npm} />
+        <a className="install-download" href={RELEASE.url}>
+          <span>The CLI for macOS and Linux, on the v{RELEASE.version} release page</span>
+          <IconArrowRight size={14} />
+        </a>
       </div>
       <div className="install-row">
         <p className="install-label">
-          Homebrew <span>macOS and Linux</span>
+          Integrity <span>on macOS: shasum -a 256</span>
         </p>
-        <CopyCommand command={RELEASE.brew} />
+        <CopyCommand command={RELEASE.integrity} />
+      </div>
+      <div className="install-row">
+        <p className="install-label">
+          Provenance <span>GitHub CLI</span>
+        </p>
+        <CopyCommand command={RELEASE.provenance} />
       </div>
       <div className="install-note">
         <IconPenguin size={16} />
         <p>
-          Both install the CLI only. On Debian 13 (x86_64), task scopes also need a small helper with its own setup,
-          from a checkout of v{RELEASE.version}. The setup runs with sudo, and again after each reboot. Neither npm nor
-          Homebrew runs it.{' '}
+          On Debian 13 (x86_64), task scopes also need a small helper, set up from a checkout of v{RELEASE.version}. You
+          verify the release, build the helper, check its hash against SHA256SUMS and run the setup script with sudo,
+          again after each reboot.{' '}
           <a href={RELEASE.linuxSetup}>
             Steps in docs/linux.md
             <IconArrowRight size={13} />
