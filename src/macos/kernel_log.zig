@@ -14,10 +14,16 @@
 //! read, since the kernel delivers its lines in order. Probe lines are recognised by the probe's pid.
 //!
 //! What the receipts can and cannot prove:
+//! - macOS logs refusals of Apple-signed binaries, and not those of ad-hoc-signed ones: a refusal of blackice
+//!   itself or of a self-built program is enforced the same way but writes no log line, so it gets no receipt,
+//!   and the end probe cannot notice. Tested on macOS 27.0.1: under the same rule, a connect by python3 or
+//!   curl was logged; the same connect by blackice or by a C program built with cc (both ad-hoc signed) was
+//!   not, with `(with report)` or `(debug deny)` in the profile too. Binaries signed with a third-party
+//!   Developer ID were not tested.
 //! - They can be added to, not removed. Any process of the same user can tag its own sandbox-exec profile
 //!   with "blackice <scope id>" and so add refusal lines that did not come from the scope. A refusal by the
-//!   scope always gets a receipt, within the limits below, even when its line cannot be parsed (reason
-//!   seatbelt_refused, with the raw line).
+//!   scope that macOS logs always gets a receipt, within the limits below, even when its line cannot be parsed
+//!   (reason seatbelt_refused, with the raw line).
 //! - Repeats of one refusal (same operation, target and process) get one receipt and a count at the end. The
 //!   kernel also folds repeats itself ("N duplicate reports for ..."), which becomes repeats=N.
 //! - At most 256 distinct refusals get their own receipt; the last 32 after that are written at the end, and
