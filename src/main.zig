@@ -93,6 +93,7 @@ test {
     _ = scope;
     _ = backend;
     _ = seatbelt;
+    _ = @import("macos/kernel_log.zig");
     _ = @import("proxy/proxy.zig");
     _ = @import("relay/relay.zig");
     _ = @import("control/control.zig");
