@@ -95,6 +95,7 @@ fn run(init: std.process.Init) !void {
             const bytes = try Io.Dir.cwd().readFileAlloc(init.io, path, init.gpa, .limited(config.max_bytes));
             defer init.gpa.free(bytes);
             runtime.cfg = try config.Config.parse(init.gpa, bytes);
+            try @import("unlisted.zig").requireRuntimeSupport(runtime.cfg.?.unlisted);
             if (!std.mem.eql(u8, &runtime.cfg.?.digest, &hex) or runtime.cfg.?.apps.len != state.app_count) return error.PinnedPolicyMismatch;
             try runtime.refreshWatchedFiles();
             try runtime.openLogs();
@@ -366,6 +367,8 @@ const Runtime = struct {
             r.cfg.?.deinit();
             r.cfg = null;
         };
+        // Draft B is not wired into the privileged loader. Refuse before policy persistence or BPF work.
+        try @import("unlisted.zig").requireRuntimeSupport(r.cfg.?.unlisted);
         if (try intent.read(r.gpa, r.io)) |saved| {
             if (saved.armed and !std.mem.eql(u8, &saved.policy, &r.cfg.?.digest)) return error.PolicyChangeRequiresAuthorizedOff;
         }

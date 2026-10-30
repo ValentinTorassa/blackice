@@ -15,7 +15,8 @@ fn request(gpa: std.mem.Allocator, io: std.Io, args: []const []const u8, out: *s
     defer gpa.free(bytes);
     if (op == .on) {
         var cfg = try @import("config.zig").Config.parse(gpa, bytes);
-        cfg.deinit();
+        defer cfg.deinit();
+        try @import("unlisted.zig").requireRuntimeSupport(cfg.unlisted);
     }
     // Start before connecting: registration cannot consume the daemon's control-header timeout.
     var agent = if (op == .off) try @import("tty_agent.zig").start(io) else null;

@@ -2,11 +2,13 @@
 const std = @import("std");
 const policy = @import("../../core/policy.zig");
 const abi = @import("types.zig");
+const unlisted = @import("unlisted.zig");
 
 pub const max_bytes = 1024 * 1024;
 pub const App = struct { executable: []const u8, network: policy.Policy };
 const Raw = struct {
     version: []const u8,
+    unlisted: unlisted.Mode = .allow,
     applications: []const struct { executable: []const u8, policy: std.json.Value },
 };
 
@@ -14,6 +16,7 @@ pub const Config = struct {
     arena: std.heap.ArenaAllocator,
     apps: []App,
     digest: [64]u8,
+    unlisted: unlisted.Mode,
 
     pub fn parse(gpa: std.mem.Allocator, bytes: []const u8) !Config {
         if (bytes.len > max_bytes) return error.PolicyTooLarge;
@@ -43,7 +46,7 @@ pub const Config = struct {
         }
         var digest: [32]u8 = undefined;
         std.crypto.hash.sha2.Sha256.hash(bytes, &digest, .{});
-        return .{ .arena = arena, .apps = apps, .digest = std.fmt.bytesToHex(digest, .lower) };
+        return .{ .arena = arena, .apps = apps, .digest = std.fmt.bytesToHex(digest, .lower), .unlisted = raw.unlisted };
     }
 
     pub fn deinit(c: *Config) void {
@@ -110,6 +113,24 @@ test "appfilter application policy reuses the strict core network policy" {
     try std.testing.expect(c.apps[0].network.checkHost("example.com").allowed);
     try std.testing.expect(!c.apps[0].network.checkHost("github.com").allowed);
     try std.testing.expect(!c.apps[0].network.checkPort(22).allowed);
+    try std.testing.expectEqual(unlisted.Mode.allow, c.unlisted);
+}
+
+test "appfilter unlisted is explicit strict and currently refused by the runtime gate" {
+    const body = ",\"applications\":[{\"executable\":\"/usr/bin/curl\",\"policy\":{\"version\":\"blackice.policy/v0\",\"network\":{\"mode\":\"deny-all\"}}}]}";
+    const prefix = "{\"version\":\"blackice.apps/v0\",";
+    for ([_][]const u8{ "\"unlisted\":\"allow\"", "\"unlisted\":\"deny\"" }, 0..) |field, i| {
+        const bytes = try std.mem.concat(std.testing.allocator, u8, &.{ prefix, field, body });
+        defer std.testing.allocator.free(bytes);
+        var c = try Config.parse(std.testing.allocator, bytes);
+        defer c.deinit();
+        if (i == 0) try unlisted.requireRuntimeSupport(c.unlisted) else try std.testing.expectError(error.ExperimentalUnlistedRuntimeNotReady, unlisted.requireRuntimeSupport(c.unlisted));
+    }
+    for ([_][]const u8{ "\"unlisted\":\"ask\"", "\"unlisted\":true", "\"unlisted\":\"allow\",\"unlisted\":\"deny\"", "\"unmatched\":\"deny\"", "\"agents\":true", "\"exemptions\":[]" }) |field| {
+        const bytes = try std.mem.concat(std.testing.allocator, u8, &.{ prefix, field, body });
+        defer std.testing.allocator.free(bytes);
+        try std.testing.expectError(error.InvalidAppPolicy, Config.parse(std.testing.allocator, bytes));
+    }
 }
 
 test "appfilter ambiguous executable paths and unsupported fields refuse before a loader exists" {

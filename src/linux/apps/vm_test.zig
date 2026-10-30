@@ -22,6 +22,7 @@ const state_value = 35100;
 const existing = 35200;
 const lost = 35300;
 const event = 60000;
+const unlisted_state = 35600;
 const Vm = struct {
     mem: [65536]u8 = @splat(0),
     regs: [11]u64 = @splat(0),
@@ -29,6 +30,10 @@ const Vm = struct {
     tgid: u32 = 100,
     ring_full: bool = false,
     events: u32 = 0,
+    uid: u32 = 1000,
+    gid: u32 = 1000,
+    boot_ns: u64 = 100,
+    unlisted_gate_missing: bool = false,
 
     fn init() Vm {
         var v: Vm = .{};
@@ -101,10 +106,14 @@ const Vm = struct {
                 0x85 => {
                     const value: u64 = switch (@as(a.bpf.Helper, @fromBackingInt(@intCast(i.imm)))) {
                         .get_current_pid_tgid => @as(u64, v.tgid) << 32 | v.tgid,
+                        .get_current_uid_gid => @as(u64, v.gid) << 32 | v.uid,
                         .ktime_get_ns => 123456789,
+                        .ktime_get_boot_ns => v.boot_ns,
                         .map_lookup_elem => blk: {
                             const map = v.regs[1];
                             const k: u32 = @intCast(v.get(v.regs[2], 4));
+                            if (map == @import("unlisted_programs.zig").fixture_fds.gate)
+                                break :blk if (v.unlisted_gate_missing) 0 else unlisted_state;
                             if (map == fd.tags) break :blk v.slot(k);
                             if (map == fd.ports) break :blk if (k > 0 and k <= abi.max_apps) ports_base + k * 8 else 0;
                             if (map == fd.state) break :blk state_value;
@@ -145,6 +154,8 @@ const Vm = struct {
                         const jump = switch (i.code & 0xf0) {
                             0x00 => true,
                             0x10 => left == right,
+                            0x20 => left > right,
+                            0x30 => left >= right,
                             0x50 => left != right,
                             else => return error.UnknownJump,
                         };
@@ -317,4 +328,109 @@ test "appfilter emitted exec fork exit and iterator obey lifecycle and PID reuse
     v.setTag(100, 2);
     _ = try v.run(&programs.tracing(.iterator, fd));
     try std.testing.expectEqual(@as(u64, 0), v.get(existing, 4));
+}
+
+fn unlistedVm(until: u64) Vm {
+    var v = Vm.init();
+    const gate: @import("unlisted.zig").Gate = .{ .owner_uid = 1000, .epoch = 9, .deny_until = until };
+    @memcpy(v.mem[unlisted_state..][0..@sizeOf(@TypeOf(gate))], std.mem.asBytes(&gate));
+    return v;
+}
+fn refusedContext(v: *Vm, hook: a.bpf.AttachType) void {
+    if (hook == .cgroup_inet_sock_create) {
+        v.put(ctx + 4, 2, 4);
+        v.put(ctx + 8, 3, 4);
+        v.put(ctx + 12, 1, 4);
+    } else v.socket(hook == .cgroup_inet6_connect or hook == .cgroup_udp6_sendmsg, 443, 6);
+}
+
+test "appfilter unlisted emitted deadlines expire independently of service and commit has no timeout" {
+    const b = @import("unlisted_programs.zig");
+    for (b.hooks) |hook| {
+        const code = b.admission(hook, b.fixture_fds);
+        for ([_]u64{ 0, 99, 100, 101, @import("unlisted.zig").committed }) |until| {
+            var v = unlistedVm(until);
+            refusedContext(&v, hook);
+            const before = v.mem[ctx .. ctx + 64].*;
+            try std.testing.expectEqual(@as(u64, @intFromBool(until <= v.boot_ns)), try v.run(&code));
+            try std.testing.expectEqualSlices(u8, &before, v.mem[ctx .. ctx + 64]);
+            // This emitter does not rewrite tags, route destinations, or claim refusal receipts.
+            try std.testing.expectEqual(@as(u32, 0), v.tag(100));
+        }
+    }
+}
+
+test "appfilter unlisted emitted invalid or absent gates disable B without a wildcard allow rule" {
+    const b = @import("unlisted_programs.zig");
+    for (b.hooks) |hook| {
+        const code = b.admission(hook, b.fixture_fds);
+        for (0..4) |bad| {
+            var v = unlistedVm(200);
+            refusedContext(&v, hook);
+            switch (bad) {
+                0 => v.unlisted_gate_missing = true,
+                1 => v.put(unlisted_state, 2, 4),
+                2 => v.put(unlisted_state + 4, 0, 4),
+                3 => v.put(unlisted_state + 8, 0, 8),
+                else => unreachable,
+            }
+            try std.testing.expectEqual(@as(u64, 1), try v.run(&code));
+        }
+    }
+}
+
+test "appfilter unlisted emitted owner check uses UID not GID and leaves other UIDs and valid tags to base" {
+    const b = @import("unlisted_programs.zig");
+    for (b.hooks) |hook| for ([_]u32{ 0, 110, 999, 1000, 1001 }) |uid| for ([_]u32{ 0, 1, 7, 8 }) |tag| {
+        var v = unlistedVm(200);
+        v.uid = uid;
+        v.gid = 1000;
+        v.setTag(100, tag);
+        refusedContext(&v, hook);
+        const permit = uid != 1000 or (tag > 0 and tag <= abi.max_apps);
+        try std.testing.expectEqual(@as(u64, @intFromBool(permit)), try v.run(&b.admission(hook, b.fixture_fds)));
+        try std.testing.expectEqual(tag, v.tag(100));
+    };
+}
+
+test "appfilter unlisted emitted exception is UDP port53 exact IPv4 or mapped stub only" {
+    const b = @import("unlisted_programs.zig");
+    for (b.hooks[0..4], 0..) |hook, index| {
+        const v6 = index % 2 == 1;
+        const code = b.admission(hook, b.fixture_fds);
+        for ([_]u32{ 0, 0x7f000001, 0x7f000035, 0x7f000036, 0x01010101 }) |ip|
+            for ([_]u32{ 6, 17, 132 }) |protocol|
+                for ([_]u16{ 53, 80, 443, 760, 8080 }) |port| {
+                    var v = unlistedVm(200);
+                    v.socket(v6, port, protocol);
+                    if (v6) v.mapped(ip) else v.addr4(ip);
+                    const allow = ip == 0x7f000035 and protocol == 17 and port == 53;
+                    const before = v.mem[ctx .. ctx + 64].*;
+                    try std.testing.expectEqual(@as(u64, @intFromBool(allow)), try v.run(&code));
+                    try std.testing.expectEqualSlices(u8, &before, v.mem[ctx .. ctx + 64]);
+                };
+        if (v6) for ([_]u32{ 0, 1, 0x7f000035 }) |last| {
+            var v = unlistedVm(200);
+            v.socket(true, 53, 17);
+            v.put(ctx + 8, 0, 8);
+            v.put(ctx + 16, 0, 4);
+            v.put(ctx + 20, std.mem.nativeToBig(u32, last), 4);
+            try std.testing.expectEqual(@as(u64, 0), try v.run(&code));
+        };
+    }
+}
+
+test "appfilter unlisted emitted create refuses SCTP raw ping and protocol type mismatches" {
+    const b = @import("unlisted_programs.zig");
+    const code = b.admission(.cgroup_inet_sock_create, b.fixture_fds);
+    for ([_]u32{ 2, 10 }) |family| for ([_]u32{ 0, 1, 6, 17, 58, 132, 136, 262 }) |protocol|
+        for ([_]u32{ 1, 2, 3 }) |kind| {
+            var v = unlistedVm(200);
+            v.put(ctx + 4, family, 4);
+            v.put(ctx + 8, kind, 4);
+            v.put(ctx + 12, protocol, 4);
+            const allow = (protocol == 6 and kind == 1) or (protocol == 17 and kind == 2);
+            try std.testing.expectEqual(@as(u64, @intFromBool(allow)), try v.run(&code));
+            try std.testing.expectEqual(@as(u64, 0), v.get(ctx, 4)); // B never binds sockets to lo
+        };
 }
