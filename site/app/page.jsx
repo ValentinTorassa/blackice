@@ -68,24 +68,24 @@ const SESSION = [
 
 const UNIX = [
   {
-    name: 'Set before exec',
+    name: 'chroot',
     Icon: IconArrowInto,
-    text: 'Like chroot, the policy is in place before the command runs its first instruction, so even its first connection is checked.',
+    text: 'A chroot is set before the program runs. So is the policy: it is in place before the command runs its first instruction, so even its first connection is checked.',
   },
   {
-    name: 'No way up from inside',
+    name: 'pledge(2)',
     Icon: IconNarrow,
-    text: 'Like a process after pledge(2), nothing inside a scope can get more access. Only the owner, from outside, can widen it, and only until a set time.',
+    text: 'After pledge, a process can only give up access. Inside a scope it is the same: nothing can get more. The owner can widen it from outside, until a set time.',
   },
   {
-    name: 'Fails early',
+    name: 'Rule of Repair',
     Icon: IconFlag,
-    text: "The Rule of Repair: fail noisily and as soon as possible. If the policy doesn't load, or doesn't match its pinned hash, the command never starts.",
+    text: "Fail noisily and as soon as possible. If the policy doesn't load, or doesn't match its pinned hash, the command never starts.",
   },
   {
     name: 'Everything is a file',
     Icon: IconLines,
-    text: 'The policy is a file, and each logged decision is a line appended to another one. grep and jq work on both, and tail -f follows the receipts.',
+    text: 'The policy is a file, and each decision is a line appended to another one. grep and jq work on both, and tail -f follows the receipts.',
   },
 ];
 
@@ -191,6 +191,23 @@ export default function Home() {
           <p className="caption">Illustration with simulated traffic.</p>
         </section>
 
+        <section className="container section about" aria-labelledby="about-title">
+          <h2 className="h2" id="about-title">
+            Why I built it
+          </h2>
+          <p className="sub">
+            I'm <a href={SITE.authorUrl}>Valen Torassa</a>, a security and backend engineer in Rosario, Argentina. Most
+            days an AI agent runs commands on my machine: tests, package installs, scripts. Each of those runs with my
+            user's permissions, so any of them can connect to anywhere my user can reach.
+          </p>
+          <p className="sub">
+            I wanted that limit in a file I can review in a pull request, enforced by the operating system before the
+            command starts. My earlier project,{' '}
+            <a href="https://github.com/ValentinTorassa/VT-Agent-Firewall">VT-Agent-Firewall</a>, checks which tools an
+            agent calls. blackice works one layer down, on the connections the commands themselves open.
+          </p>
+        </section>
+
         <section className="container section">
           <h2 className="h2">How it works</h2>
           <p className="sub">Tasks and apps use the same model: a scope, a policy and receipts.</p>
@@ -216,7 +233,7 @@ export default function Home() {
         <section className="container section">
           <div className="head-row">
             <h2 className="h2">Design</h2>
-            <span className="badge">v0 design · verified for task scopes on macOS (Apple silicon) and Debian 13 (x86_64)</span>
+            <span className="badge">v0</span>
           </div>
           <p className="sub">
             Each connection passes these layers in order and stops at the first one that refuses it. A hostname hides
@@ -237,7 +254,7 @@ export default function Home() {
         </section>
 
         <section className="container section">
-          <h2 className="h2">Built like a Unix tool</h2>
+          <h2 className="h2">Borrowed from Unix</h2>
           <Spotlight className="grid4">
             {UNIX.map(({ name, Icon, text }) => (
               <div className="cell spot" key={name}>
@@ -290,8 +307,11 @@ export default function Home() {
         <section className="container section">
           <div className="cta">
             <CubeMark />
-            <h2 className="h2">Read the code and the evidence</h2>
-            <p className="sub">The design, its limits and the evidence for each checkpoint are in the repository.</p>
+            <h2 className="h2">Try it and tell me what broke</h2>
+            <p className="sub">
+              The code, the design, its limits and the evidence for each checkpoint are in the repository. If something
+              doesn't behave the way this page says, open an issue.
+            </p>
             <div className="actions">
               <Link className="btn btn-primary" href="/docs/">
                 <IconBook size={16} />

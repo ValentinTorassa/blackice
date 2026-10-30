@@ -35,6 +35,8 @@ body {
   overflow-x: hidden;
 }
 a { color: inherit; text-decoration: none; }
+.about a { color: var(--fg); text-decoration: underline; text-decoration-color: var(--line-2); text-underline-offset: 3px; }
+.about a:hover { text-decoration-color: var(--fg); }
 code, pre, .mono { font-family: var(--mono); }
 :focus-visible { outline: 2px solid var(--fg); outline-offset: 3px; border-radius: 6px; }
 ::selection { background: #ededed; color: #000; }
