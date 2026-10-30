@@ -65,7 +65,8 @@ HTTPS through the proxy, observe mode, and recovery after faults.
 - An allowed name on a shared CDN can reach other sites on that CDN through domain fronting inside TLS: the
   proxy checks the TLS server name, not the encrypted request.
 - Receipts are a local record for diagnosis. Other programs of the same user, and administrators, can change
-  them. Keeping the scoped command itself from writing them is designed but not yet tested on either OS.
+  them. The scoped command itself is designed not to write them: on macOS that held in probes, without an
+  evidence entry yet; on Linux it is not yet tested.
 
 ## Build
 

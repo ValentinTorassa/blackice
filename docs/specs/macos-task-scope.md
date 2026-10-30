@@ -83,8 +83,9 @@ or addresses, only "any host" or "localhost", so every decision about names happ
     scope's proxy is kept from serving another, belong to [proxy](proxy.md) and are untested.
   - Inherited sockets (R7) are untested.
   - A connection the sandbox refuses leaves no receipt yet: only the proxy's decisions are receipted on macOS.
-  - The state root's parent directories are also denied rename, and the root is checked by its real path; an
-    earlier build let a command rename a parent and then write its own receipts.
+  - The state root's parent directories are also denied rename, hard links into the state root are refused,
+    and the root is checked by its real path. An earlier build let a command rename a parent and then write
+    its own receipts.
 
 ## Tasks
 
@@ -113,7 +114,7 @@ or addresses, only "any host" or "localhost", so every decision about names happ
 | macos-task-scope.R3 | probe | Same probe | With all outbound network denied, `curl https://example.com` failed with "Could not resolve host" |
 | macos-task-scope.R4 | probe | Same probe | A background child, orphaned and adopted by launchd (parent PID 1), was still blocked |
 | macos-task-scope.R2 | probe | fx 0.0.16 inside the same kind of profile, scripted local model, stand-in proxy, SIP on | fx reached its model only on the allowed port; a direct `curl` from a tool could not resolve the host; through the stand-in proxy the request arrived as `CONNECT example.com:443` |
-| macos-task-scope.R1, macos-task-scope.R2, macos-task-scope.R10 | probe | Reported by the lead: `blackice run` (PR #7, 61ffe84) on macOS 27.0.1 (26A434), arm64, SIP on, ReleaseSafe | `curl --noproxy '*'` to a name failed (exit 6) and to 1.1.1.1 failed (exit 7); 169.254.169.254 through the proxy got `local_or_private_address`; writing the receipts from inside was refused, including after renaming a parent of the state root. No evidence entry yet |
+| macos-task-scope.R1, macos-task-scope.R2, macos-task-scope.R10 | probe | Reported by the lead: `blackice run` (PR #7, 61ffe84) on macOS 27.0.1 (26A434), arm64, SIP on, ReleaseSafe | `curl --noproxy '*'` to a name failed (exit 6) and to 1.1.1.1 failed (exit 7); 169.254.169.254 through the proxy got `local_or_private_address`; writing the receipts from inside was refused, and so were a parent rename and a hard link to the home directory, /private/tmp or an ancestor (security re-check of 7e26dfd: no open findings). No evidence entry yet |
 
 ## Terms
 

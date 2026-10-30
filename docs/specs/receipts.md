@@ -64,8 +64,9 @@ and `jq` are enough to read it.
   ([linux-task-scope](linux-task-scope.md)).
 - Limits:
   - Receipts are not tamper-proof against the user's other processes outside the scope. The scoped command
-    itself is meant not to write them: on macOS a sandbox rule denies writes under the state root and renames
-    of its parents (probed on the Mac, under security re-check); on Linux the state directory is a read-only
+    itself is meant not to write them: on macOS a sandbox rule denies writes under the state root, renames of
+    its parents and hard links into it (probed on the Mac: direct write, parent rename and hard link
+    refused); on Linux the state directory is a read-only
     mount (not yet run with the installed helper).
   - v0 has no per-line sequence number, so a gap inside the file is visible only through `dropped`.
   - No size or time limit on the file yet.

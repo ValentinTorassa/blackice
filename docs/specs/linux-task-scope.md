@@ -92,6 +92,8 @@ the system resolver's sockets do not exist, so it cannot ask a system service to
   - The state directory is a read-only mount inside the scope. That does not cover every path to the same
     files (another process's `/proc/<pid>/root`, hard links made before the scope), so it is not a
     tamper-proof record. The policy is kept in memory, never re-read from that directory.
+  - A command can start in a directory strictly below `/tmp` or `/var/tmp`: that directory stays visible and
+    its siblings are hidden. A command whose working directory is `/tmp` or `/var/tmp` itself is refused.
   - The setup script installs the helper only if its SHA-256 matches the expected value given to it, checked on
     the root-owned copy. The helper is built stripped, without Zig's crash handler.
 
@@ -108,8 +110,8 @@ the system resolver's sockets do not exist, so it cannot ask a system service to
 | Private mount namespace that hides resolver and daemon sockets | codex-linux | done | |
 | Landlock scoping and seccomp filter | codex-linux | done | |
 | `scripts/linux-setup.sh` and `scripts/linux-teardown.sh` | codex-linux | done | |
-| Security review of the setup script before it runs | security | doing | |
-| Run the setup script with sudo, once it is reviewed | valen | todo | waits for: the scripts and their review |
+| Security review of the setup script before it runs (e4d9ac3, then the a6a9a95 changes) | security | done | |
+| Run the setup script with sudo, once it is reviewed: done at e4d9ac3; run it again at a6a9a95 (helper SHA-256 `8b3632e1…`), because the first helper could not start a scope | valen | todo | |
 | Fixtures: immediate connect, fork and exec, TCP and both UDP modes on IPv4 and IPv6, migration, `systemd-run --user`, Docker socket, raw sockets, io_uring, `ping`, an SCTP connect, an unconnected ICMP `sendto`, `bind` and `listen`, DNS paths (`getent hosts`, `resolvectl query`, `busctl call org.freedesktop.resolve1`) | codex-linux | doing | |
 | End-to-end kernel deny with receipts, an off-host receiver that sees nothing per protocol and family, and an evidence entry | codex-linux | todo | |
 | docs/linux.md | codex-linux | done | |
@@ -119,7 +121,8 @@ the system resolver's sockets do not exist, so it cannot ask a system service to
 
 | Covers | Kind | Link | Note |
 |---|---|---|---|
-| linux-task-scope.R13 | test | `zig build test`, src/linux/: "all generated BPF branches stay in bounds; only IPv4 TCP has an allow branch", "seccomp installs and refuses Unix sockets, namespaces and io_uring in a disposable child", "private mounts preserve uid and cwd, hide daemon paths, and protect state before exec", "outside sockets cannot be used as workload stdio" | 18/18 passed at e4d9ac3 (PR #6), Zig 0.17.0, Debian 13 x86_64, no root. The mount test failed when the checkout was under /tmp. Nothing ran with the helper's capabilities or with programs attached to a cgroup |
+| linux-task-scope.R13 | test | `zig build test`, src/linux/: "all generated BPF branches stay in bounds; only IPv4 TCP has an allow branch", "seccomp installs and refuses Unix sockets, namespaces and io_uring in a disposable child", "private mounts preserve uid and cwd, hide daemon paths, and protect state before exec", "outside sockets cannot be used as workload stdio" | 30/30 passed at a6a9a95 (PR #6), Zig 0.17.0, Debian 13 x86_64, no root, from a checkout under the home directory and from one under /tmp. Nothing ran with the helper's capabilities or with programs attached to a cgroup |
+| linux-task-scope.R8 | probe | Reported by the Linux owner: the helper installed at e4d9ac3 (SHA-256 `ef675825…`), Debian 13, no sudo during the run | The first scope launch failed closed: exit 125, `root_cgroup: PermissionDenied`, receipts `linux_helper_failure` and `linux_launch_refused`, and the command never ran. Cause: a chown before a chmod in the helper, fixed in a6a9a95. Not evidence for the deny checkpoints |
 | linux-task-scope.R4 | probe | Name lookup from a network namespace with only loopback (bubblewrap), Debian 13, kernel 6.12, without blackice code | TCP to a public address was unreachable, but `example.com` still resolved through systemd-resolved's world-writable Unix socket. With a tmpfs over `/run/systemd/resolve`, resolution failed. A network namespace alone does not close DNS |
 | linux-task-scope.R2 | probe | fx 0.0.16 in the same kind of network namespace, scripted local model, stand-in proxy | A direct `curl` from a tool could not resolve the host; through the stand-in proxy it arrived as `CONNECT example.com:443`. Uses a network namespace, not cgroup rules, so it shows the proxy route, not the kernel rule |
 
