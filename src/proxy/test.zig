@@ -233,6 +233,16 @@ fn fixedResolve(context: ?*anyopaque, io: Io, host: []const u8, port: u16, out: 
         out[n] = try net.IpAddress.parse("127.0.0.1", port);
         n += 1;
     }
+    // hole.test answers first with an address that drops connections (see Hole), then with the upstream;
+    // blackhole.test only with the dropping one.
+    if (std.mem.eql(u8, host, "hole.test") or std.mem.eql(u8, host, "blackhole.test")) {
+        out[n] = try net.IpAddress.parse("::1", port);
+        n += 1;
+        if (host[0] == 'h') {
+            out[n] = try net.IpAddress.parse("127.0.0.1", port);
+            n += 1;
+        }
+    }
     if (n == 0) return error.UnknownHostName;
     return n;
 }
@@ -246,6 +256,11 @@ const Harness = struct {
     p: *proxy.Proxy,
 
     fn init(h: *Harness, policy_json: []const u8) !void {
+        return h.initConfig(policy_json, .{});
+    }
+
+    /// `cfg` with the test resolver and the harness's grant table filled in.
+    fn initConfig(h: *Harness, policy_json: []const u8, cfg: proxy.Config) !void {
         h.io = testing.io;
         h.tmp = testing.tmpDir(.{});
         errdefer h.tmp.cleanup();
@@ -254,10 +269,10 @@ const Harness = struct {
         h.log = try receipt.Log.open(h.io, h.tmp.dir, "receipts.jsonl", "s-test0001", h.pol.id());
         errdefer h.log.close();
         h.grants = .init(testing.allocator);
-        h.p = try proxy.Proxy.start(testing.allocator, h.io, &h.pol, &h.log, .{
-            .resolver = .{ .resolve = fixedResolve },
-            .grants = &h.grants,
-        });
+        var c = cfg;
+        c.resolver = .{ .resolve = fixedResolve };
+        c.grants = &h.grants;
+        h.p = try proxy.Proxy.start(testing.allocator, h.io, &h.pol, &h.log, c);
     }
 
     fn deinit(h: *Harness) void {
@@ -280,6 +295,18 @@ const Harness = struct {
         var i: usize = 0;
         while (it.next()) |line| : (i += 1) {
             if (i == n) return std.json.parseFromSlice(std.json.Value, testing.allocator, line, .{});
+        }
+        return error.MissingReceipt;
+    }
+
+    /// Waits up to 3 s for at least `n` receipt lines.
+    fn waitReceipts(h: *Harness, n: usize) !void {
+        var tries: usize = 0;
+        while (tries < 300) : (tries += 1) {
+            const bytes = try h.receipts();
+            defer testing.allocator.free(bytes);
+            if (std.mem.count(u8, bytes, "\n") >= n) return;
+            try h.io.sleep(.fromMilliseconds(10), .awake);
         }
         return error.MissingReceipt;
     }
@@ -907,4 +934,198 @@ test "the system resolver is used when none is injected; localhost stays refused
     const bytes = try tmp.dir.readFileAlloc(io, "r.jsonl", testing.allocator, .limited(1 << 16));
     defer testing.allocator.free(bytes);
     try testing.expect(std.mem.find(u8, bytes, "\"reason\":\"local_or_private_address\"") != null);
+}
+
+// ---------------------------------------------------------------- dialing
+
+test "interleaveFamilies alternates families from the first answer's family, keeping each family's order" {
+    const v6a = try net.IpAddress.parse("2001:db8::a", 443);
+    const v6b = try net.IpAddress.parse("2001:db8::b", 443);
+    const v4a = try net.IpAddress.parse("192.0.2.1", 443);
+    const v4b = try net.IpAddress.parse("192.0.2.2", 443);
+    const v4c = try net.IpAddress.parse("192.0.2.3", 443);
+    var out: [8]net.IpAddress = undefined;
+
+    const a = proxy.interleaveFamilies(&out, &.{ v6a, v6b, v4a, v4b, v4c });
+    try testing.expectEqualSlices(net.IpAddress, &.{ v6a, v4a, v6b, v4b, v4c }, a);
+    const b = proxy.interleaveFamilies(&out, &.{ v4a, v6a, v6b });
+    try testing.expectEqualSlices(net.IpAddress, &.{ v4a, v6a, v6b }, b);
+    const c = proxy.interleaveFamilies(&out, &.{ v4a, v4b });
+    try testing.expectEqualSlices(net.IpAddress, &.{ v4a, v4b }, c);
+    try testing.expectEqual(@as(usize, 0), proxy.interleaveFamilies(&out, &.{}).len);
+}
+
+/// A listener on [::1]:port whose accept queue is full and never drained, so the kernel drops new
+/// connection attempts to it: a connect neither succeeds nor fails, like an address whose packets are lost.
+/// Skips the test where that cannot be set up (no IPv6 loopback, or a kernel that refuses instead of dropping).
+const Hole = struct {
+    io: Io,
+    server: net.Server,
+    fillers: [8]net.Stream = undefined,
+    filled: usize = 0,
+
+    fn open(hole: *Hole, io: Io, port: u16) !void {
+        const addr = try net.IpAddress.parse("::1", port);
+        const server = addr.listen(io, .{ .kernel_backlog = 0 }) catch return error.SkipZigTest;
+        hole.* = .{ .io = io, .server = server };
+        errdefer hole.close();
+        while (hole.filled < hole.fillers.len) {
+            switch (try proxy.dialRace(io, &.{addr}, .fromSeconds(1), .fromMilliseconds(300))) {
+                .open => |o| {
+                    hole.fillers[hole.filled] = o.stream;
+                    hole.filled += 1;
+                },
+                .failed => |f| {
+                    if (f.err == error.Timeout) return; // the queue is full and attempts hang
+                    return error.SkipZigTest;
+                },
+            }
+        }
+        return error.SkipZigTest;
+    }
+
+    fn close(hole: *Hole) void {
+        for (hole.fillers[0..hole.filled]) |s| s.close(hole.io);
+        hole.server.deinit(hole.io);
+    }
+};
+
+/// The test policy plus the dialing names and the IPv6 loopback.
+fn holePolicy(buf: []u8, upstream_port: u16) []const u8 {
+    return std.fmt.bufPrint(buf,
+        \\{{"version":"blackice.policy/v0","network":{{"mode":"allowlist",
+        \\ "allow":["allowed.test","hole.test","blackhole.test"],
+        \\ "subnets":{{"allow":["127.0.0.0/8","::1/128"]}},"ports":[443,{d}]}}}}
+    , .{upstream_port}) catch unreachable;
+}
+
+test "an address that drops connections costs one attempt delay, then the next address answers" {
+    var up: TestServer = undefined;
+    try up.start(testing.io, .echo);
+    defer up.stop();
+    var hole: Hole = undefined;
+    try hole.open(testing.io, up.port);
+    defer hole.close();
+    var h: Harness = undefined;
+    var pbuf: [512]u8 = undefined;
+    try h.init(holePolicy(&pbuf, up.port)); // default budget: 10 s
+    defer h.deinit();
+    var c: Client = .{ .stream = try h.connect() };
+    c.init(h.io, c.stream);
+    defer c.stream.close(h.io);
+
+    const t0 = Io.Clock.awake.now(h.io);
+    var req_buf: [128]u8 = undefined;
+    try c.send(try std.fmt.bufPrint(&req_buf, "CONNECT hole.test:{d} HTTP/1.1\r\n\r\n", .{up.port}));
+    var sbuf: [128]u8 = undefined;
+    try testing.expectEqualStrings("HTTP/1.1 200 Connection Established", try c.status(&sbuf));
+    // One 250 ms attempt delay, not the 10 s budget (dialing one address at a time took the whole budget).
+    try testing.expect(t0.untilNow(h.io, .awake).toMilliseconds() < 2000);
+    var hello_buf: [600]u8 = undefined;
+    const hello = clientHello(&hello_buf, "hole.test");
+    try c.send(hello);
+    try testing.expectEqualSlices(u8, hello, try c.r.interface.take(hello.len));
+
+    var r = try h.receiptAt(0);
+    defer r.deinit();
+    try expectField(r.value, "verdict", "allow");
+    try expectField(r.value, "ip", "127.0.0.1");
+    try expectField(r.value, "detail", "sni_match");
+}
+
+test "when every address drops connections, the dial gives up after its budget with upstream_unreachable" {
+    var up: TestServer = undefined;
+    try up.start(testing.io, .echo);
+    defer up.stop();
+    var hole: Hole = undefined;
+    try hole.open(testing.io, up.port);
+    defer hole.close();
+    var h: Harness = undefined;
+    var pbuf: [512]u8 = undefined;
+    try h.initConfig(holePolicy(&pbuf, up.port), .{ .connect_timeout = .fromMilliseconds(500) });
+    defer h.deinit();
+    var c: Client = .{ .stream = try h.connect() };
+    c.init(h.io, c.stream);
+    defer c.stream.close(h.io);
+
+    var req_buf: [128]u8 = undefined;
+    try c.send(try std.fmt.bufPrint(&req_buf, "CONNECT blackhole.test:{d} HTTP/1.1\r\n\r\n", .{up.port}));
+    var sbuf: [128]u8 = undefined;
+    try testing.expectEqualStrings("HTTP/1.1 502 Bad Gateway", try c.status(&sbuf));
+
+    var r = try h.receiptAt(0);
+    defer r.deinit();
+    try expectField(r.value, "verdict", "deny");
+    try expectField(r.value, "reason", "upstream_unreachable");
+    try expectField(r.value, "ip", "::1");
+    const detail = r.value.object.get("detail").?.string;
+    try testing.expect(std.mem.startsWith(u8, detail, "Timeout wait_ms="));
+}
+
+test "a client that leaves before sending a byte gets client_closed with wait_ms, not not_tls" {
+    var up: TestServer = undefined;
+    try up.start(testing.io, .echo);
+    defer up.stop();
+    var h: Harness = undefined;
+    var pbuf: [512]u8 = undefined;
+    try h.init(testPolicy(&pbuf, up.port));
+    defer h.deinit();
+    var c: Client = .{ .stream = try h.connect() };
+    c.init(h.io, c.stream);
+
+    var req_buf: [128]u8 = undefined;
+    try c.send(try std.fmt.bufPrint(&req_buf, "CONNECT allowed.test:{d} HTTP/1.1\r\n\r\n", .{up.port}));
+    var sbuf: [128]u8 = undefined;
+    try testing.expectEqualStrings("HTTP/1.1 200 Connection Established", try c.status(&sbuf));
+    c.stream.close(h.io);
+    try h.waitReceipts(1);
+
+    var r = try h.receiptAt(0);
+    defer r.deinit();
+    try expectField(r.value, "verdict", "allow");
+    try expectField(r.value, "reason", "allowed_by_rule");
+    try expectField(r.value, "ip", "127.0.0.1");
+    const detail = r.value.object.get("detail").?.string;
+    try testing.expect(std.mem.startsWith(u8, detail, "client_closed wait_ms="));
+    try testing.expectEqual(@as(usize, 0), up.received.load(.monotonic));
+}
+
+test "stopping the proxy mid-dial writes the refusal and does not go on to the next address" {
+    var up: TestServer = undefined;
+    try up.start(testing.io, .echo);
+    defer up.stop();
+    var hole: Hole = undefined;
+    try hole.open(testing.io, up.port);
+    defer hole.close();
+    var h: Harness = undefined;
+    var pbuf: [512]u8 = undefined;
+    // A long attempt delay keeps the dial on the dropping address when the stop comes.
+    try h.initConfig(holePolicy(&pbuf, up.port), .{ .attempt_delay = .fromSeconds(5) });
+    var stopped = false;
+    defer if (!stopped) h.deinit();
+    var c: Client = .{ .stream = try h.connect() };
+    c.init(h.io, c.stream);
+    defer c.stream.close(h.io);
+
+    var req_buf: [128]u8 = undefined;
+    try c.send(try std.fmt.bufPrint(&req_buf, "CONNECT hole.test:{d} HTTP/1.1\r\n\r\n", .{up.port}));
+    try h.io.sleep(.fromMilliseconds(300), .awake);
+    h.p.stop();
+    stopped = true;
+    defer {
+        h.grants.deinit();
+        h.log.close();
+        h.pol.deinit();
+        h.tmp.cleanup();
+    }
+
+    var r = try h.receiptAt(0);
+    defer r.deinit();
+    try expectField(r.value, "verdict", "deny");
+    try expectField(r.value, "reason", "upstream_unreachable");
+    try expectField(r.value, "ip", "::1");
+    const detail = r.value.object.get("detail").?.string;
+    try testing.expect(std.mem.startsWith(u8, detail, "canceled wait_ms="));
+    try testing.expectError(error.MissingReceipt, h.receiptAt(1));
+    try testing.expectEqual(@as(u32, 0), up.accepted.load(.monotonic));
 }
