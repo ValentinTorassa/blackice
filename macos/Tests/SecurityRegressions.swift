@@ -53,13 +53,30 @@ func securityRegressions() throws {
     for action in HostAction.allCases {
         let reject = FakePresence(accepts: false), accept = FakePresence(accepts: true)
         var mutations = 0, refusals = 0
-        PresenceGate.perform(action, using: reject, denied: { refusals += 1 }, authorized: { mutations += 1 })
+        var announced: [String] = []
+        let prompt = AuthorizationPrompt(action: action, policy: .available(config),
+            parent: AuthorizationParent(pid: 42, name: Data("test-shell".utf8)))
+        PresenceGate.perform(prompt, using: reject, announce: { announced.append($0) }, denied: { refusals += 1 }, authorized: { mutations += 1 })
         expect(mutations == 0 && refusals == 1, "cancel/unavailable authentication blocks \(action.rawValue)")
-        PresenceGate.perform(action, using: accept, denied: { refusals += 1 }, authorized: { mutations += 1 })
-        expect(mutations == 1 && refusals == 1 && accept.reasons == [action.reason], "successful user presence gates \(action.rawValue)")
-        PresenceGate.perform(action, using: reject, denied: { refusals += 1 }, authorized: { mutations += 1 })
+        PresenceGate.perform(prompt, using: accept, announce: { announced.append($0) }, denied: { refusals += 1 }, authorized: { mutations += 1 })
+        expect(mutations == 1 && refusals == 1 && accept.reasons == [prompt.reason], "successful user presence gates \(action.rawValue)")
+        PresenceGate.perform(prompt, using: reject, announce: { announced.append($0) }, denied: { refusals += 1 }, authorized: { mutations += 1 })
         expect(mutations == 1 && refusals == 2 && reject.reasons.count == 2, "previous approval never bypasses later request")
+        expect(announced == Array(repeating: prompt.reason, count: 3), "terminal and authentication receive identical complete summary")
+        expect(prompt.reason.contains("generation 1") && prompt.reason.contains("unmatched allow") &&
+               prompt.reason.contains("configuration sha256 \(config.id)"), "prompt identifies generation, exact wrapper digest and unmatched mode")
+        expect(prompt.reason.contains("com.example.probe/ABCDE12345") &&
+               prompt.reason.contains("policy sha256 \(config.apps[0].policy.sha256.prefix(12))"), "prompt binds app identity to original policy digest")
+        expect(prompt.reason.contains("Parent: test-shell (pid 42, audit only)"), "prompt exposes requesting parent without using it for authorization")
     }
+    expect(AuthorizationParent(pid: 42, name: Data("fake\n\u{202e}shell".utf8)).name == "fake??shell", "parent label control/bidi characters cannot forge prompt lines")
+    expect(AuthorizationParent.current().pid > 0 && !AuthorizationParent.current().name.isEmpty, "parent label resolves on Mac without an authorization role")
+    expect(AuthorizationPolicy.absent.summary.contains("none") && AuthorizationPolicy.unreadable.summary.contains("unknown"), "missing or unreadable saved policy is explicit during recovery")
+    let (_, changedPromptPolicy) = try configuration(policy: #"{"mode":"allow-all"}"#, gen: 7, unmatched: "deny")
+    let summary = AuthorizationPolicy.available(changedPromptPolicy).summary
+    expect(summary.contains("generation 7") && summary.contains("unmatched deny") &&
+           summary.contains(String(changedPromptPolicy.apps[0].policy.sha256.prefix(12))) &&
+           summary != AuthorizationPolicy.available(config).summary, "policy replacement changes recognizable prompt summary")
     try ConfigurationUpdate.validate(config, replacing: nil)
     rejects("host rejects same-generation replacement") { try ConfigurationUpdate.validate(config, replacing: config) }
     let (_, next) = try configuration(gen: 2)
@@ -100,7 +117,21 @@ func securityRegressions() throws {
     var changed = hello; changed[2] = 3
     expect(changedPrefix.receive(changed, offset: 0) == .deny("tls_unparsed"), "peek prefix cannot be replaced")
     expect(TLSClientHello.inspect(clientHello("api.example.com", duplicateSNI: true)) == .deny("tls_unparsed"), "duplicate SNI rejected")
-    expect(TLSClientHello.inspect(clientHello("api.example.com", extra: [0xfe, 0x0d, 0, 0])) == .deny("tls_unparsed"), "ECH outer cover name cannot authorize inner name")
+    let echExtension: [UInt8] = [0xfe, 0x0d, 0, 4, 0x42, 0x87, 0x19, 0xff]
+    let echHello = clientHello("api.example.com", extra: echExtension)
+    expect(TLSClientHello.inspect(echHello) == .serverName("api.example.com", echPresent: true), "ECH/GREASE presence is diagnostic, not a blanket deny")
+    var matchingECH = TLSInspection(expectedHost: "api.example.com")
+    expect(matchingECH.receive(echHello, offset: 0) == .serverName("api.example.com", echPresent: true), "ECH/GREASE with exact outer SNI allowed")
+    var wrongECH = TLSInspection(expectedHost: "other.example.com")
+    expect(wrongECH.receive(echHello, offset: 0) == .deny("sni_mismatch"), "ECH/GREASE cannot bypass exact outer-SNI gate")
+    expect(matchingECH.echPresent && wrongECH.echPresent, "ECH evidence survives both allow and mismatch")
+    expect(TLSClientHello.inspect(clientHello(nil, extra: echExtension)) == .deny("sni_missing"), "ECH/GREASE cannot substitute for missing SNI")
+    expect(TLSClientHello.inspect(clientHello("api.example.com", extra: echExtension + echExtension)) == .deny("tls_unparsed"), "duplicate ECH still rejects malformed hello")
+    var marked = domain
+    marked.echPresent = matchingECH.echPresent
+    let markedReceipt = Receipt.flow(flow(hostname: "api.example.com"), result: marked, hostnameMode: "os-metadata")
+    expect(try markedReceipt.jsonLine().contains("ech_present;"), "ECH presence appears in bounded receipt detail")
+    expect(try !Receipt.flow(flow(), result: domain, hostnameMode: "os-metadata").jsonLine().contains("ech_present"), "ordinary TLS receipts do not claim ECH")
     for name in ["", "evil\0.example.com", "éxample.com", "127.0.0.1", "bad..example.com"] {
         expect(TLSClientHello.inspect(clientHello(name)) == .deny("tls_unparsed"), "invalid SNI rejected")
     }
