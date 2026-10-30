@@ -31,8 +31,11 @@ attachments, and holds the child behind a two-stage pipe handshake until contain
 
 Before exec, the child closes all unexpected descriptors, drops host capabilities, creates private user/mount
 namespaces, and masks `/run`, `/var/run`, `/tmp` and `/var/tmp`. The caller's numeric uid/gid and working
-directory are preserved, reopening cwd through the new mounts. A working directory or executable inside a
-masked path may therefore be unavailable. The complete blackice state root, including every scope's
+directory are preserved, reopening cwd through the new mounts. When cwd is below `/tmp` or `/var/tmp`, only
+that directory and its descendants are restored from a pinned descriptor; unrelated temporary paths,
+including siblings and files in the old parent, remain hidden. Run from the project root if commands need
+its whole tree. Cwd equal to `/tmp` or `/var/tmp` is refused, as are unavailable paths under `/run`.
+The complete blackice state root, including every scope's
 receipts, policy copies and control sockets, is recursively mounted read-only.
 Landlock ABI 6 scopes abstract Unix sockets and signals. Finally, all capabilities are dropped and an
 inherited seccomp filter and `no_new_privs` prevent reacquiring privilege. Socket-backed standard input,
@@ -40,6 +43,8 @@ output or error is rejected rather than inheriting an outside socket's cgroup at
 
 The core supplies the canonical absolute state root through `LaunchSpec.state_dir`; a missing or invalid
 path refuses launch. The standalone receiver probe protects its receipt directory instead.
+The seccomp prohibition on Unix socket creation prevents connections to `control.sock`; a read-only mount
+alone does not prevent connecting to an existing socket.
 
 ## Build and install
 
@@ -113,8 +118,9 @@ lifetime/reuse are core/proxy responsibilities; this backend does not claim cont
 
 `zig build test` includes actual unprivileged namespace, Landlock and seccomp tests. The test runner must
 allow ordinary socket creation and unprivileged user namespaces. Tool sandboxes and some CI hosts may
-disable these facilities. Tests never invoke sudo or install a helper. Generated BPF branch bounds and
-invalid launch inputs also have unit checks.
+disable these facilities. Tests never invoke sudo or install a helper. Temporary-project tests cover cwd,
+project writes and executable files, hidden siblings and read-only state for multiple scopes. Generated BPF
+branch bounds and invalid launch inputs also have unit checks.
 
 `zig build linux-probe` installs an explicit backend harness for receiver tests:
 

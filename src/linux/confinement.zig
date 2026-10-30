@@ -9,6 +9,12 @@ pub fn namespaces(uid: u32, gid: u32, state: [:0]const u8) !void {
     const cwd_len = try sys.check(l.getcwd(&cwd_buf, cwd_buf.len));
     if (cwd_len < 2) return error.WorkingDirectoryUnavailable;
     const cwd = cwd_buf[0 .. cwd_len - 1 :0];
+    var temporary_root: ?[]const u8 = null;
+    for ([_][]const u8{ "/tmp", "/var/tmp" }) |root| {
+        // Restoring a whole temporary root would expose unrelated daemon paths again.
+        if (std.mem.eql(u8, cwd, root)) return error.WorkingDirectoryAtTemporaryRoot;
+        if (std.mem.startsWith(u8, cwd, root) and cwd.len > root.len and cwd[root.len] == '/') temporary_root = root;
+    }
     try sys.dropCapabilities();
     // Retain the caller's numeric IDs. Only this uid/gid is mapped in the private user namespace.
     _ = try sys.check(l.unshare(l.CLONE.NEWUSER | l.CLONE.NEWNS));
@@ -17,20 +23,45 @@ pub fn namespaces(uid: u32, gid: u32, state: [:0]const u8) !void {
     try sys.writeFileAt(l.AT.FDCWD, "/proc/self/uid_map", try std.fmt.bufPrint(&buf, "{d} {d} 1\n", .{ uid, uid }));
     try sys.writeFileAt(l.AT.FDCWD, "/proc/self/gid_map", try std.fmt.bufPrint(&buf, "{d} {d} 1\n", .{ gid, gid }));
     _ = try sys.check(l.mount(null, "/", null, l.MS.REC | l.MS.PRIVATE, 0));
-    // Protect the whole scope directory, including submounts. An alias through a pre-opened fd is closed
+    // Protect the whole state root, including submounts. An alias through a pre-opened fd is closed
     // by the launch handshake. The broader same-user filesystem/IPC threat remains a declared limit.
     _ = try sys.check(l.mount(state, state, null, l.MS.BIND | l.MS.REC, 0));
     const MountAttr = extern struct { set: u64 = 15, clear: u64 = 0, propagation: u64 = 0, userns: u64 = 0 };
     const attr: MountAttr = .{}; // RDONLY | NOSUID | NODEV | NOEXEC
     _ = try sys.check(l.syscall5(.mount_setattr, @bitCast(@as(isize, l.AT.FDCWD)), @intFromPtr(state.ptr), 0x8000, @intFromPtr(&attr), @sizeOf(MountAttr)));
+    // Resolve through the new state mount before pinning the project, so a nested state root stays read-only.
+    const project = if (temporary_root != null)
+        try sys.fd(l.open(cwd, .{ .PATH = true, .DIRECTORY = true, .CLOEXEC = true, .NOFOLLOW = true }, 0))
+    else
+        -1;
+    defer if (project >= 0) sys.close(project);
     // /var/run normally points at /run. A separate /var/run is masked as well.
     try maskDir("/run");
     try maskDir("/var/run");
     try maskDir("/tmp");
     try maskDir("/var/tmp");
+    if (temporary_root) |root| try restoreProject(project, cwd, root.len);
     // Reopen cwd by path, so an inherited cwd cannot retain a reference into a masked mount.
     _ = try sys.check(l.chdir("/"));
     _ = try sys.check(l.chdir(cwd));
+}
+
+fn restoreProject(project: l.fd_t, cwd: [:0]const u8, root_len: usize) !void {
+    // These parents exist only in our new private tmpfs. The bind exposes precisely cwd, not its old parent.
+    var path: [4096]u8 = undefined;
+    @memcpy(path[0..cwd.len], cwd);
+    path[cwd.len] = 0;
+    for (root_len + 1..cwd.len + 1) |i| {
+        if (i != cwd.len and path[i] != '/') continue;
+        const saved = path[i];
+        path[i] = 0;
+        const rc = l.mkdirat(l.AT.FDCWD, @ptrCast(&path), 0o700);
+        if (l.errno(rc) != .EXIST) _ = try sys.check(rc);
+        path[i] = saved;
+    }
+    var source_buf: [64]u8 = undefined;
+    const source = try std.fmt.bufPrintSentinel(&source_buf, "/proc/self/fd/{d}", .{project}, 0);
+    _ = try sys.check(l.mount(source, cwd, null, l.MS.BIND | l.MS.REC, 0));
 }
 
 fn maskDir(path: [:0]const u8) !void {
@@ -172,6 +203,77 @@ test "private mounts preserve uid and cwd, hide daemon paths, and protect state 
         l.exit_group(0);
     }
     try std.testing.expectEqual(@as(u32, 0), try sys.wait(pid));
+}
+
+test "temporary projects retain cwd and executables without exposing siblings or writable state" {
+    for ([_][:0]const u8{ "/tmp", "/var/tmp" }) |root| try testTemporaryProject(root);
+}
+
+fn testTemporaryProject(root: [:0]const u8) !void {
+    const io = std.testing.io;
+    var random: [8]u8 = undefined;
+    io.random(&random);
+    var base_buf: [128]u8 = undefined;
+    const base = try std.fmt.bufPrintSentinel(&base_buf, "{s}/blackice-test-{s}", .{ root, std.fmt.bytesToHex(random, .lower) }, 0);
+    try std.Io.Dir.createDirAbsolute(io, base, .fromMode(0o700));
+    defer std.Io.Dir.cwd().deleteTree(io, base) catch {};
+    var dir = try std.Io.Dir.openDirAbsolute(io, base, .{});
+    defer dir.close(io);
+    try dir.createDirPath(io, "parent/project/state/scopes/first");
+    try dir.createDirPath(io, "parent/project/state/scopes/second");
+    try dir.writeFile(io, .{ .sub_path = "outside", .data = "hidden\n" });
+    try dir.writeFile(io, .{ .sub_path = "parent/sibling", .data = "hidden\n" });
+    try dir.writeFile(io, .{ .sub_path = "parent/project/payload", .data = "project\n" });
+    for ([_][]const u8{ "parent/project/state/scopes/first/receipt", "parent/project/state/scopes/second/receipt" }) |path| {
+        try dir.writeFile(io, .{ .sub_path = path, .data = "read-only\n" });
+    }
+    const script = try dir.createFile(io, "parent/project/project-command", .{ .permissions = .fromMode(0o700) });
+    try sys.writeAll(script.handle, "#!/bin/sh\nexit 0\n");
+    script.close(io);
+    var cwd_buf: [256]u8 = undefined;
+    const cwd = try std.fmt.bufPrintSentinel(&cwd_buf, "{s}/parent/project", .{base}, 0);
+    var state_buf: [256]u8 = undefined;
+    const state = try std.fmt.bufPrintSentinel(&state_buf, "{s}/state", .{cwd}, 0);
+    var outside_buf: [256]u8 = undefined;
+    const outside = try std.fmt.bufPrintSentinel(&outside_buf, "{s}/outside", .{base}, 0);
+    const uid = l.getuid();
+    const gid = l.getgid();
+    const pid: l.pid_t = @intCast(try sys.check(l.fork()));
+    if (pid == 0) {
+        _ = sys.check(l.chdir(cwd)) catch l.exit_group(1);
+        arm(uid, gid, state) catch |err| {
+            sys.writeAll(2, @errorName(err)) catch {};
+            l.exit_group(2);
+        };
+        var actual: [4096]u8 = undefined;
+        const n = sys.check(l.getcwd(&actual, actual.len)) catch l.exit_group(3);
+        if (!std.mem.eql(u8, cwd, actual[0 .. n - 1])) l.exit_group(4);
+        if (l.errno(l.open(outside, .{}, 0)) != .NOENT) l.exit_group(5);
+        if (l.errno(l.open("../sibling", .{}, 0)) != .NOENT) l.exit_group(6);
+        for ([_][:0]const u8{ "state/scopes/first/receipt", "state/scopes/second/receipt" }) |path| {
+            if (l.errno(l.open(path, .{ .ACCMODE = .WRONLY }, 0)) != .ROFS) l.exit_group(7);
+        }
+        sys.writeFileAt(l.AT.FDCWD, "payload", "changed\n") catch l.exit_group(8);
+        if (l.errno(l.socket(l.AF.UNIX, l.SOCK.STREAM, 0)) != .PERM) l.exit_group(9);
+        const argv = [_:null]?[*:0]const u8{"./project-command"};
+        const env = [_:null]?[*:0]const u8{};
+        _ = l.execve("./project-command", &argv, &env);
+        l.exit_group(10);
+    }
+    try std.testing.expectEqual(@as(u32, 0), try sys.wait(pid));
+}
+
+test "a whole temporary root cannot be restored as the project" {
+    for ([_][:0]const u8{ "/tmp", "/var/tmp" }) |root| {
+        const pid: l.pid_t = @intCast(try sys.check(l.fork()));
+        if (pid == 0) {
+            _ = sys.check(l.chdir(root)) catch l.exit_group(1);
+            namespaces(l.getuid(), l.getgid(), "/unused") catch |err|
+                l.exit_group(if (err == error.WorkingDirectoryAtTemporaryRoot) 0 else 2);
+            l.exit_group(3);
+        }
+        try std.testing.expectEqual(@as(u32, 0), try sys.wait(pid));
+    }
 }
 
 test "seccomp installs and refuses Unix sockets, namespaces and io_uring in a disposable child" {
