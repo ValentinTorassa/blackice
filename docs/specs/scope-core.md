@@ -90,7 +90,7 @@ loopback ports; names and addresses are then decided by the proxy.
 | `scope_start` and `scope_end` receipts, with the failed-write count | lead | done | |
 | Decide and document what happens to processes left running after CMD exits | lead | todo | |
 | Protected paths (`protected_paths` in the launch contract, `--protect`, symlink components) and `--policy-sha256`; macOS honors them (PR #7, b958046) | lead | done | |
-| Linux backend honors protected paths (`protects_paths = true`), helper protocol v2 (PR #6, 89a5f49; reviewed safe at 93412c1) | codex-linux | done | |
+| Linux backend honors protected paths (`protects_paths = true`), helper protocol v2 (PR #6, 89a5f49; reviewed safe, pinned at 35ae1f8) | codex-linux | done | |
 | Create each scope's state directory exclusively (0700), with a new id on a clash | lead | done | |
 | Linux enforcing backend behind the same contract (PR #6, not merged; `run` refuses on Linux until it lands) | codex-linux | done | |
 
