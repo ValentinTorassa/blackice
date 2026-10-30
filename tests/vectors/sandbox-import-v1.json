@@ -1,0 +1,622 @@
+{
+  "version": "blackice.sandbox-import-vectors/v1",
+  "cases": [
+    {
+      "id": "deny-all",
+      "input": "\"deny-all\"",
+      "mode": "deny-all",
+      "allow": [],
+      "queries": [
+        {
+          "kind": "host",
+          "value": "example.com",
+          "allowed": false
+        },
+        {
+          "kind": "literal",
+          "value": "203.0.113.1",
+          "allowed": false
+        }
+      ]
+    },
+    {
+      "id": "empty-denies-0",
+      "input": "{}",
+      "mode": "deny-all",
+      "allow": [],
+      "queries": [
+        {
+          "kind": "host",
+          "value": "example.com",
+          "allowed": false
+        },
+        {
+          "kind": "literal",
+          "value": "198.51.100.2",
+          "allowed": false
+        }
+      ]
+    },
+    {
+      "id": "empty-denies-1",
+      "input": "{\"allow\":[]}",
+      "mode": "deny-all",
+      "allow": [],
+      "queries": [
+        {
+          "kind": "host",
+          "value": "example.com",
+          "allowed": false
+        },
+        {
+          "kind": "literal",
+          "value": "198.51.100.2",
+          "allowed": false
+        }
+      ]
+    },
+    {
+      "id": "empty-denies-2",
+      "input": "{\"allow\":{}}",
+      "mode": "deny-all",
+      "allow": [],
+      "queries": [
+        {
+          "kind": "host",
+          "value": "example.com",
+          "allowed": false
+        },
+        {
+          "kind": "literal",
+          "value": "198.51.100.2",
+          "allowed": false
+        }
+      ]
+    },
+    {
+      "id": "empty-denies-3",
+      "input": "{\"subnets\":{}}",
+      "mode": "deny-all",
+      "allow": [],
+      "queries": [
+        {
+          "kind": "host",
+          "value": "example.com",
+          "allowed": false
+        },
+        {
+          "kind": "literal",
+          "value": "198.51.100.2",
+          "allowed": false
+        }
+      ]
+    },
+    {
+      "id": "empty-denies-4",
+      "input": "{\"subnets\":{\"deny\":[\"203.0.113.0/24\"]}}",
+      "mode": "deny-all",
+      "allow": [],
+      "queries": [
+        {
+          "kind": "host",
+          "value": "example.com",
+          "allowed": false
+        },
+        {
+          "kind": "literal",
+          "value": "198.51.100.2",
+          "allowed": false
+        }
+      ]
+    },
+    {
+      "id": "exact",
+      "input": "{\"allow\":[\"api.example.com\"]}",
+      "mode": "allowlist",
+      "allow": [
+        "api.example.com"
+      ],
+      "queries": [
+        {
+          "kind": "host",
+          "value": "api.example.com",
+          "allowed": true
+        },
+        {
+          "kind": "host",
+          "value": "www.api.example.com",
+          "allowed": false
+        },
+        {
+          "kind": "host",
+          "value": "other.example.com",
+          "allowed": false
+        },
+        {
+          "kind": "port",
+          "value": "80",
+          "allowed": true
+        },
+        {
+          "kind": "port",
+          "value": "443",
+          "allowed": true
+        },
+        {
+          "kind": "port",
+          "value": "22",
+          "allowed": false
+        },
+        {
+          "kind": "port",
+          "value": "8443",
+          "allowed": false
+        }
+      ]
+    },
+    {
+      "id": "wildcard",
+      "input": "{\"allow\":[\"*.example.com\"]}",
+      "mode": "allowlist",
+      "allow": [
+        "*.example.com"
+      ],
+      "queries": [
+        {
+          "kind": "host",
+          "value": "a.example.com",
+          "allowed": true
+        },
+        {
+          "kind": "host",
+          "value": "a.b.example.com",
+          "allowed": true
+        },
+        {
+          "kind": "host",
+          "value": "example.com",
+          "allowed": false
+        },
+        {
+          "kind": "host",
+          "value": "evilexample.com",
+          "allowed": false
+        }
+      ]
+    },
+    {
+      "id": "normalization-and-deduplication",
+      "input": "{\"allow\":[\"Z.EXAMPLE.COM.\",\"a.example.com\",\"A.EXAMPLE.COM\",\"z.example.com\"]}",
+      "mode": "allowlist",
+      "allow": [
+        "a.example.com",
+        "z.example.com"
+      ],
+      "queries": []
+    },
+    {
+      "id": "empty-rule-map",
+      "input": "{\"allow\":{\"api.example.com\":[],\"*.example.org\":[]}}",
+      "mode": "allowlist",
+      "allow": [
+        "*.example.org",
+        "api.example.com"
+      ],
+      "queries": []
+    },
+    {
+      "id": "independent-ip-allow",
+      "input": "{\"allow\":[\"api.example.com\"],\"subnets\":{\"allow\":[\"10.0.0.0/8\"]}}",
+      "mode": "allowlist",
+      "allow": [
+        "api.example.com"
+      ],
+      "queries": [
+        {
+          "kind": "host",
+          "value": "other.example.com",
+          "allowed": false
+        },
+        {
+          "kind": "literal",
+          "value": "10.2.3.4",
+          "allowed": true
+        },
+        {
+          "kind": "literal",
+          "value": "203.0.113.10",
+          "allowed": false
+        },
+        {
+          "kind": "port",
+          "value": "80",
+          "allowed": true
+        },
+        {
+          "kind": "port",
+          "value": "443",
+          "allowed": true
+        },
+        {
+          "kind": "port",
+          "value": "22",
+          "allowed": false
+        },
+        {
+          "kind": "port",
+          "value": "8443",
+          "allowed": false
+        }
+      ]
+    },
+    {
+      "id": "subnet-deny-wins",
+      "input": "{\"subnets\":{\"allow\":[\"10.0.0.0/8\"],\"deny\":[\"10.1.0.0/16\"]}}",
+      "mode": "allowlist",
+      "allow": [],
+      "queries": [
+        {
+          "kind": "literal",
+          "value": "10.2.0.1",
+          "allowed": true
+        },
+        {
+          "kind": "literal",
+          "value": "10.1.2.3",
+          "allowed": false
+        },
+        {
+          "kind": "literal",
+          "value": "::ffff:10.1.2.3",
+          "allowed": false
+        },
+        {
+          "kind": "literal",
+          "value": "::ffff:10.2.0.1",
+          "allowed": true
+        }
+      ]
+    },
+    {
+      "id": "deny-after-name",
+      "input": "{\"allow\":[\"api.example.com\"],\"subnets\":{\"deny\":[\"203.0.113.0/24\"]}}",
+      "mode": "allowlist",
+      "allow": [
+        "api.example.com"
+      ],
+      "queries": [
+        {
+          "kind": "host",
+          "value": "api.example.com",
+          "allowed": true
+        },
+        {
+          "kind": "resolved",
+          "value": "203.0.113.7",
+          "allowed": false
+        },
+        {
+          "kind": "resolved",
+          "value": "127.0.0.1",
+          "allowed": false
+        },
+        {
+          "kind": "resolved",
+          "value": "::1",
+          "allowed": false
+        },
+        {
+          "kind": "resolved",
+          "value": "::ffff:127.0.0.1",
+          "allowed": false
+        }
+      ]
+    },
+    {
+      "id": "explicit-local-range",
+      "input": "{\"subnets\":{\"allow\":[\"127.0.0.1/32\"]}}",
+      "mode": "allowlist",
+      "allow": [],
+      "queries": [
+        {
+          "kind": "literal",
+          "value": "127.0.0.1",
+          "allowed": true
+        },
+        {
+          "kind": "literal",
+          "value": "127.0.0.2",
+          "allowed": false
+        }
+      ]
+    },
+    {
+      "id": "zero-prefix",
+      "input": "{\"subnets\":{\"allow\":[\"0.0.0.0/0\"],\"deny\":[\"10.0.0.0/8\"]}}",
+      "mode": "allowlist",
+      "allow": [],
+      "queries": [
+        {
+          "kind": "literal",
+          "value": "203.0.113.1",
+          "allowed": true
+        },
+        {
+          "kind": "literal",
+          "value": "10.1.1.1",
+          "allowed": false
+        }
+      ]
+    },
+    {
+      "id": "allow-all",
+      "input": "\"allow-all\"",
+      "expected_error": "UnsupportedMode"
+    },
+    {
+      "id": "unknown-mode",
+      "input": "\"restricted\"",
+      "expected_error": "UnsupportedMode"
+    },
+    {
+      "id": "null",
+      "input": "null",
+      "expected_error": "InvalidShape"
+    },
+    {
+      "id": "boolean",
+      "input": "true",
+      "expected_error": "InvalidShape"
+    },
+    {
+      "id": "array",
+      "input": "[]",
+      "expected_error": "InvalidShape"
+    },
+    {
+      "id": "number",
+      "input": "5",
+      "expected_error": "InvalidShape"
+    },
+    {
+      "id": "wrapper",
+      "input": "{\"networkPolicy\":{\"allow\":[\"example.com\"]}}",
+      "expected_error": "UnknownField"
+    },
+    {
+      "id": "mode-object",
+      "input": "{\"mode\":\"allow-all\"}",
+      "expected_error": "UnknownField"
+    },
+    {
+      "id": "unknown-root",
+      "input": "{\"allow\":[],\"deny\":[]}",
+      "expected_error": "UnknownField"
+    },
+    {
+      "id": "unknown-subnet",
+      "input": "{\"subnets\":{\"alow\":[]}}",
+      "expected_error": "UnknownField"
+    },
+    {
+      "id": "null-subnets",
+      "input": "{\"subnets\":null}",
+      "expected_error": "InvalidShape"
+    },
+    {
+      "id": "null-allow",
+      "input": "{\"allow\":null}",
+      "expected_error": "InvalidShape"
+    },
+    {
+      "id": "nonstring-domain",
+      "input": "{\"allow\":[15]}",
+      "expected_error": "InvalidShape"
+    },
+    {
+      "id": "null-map-rules",
+      "input": "{\"allow\":{\"example.com\":null}}",
+      "expected_error": "InvalidShape"
+    },
+    {
+      "id": "transform",
+      "input": "{\"allow\":{\"example.com\":[{\"transform\":[{\"headers\":{\"Authorization\":\"synthetic-not-a-real-key\"}}]}]}}",
+      "expected_error": "UnsupportedHandling"
+    },
+    {
+      "id": "match",
+      "input": "{\"allow\":{\"example.com\":[{\"match\":{\"method\":[\"POST\"]}}]}}",
+      "expected_error": "UnsupportedHandling"
+    },
+    {
+      "id": "forward",
+      "input": "{\"allow\":{\"example.com\":[{\"forwardURL\":\"https://proxy.example\"}]}}",
+      "expected_error": "UnsupportedHandling"
+    },
+    {
+      "id": "response",
+      "input": "{\"allow\":{\"example.com\":[{\"response\":{\"statusCode\":403}}]}}",
+      "expected_error": "UnsupportedHandling"
+    },
+    {
+      "id": "empty-handling-object",
+      "input": "{\"allow\":{\"example.com\":[{}]}}",
+      "expected_error": "UnsupportedHandling"
+    },
+    {
+      "id": "catch-all",
+      "input": "{\"allow\":[\"*\"]}",
+      "expected_error": "UnsupportedWildcard"
+    },
+    {
+      "id": "middle-wildcard",
+      "input": "{\"allow\":[\"www.*.com\"]}",
+      "expected_error": "UnsupportedWildcard"
+    },
+    {
+      "id": "partial-wildcard",
+      "input": "{\"allow\":[\"api*.example.com\"]}",
+      "expected_error": "UnsupportedWildcard"
+    },
+    {
+      "id": "two-wildcards",
+      "input": "{\"allow\":[\"*.*.com\"]}",
+      "expected_error": "UnsupportedWildcard"
+    },
+    {
+      "id": "domain-url",
+      "input": "{\"allow\":[\"https://example.com\"]}",
+      "expected_error": "InvalidDomain"
+    },
+    {
+      "id": "domain-port",
+      "input": "{\"allow\":[\"example.com:443\"]}",
+      "expected_error": "InvalidDomain"
+    },
+    {
+      "id": "domain-ip",
+      "input": "{\"allow\":[\"127.0.0.1\"]}",
+      "expected_error": "InvalidDomain"
+    },
+    {
+      "id": "wildcard-ip",
+      "input": "{\"allow\":[\"*.127.0.0.1\"]}",
+      "expected_error": "InvalidDomain"
+    },
+    {
+      "id": "domain-empty-label",
+      "input": "{\"allow\":[\"api..example.com\"]}",
+      "expected_error": "InvalidDomain"
+    },
+    {
+      "id": "domain-empty",
+      "input": "{\"allow\":[\"\"]}",
+      "expected_error": "InvalidDomain"
+    },
+    {
+      "id": "domain-underscore",
+      "input": "{\"allow\":[\"api_name.example\"]}",
+      "expected_error": "InvalidDomain"
+    },
+    {
+      "id": "domain-hyphen",
+      "input": "{\"allow\":[\"-api.example\"]}",
+      "expected_error": "InvalidDomain"
+    },
+    {
+      "id": "domain-unicode",
+      "input": "{\"allow\":[\"caf\\u00e9.example\"]}",
+      "expected_error": "InvalidDomain"
+    },
+    {
+      "id": "domain-nul",
+      "input": "{\"allow\":[\"api\\u0000.example\"]}",
+      "expected_error": "InvalidDomain"
+    },
+    {
+      "id": "domain-long-label",
+      "input": "{\"allow\":[\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.example\"]}",
+      "expected_error": "InvalidDomain"
+    },
+    {
+      "id": "subnet-not-list",
+      "input": "{\"subnets\":{\"allow\":\"10.0.0.0/8\"}}",
+      "expected_error": "InvalidShape"
+    },
+    {
+      "id": "subnet-not-string",
+      "input": "{\"subnets\":{\"deny\":[1]}}",
+      "expected_error": "InvalidShape"
+    },
+    {
+      "id": "subnet-missing-prefix",
+      "input": "{\"subnets\":{\"allow\":[\"10.0.0.0\"]}}",
+      "expected_error": "InvalidSubnet"
+    },
+    {
+      "id": "subnet-host-bits",
+      "input": "{\"subnets\":{\"allow\":[\"10.1.0.0/8\"]}}",
+      "expected_error": "InvalidSubnet"
+    },
+    {
+      "id": "subnet-underscore",
+      "input": "{\"subnets\":{\"allow\":[\"10.0.0.0/2_4\"]}}",
+      "expected_error": "InvalidSubnet"
+    },
+    {
+      "id": "subnet-leading-prefix",
+      "input": "{\"subnets\":{\"allow\":[\"10.0.0.0/08\"]}}",
+      "expected_error": "InvalidSubnet"
+    },
+    {
+      "id": "subnet-plus-prefix",
+      "input": "{\"subnets\":{\"allow\":[\"10.0.0.0/+8\"]}}",
+      "expected_error": "InvalidSubnet"
+    },
+    {
+      "id": "subnet-range",
+      "input": "{\"subnets\":{\"allow\":[\"10.0.0.0/33\"]}}",
+      "expected_error": "InvalidSubnet"
+    },
+    {
+      "id": "subnet-ipv6",
+      "input": "{\"subnets\":{\"deny\":[\"::/0\"]}}",
+      "expected_error": "UnsupportedSubnet"
+    },
+    {
+      "id": "subnet-mapped-ipv6",
+      "input": "{\"subnets\":{\"deny\":[\"::ffff:127.0.0.1/128\"]}}",
+      "expected_error": "UnsupportedSubnet"
+    },
+    {
+      "id": "duplicate-json-key",
+      "input": "{\"allow\":[],\"allow\":[\"example.com\"]}",
+      "expected_error": "InvalidJson"
+    },
+    {
+      "id": "duplicate-map-key",
+      "input": "{\"allow\":{\"example.com\":[],\"example.com\":[]}}",
+      "expected_error": "InvalidJson"
+    },
+    {
+      "id": "malformed",
+      "input": "{\"allow\":[",
+      "expected_error": "InvalidJson"
+    },
+    {
+      "id": "trailing-document",
+      "input": "{} {}",
+      "expected_error": "InvalidJson"
+    },
+    {
+      "id": "unsupported-root-ports",
+      "input": "{\"allow\":[\"example.com\"],\"ports\":[443]}",
+      "expected_error": "UnknownField"
+    },
+    {
+      "id": "unsupported-empty-ports",
+      "input": "{\"allow\":[\"example.com\"],\"ports\":[]}",
+      "expected_error": "UnknownField"
+    },
+    {
+      "id": "unsupported-subnet-ports",
+      "input": "{\"subnets\":{\"allow\":[\"203.0.113.0/24\"],\"ports\":[443]}}",
+      "expected_error": "UnknownField"
+    },
+    {
+      "id": "domain-numeric-integer",
+      "input": "{\"allow\":[\"2130706433\"]}",
+      "expected_error": "InvalidDomain"
+    },
+    {
+      "id": "domain-numeric-short-ip",
+      "input": "{\"allow\":[\"127.1\"]}",
+      "expected_error": "InvalidDomain"
+    },
+    {
+      "id": "domain-numeric-hex",
+      "input": "{\"allow\":[\"0x7f000001\"]}",
+      "expected_error": "InvalidDomain"
+    }
+  ]
+}
