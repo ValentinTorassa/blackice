@@ -30,10 +30,10 @@ index 0ee675c..843ee71 100644
  pub fn Runtime(comptime App: type) type {
 diff --git a/src/builtins/hooks/blackice.zig b/src/builtins/hooks/blackice.zig
 new file mode 100644
-index 0000000..08854cb
+index 0000000..d0384f5
 --- /dev/null
 +++ b/src/builtins/hooks/blackice.zig
-@@ -0,0 +1,374 @@
+@@ -0,0 +1,466 @@
 +//! blackice task scopes for the commands fx runs.
 +//!
 +//! This file is a declared patch to fx v0.0.16, kept in the blackice repository (integrations/fx). It is not
@@ -48,6 +48,11 @@ index 0000000..08854cb
 +//!   hook). Every other tool (web_fetch, web_search, install_skill, mcp_select_tool, MCP tools, vision,
 +//!   capability_search, and any tool added later) would act from fx itself, outside every scope, so it is
 +//!   blocked.
++//! - write_file and edit_file also run in fx, outside the scopes, so they may only use a relative path with no
++//!   "..": fx then keeps the write inside the workspace (its working directory at start), symlinks included.
++//!   blackice, fx and the policy must be outside the workspace, or every call is blocked. Reads (read_file,
++//!   glob_files, grep_files) are not limited: what they read goes to the model provider. blackice limits what
++//!   scoped commands send over the network, not what the model can read.
 +//! - `shell` run (action "run", or no action and a command) is rewritten to
 +//!       '<blackice>' run --policy-sha256 '<hash>' --protect '<fx>' --policy '<policy>' -- '<shell>' <flags> '-c' '<command>'
 +//!   with profile "clean". The command starts in its own blackice task scope: network only through the
@@ -128,6 +133,28 @@ index 0000000..08854cb
 +            return;
 +        };
 +        state.fx_exe = state.fx_exe_buf[0..exe_len];
++
++        // fx's file tools run outside the scopes and may write anywhere in the workspace (fx's working
++        // directory at start), so blackice, fx and the policy must live elsewhere.
++        const workspace = io_mod.realpathAlloc(gpa, ".") catch {
++            state.problem = "blackice: the workspace directory cannot be resolved.";
++            return;
++        };
++        defer gpa.free(workspace);
++        const policy_real = io_mod.realpathAlloc(gpa, state.policy) catch {
++            state.problem = "blackice: FX_BLACKICE_POLICY cannot be resolved.";
++            return;
++        };
++        defer gpa.free(policy_real);
++        const fx_real = io_mod.realpathAlloc(gpa, state.fx_exe) catch {
++            state.problem = "blackice: fx cannot resolve its own executable.";
++            return;
++        };
++        defer gpa.free(fx_real);
++        if (inside(workspace, state.bin) or inside(workspace, policy_real) or inside(workspace, fx_real)) {
++            state.problem = "blackice: blackice, fx and the policy must be outside the workspace, where fx's own file tools could change them. Install them elsewhere (root-owned is best).";
++            return;
++        }
 +    }
 +
 +    pub fn configure(state: *State, policy: ?[]const u8, bin: ?[]const u8, shell: ?[]const u8) void {
@@ -163,6 +190,24 @@ index 0000000..08854cb
 +
 +fn absolute(path: []const u8) bool {
 +    return path.len > 0 and path[0] == '/' and std.mem.findScalar(u8, path, 0) == null;
++}
++
++/// `path` is `root` or below it.
++fn inside(root: []const u8, path: []const u8) bool {
++    if (!std.mem.startsWith(u8, path, root)) return false;
++    return path.len == root.len or path[root.len] == '/' or (root.len > 0 and root[root.len - 1] == '/');
++}
++
++/// A path fx's file tools keep inside the workspace: relative, not starting with "~", with no ".." part. fx
++/// treats anything else as an external path that only its permission rules guard, and those do not ask in
++/// permissive modes. fx trims the same whitespace before it classifies a path.
++fn workspacePath(raw: []const u8) bool {
++    const path = std.mem.trim(u8, raw, " \t\r\n");
++    if (path.len == 0 or path[0] == '/' or path[0] == '~') return false;
++    if (std.mem.findScalar(u8, path, 0) != null or std.mem.findScalar(u8, path, '\\') != null) return false;
++    var parts = std.mem.splitScalar(u8, path, '/');
++    while (parts.next()) |part| if (std.mem.eql(u8, part, "..")) return false;
++    return true;
 +}
 +
 +pub fn register(runtime: *hooks.Runtime, state: *State) !void {
@@ -252,6 +297,18 @@ index 0000000..08854cb
 +            "Use a shell command (for example curl) instead; it runs in a scope under the network policy." };
 +    if (!isAllowed(tool_name))
 +        return .{ .block = "blackice: this tool would act from fx itself, outside every blackice scope, so it is off in blackice mode." };
++    if (std.mem.eql(u8, tool_name, "write_file") or std.mem.eql(u8, tool_name, "edit_file")) {
++        // These run in fx, outside the scopes: keep them to the workspace, where blackice, fx and the policy
++        // are not (checked at start).
++        const args = std.json.parseFromSliceLeaky(std.json.Value, arena, arguments_json, .{}) catch
++            return .{ .block = "blackice: the file tool arguments are not a JSON object; the call was not run." };
++        if (args != .object or args.object.get("request") != null)
++            return .{ .block = "blackice: send the file tool fields at the top level." };
++        const path = args.object.get("path") orelse return .{ .block = "blackice: a file write needs a path." };
++        if (path != .string or !workspacePath(path.string))
++            return .{ .block = "blackice: in blackice mode fx writes files only inside the workspace, by a relative path without \"..\". Use a shell command for anything else; it runs in a scope." };
++        return .keep;
++    }
 +    if (!std.mem.eql(u8, tool_name, "shell")) return .keep;
 +
 +    const parsed = std.json.parseFromSliceLeaky(std.json.Value, arena, arguments_json, .{}) catch
@@ -353,13 +410,48 @@ index 0000000..08854cb
 +    try testing.expect((try decide(arena, &s, "shell", "{\"action\":\"stop\",\"session_id\":\"shell-1\"}")) == .keep);
 +}
 +
++test "file writes stay inside the workspace" {
++    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
++    defer arena_state.deinit();
++    const arena = arena_state.allocator();
++    const s = testState();
++    for ([_][]const u8{ "write_file", "edit_file" }) |t| {
++        try testing.expect((try decide(arena, &s, t, "{\"path\":\"src/a.zig\",\"content\":\"x\"}")) == .keep);
++        try testing.expect((try decide(arena, &s, t, "{\"path\":\"./notes.md\"}")) == .keep);
++        for ([_][]const u8{
++            "{\"path\":\"/usr/local/bin/blackice\"}",
++            "{\"path\":\" /abs\"}",
++            "{\"path\":\"~/.local/bin/fx\"}",
++            "{\"path\":\"~\"}",
++            "{\"path\":\"../outside\"}",
++            "{\"path\":\"a/../../outside\"}",
++            "{\"path\":\"a/..\"}",
++            "{\"path\":\"\"}",
++            "{\"path\":7}",
++            "{}",
++            "{\"request\":{\"path\":\"a\"}}",
++            "not json",
++        }) |args| try testing.expect((try decide(arena, &s, t, args)) == .block);
++    }
++}
++
++test inside {
++    try testing.expect(inside("/w", "/w"));
++    try testing.expect(inside("/w", "/w/bin/blackice"));
++    try testing.expect(!inside("/w", "/work/bin"));
++    try testing.expect(inside("/", "/usr/bin"));
++}
++
 +test "only the listed tools run" {
 +    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
 +    defer arena_state.deinit();
 +    const arena = arena_state.allocator();
 +    const s = testState();
-+    for ([_][]const u8{ "read_file", "write_file", "edit_file", "glob_files", "grep_files", "ask_user_question", "read_tool_result", "skill", "subagent" }) |t| {
++    for ([_][]const u8{ "read_file", "glob_files", "grep_files", "ask_user_question", "read_tool_result", "skill", "subagent" }) |t| {
 +        try testing.expect((try decide(arena, &s, t, "{}")) == .keep);
++    }
++    for ([_][]const u8{ "write_file", "edit_file" }) |t| {
++        try testing.expect((try decide(arena, &s, t, "{\"path\":\"a.txt\"}")) == .keep);
 +    }
 +    for ([_][]const u8{ "web_fetch", "web_search", "install_skill", "mcp_select_tool", "capability_search", "vision", "mcp__github__create_issue", "some_new_tool", "" }) |t| {
 +        try testing.expect((try decide(arena, &s, t, "{}")) == .block);

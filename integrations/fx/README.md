@@ -19,7 +19,8 @@ before fx validates, reviews or runs each tool call.
 | `shell` that starts a command (`action: "run"`, or a `command` with no action) | The command becomes `'<blackice>' run --policy-sha256 '<hash>' --protect '<fx>' --policy '<policy>' -- '<shell>' '-f' '-c' '<command>'`, and the call gets `profile: "clean"`. It runs in a new task scope with its own proxy, receipts and a clean environment. |
 | `shell` with `tty: true`, `reload: true` or a `shell` field | Blocked. A tty session runs fx's terminal bootstrap outside the scope, and reload re-reads startup files. |
 | `shell` `interact` / `stop` | Unchanged. These talk to a command that was already started inside a scope. |
-| `read_file`, `write_file`, `edit_file`, `glob_files`, `grep_files`, `ask_user_question`, `read_tool_result`, `skill`, `subagent` | Unchanged. They act on local files or on the conversation. A subagent's calls go through this same hook. |
+| `write_file`, `edit_file` | Allowed only with a relative path that has no `..` and does not start with `~`. fx then keeps the write inside the workspace (its working directory at start), symlinks included. Any other path is blocked: these tools run in fx, outside every scope, so they must not reach blackice, fx or the policy. |
+| `read_file`, `glob_files`, `grep_files`, `ask_user_question`, `read_tool_result`, `skill`, `subagent` | Unchanged. They read local files or act on the conversation. A subagent's calls go through this same hook. |
 | Any other tool: `web_fetch`, `web_search`, `install_skill`, `mcp_select_tool`, MCP tools, `vision`, `capability_search`, and tools added later | Blocked. They would act from fx itself, outside every scope. Use a shell command such as `curl`; it runs under the policy. |
 | A call the hook cannot read safely | Blocked, never run unscoped. That covers a `request` wrapper and a command that is not a string or contains a NUL byte. A misconfiguration blocks every call. |
 
@@ -35,6 +36,9 @@ Why one command cannot unscope the next:
   their parent directories.
 - `FX_BLACKICE_BIN` must be an absolute path with no symlinks, so the path fx runs is the one
   blackice protects.
+- fx's own `write_file` and `edit_file` run outside the scopes, so they may only write inside the
+  workspace. blackice, fx and the policy must be outside the workspace, or every call is
+  blocked. Installing blackice and fx root-owned is the strongest setup.
 
 The command is single-quoted, so nothing inside it is interpreted by the outer shell. The
 inner shell is `$SHELL` when that is sh, bash or zsh, or else `/bin/sh`. It also starts
@@ -77,6 +81,9 @@ scope for a while, run `blackice grant <scope> <host> --for 10m` from outside it
 
 - fx itself, and its traffic to the model, run outside the scopes. Only the commands it
   starts are confined.
+- fx's own reads (`read_file`, `glob_files`, `grep_files`) are not limited, and what they read
+  goes to the model provider. blackice limits what scoped commands send over the network, not
+  what the model can read.
 - fx's own network tools and MCP tools are blocked, not scoped. `fx acp` refuses to start
   in this mode.
 - A command in a scope can still change ordinary files of the user, such as `~/.zshrc`. fx
@@ -97,7 +104,7 @@ scope for a while, run `blackice grant <scope> <host> --for 10m` from outside it
 ## Checked
 
 On macOS 27.0.1 (26A434), arm64, with SIP on, using fx v0.0.16 with this patch, blackice
-`claude/run` at ca62d58, and a **scripted test model** (not a real model) on loopback:
+`claude/run` at b958046, and a **scripted test model** (not a real model) on loopback:
 
 - fx ran eight shell commands, and blackice created eight scopes, one per command. Each
   scope_start says "3 protected files; policy pinned".
@@ -113,6 +120,12 @@ On macOS 27.0.1 (26A434), arm64, with SIP on, using fx v0.0.16 with this patch, 
 - `tty: true`, `reload: true`, `web_fetch` and `install_skill` calls were blocked with a
   message to the model.
 - `FAKE_SECRET`, set in fx's environment, did not reach the command; `AI_AGENT=fx` did.
+- fx's own `write_file` to blackice's absolute path, to `~/.local/bin/…` and to `../escape.txt`,
+  and `edit_file` on the policy's absolute path, were blocked; `write_file notes.txt` wrote
+  inside the workspace, and the next command ran in its scope. The three files' hashes did not
+  change.
+- With fx started in the directory that holds blackice, every call was blocked with the
+  "must be outside the workspace" message.
 
 ## License
 
