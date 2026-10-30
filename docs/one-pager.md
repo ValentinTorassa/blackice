@@ -56,7 +56,7 @@ was shown working.
 | | Tasks | Apps |
 |---|---|---|
 | **macOS** | Shown on one Mac in the entries above. Not shown yet: launches through `open` or Apple Events refused, fx with a real model through the relay. | Built, unsigned, in #8: a Network Extension filter. It has never been activated. Needs an Apple Developer ID, a signed Network Extension, tests on a live system, and receipts written through blackice. |
-| **Linux** | Shown on one Debian 13 machine in the entries above. A small helper is installed once by a setup script run with sudo. The first two real runs on 30 Oct failed closed before the command ran, and were fixed. Not shown yet: aarch64, fx, other distributions. On Ubuntu 24.04 and later, where `kernel.apparmor_restrict_unprivileged_userns=1` is the default, scopes are expected to fail closed. | In design. |
+| **Linux** | Shown on one Debian 13 machine in the entries above. A small helper is set up by a script run with sudo, again after each reboot (cgroups do not persist). The first two real runs on 30 Oct failed closed before the command ran, and were fixed. Not shown yet: aarch64, fx, other distributions. On Ubuntu 24.04 and later, where `kernel.apparmor_restrict_unprivileged_userns=1` is the default, scopes are expected to fail closed. | In design. |
 
 Windows comes after macOS and Linux. Nothing is built for it.
 
