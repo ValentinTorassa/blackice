@@ -20,6 +20,9 @@ test "appfilter units register only pure fixtures" {
     _ = @import("linux/apps/intent.zig");
     _ = @import("linux/apps/worker.zig");
     _ = @import("linux/apps/refusals.zig");
+    _ = @import("linux/apps/reload_snapshot.zig");
+    _ = @import("linux/apps/reload_protocol.zig");
+    _ = @import("linux/apps/reload_transaction.zig");
     _ = @import("linux/apps/vm_test.zig");
     _ = @import("linux/apps/proxy_test.zig");
     _ = @import("linux/apps/ipc.zig");
