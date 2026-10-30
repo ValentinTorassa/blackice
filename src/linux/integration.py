@@ -74,7 +74,7 @@ def worker(args):
         result['errno'] = denied(attempt)
     elif kind == 'ping-command':
         try:
-            run = subprocess.run(['/usr/bin/ping', '-n', '-c1', '-W1', '127.0.0.1'], capture_output=True, text=True)
+            run = subprocess.run(['/usr/bin/ping', '-n', '-c1', '-W1', '1.1.1.1'], capture_output=True, text=True)
             assert run.returncode != 0 and 'Operation not permitted' in run.stderr, (run.returncode, run.stderr)
             result['stderr'] = run.stderr.strip()
         except OSError as exc:
