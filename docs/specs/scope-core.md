@@ -33,7 +33,7 @@ blackice exits with the command's own status, so it can sit in front of any comm
 | scope-core.R9 | When `--name N` is given, blackice shall record N in the `scope_start` receipt as a label only; a name never selects or widens a policy. | P0-09 |
 | scope-core.R10 | blackice shall make the scope's state directory read-only, or hidden, for the command and every process it starts, and shall load the policy into memory once, never re-reading it from that directory. | P0-04 |
 | scope-core.R11 | When CMD starts, blackice shall give it a clean environment: only a short pass list (`PATH`, `HOME`, `TERM`, the locale and XDG base-directory variables, `AI_AGENT`), the names given with `--env NAME`, `BLACKICE_SCOPE` and the proxy variables. Nothing else from the caller's environment shall pass. | P0-07 |
-| scope-core.R12 | blackice shall keep its own executable, the policy file and each `--protect PATH` (at most 8) unchanged inside the scope: writes to them, and renames or removals of their parent directories and of every symlink on the way to them, shall be refused. If the platform backend cannot do this, `blackice run` shall refuse to start. | P0-01 |
+| scope-core.R12 | blackice shall keep these unchanged inside the scope: its own executable as resolved, the path used to reach it (`argv[0]` or the `PATH` entry, only when it resolves to the same file), the policy file, and each `--protect PATH` (at most 8). For each given path, it shall protect the resolved file and every symlink component on the way as the entry the kernel sees: writes, and renames or removals of their parent directories, shall be refused. If the platform backend cannot do this, `blackice run` shall refuse to start. | P0-01 |
 | scope-core.R13 | When `--policy-sha256 HEX` is given, blackice shall refuse to start unless the policy file's SHA-256 is HEX. | P0-01 |
 
 ## Design
@@ -72,6 +72,7 @@ loopback ports; names and addresses are then decided by the proxy.
     read-only or hidden. Other processes of the same user outside every scope can still change it, so
     receipts are a record for diagnosis, not tamper-proof evidence.
   - What happens to processes still running after CMD exits is not defined yet (see Tasks).
+  - Path protection follows the symlinks in the path given, not symlinks inside a link's target.
 
 ## Tasks
 

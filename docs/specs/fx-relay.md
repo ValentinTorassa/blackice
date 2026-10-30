@@ -44,6 +44,7 @@ out, so the key never enters the scope.
 | fx-relay.R18 | If the hook cannot read a tool call safely (a request wrapper, a command that is not a string or contains a NUL byte, a shell other than `sh`, `bash` or `zsh`), it shall block the call. | P0-01 |
 | fx-relay.R19 | When the hook rewrites a command, fx's outer shell shall start clean, without the user's startup files (`zsh -f`, `bash --noprofile --norc`); terminal sessions, shell reloads and a changed shell shall be blocked. | P0-01 |
 | fx-relay.R20 | The hook shall require an absolute `FX_BLACKICE_BIN` equal to its real path, pin the policy's SHA-256 when fx starts, and run every command with `--policy-sha256` and `--protect <fx's own executable>`, so that blackice, the policy and fx stay unchanged for the next command. | P0-01 |
+| fx-relay.R21 | When the fx hook is active, fx's `write_file` and `edit_file` shall accept only a relative path with no `..`, no leading `~`, and no NUL or backslash. If blackice, the policy or fx's own executable lies inside the workspace (the real path of fx's working directory), the hook shall block every call. | P0-01 |
 
 ## Design
 
@@ -93,13 +94,13 @@ key out of the scope; it does not decide what content may be sent to the model.
   - L0: the relay token (R16) keeps out processes that do not have it, and the header checks in R3 keep out web
     pages in the user's browser. The token is readable by everything in the scope, and by the user's other
     processes that can read the scope's environment (`/proc/<pid>/environ` on Linux).
-  - Main mode: fx's own file tools (`write_file`, `edit_file`) run in fx, outside every scope, and fx accepts
-    absolute, `~` and `..` paths. Until the task below is done, the model can overwrite `FX_BLACKICE_BIN` or
-    fx's executable through them, and the next command would run unscoped. Installing blackice and fx
-    root-owned, outside the workspace, avoids it.
-  - Main mode: fx's reads are not limited; blackice limits only what scoped commands send.
-  - An earlier version had three more gaps, fixed in 617882a: the outer shell ran the user's startup files,
-    the policy and binary could be changed from a scope, and fx tools other than the shell were allowed.
+  - Main mode: fx's own file tools (`write_file`, `edit_file`) still run in fx, outside every scope. They are
+    kept inside the workspace (R21), so blackice and fx must be installed outside it; root-owned is best.
+  - Main mode: fx's reads are not limited, and what fx reads goes to the model provider; blackice limits only
+    what scoped commands send.
+  - Earlier versions had four more gaps, fixed in 617882a and b88c52e: the outer shell ran the user's startup
+    files, the policy and binary could be changed from a scope, fx tools other than the shell were allowed,
+    and fx's file tools could write outside the workspace.
   - L0: one scope for fx and its tools, so no per-tool isolation; fx features that need other destinations fail
     unless the policy allows them.
   - The key is protected from the scope, not from other processes of the same user running outside every
@@ -118,7 +119,7 @@ key out of the scope; it does not decide what content may be sent to the model.
 | Allow only a fixed list of fx tools in blackice mode; `fx acp` refuses to start (617882a) | lead | done | |
 | Run the rewritten command with fx's clean shell profile, never the user's startup files, and refuse a reload (617882a) | lead | done | |
 | Absolute `blackice` path; policy pinned (`--policy-sha256`); blackice, the policy and fx protected inside each scope (617882a) | lead | done | |
-| Block absolute, `~` and `..` paths in fx's file tools in blackice mode; refuse when blackice, the policy or fx is inside the workspace | lead | todo | |
+| Block absolute, `~` and `..` paths in fx's file tools in blackice mode; refuse when blackice, the policy or fx is inside the workspace (b88c52e) | lead | done | |
 | Relay token: random per relay, exported as `BLACKICE_RELAY_TOKEN`, sent by fx as a bearer token | network | done | |
 | End-to-end scripts in `scripts/e2e/` (`linux-run.sh`, `linux-grant.sh`, `fx-l0.sh`), PASS, FAIL or NOT RUN per check | network | done | |
 | Relay: loopback endpoint, key on stdin, forwarding to the gateway | network | done | |

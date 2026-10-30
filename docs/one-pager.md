@@ -59,8 +59,8 @@ HTTPS through the proxy, observe mode, and recovery after faults.
 - Network only. Files, processes and credentials need their own controls.
 - It does not detect prompt injection. It blocks connections the policy does not allow. Data sent to an allowed
   destination is out of scope.
-- With the fx hook, fx's own file tools run outside every scope and can still change blackice or fx for the
-  next command; a fix is pending. Until then, install both root-owned, outside the workspace.
+- With the fx hook, fx itself runs outside the scopes. Its file tools are kept inside the workspace, so
+  install blackice and fx outside it (root-owned is best). What fx reads goes to the model provider.
 - In v0, any process of the same user that runs outside every scope counts as the owner.
 - Work handed to a service outside the scope (launchd, `open`, `systemd-run --user`, Docker) is refused only
   where a test shows it; otherwise it is a stated limit.
