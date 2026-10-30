@@ -57,11 +57,14 @@ tag, follow it to its commit), replace the SHA and update the tag in the comment
 `.github/workflows/release.yml` runs only when a tag starting with `v` is pushed. It ends with a draft release;
 publishing it is a manual step.
 
-1. **tag** checks that the tag is `vX.Y.Z` and that its commit is on `main`.
+1. **tag** checks that the tag is `vX.Y.Z`, that `build.zig.zon` declares the same version, and that the
+   tagged commit is on `main`.
 2. **build** runs twice, on `ubuntu-latest` and on `macos-latest`. Each builder runs
-   `zig build release -Dmacos-min=13.0` for the four CLI targets and builds the Linux helper with the same
-   command and flags as `scripts/linux-build-helper.sh`. The Linux builder also runs that script and checks
-   that both helpers are byte-identical. It then checks that `blackice version` prints the tag's version.
+   `zig build release -Dmacos-min=13.0`, which writes the four CLIs, the x86_64 Linux helper and the build's own
+   `SHA256SUMS` to `zig-out/release`. The job fails unless that directory holds exactly those files and its
+   `SHA256SUMS` checks, and it copies only the expected files. The Linux builder also runs
+   `scripts/linux-build-helper.sh` and checks that its helper is byte-identical to the release's. It then checks
+   that `blackice version` prints the tag's version.
 3. **compare** fails unless both builders produced the same set of files with the same bytes. It writes
    `SHA256SUMS`.
 4. **attest** creates one build provenance attestation per release file (`actions/attest-build-provenance`).
@@ -70,7 +73,9 @@ publishing it is a manual step.
    `contents: write`.
 
 Release files: `blackice-X.Y.Z-{x86_64-linux,aarch64-linux,aarch64-macos,x86_64-macos}`,
-`blackice-linux-helper-X.Y.Z-x86_64-linux`, `linux-setup.sh`, `linux-teardown.sh` and `SHA256SUMS`.
+`blackice-linux-helper-X.Y.Z-x86_64-linux` and `SHA256SUMS`. No helper ships for a target that has not run on
+real hardware, so there is no aarch64 Linux helper yet. The setup scripts are not release files: Linux setup
+runs from a checkout of the tag.
 
 Checking a release file before running it:
 
@@ -81,7 +86,7 @@ gh attestation verify blackice-X.Y.Z-aarch64-macos --repo ValentinTorassa/blacki
 ```
 
 To check a release without trusting GitHub at all, build the tag with Zig 0.17.0
-(`zig build release -Dmacos-min=13.0` and `scripts/linux-build-helper.sh`) and compare the hashes.
+(`zig build release -Dmacos-min=13.0`) and compare the hashes.
 
 What the workflow assumes. These are repository settings, and changing them is the owner's decision:
 
@@ -93,8 +98,9 @@ What the workflow assumes. These are repository settings, and changing them is t
 
 Known gaps before the first release:
 
-- The helper and `scripts/linux-build-helper.sh` reach `main` with the Linux backend pull request. Until then,
-  the build job fails, so no release can be made.
-- `linux-setup.sh` looks for the helper in `../zig-out/bin` relative to itself. A Homebrew or tarball
-  install needs a helper-path argument first. That is a change to privileged setup code and needs its own
-  review and a new pinned hash.
+- The helper and `scripts/linux-build-helper.sh` reach `main` with the Linux backend pull request, and the
+  versioned release files with the 0.1.0 release change. Until both are on `main`, the build job fails, so no
+  release can be made.
+- `linux-setup.sh` looks for the helper in `../zig-out/bin` relative to itself. Shipping the setup scripts, or
+  a Homebrew or tarball install, needs a helper-path argument first. That is a change to privileged setup code
+  and needs its own review and a new pinned hash.
