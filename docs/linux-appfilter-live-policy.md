@@ -184,6 +184,15 @@ request, root non-owner, tagged curl and a real terminal prompt cancelled with
 Ctrl-C. It verifies unchanged kernel state and service PID plus refusal receipts.
 It neither installs an auth rule nor exercises a successful reload.
 
+`scripts/e2e/linux-appfilter-reload-membership-vm.py` covers an already-running
+untagged addition (refused), the later successfully added app's allow/deny flows,
+a removed running process retaining its previous policy/generation, a fresh
+unlisted launch reaching the controlled receiver, and a later app using a new
+slot. It kills only the identified VM3 loader through a pidfd to check that a
+retired process stays tagged but loses proxy service after restart. The script
+uses real polkit for each reload/off and ends with an authorized off. Receiver
+corroboration is required in addition to its local checks.
+
 Crash testing has a separate opt-in build:
 
 ```sh
