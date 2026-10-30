@@ -92,6 +92,7 @@ service by the program.
 | `CONNECT` and plain HTTP proxy on a random loopback port | network | done | |
 | Resolve allowed names in the proxy and dial only checked addresses | network | done | |
 | Happy Eyeballs dial, `client_closed` detail instead of `not_tls`, no dialing after a stop (c6b3c1a; found by the lead when a proxied example.com timed out on a slow IPv6 path) | network | done | |
+| A `client_closed` receipt also when the 200 cannot be written; the dial always has its deadline, with no sequential fallback (afe126d, security review) | network | done | |
 | One receipt per decision | network | done | |
 | Bound header size and refuse unsupported requests | network | done | |
 | Tests: refused name, allowed name, private address behind an allowed name, IP literal | network | done | |
