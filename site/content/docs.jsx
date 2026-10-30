@@ -331,9 +331,24 @@ refused: grants come from outside the scope`}</Code>
           <a href="https://github.com/vercel-labs/fx/blob/main/CHANGELOG.md">changelog</a>). A network policy limits
           where any of those commands can connect, whatever approved them.
         </p>
+        <h2>Model traffic</h2>
+        <Note>
+          <strong>Designed, not yet verified.</strong> fx reaches its model through a relay outside the task, so the
+          model key never enters the scope.
+        </Note>
+        <p>What the relay does not do:</p>
+        <ul>
+          <li>
+            A tool inside the scope can still send any content to the allowed model endpoint through the relay. The relay
+            keeps the key out of the scope, nothing more.
+          </li>
+          <li>
+            In this first version the key is protected from the scope, not from other processes of the same user that run
+            outside every scope.
+          </li>
+        </ul>
         <h2>Limits of wrapping</h2>
         <ul>
-          <li>fx still needs to reach its model. The design sends that traffic through a relay outside the task, so the model key never enters the scope.</li>
           <li>A separate scope per tool call needs a launch hook in fx. That is future work.</li>
           <li>MCP servers are not covered by the first proof.</li>
         </ul>
