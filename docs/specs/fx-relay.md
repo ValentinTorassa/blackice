@@ -91,9 +91,16 @@ key out of the scope; it does not decide what content may be sent to the model.
   - L0: the relay token (R16) keeps out processes that do not have it, and the header checks in R3 keep out web
     pages in the user's browser. The token is readable by everything in the scope, and by the user's other
     processes that can read the scope's environment (`/proc/<pid>/environ` on Linux).
-  - Main mode: fx tools other than the shell are not yet limited to a fixed list. A review found that
-    `install_skill` can clone any URL from inside fx and `mcp_select_tool` reaches MCP servers outside every
-    scope; `fx acp` also runs unscoped. A task below fixes the tool list.
+  - Main mode, until the three tasks below are done, only the first command of an fx session is sure to be
+    confined:
+    - fx runs the rewritten command through the user's login, interactive shell (`zsh -l -i`,
+      `bash --login -i`) outside the scope. A scoped command that writes `~/.zshrc` gets code run unscoped
+      before the next command.
+    - The policy file and the `blackice` binary are ordinary user files, and without `FX_BLACKICE_BIN` the
+      binary is found through `PATH`. A scoped command can loosen the policy or swap the binary for the next
+      command.
+    - fx tools other than the shell are not limited to a fixed list: `install_skill` can clone any URL from
+      inside fx, `mcp_select_tool` reaches MCP servers outside every scope, and `fx acp` runs unscoped.
   - L0: one scope for fx and its tools, so no per-tool isolation; fx features that need other destinations fail
     unless the policy allows them.
   - The key is protected from the scope, not from other processes of the same user running outside every
@@ -110,6 +117,8 @@ key out of the scope; it does not decide what content may be sent to the model.
 | Scrubbed environment for scopes started by the hook | lead | done | |
 | Block fx's `web_fetch` and `web_search` in blackice mode | lead | done | |
 | Allow only a fixed list of fx tools in blackice mode (`install_skill` and `mcp_select_tool` stay out); say that `fx acp` runs unscoped | lead | todo | |
+| Run the rewritten command with fx's clean shell profile, never the user's startup files, and refuse a reload | lead | todo | |
+| Absolute `blackice` path; policy and binary root-owned or pinned (`--policy-sha256`), and protected by the backends | lead | todo | |
 | Relay token: random per relay, exported as `BLACKICE_RELAY_TOKEN`, sent by fx as a bearer token | network | done | |
 | End-to-end scripts in `scripts/e2e/` (`linux-run.sh`, `linux-grant.sh`, `fx-l0.sh`), PASS, FAIL or NOT RUN per check | network | done | |
 | Relay: loopback endpoint, key on stdin, forwarding to the gateway | network | done | |

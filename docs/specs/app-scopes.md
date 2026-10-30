@@ -48,8 +48,9 @@ App scopes are planned, not designed in detail. Each platform has one candidate 
   proxy, and Tailscale) has to be tested.
 - macOS filter as built (PR #8, unsigned): TLS flows to a name pass only when the ClientHello's server name
   matches exactly; UDP and QUIC are denied; turning the filter off or removing its configuration needs the
-  owner's Touch ID. ClientHellos with ECH, which Chromium and Electron apps send by default, are denied in
-  this build (fail closed), so their domain rules do not work yet; an exact-outer-name rule is in progress.
+  owner's Touch ID, and the prompt describes the configuration being approved. A ClientHello with ECH, which
+  Chromium and Electron apps send by default, passes only on an exact outer server name, with an
+  `ech_present` note.
 - Linux: desktops such as GNOME and KDE start each app in its own systemd scope under the user's `app.slice`
   (for example `app-<launcher>-<app-id>-<n>.scope`, or a snap or Flatpak scope). systemd places the process in
   that cgroup before exec, and children inherit it. Rules can match that cgroup, or its ancestor level, with
@@ -69,7 +70,7 @@ App scopes are planned, not designed in detail. Each platform has one candidate 
 |---|---|---|---|
 | macOS: Network Extension filter (Swift) and host app in `macos/`, deciding per app by code-signing identity, with the same policy and receipt formats; built unsigned (PR #8) | appfilter | done | |
 | macOS: single-writer receipts from the extension (today they go to the unified log) | appfilter | todo | |
-| macOS: ClientHellos with ECH: allow on the exact outer server name, with an `ech_present` note | appfilter | doing | |
+| macOS: ClientHellos with ECH: allow on the exact outer server name, with an `ech_present` note (013d718) | appfilter | done | |
 | macOS: sign the extension and run it on a Mac | valen | blocked | No Apple Developer Program membership (signing) and no full Xcode on the Mac. Until then its state stays "built, unsigned" and never "verified" |
 | Linux: qualify desktop app groups (first-packet coverage, unknown groups, user-created units, migration, terminal children) | codex | todo | |
 | Linux: choose the matching mechanism (nftables socket match or cgroup eBPF) for app groups | codex | todo | |
