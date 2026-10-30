@@ -41,7 +41,7 @@ pub const pass_env = [_][]const u8{
     "PATH",            "HOME",           "USER",          "LOGNAME",        "SHELL",
     "TERM",            "COLORTERM",      "NO_COLOR",      "LANG",           "LANGUAGE",
     "LC_ALL",          "LC_CTYPE",       "LC_MESSAGES",   "TZ",             "TMPDIR",
-    "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME",
+    "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "AI_AGENT",
 };
 
 const max_models = 16;
