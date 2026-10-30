@@ -34,7 +34,8 @@ control that a signed Network Extension will provide later (see [app-scopes](app
 | macos-task-scope.R9 | When the same policy and the same test destinations run in a macOS and a Linux task scope, blackice shall reach the same verdict for each destination. The receipts may differ only in the enforcement point. | P0-08 |
 | macos-task-scope.R10 | A process inside a macOS task scope shall not be able to write the blackice state directory: receipts, the policy copy or the control socket. | P0-04 |
 | macos-task-scope.R11 | A process inside a macOS task scope shall not be able to bind a socket or accept a connection on any address, loopback included: task scopes are clients only. | P0-02 |
-| macos-task-scope.R12 | When the sandbox refuses something a process in the scope tried, and macOS logs that refusal, blackice shall write a `kernel_drop` receipt with a reason (`loopback_proxy_only`, `clients_only`, `protected_path`, `launch_outside_scope`, or `seatbelt_refused` with the raw line when it cannot be parsed). If receipts are folded, lost or cannot be read, it shall say so in a `warning` receipt (`kernel_receipts_folded`, `kernel_receipts_lost`, `kernel_receipts_off`). | P0-02 |
+| macos-task-scope.R12 | When the sandbox refuses something a process in the scope tried, and macOS logs that refusal, blackice shall write a `kernel_drop` receipt with a reason (`loopback_proxy_only`, `clients_only`, `protected_path`, `launch_outside_scope`, `clipboard_outside_scope`, or `seatbelt_refused` with the raw line when it cannot be parsed). If receipts are folded, lost or cannot be read, it shall say so in a `warning` receipt (`kernel_receipts_folded`, `kernel_receipts_lost`, `kernel_receipts_off`). | P0-02 |
+| macos-task-scope.R13 | A process inside a macOS task scope shall not be able to read or write the pasteboard (the clipboard and its Handoff client); a logged refusal gets a `kernel_drop` receipt with reason `clipboard_outside_scope`. | - |
 
 ## Design
 
@@ -83,9 +84,11 @@ or addresses, only "any host" or "localhost", so every decision about names happ
   - The proxy port: what happens if the proxy restarts or another local process takes its port, and how one
     scope's proxy is kept from serving another, belong to [proxy](proxy.md) and are untested.
   - Inherited sockets (R7) are untested.
-  - The pasteboard is shared: a command in a scope read a value copied outside it, and a value it wrote was
-    read outside (`pbcopy`/`pbpaste`, synthetic values, the lead's probes on 58e73cc). The write side matters more: a scoped command can leave a crafted
-    command line on the clipboard for the owner to paste into a terminal outside any scope. A fix is planned.
+  - In the recorded build (58e73cc) the pasteboard is shared: a command in a scope read a value copied outside
+    it, and a value it wrote was read outside (`pbcopy`/`pbpaste`, synthetic values, the lead's probes). The write
+    side matters more: a scoped command could leave a crafted command line on the clipboard for the owner to paste
+    into a terminal outside any scope. Refused since claude/run e6dcd3f (R13); as with every rule here, a refused
+    program that is not Apple-signed gets no receipt.
   - Reading another process's environment from a scope was refused the two ways tried: `/bin/ps` (setuid)
     does not start inside a scope, and `sysctl` `KERN_PROCARGS2` returns the arguments without the
     environment, inside a scope and outside alike (lead's probe). Other paths, such as a debugger attach,
@@ -122,13 +125,14 @@ or addresses, only "any host" or "localhost", so every decision about names happ
 | Test name lookups through other system services, with fresh random names | lead | todo | |
 | docs/macos.md | lead | todo | |
 | Receipt reason `protected_path` for a refused hard link to a protected file (Seatbelt logs it as `forbidden-link-priv`), cffa0cd | lead | done | |
-| Deny the pasteboard's service lookup in task scopes, with a receipt (security Low on PR #7, after the demo) | lead | todo | |
+| Deny the pasteboard's service lookup in task scopes, with a receipt (security Low on PR #7): ae59ed5, e6dcd3f | lead | done | |
 | Label the backend experimental in `blackice run --help`, the scope line and the `scope_start` receipt (R8): at 58b9491 they say `macos-seatbelt` only | lead | todo | |
 
 ## Evidence
 
 | Covers | Kind | Link | Note |
 |---|---|---|---|
+| macos-task-scope.R13 | probe | Reported by the lead: claude/run e6dcd3f release (aarch64-macos `f3c8aead…`), macOS 27.0.1, SIP on, scope s-97b9df22, synthetic values | `pbpaste` and `pbcopy` inside a scope exited 1, the owner's pasteboard was unchanged, each refusal left a `clipboard_outside_scope` receipt; git, python3, swift and fx still ran. No evidence entry |
 | macos-task-scope.R3, macos-task-scope.R12 | entry | [P0-07 macOS, scripted model](../../evidence/P0-07-fx-hook-scripted-macos.md) | macOS 27.0.1 arm64, SIP on, blackice claude/run 58e73cc, fx v0.0.16 with the hook patch at 08e34f3, scripted model, PR #11 (not merged). `curl --noproxy '*' https://example.com` could not resolve the name: Seatbelt refused the resolver socket (`/private/var/run/mDNSResponder`) with a `kernel_drop`; writes and renames of protected files left `protected_path` receipts |
 | macos-task-scope.R1, macos-task-scope.R12 | entry | [P0-01 macOS](../../evidence/P0-01-policy-before-exec-macos.md) | macOS 27.0.1 arm64, SIP on, claude/run 58e73cc, Zig 0.17.0, one run, PR #11 (not merged). curl's first and only network call was refused at once (exit 7), with `backend_armed` before the `kernel_drop`; a grandchild started a second later was refused the same way; a child that outlived the command was refused too (exit 7), with no receipt because receipts stop at the scope's end. That the orphan was adopted by launchd is not shown, so R4 stays open |
 | macos-task-scope.R2, macos-task-scope.R3, macos-task-scope.R11, macos-task-scope.R12 | entry | [P0-02 macOS](../../evidence/P0-02-real-deny-macos.md) | macOS 27.0.1 arm64, SIP on, claude/run 58e73cc, Zig 0.17.0, one run, PR #11 (not merged). A scoped python3 got `Operation not permitted` for TCP and UDP over IPv4 and IPv6; curl direct was refused (exit 7); `getaddrinfo` failed (resolver socket refused); `bind` + `listen` on 127.0.0.1 refused (`clients_only`); `launchctl submit` refused (`launch_outside_scope`) and the job never ran. A receiver on another machine logged controls before and after and nothing from any scope; the IPv6 path was Tailscale. `open`, Apple Events (the rest of R6) and R7 are not tested |

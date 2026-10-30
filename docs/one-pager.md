@@ -59,8 +59,8 @@ HTTPS through the proxy, observe mode, and recovery after faults.
 
 ## Limits
 
-- Network only. Files, processes and credentials need their own controls. On macOS, a command in a scope can
-  read and write the clipboard.
+- Network only. Files, processes and credentials need their own controls. On macOS, in the recorded build (58e73cc),
+  a command in a scope can read and write the clipboard; refused since claude/run e6dcd3f.
 - It does not detect prompt injection. It blocks connections the policy does not allow. Data sent to an allowed
   destination is out of scope.
 - With the fx hook, fx itself runs outside the scopes. Its file tools are kept inside the workspace, so
