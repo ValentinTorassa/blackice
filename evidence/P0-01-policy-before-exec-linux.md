@@ -2,7 +2,9 @@
 
 **Claim:** P0-01 — the tested Linux launcher refused invalid or mismatched policy before creating a scope, and the valid scoped command observed its policy copy and initial receipt before doing work.
 
-**Platform:** Debian Linux, kernel `6.12.113+deb13-amd64`, x86_64; kernel build `#1 SMP PREEMPT_DYNAMIC Debian 6.12.113-1 (2026-10-15)`.
+**Platform:** Debian GNU/Linux 13.7 (trixie), kernel `6.12.113+deb13-amd64`, x86_64; kernel build `#1 SMP PREEMPT_DYNAMIC Debian 6.12.113-1 (2026-10-15)`. This host has no Ubuntu AppArmor user-namespace restriction: `/proc/sys/kernel/apparmor_restrict_unprivileged_userns` is absent. AppArmor itself is enabled, and the launching session is `unconfined`.
+
+A read-only platform check after the run confirmed `VERSION_ID="13"` and `DEBIAN_VERSION_FULL=13.7` in `/etc/os-release`, the absent restriction knob, `Y` in `/sys/module/apparmor/parameters/enabled`, and `unconfined` in `/proc/self/attr/current`. No host policy was changed. These details qualify the Debian result; they do not establish Ubuntu compatibility.
 
 **Build:** Zig `0.17.0`; frozen launcher and [harness](https://github.com/ValentinTorassa/blackice/blob/020f3892374c89a4bf0be722767ccd4d366cd5ca/src/linux/evidence_check.py) from `020f3892374c89a4bf0be722767ccd4d366cd5ca`; installed helper from `7c3bcff45dcdb122149b1a4ace282d0d749f9f53`.
 
