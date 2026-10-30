@@ -50,6 +50,8 @@ echo; echo "\$ FX_BLACKICE_POLICY=agent.json FX_BLACKICE_BIN=blackice FAKE_SECRE
   FAKE_SECRET=synthetic-value-from-fx-env FX_BLACKICE_POLICY="$POL" FX_BLACKICE_BIN="$BIN" "$FX" ask "Run the probe." </dev/null > "$W/fx.out" 2>&1)
 echo "fx exit=$?"
 kill $M 2>/dev/null; wait $M 2>/dev/null
+echo; echo "== control after, NOT in a scope: the receiver must log this"
+/usr/bin/python3 -I -c "import socket; s=socket.socket(); s.settimeout(3); s.connect(('$V4',47121)); s.sendall(b'fx-control-after'); print('control-after tcp4: sent')"
 echo; echo "== what each tool call returned to the model"
 /usr/bin/python3 -I - "$W/model.log" <<'PY'
 import json, sys
@@ -68,6 +70,8 @@ for i, r in enumerate(last["tool_results"]):
 PY
 echo; echo "== files unchanged?"
 SUMS1=$(shasum -a 256 "$BIN" "$FX" "$POL" "$W/home/.fx/settings.json")
-[ "$SUMS0" = "$SUMS1" ] && echo "blackice, fx, policy and fx settings.json: unchanged" || { echo "CHANGED:"; echo "$SUMS1"; }
+echo "before:"; echo "$SUMS0" | sed "s|$W/||"
+echo "after:"; echo "$SUMS1" | sed "s|$W/||"
+[ "$SUMS0" = "$SUMS1" ] && echo "blackice, fx, policy and fx settings.json: unchanged" || echo "CHANGED"
 echo; echo "== scopes: $(ls "$W/state/blackice/scopes" | wc -l | tr -d ' ')"
 for f in $(ls -tr "$W"/state/blackice/scopes/*/receipts.jsonl); do echo "-- $(basename $(dirname $f))"; cat "$f"; done

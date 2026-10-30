@@ -66,5 +66,9 @@ step 'blackice run --policy bad.json -- sh -c "touch started"   # a policy that 
 step 'blackice run --policy agent.json --policy-sha256 <wrong hash> -- sh -c "touch started2"'
 "$B" run --policy "$P" --policy-sha256 0000000000000000000000000000000000000000000000000000000000000000 -- /bin/sh -c "touch '$W/started2'"; echo "exit=$?"
 [ -e "$W/started2" ] && echo "the command ran (BAD)" || echo "the command never started: no 'started2' file"
+echo; echo "== control after: the same sender, NOT in a scope (the receiver must log these too)"
+step python3 -I sender.py $V4 $V6 control-after
+/usr/bin/python3 -I "$W/sender.py" $V4 $V6 control-after
+
 echo; echo "== receipts (all scopes of this run, in order)"
 for f in $(ls -tr "$W"/state/blackice/scopes/*/receipts.jsonl); do echo "-- $f"; cat "$f"; done
