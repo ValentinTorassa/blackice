@@ -348,8 +348,9 @@ host's parent PID for audit only; that PID never authorizes anything. No payload
 complete URLs, raw audit tokens, executable paths, credentials or environment
 variables are logged. Retention follows OS policy; no logging privacy settings
 are changed by this build. Durable receipt ingestion remains **pending**.
-Showing bound-app flow details in a future demo requires a separately reviewed
-visibility decision; this branch does not change the earlier privacy fix.
+Readable bound-app flow receipts are now a required demo gate. An owner-readable
+JSONL file is in design review; it is not implemented here. The public log is
+not a substitute, and this branch does not change the earlier privacy fix.
 
 The host's `status` always reports `enforcement_verified: false` in this build.
 Saving an enabled filter preference reports only `preferences_saved`. Neither
@@ -533,52 +534,72 @@ It neither flushes host firewall rules nor changes another filter. Local
 diagnostic log retention is unchanged. Each recovery command requires its own
 fresh user-presence check.
 
-## Two-app demo configuration
+## Probe and native-app demo
 
-[`macos/Examples/demo-apps.json`](../macos/Examples/demo-apps.json) is a prepared
-`blackice.appscope/v0` configuration, generation 1, `os-metadata`, with
-`unmatched: deny`. It embeds the exact UTF-8 bytes and full SHA-256 of these
-unchanged `blackice.policy/v0` files:
-
-| App | Exact identity selector | Policy intent on TCP port 443 |
-| --- | --- | --- |
-| Firefox | `43AQ936H96` + `org.mozilla.firefox` | `firefox-mozilla-only.json`: only `mozilla.org` and its subdomains |
-| Visual Studio Code stable | `UBF8T346G9` + `com.microsoft.VSCode` | `vscode-without-crash-telemetry.json`: only `code.visualstudio.com` and `update.code.visualstudio.com`; `rink.hockeyapp.net` denied |
-
-Microsoft's [network documentation](https://code.visualstudio.com/docs/setup/network)
-lists `rink.hockeyapp.net` for crash reporting. The example excludes it from an
-allowlist; v0 has no domain deny-list primitive. **Every other unlisted domain is
-also denied**, so this is a narrow demo policy, not a complete working VS Code
-network profile or a claim to disable all telemetry. Redirect/CDN, marketplace,
-sign-in and update download hosts may need additional explicit allows.
-The Firefox policy intentionally prevents general web browsing.
-
-The selectors are expected release identities, not evidence about the apps on
-the demo Mac. Apple's [browser identity data](https://github.com/apple/password-manager-resources/blob/main/quirks/web-browser-extension-distribution-information.json)
-lists the Firefox pair. Before any signed-run demonstration, inspect the actual
-installed copies without launching them:
+The separate [`BlackiceProbe.app`](../macos/Probe/README.md) target uses
+foreground URLSession with a stable signing identifier,
+`com.valentorassa.blackice.probe`. It offers both sequential CLI requests and a
+small Service/Telemetry window. Build it without signing or opening it:
 
 ```sh
-/usr/bin/codesign --verify --strict --deep /Applications/Firefox.app
-/usr/bin/codesign -dv --verbose=4 /Applications/Firefox.app 2>&1 | awk '/^(Identifier|TeamIdentifier)=/'
-/usr/bin/codesign --verify --strict --deep '/Applications/Visual Studio Code.app'
-/usr/bin/codesign -dv --verbose=4 '/Applications/Visual Studio Code.app' 2>&1 | awk '/^(Identifier|TeamIdentifier)=/'
-./macos/build/Blackice.app/Contents/MacOS/BlackiceApp validate ./macos/Examples/demo-apps.json
+./macos/build-probe.sh /private/tmp/blackice-probe-build
+./macos/test-probe.sh /private/tmp/blackice-probe-tests
 ```
 
-Paths above only locate apps for inspection; runtime authorization still comes
-from exact signed identities resolved from audit tokens. Insiders/Developer
-Edition builds and helper executables may have different signing identifiers.
-Do not expand a selector to a team-wide wildcard. Real app/helper attribution,
-hostname availability and actual requests to the excluded telemetry endpoint
-remain signed-run gates; no such request or enforcement is claimed here.
+Its source is prepared; the Mac was unreachable for compilation and execution.
+The probe accepts successful evidence only with fresh TLS/TCP transport metrics,
+never by assuming that any URLSession response is TCP. Its README gives the
+HTTP/3 limitation, safe CLI input checks, exact policy-generation command and
+later Developer ID signing recipe. No probe window or network request has been
+run during preparation.
 
-Unknown/unbound apps are denied, including valid ad hoc binaries, and have only
-aggregate receipts. This includes unrelated background apps, SSH and potentially
-DNS service traffic. Use an isolated demo Mac with local recovery; this config
-is not suitable for enabling over the only remote connection to a daily-use Mac.
-Domain rules require an exact outer SNI and deny UDP/QUIC. The DNS, helper,
-existing-socket, ECH and provider-downtime limits above still apply.
+Use `probe-service-only.json` for the probe's service host and
+`netnewswire-feeds.json` as the starting policy for NetNewsWire, the first native
+URLSession candidate. Bind each by its actual Team ID plus signing identifier;
+inspect the installed native app before generating its binding:
+
+```sh
+/usr/bin/codesign --verify --strict --deep /Applications/NetNewsWire.app
+/usr/bin/codesign -dv --verbose=4 /Applications/NetNewsWire.app 2>&1 | awk '/^(Identifier|TeamIdentifier)=/'
+```
+
+A second native app is optional and must pass the same signed-flow checks.
+NetNewsWire's source uses URLSession, but the installed build's source identity,
+`remoteHostname`, helpers and TLS/TCP behavior still need real evidence. Apple's
+own apps lack the Team ID needed by this binding format. Chrome, Electron and
+Firefox are not domain-rule demonstration targets: their networking stacks and
+helpers do not establish the required OS hostname metadata. IP/subnet rules are
+a separate capability.
+
+The older [`demo-apps.json`](../macos/Examples/demo-apps.json) with Firefox and
+VS Code remains a **configuration syntax fixture only**, not evidence that those
+apps can satisfy domain rules. Its default is now `unmatched: allow`, and its
+embedded network policies/hashes remain unchanged. Do not use it as the live
+per-domain demonstration.
+
+### Defaults and recovery
+
+Every example wrapper and demo `make-config` command uses `unmatched: allow`.
+Only explicitly bound apps receive their network policy; verified unrelated
+apps, ad hoc development tools and Apple system services follow unmatched allow.
+Invalid/unresolvable identities still deny according to the reviewed identity
+rules, so this default is not a blanket promise of uninterrupted networking.
+Network-policy `deny-all` affects a bound app; **`unmatched: deny` affects the
+whole Mac**, including Apple's services and DNS. Do not enable that mode as a
+demo default. Any later isolated unknown-app test must be short, last, and have
+local recovery; never attempt it over the only remote connection.
+
+For a signed, installed filter, the exact recovery command is:
+
+```sh
+/Applications/Blackice.app/Contents/MacOS/BlackiceApp disable
+```
+
+Approve its Touch ID/password request locally. It needs no DNS or network access.
+If also removing the saved configuration or extension, use `remove-config` and
+`deactivate`, each with its own approval, as described above. No such command was
+run during this preparation. With `unmatched: allow`, an app can still delegate
+to an unbound helper; this is not process-tree confinement.
 
 ### Change a policy without restarting the provider
 
@@ -588,30 +609,33 @@ place while keeping the filter enabled; the provider observes the update and
 installs a validated snapshot. This behavior is source/unit-test verified;
 live delivery to a signed provider remains untested.
 
-For a later owner-operated demo, after the sample's generation 1 is active,
-prepare generation 2 that changes Firefox to deny-all (VS Code stays as above):
+After the probe's generation-1 configuration from its README is active, add the
+previously excluded test host for generation 2. Start from the original policy
+bytes, then embed the edited file with its new hash:
 
 ```sh
-jq --rawfile policy macos/Examples/deny-all.json \
-  --arg sha "$(shasum -a 256 macos/Examples/deny-all.json | awk '{print $1}')" \
-  '.generation += 1 | .apps |= map(if .scope == "app-firefox" then .policy_json = $policy | .policy_sha256 = $sha else . end)' \
-  macos/Examples/demo-apps.json > /private/tmp/blackice-app-demo-next.json
-/Applications/Blackice.app/Contents/MacOS/BlackiceApp validate /private/tmp/blackice-app-demo-next.json
-/Applications/Blackice.app/Contents/MacOS/BlackiceApp enable /private/tmp/blackice-app-demo-next.json
+jq '.network.allow += ["httpbingo.org"]' macos/Examples/probe-service-only.json > /private/tmp/blackice-probe-next-policy.json
+jq --rawfile policy /private/tmp/blackice-probe-next-policy.json \
+  --arg sha "$(shasum -a 256 /private/tmp/blackice-probe-next-policy.json | awk '{print $1}')" \
+  '.generation += 1 | .apps |= map(if .scope == "app-probe" then .policy_json = $policy | .policy_sha256 = $sha else . end)' \
+  /private/tmp/blackice-probe-apps.json > /private/tmp/blackice-probe-apps-next.json
+/Applications/Blackice.app/Contents/MacOS/BlackiceApp validate /private/tmp/blackice-probe-apps-next.json
+/Applications/Blackice.app/Contents/MacOS/BlackiceApp enable /private/tmp/blackice-probe-apps-next.json
 ```
 
 For any later update, choose a generation greater than the currently saved one.
-In the public live stream, wait for `event: "policy_activated"`,
-`reason: "snapshot_installed"` and the new `gen`. `preferences_saved` alone is
-not that acknowledgement. Observe new connections for the policy comparison;
-already allowed sockets are not revoked, and pending TLS checks are discarded
-on a generation change. No disable/enable cycle or provider restart is requested.
+Wait for `event: "policy_activated"`, `reason: "snapshot_installed"` and the new
+`gen` before comparing new requests. `preferences_saved` alone is not that
+acknowledgement. The public control stream can currently show it; the proposed
+receipt file must include it too. Adding a host avoids the misleading appearance
+that removing one failed because an already allowed socket was reused. Existing
+allowed sockets are not revoked; pending TLS checks are discarded on a change.
+No disable/enable cycle or provider restart is requested.
 
-The first app demo uses unified-log diagnostics only. Durable `receipts.jsonl`
-ingestion and app grants with expiry are outside that demo. The task-scope
-`blackice grant` command does not grant app-filter permissions. Neither omitted
-feature is presented as implemented; durable ingestion remains a later release
-integration gate.
+The first app demo now requires owner-readable per-flow JSONL receipts with loss
+accounting, pending security design review and implementation. The earlier
+unified-log-only demo plan is superseded. Expiring app grants remain out of scope;
+`blackice grant` applies to task scopes, not app-filter permissions.
 
 ## Validation and remaining gates
 
@@ -624,15 +648,16 @@ plists passed `plutil`; 351 test assertions passed. The host's `make-config` and
 confirmed only linker ad hoc signing with no Team ID. No activation or live
 enforcement test was performed.
 
-The later `appfilter/demo-prep` replay onto main `5f84f67` preserves all production
-Swift, resources, `build.sh`, `test.sh` and Swift tests byte-for-byte. The Mac was
-unreachable for a fresh run, so the 351-assertion/build result above remains prior
+The `appfilter/demo-prep` replay onto main `5f84f67` preserves the existing filter/host
+Swift, resources, `build.sh`, `test.sh` and Swift tests byte-for-byte. The probe is
+a separate, newly added target. The Mac was unreachable for a fresh run, so the
+351-assertion/build result above remains prior
 validation of identical source. The new signing preparation has eight passing
-offline Python tests. The new two-app wrapper's original-byte hashes, documented
-generation-2 transformation and `jq` stream parser were checked locally; the
-stream input was synthetic, not a captured provider receipt. Host validation of
-the new sample and the signing recipe with actual Apple profiles are still
-pending. No credentials or keychain items were accessed for these checks.
+offline Python tests. The example wrapper's original-byte hashes and `jq` stream
+parser were checked locally; the stream input was synthetic, not a captured provider receipt. Host
+validation of the samples, compiling/running the new probe and its Swift tests,
+and signing with actual Apple profiles remain pending. No credentials or keychain
+items were accessed for these checks.
 
 Tests cover exact/wildcard matching, private and mapped addresses, IPv6 CIDRs,
 ports, strict configuration, identity binding isolation, inbound denial,

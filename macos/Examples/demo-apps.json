@@ -1,7 +1,7 @@
 {
   "version": "blackice.appscope/v0",
   "generation": 1,
-  "unmatched": "deny",
+  "unmatched": "allow",
   "hostname_mode": "os-metadata",
   "apps": [
     {

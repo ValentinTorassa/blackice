@@ -22,6 +22,9 @@ profile import or keychain change has been performed by these preparation steps.
    Enable System Extensions for the host if the portal presents that checkbox.
    The extension does not install other extensions and does not claim this key.
    No Endpoint Security entitlement or App Group is needed for this build.
+   The separate evidence probe uses com.valentorassa.blackice.probe. It is an
+   ordinary app with no restricted capabilities; it needs no Network Extension
+   provisioning profile. Its later signing recipe is in macos/Probe/README.md.
 
 3. On the Mac, use Keychain Access > Certificate Assistant > Request a
    Certificate from a Certificate Authority. Enter the owner email and a key

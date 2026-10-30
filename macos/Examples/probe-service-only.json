@@ -1,0 +1,8 @@
+{
+  "version": "blackice.policy/v0",
+  "network": {
+    "mode": "allowlist",
+    "allow": ["example.com"],
+    "ports": [443]
+  }
+}
