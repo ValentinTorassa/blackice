@@ -87,6 +87,23 @@ class Pty:
         return os.waitstatus_to_exitcode(status)
 
 
+def vm_wrapper(path):
+    """Refuses anything that could run on this host. The wrapper must be a test VM's vssh (never the demo VM's),
+    its only command must exec ssh (so nothing can fall back to a local shell or the local PATH), and the VM must
+    answer `hostname` with test-vm. Returns the resolved path, which is the only one used afterwards."""
+    real = os.path.realpath(path)
+    if not re.fullmatch(r"/var/tmp/blackice-vm[0-9]+/vssh", real):
+        raise SystemExit(f"refusing {path}: not a test VM wrapper (/var/tmp/blackice-vmN/vssh)")
+    with open(real) as f:
+        body = [l for l in f.read().splitlines() if l.strip() and not l.lstrip().startswith("#")]
+    if len(body) != 1 or not body[0].startswith("exec ssh ") or not body[0].rstrip().endswith('"$@"'):
+        raise SystemExit(f"refusing {real}: it must be one `exec ssh ... \"$@\"` line")
+    host = subprocess.run([real, "hostname"], stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=30).stdout.strip()
+    if host != "test-vm":
+        raise SystemExit(f"refusing {real}: hostname is {host!r}, not test-vm")
+    return real
+
+
 def status_probe(vssh, cli, result):
     """Times one `app status` from a second ssh session while the first one waits at the prompt."""
     t0 = time.time()
@@ -209,6 +226,9 @@ def main():
     ap.add_argument("--status-probe-after", type=float, default=8.0, help="no-answer only")
     ap.add_argument("--limit", type=float, default=150.0)
     args = ap.parse_args()
+    args.vssh = vm_wrapper(args.vssh)
+    if not args.cli.startswith("/opt/aftest/"):
+        raise SystemExit("refusing: the CLI must be the VM kit's /opt/aftest/bin/blackice")
 
     if os.stat(args.password_file).st_mode & 0o077:
         raise SystemExit("password file must be 0600")

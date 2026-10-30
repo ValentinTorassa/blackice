@@ -1821,7 +1821,9 @@ INTERACTIVE = {
     "B4-off-no-answer": ("ssh -t, app off, no answer: refused at the 15 s polkit budget", "armed", "yes", "off"),
     "B5-off-no-tty": ("app off </dev/null without a tty: no agent, refused with no prompt", "armed", "no", "off"),
     "B7-off-agent-missing": ("pkttyagent moved aside: app off fails before contacting the service", "armed", "no", "off"),
-    "B8-off-owner-not-admin": ("owner removed from group sudo (as on valendebian): app off is refused", "armed", "observe", "off"),
+    "B8-off-owner-not-admin": ("owner removed from group sudo (as on valendebian): the agent asks for root; first try refused", "armed", "observe", "off"),
+    "B8a-off-root-password": ("owner not in sudo, no rule: root's password turns it off", "off", "yes", "off"),
+    "B8b-off-root-wrong": ("owner not in sudo, no rule: a wrong root password is refused", "armed", "yes", "off"),
     "B9a-admin-rule-correct": ("security's admin rule, owner not in sudo: the owner's own password turns it off", "off", "yes", "off"),
     "B9b-admin-rule-wrong": ("security's admin rule: a wrong password is refused", "armed", "yes", "off"),
     "B9c-admin-rule-pkexec": ("security's admin rule: pkexec true with the owner's password is still refused", "armed", "observe", "pkexec"),
@@ -1874,6 +1876,10 @@ def phase_interactive_pre(args):
             os.rename("/usr/bin/pkttyagent", AGENT_ASIDE)
             check(f"{cid}.agent-aside", "L10", "/usr/bin/pkttyagent moved aside by root", os.path.exists("/usr/bin/pkttyagent"),
                   not os.path.exists("/usr/bin/pkttyagent"), facts=pre["agent_file"])
+        if cid.startswith("B8"):
+            pre["root_password_state"] = run(["/usr/bin/passwd", "-S", "root"], timeout=10, quiet=True)[1].split()[1:2]
+            record(f"{cid}.root-password-state", "L10", "passwd -S root (P usable, L locked, NP none); run.sh sets a random one before B8a",
+                   pre["root_password_state"], "OBSERVE")
         if cid == "B8-off-owner-not-admin":
             pre["sudo_group_before"] = sudo_group()
             run(["/usr/sbin/gpasswd", "-d", OWNER, "sudo"], timeout=10)
@@ -1881,6 +1887,10 @@ def phase_interactive_pre(args):
             check(f"{cid}.owner-not-in-sudo", "L10", "getent group sudo has no owner", pre,
                   OWNER not in pre["sudo_group_after"].split(":")[-1].split(","))
         if cid == "B9a-admin-rule-correct":
+            if OWNER in sudo_group().split(":")[-1].split(","):  # B8 did not run (targeted re-run)
+                pre["sudo_group_before"] = sudo_group()
+                run(["/usr/sbin/gpasswd", "-d", OWNER, "sudo"], timeout=10)
+                pre["sudo_group_after"] = sudo_group()
             pre["rules_d_before"] = rules_listing()
             pre["rule_source"] = file_facts(ADMIN_RULE_SRC)
             run(["/usr/bin/install", "-o", "root", "-g", "root", "-m", "0644", ADMIN_RULE_SRC, ADMIN_RULE], timeout=10, check=True)

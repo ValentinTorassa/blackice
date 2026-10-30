@@ -8,16 +8,18 @@
 #
 #   run.sh --vm DIR --commit SHA --binary-sha SHA256 --bundle-sha SHA256 [--cli-sha SHA256] \
 #          --label dry-run|evidence --results DIR [--agent yes|no] [--extra] [--skip phase,...] \
-#          [--secret-dir DIR] [--only interactive|reboot|teardown,...]
+#          [--secret-dir DIR] [--only interactive|reboot|teardown,...] [--targeted] [--bcases "B1 B9a ..."]
 #
 # --agent yes: the commit's CLI starts pkttyagent for `app off` on a tty. --agent no: it does not (before c592f6e).
 # --only:      re-run blocks against the kit already installed in the VM (after a harness fix); no build.
+# --targeted:  a fresh build and install of a new SHA, then only P0-P4, the restart phase (F01, F02, F02b,
+#              F02c), the interactive B1 and B9a-c, and the root teardown.
 set -euo pipefail
 PINNED_KERNEL=6.12.113+deb13-amd64
 here=$(cd -- "$(dirname -- "$(readlink -f -- "$0")")" && pwd)
 repo=$(git -C "$here" rev-parse --show-toplevel)
 
-vm= commit= binary_sha= bundle_sha= cli_sha= label= results= agent=yes extra=0 skip= secret_dir= only=
+vm= commit= binary_sha= bundle_sha= cli_sha= label= results= agent=yes extra=0 skip= secret_dir= only= targeted=0 bcases=
 while [[ $# -gt 0 ]]; do
     case $1 in
         --vm) vm=$2; shift 2 ;;
@@ -32,6 +34,8 @@ while [[ $# -gt 0 ]]; do
         --skip) skip=,$2,; shift 2 ;;
         --secret-dir) secret_dir=$2; shift 2 ;;
         --only) only=,$2,; shift 2 ;;
+        --targeted) targeted=1; shift ;;
+        --bcases) bcases=$2; shift 2 ;;
         *) echo "unknown argument: $1" >&2; exit 2 ;;
     esac
 done
@@ -41,11 +45,16 @@ done
 [[ $label == dry-run || $label == evidence ]] || { echo 'label: dry-run or evidence' >&2; exit 2; }
 [[ $agent == yes || $agent == no ]] || { echo 'agent: yes or no' >&2; exit 2; }
 
+# Nothing may run on this host: only a test VM's wrapper (never the demo VM's /var/tmp/blackice-vm), whose only
+# command execs ssh, and a VM that answers hostname with test-vm.
 vm=$(readlink -f -- "$vm")
-[[ $vm != /var/tmp/blackice-vm ]] || { echo 'refusing the demo VM (/var/tmp/blackice-vm)' >&2; exit 1; }
+[[ $vm =~ ^/var/tmp/blackice-vm[0-9]+$ ]] || { echo "refusing $vm: not a test VM directory (/var/tmp/blackice-vmN)" >&2; exit 1; }
 vssh=$vm/vssh
-[[ -x $vssh ]] || { echo "no ssh wrapper at $vssh" >&2; exit 1; }
+[[ -x $vssh && ! -L $vssh ]] || { echo "no ssh wrapper at $vssh" >&2; exit 1; }
+[[ $(grep -v -e '^[[:space:]]*#' -e '^[[:space:]]*$' "$vssh" | wc -l) == 1 && $(grep -v -e '^[[:space:]]*#' -e '^[[:space:]]*$' "$vssh") == 'exec ssh '*'"$@"' ]] \
+    || { echo "refusing $vssh: it must be one exec ssh ... \"\$@\" line" >&2; exit 1; }
 v() { "$vssh" "$@"; }
+[[ $(v hostname </dev/null) == test-vm ]] || { echo 'refusing: the VM does not answer hostname with test-vm' >&2; exit 1; }
 
 # The kernel first, before anything else touches the VM.
 kernel=$(v uname -r)
@@ -59,13 +68,15 @@ commit=$(git -C "$repo" rev-parse --verify "$commit^{commit}")
 tree=$(git -C "$repo" rev-parse "$commit^{tree}")
 short=${commit:0:7}
 stamp=$(date -u +%Y%m%dT%H%M%SZ)
-out=$results/$label-$short-$stamp${only:+-rerun}
+out=$results/$label-$short-$stamp${only:+-rerun}$([[ $targeted == 1 ]] && echo -targeted)
 mkdir -p "$out/host"
 exec > >(tee -a "$out/driver.log") 2>&1
 if [[ -z $secret_dir ]]; then secret_dir=$(mktemp -d); fi
 umask 077
 pwfile=$secret_dir/vm-owner-password-$stamp
 python3 -I -c 'import secrets; print(secrets.token_urlsafe(18))' > "$pwfile"
+rootpwfile=$secret_dir/vm-root-password-$stamp
+python3 -I -c 'import secrets; print(secrets.token_urlsafe(18))' > "$rootpwfile"
 umask 022
 
 say() { echo; echo "== $(date -u +%FT%TZ) $*"; }
@@ -188,23 +199,35 @@ interactive_block() {
     say 'interactive off: owner password (random, never logged)'
     printf '%s:%s\n' "$owner" "$(cat "$pwfile")" | v 'sudo chpasswd'
     phase interactive-setup --agent "$agent" || true
-    local spec cid attempt prefix
+    local spec cid attempt prefix want=${1:-}
     for spec in B1-off-correct-password:correct B2-off-wrong-password:wrong B3-off-ctrl-c:ctrl-c B4-off-no-answer:no-answer \
                 B5-off-no-tty:no-tty B7-off-agent-missing:agent-missing B8-off-owner-not-admin:correct \
+                B8a-off-root-password:correct B8b-off-root-wrong:wrong \
                 B9a-admin-rule-correct:correct B9b-admin-rule-wrong:wrong B9c-admin-rule-pkexec:pkexec; do
         IFS=: read -r cid attempt <<<"$spec"
+        if [[ -n $want && " $want " != *" ${cid%%-*} "* && " $want " != *" ${cid:0:2} "* ]]; then continue; fi
         prefix=
         [[ $cid == B7-* ]] && prefix="strace -f -qq -e trace=connect,execve -o /var/tmp/aftest/drop/$owner/b7-strace.txt "
+        answer=$pwfile
+        if [[ $cid == B8a-* ]]; then
+            # Root is locked in the cloud image: B8 records the refusal, then root gets a random password for B8a/B8b.
+            say 'B8a: root password (random, never logged)'
+            v 'sudo passwd -S root' | awk '{print "root password state before: " $2}'
+            printf 'root:%s\n' "$(cat "$rootpwfile")" | v 'sudo chpasswd'
+            v 'sudo passwd -S root' | awk '{print "root password state after chpasswd: " $2}'
+        fi
+        [[ $cid == B8a-* || $cid == B8b-* ]] && answer=$rootpwfile
         phase interactive-pre --case "$cid" || true
         say "host: $cid ($attempt)"
         python3 -I "$here/interactive_off.py" --vssh "$vssh" --cli "$CLI" --owner "$owner" --attempt "$attempt" \
-            --prefix "$prefix" --password-file "$pwfile" --out "$out/host/$cid.json" || true
+            --prefix "$prefix" --password-file "$answer" --out "$out/host/$cid.json" || true
         [[ -s $out/host/$cid.json ]] || echo '{"attempt": "driver failed", "transcript": ""}' > "$out/host/$cid.json"
         b64=$(python3 -I -c 'import base64,sys; print(base64.b64encode(open(sys.argv[1],"rb").read()).decode())' "$out/host/$cid.json")
         phase interactive-post --case "$cid" --agent "$agent" --host-result "$b64" || true
         restore_agent
     done
     v "sudo passwd -l $owner >/dev/null && echo 'owner password locked again'"
+    v "sudo passwd -l root >/dev/null && echo 'root password locked again'"
 }
 
 reboot_block() {
@@ -218,7 +241,7 @@ reboot_block() {
 
 if [[ -n $only ]]; then
     refresh_kit
-    [[ $only == *",interactive,"* ]] && interactive_block
+    [[ $only == *",interactive,"* ]] && interactive_block "$bcases"
     [[ $only == *",reboot,"* ]] && reboot_block
     [[ $only == *",teardown,"* ]] && { phase teardown || true; }
     phase summary || true
@@ -228,6 +251,21 @@ if [[ -n $only ]]; then
 fi
 
 build_and_install
+if [[ $targeted == 1 ]]; then
+    critical preflight
+    critical provision
+    critical baseline
+    critical setup
+    critical arm
+    phase restart || true
+    phase host-like || true  # arms the curl-only policy the B cases start from
+    interactive_block "${bcases:-B1 B9a B9b B9c}"
+    phase teardown || true
+    phase summary || true
+    fetch
+    say "done: $out"
+    exit 0
+fi
 critical preflight
 critical provision
 critical baseline
@@ -246,7 +284,7 @@ phase kill-fork || true
 phase off || true
 phase kill-phases || true
 phase host-like || true
-[[ $skip == *",interactive,"* ]] || interactive_block
+[[ $skip == *",interactive,"* ]] || interactive_block "$bcases"
 [[ $skip == *",reboot-check,"* ]] || reboot_block
 phase teardown || true
 phase summary || true
