@@ -3,9 +3,13 @@
 import { useEffect, useRef, useState } from 'react';
 
 // Illustration only: simulated traffic, not product output.
+// Colors carry meaning: white for the task and its tools, blue for apps, gray for the host,
+// green for traffic that was allowed, red for traffic that was denied.
 const WHITE = 0xffffff;
 const RED = 0xe5484d;
-const GRAY = 0x6f6f6f;
+const GREEN = 0x4ade80;
+const BLUE = 0x60a5fa;
+const HOST = 0x9a9a9a;
 const TRAIL = 12;
 
 // Glass: a face glows more as it turns away from the viewer, and more toward its top.
@@ -253,7 +257,7 @@ export default function Scene() {
       }
 
       const scopes = [];
-      function addScope({ size, pos, color, opacity, dashed, glass, corners }) {
+      function addScope({ size, pos, color, opacity, dashed, glass, corners, footprint }) {
         const [w, h, d] = size;
         const geo = track(new THREE.BoxGeometry(w, h, d));
         const edges = track(new THREE.EdgesGeometry(geo));
@@ -289,6 +293,16 @@ export default function Scene() {
           m.position.copy(line.position);
           scene.add(m);
         }
+        if (footprint) {
+          // A faint footprint on the floor, so each scope reads as its own block.
+          const f = new THREE.Mesh(
+            track(new THREE.PlaneGeometry(w, d)),
+            track(new THREE.MeshBasicMaterial({ color, transparent: true, opacity: footprint, blending: THREE.AdditiveBlending, depthWrite: false })),
+          );
+          f.rotation.x = -Math.PI / 2;
+          f.position.set(pos[0], 0.003, pos[2]);
+          scene.add(f);
+        }
         const box = new THREE.Box3(
           new THREE.Vector3(pos[0] - w / 2, pos[1] - h / 2, pos[2] - d / 2),
           new THREE.Vector3(pos[0] + w / 2, pos[1] + h / 2, pos[2] + d / 2),
@@ -305,10 +319,10 @@ export default function Scene() {
         return scope;
       }
 
-      addScope({ size: [12, 3.4, 8], pos: [0, 1.7, 0], color: WHITE, opacity: 0.18, glass: 0.014 });
-      const appA = addScope({ size: [2.4, 1.0, 1.8], pos: [-3.7, 0.5, 2.0], color: GRAY, opacity: 0.8, dashed: true, glass: 0.03 });
-      const appB = addScope({ size: [2.4, 1.0, 1.8], pos: [-3.7, 0.5, -1.7], color: GRAY, opacity: 0.8, dashed: true, glass: 0.03 });
-      addScope({ size: [4.4, 2.0, 4.6], pos: [1.9, 1.0, 0], color: WHITE, opacity: 0.5, glass: 0.035, corners: 0.55 });
+      addScope({ size: [12, 3.4, 8], pos: [0, 1.7, 0], color: HOST, opacity: 0.24, glass: 0.006 });
+      const appA = addScope({ size: [2.4, 1.0, 1.8], pos: [-3.7, 0.5, 2.0], color: BLUE, opacity: 0.85, dashed: true, glass: 0.035, footprint: 0.07 });
+      const appB = addScope({ size: [2.4, 1.0, 1.8], pos: [-3.7, 0.5, -1.7], color: BLUE, opacity: 0.85, dashed: true, glass: 0.035, footprint: 0.07 });
+      addScope({ size: [4.4, 2.0, 4.6], pos: [1.9, 1.0, 0], color: WHITE, opacity: 0.55, glass: 0.035, corners: 0.55, footprint: 0.03 });
       const toolA = addScope({ size: [1.5, 1.1, 1.5], pos: [1.0, 0.56, -1.05], color: WHITE, opacity: 0.55, glass: 0.04 });
       const toolB = addScope({ size: [1.5, 1.1, 1.5], pos: [2.8, 0.56, 1.05], color: WHITE, opacity: 0.55, glass: 0.04 });
 
@@ -336,26 +350,26 @@ export default function Scene() {
       // Processes, each with a halo that breathes and flares when it sends.
       const nodeGeo = track(new THREE.SphereGeometry(0.07, 16, 16));
       const nodeMat = track(new THREE.MeshBasicMaterial({ color: WHITE }));
-      const appNodeMat = track(new THREE.MeshBasicMaterial({ color: 0x8a8a8a }));
+      const appNodeMat = track(new THREE.MeshBasicMaterial({ color: 0x93c5fd }));
       const nodes = [];
-      function node(scope, mat, glowOpacity) {
+      function node(scope, mat, glowOpacity, glowColor = WHITE, size = 0.9) {
         const c = new THREE.Vector3();
         scope.box.getCenter(c);
         const m = new THREE.Mesh(nodeGeo, mat);
         m.position.copy(c);
         scene.add(m);
         reflect(m, 0.35);
-        const g = glow(WHITE, 0.9, glowOpacity);
+        const g = glow(glowColor, size, glowOpacity);
         g.position.copy(c);
         scene.add(g);
         reflect(g, 0.3);
-        nodes.push({ at: c, g, phase: Math.random() * 6.28, flare: 0 });
+        nodes.push({ at: c, g, size, phase: Math.random() * 6.28, flare: 0 });
         return c;
       }
-      const nToolA = node(toolA, nodeMat, 0.3);
-      const nToolB = node(toolB, nodeMat, 0.3);
-      const nAppA = node(appA, appNodeMat, 0.12);
-      const nAppB = node(appB, appNodeMat, 0.12);
+      const nToolA = node(toolA, nodeMat, 0.22, WHITE, 0.7);
+      const nToolB = node(toolB, nodeMat, 0.22, WHITE, 0.7);
+      const nAppA = node(appA, appNodeMat, 0.22, BLUE);
+      const nAppB = node(appB, appNodeMat, 0.22, BLUE);
 
       // Destinations outside the host ceiling, each on a stem down to the ground.
       const dests = {
@@ -365,11 +379,13 @@ export default function Scene() {
         tracker: new THREE.Vector3(-7.3, 4.0, 2.6),
       };
       const destGeo = track(new THREE.OctahedronGeometry(0.16, 0));
-      const destAllowMat = track(new THREE.MeshBasicMaterial({ color: WHITE, wireframe: true }));
-      const destDenyMat = track(new THREE.MeshBasicMaterial({ color: 0x5a5a5a, wireframe: true }));
-      const stemMat = track(new THREE.LineDashedMaterial({ color: 0x333333, dashSize: 0.1, gapSize: 0.12 }));
+      const destAllowMat = track(new THREE.MeshBasicMaterial({ color: GREEN, wireframe: true }));
+      const destDenyMat = track(new THREE.MeshBasicMaterial({ color: RED, wireframe: true, transparent: true, opacity: 0.75 }));
+      const stemAllowMat = track(new THREE.LineDashedMaterial({ color: 0x1d4a2c, dashSize: 0.1, gapSize: 0.12 }));
+      const stemDenyMat = track(new THREE.LineDashedMaterial({ color: 0x4a1d20, dashSize: 0.1, gapSize: 0.12 }));
       const groundRingGeo = track(new THREE.RingGeometry(0.2, 0.235, 40));
-      const groundRingMat = track(new THREE.MeshBasicMaterial({ color: 0x3a3a3a, side: THREE.DoubleSide }));
+      const groundAllowMat = track(new THREE.MeshBasicMaterial({ color: 0x24603a, side: THREE.DoubleSide }));
+      const groundDenyMat = track(new THREE.MeshBasicMaterial({ color: 0x5e2427, side: THREE.DoubleSide }));
       const destObjs = new Map();
       for (const [k, v] of Object.entries(dests)) {
         const denied = k === 'paste' || k === 'tracker';
@@ -377,15 +393,15 @@ export default function Scene() {
         m.position.copy(v);
         scene.add(m);
         const mm = reflect(m, 0.35);
-        const g = glow(WHITE, denied ? 0.7 : 1.2, denied ? 0.08 : 0.28);
+        const g = glow(denied ? RED : GREEN, denied ? 0.8 : 1.2, denied ? 0.14 : 0.26);
         g.position.copy(v);
         scene.add(g);
         reflect(g, 0.3);
-        const stem = new THREE.Line(track(new THREE.BufferGeometry().setFromPoints([v, new THREE.Vector3(v.x, 0, v.z)])), stemMat);
+        const stem = new THREE.Line(track(new THREE.BufferGeometry().setFromPoints([v, new THREE.Vector3(v.x, 0, v.z)])), denied ? stemDenyMat : stemAllowMat);
         stem.computeLineDistances();
         scene.add(stem);
         reflect(stem, 0.5);
-        const ring = new THREE.Mesh(groundRingGeo, groundRingMat);
+        const ring = new THREE.Mesh(groundRingGeo, denied ? groundDenyMat : groundAllowMat);
         ring.rotation.x = -Math.PI / 2;
         ring.position.set(v.x, 0.01, v.z);
         scene.add(ring);
@@ -411,14 +427,23 @@ export default function Scene() {
         ray.direction.copy(to).sub(from).normalize();
         return ray.intersectBox(scope.box, new THREE.Vector3());
       }
+      // An allowed packet turns green where it leaves its own scope, the point where it was checked.
       const routes = [
-        { from: nToolA, to: dests.registry, weight: 3 },
-        { from: nToolB, to: dests.github, weight: 3 },
+        { from: nToolA, to: dests.registry, inner: toolA, weight: 3 },
+        { from: nToolB, to: dests.github, inner: toolB, weight: 3 },
         { from: nToolB, to: dests.paste, deniedBy: toolB, weight: 2 },
         { from: nToolA, to: dests.paste, deniedBy: toolA, weight: 1 },
-        { from: nAppA, to: dests.github, weight: 2 },
+        { from: nAppA, to: dests.github, inner: appA, weight: 2 },
         { from: nAppB, to: dests.tracker, deniedBy: appB, weight: 1.5 },
-      ].map((r) => ({ ...r, stop: r.deniedBy ? exitPoint(r.from, r.to, r.deniedBy) : null, node: nodes.find((n) => n.at === r.from) }));
+      ].map((r) => {
+        const exit = r.inner ? exitPoint(r.from, r.to, r.inner) : null;
+        return {
+          ...r,
+          stop: r.deniedBy ? exitPoint(r.from, r.to, r.deniedBy) : null,
+          cross: exit ? r.from.distanceTo(exit) / r.from.distanceTo(r.to) : 0,
+          node: nodes.find((n) => n.at === r.from),
+        };
+      });
       const totalWeight = routes.reduce((s, r) => s + r.weight, 0);
       function pickRoute() {
         let x = Math.random() * totalWeight;
@@ -429,13 +454,21 @@ export default function Scene() {
       // Packets: a bright head and a comet tail that fades out, both mirrored in the floor.
       const packetGeo = track(new THREE.SphereGeometry(0.05, 12, 12));
       const packetMat = track(new THREE.MeshBasicMaterial({ color: WHITE }));
+      const packetGreenMat = track(new THREE.MeshBasicMaterial({ color: GREEN }));
+      const packetRedMat = track(new THREE.MeshBasicMaterial({ color: RED }));
       const trailMat = track(new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false }));
       const mirrorTrailMat = track(
         new THREE.LineBasicMaterial({ color: 0x555555, vertexColors: true, transparent: true, blending: THREE.AdditiveBlending }),
       );
-      const mirrorHaloMat = track(
-        new THREE.SpriteMaterial({ map: glowTex, color: WHITE, transparent: true, opacity: 0.22, blending: THREE.AdditiveBlending, depthWrite: false, fog: false }),
-      );
+      const mirrorHalo = (color) =>
+        track(new THREE.SpriteMaterial({ map: glowTex, color, transparent: true, opacity: 0.22, blending: THREE.AdditiveBlending, depthWrite: false, fog: false }));
+      const mirrorHaloMat = mirrorHalo(WHITE);
+      const mirrorHaloGreen = mirrorHalo(GREEN);
+      const mirrorHaloRed = mirrorHalo(RED);
+      const cWhite = new THREE.Color(WHITE);
+      const cGreen = new THREE.Color(GREEN);
+      const cRed = new THREE.Color(RED);
+      const cTmp = new THREE.Color();
       const ringGeo = track(new THREE.RingGeometry(0.24, 0.255, 48));
       const packets = [];
       const effects = [];
@@ -444,15 +477,11 @@ export default function Scene() {
         const r = pickRoute();
         const end = r.stop || r.to;
         const mesh = new THREE.Mesh(packetGeo, packetMat);
-        mesh.add(glow(WHITE, 0.42, 0.32));
+        const halo = glow(WHITE, 0.38, 0.22);
+        mesh.add(halo);
         const pos = new Float32Array(TRAIL * 3);
         const col = new Float32Array(TRAIL * 3);
-        const k0 = r.stop ? 0.7 : 1;
-        for (let i = 0; i < TRAIL; i++) {
-          pos.set([r.from.x, r.from.y, r.from.z], i * 3);
-          const k = k0 * Math.pow(1 - i / (TRAIL - 1), 1.6);
-          col.set([k, k, k], i * 3);
-        }
+        for (let i = 0; i < TRAIL; i++) pos.set([r.from.x, r.from.y, r.from.z], i * 3);
         const trailGeo = new THREE.BufferGeometry();
         trailGeo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
         trailGeo.setAttribute('color', new THREE.BufferAttribute(col, 3));
@@ -466,7 +495,7 @@ export default function Scene() {
         scene.add(mesh, trail);
         mirror.add(mTrail, mHalo);
         if (r.node) r.node.flare = 1;
-        packets.push({ r, end, t: 0, dur: Math.max(0.6, r.from.distanceTo(end) / 4.2), mesh, trail, trailGeo, mTrail, mHalo });
+        packets.push({ r, end, t: 0, dur: Math.max(0.6, r.from.distanceTo(end) / 4.2), mesh, halo, trail, trailGeo, mTrail, mHalo, tint: 'white' });
       }
 
       function faceNormal(p, box) {
@@ -536,11 +565,11 @@ export default function Scene() {
       }
 
       function arriveAt(p, dest) {
-        const pulse = oneOffGlow(WHITE, 0.4, 0.5);
+        const pulse = oneOffGlow(GREEN, 0.4, 0.55);
         pulse.position.copy(p);
         scene.add(pulse);
         effects.push({ kind: 'flash', obj: pulse, mat: pulse.material, age: 0, life: 0.6, from: 0.4, to: 1.6, peak: 0.5 });
-        const mat = new THREE.MeshBasicMaterial({ color: WHITE, transparent: true, opacity: 0.8, side: THREE.DoubleSide, depthWrite: false, blending: THREE.AdditiveBlending });
+        const mat = new THREE.MeshBasicMaterial({ color: GREEN, transparent: true, opacity: 0.8, side: THREE.DoubleSide, depthWrite: false, blending: THREE.AdditiveBlending });
         const ring = new THREE.Mesh(ringGeo, mat);
         ring.position.copy(p);
         scene.add(ring);
@@ -564,8 +593,8 @@ export default function Scene() {
 
       function step(dt) {
         spawnClock += dt;
-        while (spawnClock > 0.32) {
-          spawnClock -= 0.32;
+        while (spawnClock > 0.36) {
+          spawnClock -= 0.36;
           spawn();
         }
         for (let i = packets.length - 1; i >= 0; i--) {
@@ -574,15 +603,34 @@ export default function Scene() {
           const t = Math.min(p.t, 1);
           tmp.lerpVectors(p.r.from, p.end, t);
           p.mesh.position.copy(tmp);
+          // Grow in as it leaves the process, so heads do not pile up on the node.
+          p.mesh.scale.setScalar(Math.min(1, 0.2 + t * 8));
           p.mHalo.position.copy(tmp);
           const arr = p.trailGeo.attributes.position.array;
+          const carr = p.trailGeo.attributes.color.array;
           for (let k = 0; k < TRAIL; k++) {
-            tmp2.lerpVectors(p.r.from, p.end, Math.max(0, t - k * 0.022));
+            const tt = Math.max(0, t - k * 0.022);
+            tmp2.lerpVectors(p.r.from, p.end, tt);
             arr[k * 3] = tmp2.x;
             arr[k * 3 + 1] = tmp2.y;
             arr[k * 3 + 2] = tmp2.z;
+            // White inside the scope; green once past the check, or reddening as it nears the wall that refuses it.
+            if (p.r.stop) cTmp.copy(cWhite).lerp(cRed, Math.min(1, Math.max(0, (tt - 0.35) / 0.55)));
+            else cTmp.copy(tt >= p.r.cross ? cGreen : cWhite);
+            const fade = Math.pow(1 - k / (TRAIL - 1), 1.6);
+            carr[k * 3] = cTmp.r * fade;
+            carr[k * 3 + 1] = cTmp.g * fade;
+            carr[k * 3 + 2] = cTmp.b * fade;
           }
           p.trailGeo.attributes.position.needsUpdate = true;
+          p.trailGeo.attributes.color.needsUpdate = true;
+          const tint = p.r.stop ? (t > 0.6 ? 'red' : 'white') : t >= p.r.cross ? 'green' : 'white';
+          if (tint !== p.tint) {
+            p.tint = tint;
+            p.mesh.material = tint === 'green' ? packetGreenMat : tint === 'red' ? packetRedMat : packetMat;
+            p.halo.material = tint === 'white' ? glowMat(WHITE, 0.22) : glowMat(tint === 'green' ? GREEN : RED, 0.34);
+            p.mHalo.material = tint === 'green' ? mirrorHaloGreen : tint === 'red' ? mirrorHaloRed : mirrorHaloMat;
+          }
           if (p.t >= 1) {
             if (p.r.stop) denyAt(p.end, p.r.deniedBy);
             else arriveAt(p.end, destObjs.get(p.r.to));
@@ -619,7 +667,7 @@ export default function Scene() {
         }
         for (const n of nodes) {
           n.flare = Math.max(0, n.flare - dt * 3);
-          n.g.scale.setScalar(0.9 * (1 + 0.12 * Math.sin(elapsed * 2.1 + n.phase) + 0.6 * n.flare));
+          n.g.scale.setScalar(n.size * (1 + 0.12 * Math.sin(elapsed * 2.1 + n.phase) + 0.6 * n.flare));
         }
         for (const d of destObjs.values()) {
           d.pulse = Math.max(0, d.pulse - dt * 2.5);
@@ -641,10 +689,14 @@ export default function Scene() {
       const anchors = labelsEl
         ? [
             ['host', new THREE.Vector3(-5.6, 3.5, -4)],
-            ['app', new THREE.Vector3(-3.7, 1.15, 2.9)],
-            ['task', new THREE.Vector3(1.6, -0.15, 2.6)],
-            ['allow', dests.registry.clone().add(new THREE.Vector3(0, 0.38, 0))],
-            ['deny', dests.paste.clone().add(new THREE.Vector3(0, 0.38, 0))],
+            ['app', new THREE.Vector3(-3.7, 1.25, 2.9)],
+            ['task', new THREE.Vector3(1.6, -0.18, 2.6)],
+            ['toolA', new THREE.Vector3(1.0, 1.36, -1.05)],
+            ['toolB', new THREE.Vector3(2.8, 1.36, 1.05)],
+            ['allow', dests.registry.clone().add(new THREE.Vector3(0, 0.42, 0))],
+            ['allow2', dests.github.clone().add(new THREE.Vector3(0, 0.42, 0))],
+            ['deny', dests.paste.clone().add(new THREE.Vector3(0, 0.42, 0))],
+            ['deny2', dests.tracker.clone().add(new THREE.Vector3(0, 0.42, 0))],
           ].map(([key, v]) => ({ el: labelsEl.querySelector(`[data-anchor="${key}"]`), v, w: 0, h: 0 }))
         : [];
       function measureLabels() {
@@ -833,15 +885,19 @@ export default function Scene() {
       className="scene"
       ref={wrapRef}
       role="img"
-      aria-label="Illustration: a host policy plane holds two app scopes and one task scope with two nested tool scopes. Allowed connections leave the host toward registry and API destinations; a denied connection stops at the boundary of the scope that denies it."
+      aria-label="Illustration: a host ceiling holds two app scopes and one task scope with two nested tool scopes, npm install and git fetch. Allowed connections turn green as they leave their scope and reach registry.npmjs.org and api.github.com; denied connections turn red and stop at the boundary of the scope that denies them."
     >
       {mode === 'fallback' ? <SceneFallback /> : null}
       <div className="scene-labels" ref={labelsRef} aria-hidden="true">
-        <span data-anchor="host" className="tag">host</span>
-        <span data-anchor="app" className="tag">app scope</span>
+        <span data-anchor="host" className="tag">host ceiling</span>
+        <span data-anchor="app" className="tag tag-app">app scope</span>
         <span data-anchor="task" className="tag tag-strong">task scope</span>
-        <span data-anchor="allow" className="tag tag-strong">registry.npmjs.org</span>
+        <span data-anchor="toolA" className="tag tag-tool tag-minor">npm install</span>
+        <span data-anchor="toolB" className="tag tag-tool tag-minor">git fetch</span>
+        <span data-anchor="allow" className="tag tag-allow">registry.npmjs.org</span>
+        <span data-anchor="allow2" className="tag tag-allow tag-minor">api.github.com</span>
         <span data-anchor="deny" className="tag tag-deny">paste.example</span>
+        <span data-anchor="deny2" className="tag tag-deny tag-minor">tracker.example</span>
       </div>
     </div>
   );

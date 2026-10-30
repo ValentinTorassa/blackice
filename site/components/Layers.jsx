@@ -47,9 +47,9 @@ function PlaneArt({ kind }) {
       <svg className="plane-art" viewBox="0 0 230 230">
         <path className="pa-rule" d="M48 52h92M48 76h116M48 100h76" />
         <path className="pa-rule pa-rule-deny" d="M48 124h104" />
-        <circle className="pa-dot" cx="36" cy="52" r="2.5" />
-        <circle className="pa-dot" cx="36" cy="76" r="2.5" />
-        <circle className="pa-dot" cx="36" cy="100" r="2.5" />
+        <circle className="pa-dot pa-dot-allow" cx="36" cy="52" r="2.5" />
+        <circle className="pa-dot pa-dot-allow" cx="36" cy="76" r="2.5" />
+        <circle className="pa-dot pa-dot-allow" cx="36" cy="100" r="2.5" />
         <circle className="pa-dot pa-dot-deny" cx="36" cy="124" r="2.5" />
       </svg>
     );
@@ -58,7 +58,7 @@ function PlaneArt({ kind }) {
     return (
       <svg className="plane-art" viewBox="0 0 230 230">
         {[ALLOW_A, ALLOW_B].map(([x, y]) => (
-          <rect key={x} className="pa-gate" x={x - 8} y={y - 8} width="16" height="16" rx="3" />
+          <rect key={x} className="pa-gate pa-gate-ok" x={x - 8} y={y - 8} width="16" height="16" rx="3" />
         ))}
         <rect className="pa-gate pa-gate-deny" x={DENY[0] - 8} y={DENY[1] - 8} width="16" height="16" rx="3" />
         <path className="pa-gate-x" d={`M${DENY[0] - 4} ${DENY[1] - 4}l8 8m0-8-8 8`} />
@@ -154,8 +154,9 @@ export default function Layers() {
                     <span className="plane-flash" />
                   </>
                 ) : null}
-                <span className="plane-label">
-                  0{i + 1} · {l.name}
+                <span className="plane-tag">
+                  <b>0{i + 1}</b>
+                  <span className="pt-name">{l.name}</span>
                 </span>
               </div>
             ))}

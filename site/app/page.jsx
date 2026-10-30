@@ -133,6 +133,14 @@ export default function Home() {
                 scope graph
               </span>
               <span className="legend" aria-hidden="true">
+                <span className="legend-scope">
+                  <i className="lg lg-task" />
+                  task scope
+                </span>
+                <span className="legend-scope">
+                  <i className="lg lg-app" />
+                  app scope
+                </span>
                 <span>
                   <i className="lg lg-allow" />
                   allowed
@@ -140,10 +148,6 @@ export default function Home() {
                 <span>
                   <i className="lg lg-deny" />
                   denied
-                </span>
-                <span className="legend-scope">
-                  <i className="lg lg-scope" />
-                  scope
                 </span>
               </span>
             </div>
