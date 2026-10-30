@@ -198,6 +198,8 @@ the archive directory's setgid bit is explicitly cleared.
 
 Before installation, record the existing cgroup programs, program list, nft ruleset, bpffs, groups, protected
 hardlinks/BPF/Yama/port sysctls and listeners in 760–774. Do not conflate this record with a passing load.
+The [pseudo-file audit and offline teardown checks](linux-appfilter-validation.md) document the kernel-release
+read fix and the mocked interruption tests; they do not replace the installed VM run.
 
 Implementation references: Linux 6.12 [`do_exit`](https://github.com/torvalds/linux/blob/v6.12/kernel/exit.c)
 decrements `signal->live` before the exit tracepoint; [`bpf_prog_calc_tag`](https://github.com/torvalds/linux/blob/v6.12/kernel/bpf/core.c)
