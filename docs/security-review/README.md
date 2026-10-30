@@ -29,7 +29,8 @@ other OS.
 Rules for every workflow in this repository:
 
 - The token is read-only (`permissions: contents: read`), and checkout does not keep it (`persist-credentials: false`).
-  The only exceptions are the release workflow's attest and release jobs, listed under [Releases](#releases).
+  The only exceptions are the release workflow's attest and release jobs, listed under [Releases](#releases), and
+  the npm workflow's publish job, listed under [npm](#npm).
 - No secrets and no `pull_request_target`.
 - Actions are pinned to full commit SHAs, with the tag in a comment.
 - Values from the event (titles, branch names, bodies) never go straight into a `run:` script. Steps read them
@@ -104,3 +105,34 @@ Known gaps before the first release:
 - `linux-setup.sh` looks for the helper in `../zig-out/bin` relative to itself. Shipping the setup scripts, or
   a Homebrew or tarball install, needs a helper-path argument first. That is a change to privileged setup code
   and needs its own review and a new pinned hash.
+
+## npm
+
+`.github/workflows/npm-publish.yml` runs only when a release is published: a stable `vX.Y.Z` tag, not a draft
+and not a prerelease. It publishes the CLI only. No npm package contains the Linux helper or the setup scripts.
+
+1. **prepare** (`contents: read`, `attestations: read`) checks that the tagged commit is on `main`, downloads
+   the release files, and verifies the attestation of `SHA256SUMS` and then of every file it lists, bound to
+   `release.yml`, the tag and the tagged commit. It runs the Linux binary only after that. It then builds the
+   packages with `packaging/npm/prepare.mjs` and `pack.mjs`, and passes each archive's name and sha512 to the
+   next job as a job output.
+2. **publish** runs in the `npm` environment, which waits for the owner's approval. It is the only job with
+   `id-token: write`. It runs no code from the repository and no downloaded binary. It refuses any archive whose
+   name or sha512 differs from what prepare recorded, then publishes the four platform packages and the
+   launcher last, with npm trusted publishing (OIDC) and provenance. There is no npm token.
+
+Node is pinned by version. npm is pinned by version and by the sha512 of its registry tarball, and installed
+from that tarball offline. Install scripts are off everywhere (`--ignore-scripts`). npm's config files and cache
+are empty files and directories under the runner's temp directory.
+
+What the workflow assumes. These are settings, and changing them is the owner's decision:
+
+- The repository variables `NPM_SCOPE` and `NPM_PACKAGE_NAME` name packages the owner controls. There is no
+  default, so an unset variable stops the run.
+- The `npm` environment requires the owner's review and only allows `v*` tags.
+- Each of the five npm packages has a trusted publisher for this repository, the workflow file
+  `npm-publish.yml` and the environment `npm`.
+- The tag ruleset under [Releases](#releases), because the workflow file runs from the tagged commit.
+
+npm versions cannot be replaced. If a publish fails partway, the packages already published stay, and the owner
+decides how to finish.
