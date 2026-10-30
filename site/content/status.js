@@ -21,7 +21,7 @@ export const MATRIX = [
     os: 'Linux',
     apps: {
       base: 'pending',
-      how: 'Per-app control across the whole machine, which needs a reliable way to tell which app opened each connection. Not built yet.',
+      how: 'Per-app control across the whole machine, which needs a reliable way to tell which app opened each connection. A first build is in review, not cleared, and runs only in a virtual machine so far.',
     },
     tasks: {
       base: 'designed',

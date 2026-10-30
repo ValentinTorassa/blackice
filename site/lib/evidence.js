@@ -18,6 +18,22 @@ export function recordedCheckpoints() {
   return new Set(evidenceFiles().map((f) => f.slice(0, 5)));
 }
 
+// A checkpoint is recorded with findings when one of its entries says so in its own words, for example
+// evidence/P0-06-faults-linux.md: "This is a run, not a pass." Read from the file, not typed here.
+const FINDINGS_MARK = /This is a run, not a pass\./;
+
+export function findingsCheckpoints() {
+  const out = new Set();
+  for (const f of evidenceFiles()) {
+    try {
+      if (FINDINGS_MARK.test(fs.readFileSync(path.join(ROOT, 'evidence', f), 'utf8'))) out.add(f.slice(0, 5));
+    } catch {
+      // An unreadable entry keeps its plain Recorded state.
+    }
+  }
+  return out;
+}
+
 // The evidence entries of each checkpoint, for links: P0-07 -> its two files, P0-08 -> its one. A link's text
 // comes from the file name: the platform when that alone tells a checkpoint's entries apart
 // (P0-02-real-deny-macos.md -> "macOS"), otherwise the rest of the name (P0-07-fx-real-model-macos.md ->

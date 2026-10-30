@@ -88,8 +88,16 @@ const POLICY_EXAMPLE = `{
 const RECEIPT_EXAMPLE = `{"ts":"2026-10-30T14:36:01.279Z","scope":"s-1b1f4870","policy":"353b7e8328f9","gen":1,"point":"proxy","event":"connect","verdict":"allow","reason":"allowed_by_rule","rule":"example.com","host":"example.com","ip":"104.20.23.154","port":443,"detail":"sni_match"}
 {"ts":"2026-10-30T14:36:01.427Z","scope":"s-f79c31a5","policy":"353b7e8328f9","gen":1,"point":"proxy","event":"connect","verdict":"deny","reason":"no_matching_rule","host":"github.com","port":443}`;
 
+// v0 checkpoint states, from evidence/ (lib/evidence.js).
+const CHECKPOINT_LABEL = { recorded: 'Recorded', findings: 'Recorded, with findings', pending: 'No entry yet' };
+
+function checkpointState(id, recordedSet, findingsSet) {
+  if (!recordedSet.has(id)) return 'pending';
+  return findingsSet && findingsSet.has(id) ? 'findings' : 'recorded';
+}
+
 const RECEIPT_FIELDS = [
-  ['ts', 'Time of the decision, in UTC.'],
+  ['ts', 'When the line was written, in UTC. For a kernel refusal, that can be after the refusal itself.'],
   ['scope', 'The scope ID.'],
   ['policy, gen', 'A short hash of the policy and its generation.'],
   ['point', 'Where it was enforced: proxy, kernel, relay, control or app_filter.'],
@@ -154,7 +162,7 @@ export const DOCS = [
     slug: '',
     group: 'Overview',
     title: 'Introduction',
-    description: `${SITE.name} gives each app and each task its own network permissions, decided by a policy file. v0: task scopes work on macOS and Debian 13 (x86_64).`,
+    description: `${SITE.name} gives each task its own network permissions, decided by a policy file; apps are next. v0: task scopes work on macOS (experimental) and Debian 13 (x86_64).`,
     body: ({ recorded }) => (
       <>
         <Note>
@@ -162,8 +170,9 @@ export const DOCS = [
           evidence; see <Link href="/docs/status/">Status</Link>.
         </Note>
         <p>
-          {SITE.name} gives each app and each task its own network permissions, decided by a policy file. It runs
-          natively on macOS and Linux, headless, with no per-connection prompts.
+          {SITE.name} gives each task its own network permissions, decided by a policy file, and apps are next. Task
+          scopes run natively on macOS (experimental) and Debian 13 (x86_64), headless, with no per-connection
+          prompts.
         </p>
         <p>
           Today it works for tasks. A coding agent runs commands on your machine: tests, installs, scripts. Each of
@@ -203,7 +212,7 @@ $ tail -f ~/.local/state/${SITE.name}/scopes/${SCOPE}/receipts.jsonl`}</Code>
     group: 'Overview',
     title: 'Status',
     description: 'What works today and what is still in progress.',
-    body: ({ recordedSet, entries }) => (
+    body: ({ recordedSet, findingsSet, entries }) => (
       <>
         <p>
           States are computed when this site is built. <strong>Verified</strong> needs a recorded run in{' '}
@@ -227,18 +236,22 @@ $ tail -f ~/.local/state/${SITE.name}/scopes/${SCOPE}/receipts.jsonl`}</Code>
                   </span>
                 )}
               </span>
-              <span className={`state state-${recordedSet.has(id) ? 'verified' : 'pending'}`}>
+              <span className={`state state-${checkpointState(id, recordedSet, findingsSet)}`}>
                 <span className="state-dot" aria-hidden="true" />
-                {recordedSet.has(id) ? 'Recorded' : 'No entry yet'}
+                {CHECKPOINT_LABEL[checkpointState(id, recordedSet, findingsSet)]}
               </span>
             </li>
           ))}
         </ol>
+        <p className="checklist-legend">
+          <strong>Recorded</strong>: <code>evidence/</code> has an entry for the checkpoint.{' '}
+          <strong>Recorded, with findings</strong>: the entry says it is a run, not a pass, and lists what it found.
+        </p>
         <H2>Release gap</H2>
         <p>Before a first usable release, beyond v0:</p>
         <ul>
           <li>App control on macOS: the Network Extension filter, signed with a Developer ID.</li>
-          <li>App control on Linux: in design.</li>
+          <li>App control on Linux: a first build is in review, not cleared.</li>
           <li>Owner authentication for grants, beyond &quot;same user, outside every scope&quot;.</li>
           <li>Protocols other than HTTP and TLS through the proxy.</li>
           <li>Listening inside a scope, for dev servers and tests that open a port.</li>
@@ -279,7 +292,7 @@ $ tail -f ~/.local/state/${SITE.name}/scopes/${SCOPE}/receipts.jsonl`}</Code>
         <p>
           An app that is already on the machine. On macOS, a Network Extension filter will identify apps by their
           code-signing identity, not their process name, and apply the same policy format and receipts. App scopes will
-          not need {SITE.name} to launch the app. On Linux, app scopes are in design.
+          not need {SITE.name} to launch the app. On Linux, a first build is in review, not cleared.
         </p>
         <H2>Host ceiling</H2>
         <p>One policy, administered by the owner, over the whole machine. Every other scope will sit under it.</p>
@@ -382,7 +395,7 @@ error: the control socket is not reachable from inside a scope`}</Code>
     slug: 'receipts',
     group: 'Concepts',
     title: 'Receipts',
-    description: 'One flat JSON line per decision, with a stable reason code.',
+    description: 'Flat JSON lines with a stable reason code.',
     body: () => (
       <>
         <Code title="receipts.jsonl" label="From a run on Linux">
@@ -450,7 +463,9 @@ error: the control socket is not reachable from inside a scope`}</Code>
         </p>
         <H2>Gaps</H2>
         <p>
-          Lines that could not be written are counted and reported when the scope ends, so a gap in the log is visible.
+          Lines that could not be written are counted and reported in the scope&apos;s last receipt,{' '}
+          <code>scope_end</code>, so a gap in the log is visible. If {SITE.name} itself is stopped before the scope
+          ends, there is no <code>scope_end</code> and the count is not reported.
         </p>
         <p>
           On Linux, kernel refusals that overflow the scope&apos;s ring buffer are counted too, and the total is
@@ -477,7 +492,8 @@ error: the control socket is not reachable from inside a scope`}</Code>
         <p>
           Creates a task scope, starts its proxy and the owner&apos;s control socket outside the scope, and only then
           launches the command, already confined. Receipts go to the scope&apos;s state directory. {SITE.name} never
-          runs the command without a backend that enforces the policy.
+          starts the command without a backend that enforces the policy. On Linux, a scope whose helper is killed
+          while it runs is the exception; see <Link href="/docs/limits/">Limits</Link>.
         </p>
         <p>
           The command gets a clean environment: a short list of variables such as <code>PATH</code> and{' '}
@@ -501,7 +517,8 @@ error: the control socket is not reachable from inside a scope`}</Code>
         </ul>
         <p>
           Exit status: the command&apos;s own, 125 when the scope could not be set up, and 127 when the command could
-          not start.
+          not start. Linux does not match this yet: a failed helper setup exits 127, and so does a command whose
+          helper was killed while it ran.
         </p>
         <H2>
           <code>{SITE.name} grant</code> and <code>revoke</code>
@@ -561,8 +578,9 @@ ${SITE.name} revoke <scope> <host>`}</Code>
           <a href="https://github.com/ValentinTorassa/blackice/blob/main/docs/linux.md">docs/linux.md</a>.
         </p>
         <p>
-          <strong>Apps.</strong> In design. The hard part is telling apps apart without trusting process names or
-          racing PIDs.
+          <strong>Apps.</strong> In review, not cleared: a first build and the fixes from its security review. Kernel
+          tests in a virtual machine and a security clearance come before any install. The hard part is telling apps
+          apart without trusting process names or racing PIDs.
         </p>
       </>
     ),
@@ -695,6 +713,12 @@ ${SITE.name} run --policy policy.json -- npm ci`}</Code>
           <li>
             <strong>Linux.</strong> Ping, SCTP and raw sockets are refused when they are created, so they leave no
             receipt. Only x86_64 was run.
+          </li>
+          <li>
+            <strong>Linux helper killed.</strong> If the helper is killed while a scope runs, processes that detached
+            from the command keep running with access only to the dead proxy&apos;s local port, which another local
+            program can later listen on; removing them needs root, and the receipts wrongly say the command did not
+            start.
           </li>
           <li>
             <strong>Failure behavior.</strong> What happens when a broker, proxy or extension fails is stated per fault
