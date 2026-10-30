@@ -1,0 +1,68 @@
+Blackice: Apple setup for the owner (prepared, not executed)
+
+Wait for individual Apple Developer Program enrollment to be active. Security
+must review appfilter/demo-prep before any signing. No installation, activation,
+profile import or keychain change has been performed by these preparation steps.
+
+1. Sign in at https://developer.apple.com/account/ as the Account Holder.
+   In Membership details, record the ten-character Team ID. It is not an App ID
+   or an Apple Account email address.
+
+2. Certificates, Identifiers & Profiles > Identifiers > + > App IDs > App.
+   Register two explicit bundle IDs (not wildcards):
+     Host:      com.valentorassa.blackice
+     Extension: com.valentorassa.blackice.filter
+   The extension's directory ends in .systemextension; that suffix is NOT part
+   of its CFBundleIdentifier. Keep the IDs above consistent with Resources/*.plist.
+   Enable Network Extensions for BOTH IDs. The required Developer ID entitlement
+   value is content-filter-provider-systemextension, not content-filter-provider.
+   The HOST also needs System Extension installation capability, represented by
+   com.apple.developer.system-extension.install = true. In Xcode this is the
+   System Extension capability; our Host.entitlements already declares it.
+   Enable System Extensions for the host if the portal presents that checkbox.
+   The extension does not install other extensions and does not claim this key.
+   No Endpoint Security entitlement or App Group is needed for this build.
+
+3. On the Mac, use Keychain Access > Certificate Assistant > Request a
+   Certificate from a Certificate Authority. Enter the owner email and a key
+   name, leave CA Email Address empty, and save the CSR to disk outside the repo.
+   In the portal: Certificates > + > Developer ID > Developer ID Application.
+   Upload the CSR, generate/download the .cer, and import it into the same Mac's
+   login keychain. Its private key stays there. Do not choose Developer ID
+   Installer, Apple Development, or Mac App Distribution. Record the exact
+   identity name: Developer ID Application: OWNER NAME (TEAM_ID).
+
+4. Profiles > + > Distribution > Developer ID. Select the HOST App ID and the
+   Developer ID Application certificate from step 3. Generate/download a profile
+   named Blackice Host Developer ID. Repeat for the EXTENSION App ID, naming its
+   profile Blackice Filter Developer ID. Keep both .provisionprofile files
+   outside the repo. If capabilities were changed after profile creation,
+   regenerate the profiles. Each must authorize the exact ID, that team and
+   certificate, and content-filter-provider-systemextension. A development or
+   App Store profile cannot substitute. If Developer ID profiles are unavailable,
+   finish enrollment/role setup with Apple; do not bypass the profile requirement.
+
+5. Check tool availability (read-only):
+     xcrun --find notarytool
+     xcrun --find stapler
+   Current Command Line Tools include notarytool; no project in Xcode is needed.
+   On the owner's Mac, create a notary keychain profile interactively:
+     xcrun notarytool store-credentials blackice-notary --apple-id OWNER_APPLE_ID --team-id TEAM_ID
+   Enter an Apple Account app-specific password ONLY at the tool's prompt. Obtain
+   it from the owner's Apple Account security page if needed. Never put it in
+   command arguments, shell variables, environment variables, a file in the repo,
+   chat or a recording. The release script accepts only the keychain profile name.
+
+6. Stop here until security clears the branch and the owner authorizes signing.
+   Build and tests remain unsigned. The later manual invocation and its exact
+   inputs are in docs/macos-app-filter.md under Signing preparation. A notarized
+   app is still not installed or active; those are separate owner actions.
+
+Apple references checked for these steps:
+https://developer.apple.com/help/account/identifiers/register-an-app-id/
+https://developer.apple.com/help/account/certificates/create-a-certificate-signing-request/
+https://developer.apple.com/help/account/certificates/create-developer-id-certificates/
+https://developer.apple.com/documentation/bundleresources/entitlements/com.apple.developer.networking.networkextension
+https://developer.apple.com/documentation/bundleresources/entitlements/com.apple.developer.system-extension.install
+https://developer.apple.com/forums/thread/737894
+https://developer.apple.com/documentation/technotes/tn3147-migrating-to-the-latest-notarization-tool

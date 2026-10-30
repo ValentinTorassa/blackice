@@ -120,8 +120,8 @@ APP=./macos/build/Blackice.app/Contents/MacOS/BlackiceApp
 ```
 
 The Team ID and signing identifier above are synthetic; substitute a real signed
-probe before future activation. Both examples use documentation addresses;
-`allow-test-subnet.json` is an evaluator fixture, not a real reachable service.
+probe before future activation. `allow-test-subnet.json` uses documentation
+addresses; it is an evaluator fixture, not a real reachable service.
 
 The generated shape is:
 
@@ -329,14 +329,18 @@ There is no durable ingestion/acknowledgement bridge yet. Unified logging may
 drop or truncate entries, and has no application-level loss accounting; these
 diagnostics are **not** a complete audit trail. Logging failure never changes a
 deny into an allow. No runtime receipts have been captured from this unsigned
-build. After future activation, inspect diagnostic output with:
+build. After future activation, follow the public JSON records live with this
+one-liner (requires `jq`):
 
 ```sh
-log stream --style json --predicate 'subsystem == "com.valentorassa.blackice.filter" AND category == "receipts"'
+/usr/bin/log stream --predicate 'subsystem == "com.valentorassa.blackice.filter" AND category == "receipts"' --style ndjson | jq --unbuffered -Rc 'fromjson? | .eventMessage? | fromjson?'
 ```
 
-This command produces unified-log envelopes. Per-flow JSON (including destinations
-and identities) is marked private and is normally shown as `<private>` under the
+`log stream` produces unified-log envelopes; `jq` extracts their JSON
+`eventMessage`, skipping the banner and redacted/non-JSON messages. This is a
+**public control stream**, not a per-flow allow/deny display. Per-flow JSON
+(including destinations and identities) is marked private and is normally shown
+as `<private>` under the
 OS privacy policy. Public control records contain lifecycle state, aggregate
 counts or host authorization outcomes, never connection destinations. The host
 uses category `control` for user-presence results and includes the requesting
@@ -344,6 +348,8 @@ host's parent PID for audit only; that PID never authorizes anything. No payload
 complete URLs, raw audit tokens, executable paths, credentials or environment
 variables are logged. Retention follows OS policy; no logging privacy settings
 are changed by this build. Durable receipt ingestion remains **pending**.
+Showing bound-app flow details in a future demo requires a separately reviewed
+visibility decision; this branch does not change the earlier privacy fix.
 
 The host's `status` always reports `enforcement_verified: false` in this build.
 Saving an enabled filter preference reports only `preferences_saved`. Neither
@@ -395,6 +401,65 @@ signing, manually adding entitlement strings, and a free Personal Team do not
 complete this Developer ID deployment path. See Apple's
 [system extension installation entitlement](https://developer.apple.com/documentation/bundleresources/entitlements/com.apple.developer.system-extension.install)
 and [notarization guidance](https://developer.apple.com/documentation/security/notarizing-macos-software-before-distribution).
+
+### Signing preparation
+
+The owner's exact portal, certificate and keychain steps are in
+[`macos-apple-setup.txt`](macos-apple-setup.txt). Nothing has been signed,
+submitted to Apple, installed or activated by this preparation. Enrollment and
+security review must finish before the owner runs the following manual recipe.
+`build.sh` and `test.sh` never invoke the signing script.
+
+```sh
+./macos/build.sh /private/tmp/blackice-sign-input
+./macos/test.sh /private/tmp/blackice-sign-tests
+./macos/sign-notarize.sh \
+  --team-id TEAM_ID \
+  --identity 'Developer ID Application: OWNER NAME (TEAM_ID)' \
+  --host-profile /absolute/path/Blackice-Host.provisionprofile \
+  --extension-profile /absolute/path/Blackice-Filter.provisionprofile \
+  --keychain-profile blackice-notary \
+  --app /private/tmp/blackice-sign-input/Blackice.app \
+  --output /private/tmp/blackice-notarized
+```
+
+Replace the placeholders with the enrolled identity and downloaded profiles.
+Input build and output directories must be fresh; the signing output must be
+outside the checkout. The shell entry point uses the Command Line Tools'
+`/usr/bin/python3` and only system signing/notarization tools. It accepts no
+password or API key parameter and strips inherited credential environment
+variables from its tool invocations. Notary authentication uses only
+`notarytool --keychain-profile`; the certificate's private key stays in the
+owner's keychain.
+
+Before signing, it checks the exact unsigned bundle layout, both bundle IDs,
+matching versions, the available Developer ID identity, and each profile's
+team, exact App ID, certificate, expiry and Network Extension capability. It
+embeds a snapshot of each profile and claims only the reviewed entitlement
+templates plus the profile's application/team identifiers. It does not copy
+every entitlement a profile permits. Profile-plist checks are preflight checks;
+Apple's signature, notarization and runtime entitlement checks remain
+authoritative. See [TN3125](https://developer.apple.com/documentation/technotes/tn3125-inside-code-signing-provisioning-profiles).
+
+The script signs the nested extension first and the containing app last, using
+`--options runtime`, a secure timestamp and their separate entitlements. It
+verifies with `codesign --verify --strict --deep`, archives with `ditto`, runs
+`notarytool submit --wait`, requires an `Accepted` response, then runs
+`stapler staple`, another strict signature verification, `spctl -a -vv --type
+execute` and `stapler validate`. Every failed command stops the script.
+
+The final `Blackice-notarized.zip` is created **after** stapling; the earlier
+`Blackice-submission.zip` is only the upload input. Profiles, generated
+entitlements and `notary-result.json` remain in the private output directory for
+inspection. A notarized archive is not an installed or running filter.
+This ordering follows Apple's [custom notarization workflow](https://developer.apple.com/documentation/security/customizing-the-notarization-workflow).
+
+Run the script's offline tests with `python3 macos/Tests/test_signing.py`.
+They use synthetic profiles and a mocked command runner, without touching a
+keychain, signing code or submitting anything to Apple. Successful execution
+with real profiles remains a post-enrollment validation gate.
+
+### Later installation and owner controls
 
 There is no Endpoint Security entitlement, app-group container or custom Mach
 service in this implementation. Configuration travels through
@@ -468,16 +533,106 @@ It neither flushes host firewall rules nor changes another filter. Local
 diagnostic log retention is unchanged. Each recovery command requires its own
 fresh user-presence check.
 
+## Two-app demo configuration
+
+[`macos/Examples/demo-apps.json`](../macos/Examples/demo-apps.json) is a prepared
+`blackice.appscope/v0` configuration, generation 1, `os-metadata`, with
+`unmatched: deny`. It embeds the exact UTF-8 bytes and full SHA-256 of these
+unchanged `blackice.policy/v0` files:
+
+| App | Exact identity selector | Policy intent on TCP port 443 |
+| --- | --- | --- |
+| Firefox | `43AQ936H96` + `org.mozilla.firefox` | `firefox-mozilla-only.json`: only `mozilla.org` and its subdomains |
+| Visual Studio Code stable | `UBF8T346G9` + `com.microsoft.VSCode` | `vscode-without-crash-telemetry.json`: only `code.visualstudio.com` and `update.code.visualstudio.com`; `rink.hockeyapp.net` denied |
+
+Microsoft's [network documentation](https://code.visualstudio.com/docs/setup/network)
+lists `rink.hockeyapp.net` for crash reporting. The example excludes it from an
+allowlist; v0 has no domain deny-list primitive. **Every other unlisted domain is
+also denied**, so this is a narrow demo policy, not a complete working VS Code
+network profile or a claim to disable all telemetry. Redirect/CDN, marketplace,
+sign-in and update download hosts may need additional explicit allows.
+The Firefox policy intentionally prevents general web browsing.
+
+The selectors are expected release identities, not evidence about the apps on
+the demo Mac. Apple's [browser identity data](https://github.com/apple/password-manager-resources/blob/main/quirks/web-browser-extension-distribution-information.json)
+lists the Firefox pair. Before any signed-run demonstration, inspect the actual
+installed copies without launching them:
+
+```sh
+/usr/bin/codesign --verify --strict --deep /Applications/Firefox.app
+/usr/bin/codesign -dv --verbose=4 /Applications/Firefox.app 2>&1 | awk '/^(Identifier|TeamIdentifier)=/'
+/usr/bin/codesign --verify --strict --deep '/Applications/Visual Studio Code.app'
+/usr/bin/codesign -dv --verbose=4 '/Applications/Visual Studio Code.app' 2>&1 | awk '/^(Identifier|TeamIdentifier)=/'
+./macos/build/Blackice.app/Contents/MacOS/BlackiceApp validate ./macos/Examples/demo-apps.json
+```
+
+Paths above only locate apps for inspection; runtime authorization still comes
+from exact signed identities resolved from audit tokens. Insiders/Developer
+Edition builds and helper executables may have different signing identifiers.
+Do not expand a selector to a team-wide wildcard. Real app/helper attribution,
+hostname availability and actual requests to the excluded telemetry endpoint
+remain signed-run gates; no such request or enforcement is claimed here.
+
+Unknown/unbound apps are denied, including valid ad hoc binaries, and have only
+aggregate receipts. This includes unrelated background apps, SSH and potentially
+DNS service traffic. Use an isolated demo Mac with local recovery; this config
+is not suitable for enabling over the only remote connection to a daily-use Mac.
+Domain rules require an exact outer SNI and deny UDP/QUIC. The DNS, helper,
+existing-socket, ECH and provider-downtime limits above still apply.
+
+### Change a policy without restarting the provider
+
+The existing command is `BlackiceApp enable CONFIG.json`, with a strictly higher
+generation and a fresh owner-authentication prompt. It saves preferences in
+place while keeping the filter enabled; the provider observes the update and
+installs a validated snapshot. This behavior is source/unit-test verified;
+live delivery to a signed provider remains untested.
+
+For a later owner-operated demo, after the sample's generation 1 is active,
+prepare generation 2 that changes Firefox to deny-all (VS Code stays as above):
+
+```sh
+jq --rawfile policy macos/Examples/deny-all.json \
+  --arg sha "$(shasum -a 256 macos/Examples/deny-all.json | awk '{print $1}')" \
+  '.generation += 1 | .apps |= map(if .scope == "app-firefox" then .policy_json = $policy | .policy_sha256 = $sha else . end)' \
+  macos/Examples/demo-apps.json > /private/tmp/blackice-app-demo-next.json
+/Applications/Blackice.app/Contents/MacOS/BlackiceApp validate /private/tmp/blackice-app-demo-next.json
+/Applications/Blackice.app/Contents/MacOS/BlackiceApp enable /private/tmp/blackice-app-demo-next.json
+```
+
+For any later update, choose a generation greater than the currently saved one.
+In the public live stream, wait for `event: "policy_activated"`,
+`reason: "snapshot_installed"` and the new `gen`. `preferences_saved` alone is
+not that acknowledgement. Observe new connections for the policy comparison;
+already allowed sockets are not revoked, and pending TLS checks are discarded
+on a generation change. No disable/enable cycle or provider restart is requested.
+
+The first app demo uses unified-log diagnostics only. Durable `receipts.jsonl`
+ingestion and app grants with expiry are outside that demo. The task-scope
+`blackice grant` command does not grant app-filter permissions. Neither omitted
+feature is presented as implemented; durable ingestion remains a later release
+integration gate.
+
 ## Validation and remaining gates
 
 Verified on 2026-10-30 on an arm64 Mac running macOS 27.0.1 (26A434), with SIP
 enabled, Apple Swift 6.4 (`swiftlang-6.4.0.34.1`) and the Command Line Tools
 macOS 27.0 SDK. Both bundles compiled with warnings as errors; the four resource
 plists passed `plutil`; 351 test assertions passed. The host's `make-config` and
-`validate` commands accepted both included examples, and `status` reported
+`validate` commands accepted the original deny-all/subnet examples, and `status` reported
 `built, unsigned` with `enforcement_verified: false`. Signature inspection
 confirmed only linker ad hoc signing with no Team ID. No activation or live
 enforcement test was performed.
+
+The later `appfilter/demo-prep` replay onto main `5f84f67` preserves all production
+Swift, resources, `build.sh`, `test.sh` and Swift tests byte-for-byte. The Mac was
+unreachable for a fresh run, so the 351-assertion/build result above remains prior
+validation of identical source. The new signing preparation has eight passing
+offline Python tests. The new two-app wrapper's original-byte hashes, documented
+generation-2 transformation and `jq` stream parser were checked locally; the
+stream input was synthetic, not a captured provider receipt. Host validation of
+the new sample and the signing recipe with actual Apple profiles are still
+pending. No credentials or keychain items were accessed for these checks.
 
 Tests cover exact/wildcard matching, private and mapped addresses, IPv6 CIDRs,
 ports, strict configuration, identity binding isolation, inbound denial,

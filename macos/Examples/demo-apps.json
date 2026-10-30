@@ -1,0 +1,22 @@
+{
+  "version": "blackice.appscope/v0",
+  "generation": 1,
+  "unmatched": "deny",
+  "hostname_mode": "os-metadata",
+  "apps": [
+    {
+      "scope": "app-firefox",
+      "team_id": "43AQ936H96",
+      "signing_id": "org.mozilla.firefox",
+      "policy_json": "{\n  \"version\": \"blackice.policy/v0\",\n  \"network\": {\n    \"mode\": \"allowlist\",\n    \"allow\": [\"mozilla.org\", \"*.mozilla.org\"],\n    \"ports\": [443]\n  }\n}\n",
+      "policy_sha256": "f9134307b72a192aa24ad060b528c6cf3e933d291d2f3557b951bdb53b1e1cf5"
+    },
+    {
+      "scope": "app-vscode",
+      "team_id": "UBF8T346G9",
+      "signing_id": "com.microsoft.VSCode",
+      "policy_json": "{\n  \"version\": \"blackice.policy/v0\",\n  \"network\": {\n    \"mode\": \"allowlist\",\n    \"allow\": [\"code.visualstudio.com\", \"update.code.visualstudio.com\"],\n    \"ports\": [443]\n  }\n}\n",
+      "policy_sha256": "a756eb68531e20df5da09eb51eb7d22eec092fbbb1201022b991632454c2b5c8"
+    }
+  ]
+}

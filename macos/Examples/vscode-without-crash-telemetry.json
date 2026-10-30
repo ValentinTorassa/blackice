@@ -1,0 +1,8 @@
+{
+  "version": "blackice.policy/v0",
+  "network": {
+    "mode": "allowlist",
+    "allow": ["code.visualstudio.com", "update.code.visualstudio.com"],
+    "ports": [443]
+  }
+}
