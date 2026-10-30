@@ -190,6 +190,15 @@ intentionally retains an empty cgroup for owner teardown afterward. Logs are sto
 does not install anything, run sudo or create an evidence entry. These local tests do not replace the off-host
 receiver required for P0-02. A missing helper is reported as blocked, never passed.
 
+`python3 src/linux/evidence_check.py --help` describes the P0-01/P0-02 observation harness. It requires an
+explicit installed-helper hash before invoking blackice and captures CLI output through pipes. A Python
+receiver on a second machine runs over SSH; its log returns over that same connection, with no shared remote
+log filename. IPv4/IPv6 TCP, UDP sendto and connected UDP controls must arrive before and after each scoped
+sender, including a double-forked descendant. The harness checks kernel receipts as well as receiver silence,
+saves raw observations in a fresh private `/tmp/bi-ev-*` directory, and never creates an evidence entry.
+`--controls-only` checks connectivity without executing blackice. Legacy protocol-v1 runs must explicitly
+use `--legacy-protected-paths` and retain the missing file-protection limit in their evidence.
+
 This provides a network boundary and protection of the explicit trusted paths, not a general filesystem or
 same-user sandbox. Filesystem triggers, other shared files, terminal output, and cooperation from an
 unrelated outside process are not comprehensively isolated. The state root and its ancestors are protected
