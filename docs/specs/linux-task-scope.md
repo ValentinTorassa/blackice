@@ -87,6 +87,8 @@ the system resolver's sockets do not exist, so it cannot ask a system service to
   - In v0 only the proxy and relay are reachable, so every allowed destination goes through the proxy. Protocols
     that cannot use an HTTP proxy cannot be allowed yet.
   - Containers and other network namespaces are refused, not supported.
+  - A socket the seccomp filter refuses (for example `ping`) fails with `EPERM` and leaves no `kernel` receipt
+    yet; only the cgroup programs' refusals reach the receipt writer.
   - The proxy's own upstream sockets are outside the scope's cgroup; their limits are the proxy's job.
   - No general claim that a same-user process outside the scope cannot interfere.
   - The state directory is a read-only mount inside the scope. That does not cover every path to the same
@@ -107,6 +109,8 @@ the system resolver's sockets do not exist, so it cannot ask a system service to
 | `blackice-linux-helper` build target in build.zig | codex-linux | done | |
 | cgroup eBPF programs on connect4, connect6, sendmsg4 and sendmsg6 | codex-linux | done | |
 | Ring buffer reader that reports refusals to the receipt writer, with a lost-event count | codex-linux | todo | |
+| Receipts for sockets the seccomp filter refuses (`ping`, SCTP, raw), or a declared limit | codex-linux | todo | |
+| Command stdin set to `/dev/null` when the core asks for it (ef66f8f) | codex-linux | done | |
 | Private mount namespace that hides resolver and daemon sockets | codex-linux | done | |
 | Landlock scoping and seccomp filter | codex-linux | done | |
 | `scripts/linux-setup.sh` and `scripts/linux-teardown.sh` | codex-linux | done | |

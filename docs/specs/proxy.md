@@ -75,7 +75,7 @@ service by the program.
   - Data sent to an allowed destination is out of scope.
   - The proxy listens on `127.0.0.1`, so in v0 any local process, including other users' processes, can send
     requests through it and reach what the scope's policy allows. It cannot reach more than that, but the
-    receipts attribute the traffic to the scope.
+    receipts attribute the traffic to the scope. A per-scope proxy credential is not planned for v0.
   - Untested in v0: another local process taking the proxy's port after a crash, and one scope trying to use
     another scope's proxy.
 
@@ -92,7 +92,6 @@ service by the program.
 | Close the tunnel when the ClientHello has no server name | network | done | |
 | Port check before any name work (`network.ports`) | network | done | |
 | Wire the proxy into `blackice run` (PR #7) | lead | done | |
-| Per-scope token so only the scope's own processes can use the proxy | network | todo | |
 | Scope end stops the proxy and closes its tunnels | lead | done | |
 
 ## Evidence

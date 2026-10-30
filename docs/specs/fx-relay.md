@@ -39,7 +39,7 @@ out, so the key never enters the scope.
 | fx-relay.R13 | If the hook cannot start blackice, or blackice cannot create the scope, the command shall not run: the tool call fails instead of running unconfined. | P0-01 |
 | fx-relay.R14 | blackice shall ship the hook as a declared patch under `integrations/fx/` that names the fx release tag and commit it applies to, so anyone can read exactly what it changes in fx. | P0-07 |
 | fx-relay.R15 | The relay shall verify the gateway's TLS certificate and host name, and shall never follow a redirect to another host. | P0-07 |
-| fx-relay.R16 | If fx can send a static bearer token for a configured provider, blackice shall put a random per-scope token in fx's private settings (mode 0600), and the relay shall refuse any request without it. | P0-07 |
+| fx-relay.R16 | The relay shall refuse any request that does not carry its random per-relay token as `Authorization: Bearer`. `blackice run` shall give the token to the scope as `BLACKICE_RELAY_TOKEN`, and the L0 fx configuration shall send it from that variable. | P0-07 |
 | fx-relay.R17 | When the fx hook is active, fx's own `web_fetch` and `web_search` tools shall be blocked, because they run inside fx and outside every scope. | P0-07 |
 | fx-relay.R18 | If the hook cannot read a tool call safely (a request wrapper, a command that is not a string or contains a NUL byte, a shell other than `sh`, `bash` or `zsh`), it shall block the call. | P0-01 |
 
@@ -62,8 +62,8 @@ key out of the scope; it does not decide what content may be sent to the model.
 - Relay (`src/relay/`): sends upstream only `Content-Type`, `Accept-Encoding: identity`, `User-Agent` and its
   own `Authorization`; the caller's headers are dropped and redirects are not followed. It keeps its own copy of
   `Bearer <key>` and zeroes it on stop. Limits: exact-match model allow list, body size cap, call cap and
-  connection cap; a request with a repeated `"model"` key is refused. Only the standard top-level
-  chat-completion fields pass; any other field, gateway routing options such as `providerOptions` or `models`
+  connection cap; a request with a repeated `"model"` key, or with `n` other than 1, is refused. Only the 17
+  standard top-level chat-completion fields pass; any other field, gateway routing options such as `providerOptions` or `models`
   included, is refused (`routing_not_allowed`), so a call cannot fall back to a model off the list.
   Each call is cut at a response size cap and a time limit, enforced by a watchdog; if the watchdog cannot
   start, the call is refused before anything goes upstream. Streamed answers (`stream: true`) pass
@@ -88,10 +88,12 @@ key out of the scope; it does not decide what content may be sent to the model.
   - L0: a tool inside the scope can call the relay too. It can send any content to the allowed model endpoint
     and use up the scope's caps. The caps limit the number of calls, the size of each answer and its time;
     they are not a budget in money. A demo with a real key needs its own budget set on the gateway key.
-  - L0: until the per-scope token (R16) lands, any local process can send requests to the relay port and spend
-    the key: processes outside every scope, other users' processes, and a web page in the user's browser (a
-    cross-origin POST with a `text/plain` body needs no preflight). The header checks in R3 close the browser
-    case; the token closes the rest.
+  - L0: the relay token (R16) keeps out processes that do not have it, and the header checks in R3 keep out web
+    pages in the user's browser. The token is readable by everything in the scope, and by the user's other
+    processes that can read the scope's environment (`/proc/<pid>/environ` on Linux).
+  - Main mode: fx tools other than the shell are not yet limited to a fixed list. A review found that
+    `install_skill` can clone any URL from inside fx and `mcp_select_tool` reaches MCP servers outside every
+    scope; `fx acp` also runs unscoped. A task below fixes the tool list.
   - L0: one scope for fx and its tools, so no per-tool isolation; fx features that need other destinations fail
     unless the policy allows them.
   - The key is protected from the scope, not from other processes of the same user running outside every
@@ -107,6 +109,9 @@ key out of the scope; it does not decide what content may be sent to the model.
 | fx hook patch: builtin `PreToolUse` handler that wraps shell commands in `blackice run` (PR #9) | lead | done | |
 | Scrubbed environment for scopes started by the hook | lead | done | |
 | Block fx's `web_fetch` and `web_search` in blackice mode | lead | done | |
+| Allow only a fixed list of fx tools in blackice mode (`install_skill` and `mcp_select_tool` stay out); say that `fx acp` runs unscoped | lead | todo | |
+| Relay token: random per relay, exported as `BLACKICE_RELAY_TOKEN`, sent by fx as a bearer token | network | done | |
+| End-to-end scripts in `scripts/e2e/` (`linux-run.sh`, `linux-grant.sh`, `fx-l0.sh`), PASS, FAIL or NOT RUN per check | network | done | |
 | Relay: loopback endpoint, key on stdin, forwarding to the gateway | network | done | |
 | Relay limits: model allow list, size cap, request cap, one receipt per call | network | done | |
 | Relay header checks (`Origin`, `Sec-Fetch-*`, `Host`, `Content-Type`) | network | done | |

@@ -46,6 +46,10 @@ App scopes are planned, not designed in detail. Each platform has one candidate 
   Program membership for signing and the matching entitlements, full Xcode, and user approval in System
   Settings. Coexistence with other filters and VPNs already on the Mac (for example a VPN with a transparent
   proxy, and Tailscale) has to be tested.
+- macOS filter as built (PR #8, unsigned): TLS flows to a name pass only when the ClientHello's server name
+  matches exactly; UDP and QUIC are denied; turning the filter off or removing its configuration needs the
+  owner's Touch ID. ClientHellos with ECH, which Chromium and Electron apps send by default, are denied in
+  this build (fail closed), so their domain rules do not work yet; an exact-outer-name rule is in progress.
 - Linux: desktops such as GNOME and KDE start each app in its own systemd scope under the user's `app.slice`
   (for example `app-<launcher>-<app-id>-<n>.scope`, or a snap or Flatpak scope). systemd places the process in
   that cgroup before exec, and children inherit it. Rules can match that cgroup, or its ancestor level, with
@@ -65,6 +69,7 @@ App scopes are planned, not designed in detail. Each platform has one candidate 
 |---|---|---|---|
 | macOS: Network Extension filter (Swift) and host app in `macos/`, deciding per app by code-signing identity, with the same policy and receipt formats; built unsigned (PR #8) | appfilter | done | |
 | macOS: single-writer receipts from the extension (today they go to the unified log) | appfilter | todo | |
+| macOS: ClientHellos with ECH: allow on the exact outer server name, with an `ech_present` note | appfilter | doing | |
 | macOS: sign the extension and run it on a Mac | valen | blocked | No Apple Developer Program membership (signing) and no full Xcode on the Mac. Until then its state stays "built, unsigned" and never "verified" |
 | Linux: qualify desktop app groups (first-packet coverage, unknown groups, user-created units, migration, terminal children) | codex | todo | |
 | Linux: choose the matching mechanism (nftables socket match or cgroup eBPF) for app groups | codex | todo | |
@@ -75,7 +80,7 @@ App scopes are planned, not designed in detail. Each platform has one candidate 
 | Covers | Kind | Link | Note |
 |---|---|---|---|
 | app-scopes.R4 | probe | Read-only look at a GNOME desktop on Debian 13 | A terminal app ran in its own systemd scope under the user's `app.slice` (a snap scope). One grouping example; no rule was attached and no traffic was tested |
-| app-scopes.R1, app-scopes.R3, app-scopes.R6 | test | `macos/test.sh` (PR #8, 4858f20) | Reported by the app-filter owner: built with Command Line Tools on macOS 27.0.1, SIP on, warnings as errors; 174 assertions pass. Nothing installed or activated: unsigned, so no traffic was filtered |
+| app-scopes.R1, app-scopes.R3, app-scopes.R6 | test | `macos/test.sh` (PR #8, c76afe6) | Reported by the app-filter owner: built with Command Line Tools on macOS 27.0.1, SIP on, warnings as errors; 320 assertions pass. Nothing installed or activated: unsigned, so no traffic was filtered |
 
 ## Terms
 
