@@ -42,7 +42,7 @@ printf 'curl exit %s\n' "$direct_status"
 SH
 echo '$ blackice run --policy agent.json -- bash probe.sh'
 "$blackice" run --policy "$shot_dir/agent.json" -- /bin/bash "$shot_dir/probe.sh" 2>&1 | /usr/bin/tee "$shot_dir/take.log"
-receipt=$(/usr/bin/python3 - "$XDG_STATE_HOME" <<'PY'
+receipt=$(/usr/bin/python3 -I - "$XDG_STATE_HOME" <<'PY'
 import json, sys
 from pathlib import Path
 logs = list(Path(sys.argv[1]).glob('blackice/scopes/*/receipts.jsonl'))

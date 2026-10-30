@@ -279,13 +279,16 @@ def main():
         zig_version = zig_run.stdout.strip() if zig_run.returncode == 0 else None
     except (OSError, subprocess.TimeoutExpired):
         zig_version = None
-    summary = {'date_utc': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()), 'platform': platform.uname()._asdict(),
+    host_platform = platform.uname()
+    summary = {'date_utc': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
+               'platform': {'system': host_platform.system, 'release': host_platform.release,
+                            'version': host_platform.version, 'machine': host_platform.machine},
                'commit': args.commit, 'blackice_sha256': digest(args.blackice) if args.blackice else None,
                'helper_sha256': digest(HELPER) if HELPER.exists() else None,
                'zig_version': zig_version, 'harness_sha256': digest(__file__),
                'protected_paths_expected': None if args.controls_only else not args.legacy_protected_paths,
                'limits': ['Protected paths are not enforced in this legacy Linux build.'] if args.legacy_protected_paths else [],
-               'controls_only': args.controls_only, 'v4': args.v4, 'v6': args.v6, 'ssh_command': args.ssh_command,
+               'controls_only': args.controls_only, 'v4': args.v4, 'v6': args.v6,
                'controls': [], 'scopes': [], 'status': 'NOT RUN'}
     receiver = None
     try:

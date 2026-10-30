@@ -196,6 +196,8 @@ receiver on a second machine runs over SSH; its log returns over that same conne
 log filename. IPv4/IPv6 TCP, UDP sendto and connected UDP controls must arrive before and after each scoped
 sender, including a double-forked descendant. The harness checks kernel receipts as well as receiver silence,
 saves raw observations in a fresh private `/tmp/bi-ev-*` directory, and never creates an evidence entry.
+The summary omits the machine hostname and SSH command. Raw local logs remain private; public evidence
+uses reviewed excerpts without hostnames, SSH login commands or private artifact paths.
 `--controls-only` checks connectivity without executing blackice. Legacy protocol-v1 runs must explicitly
 use `--legacy-protected-paths` and retain the missing file-protection limit in their evidence.
 
