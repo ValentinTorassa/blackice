@@ -628,6 +628,7 @@ td p { margin: 8px 0 0; color: var(--fg-2); font-size: 14px; line-height: 1.55; 
   .nav-links { gap: 14px; }
   .flags { padding-right: 10px; }
   .flag-btn { width: 30px; }
+  .badge { height: auto; min-height: 26px; padding: 5px 10px; white-space: normal; line-height: 1.4; }
   .hero { padding: 76px 0 52px; }
   .br { display: none; }
   .command { height: auto; min-height: 46px; padding: 10px 8px 10px 14px; }
