@@ -115,6 +115,16 @@ Known gaps before the first release:
 `.github/workflows/npm-publish.yml` runs only when a release is published: a stable `vX.Y.Z` tag, not a draft
 and not a prerelease. It publishes the CLI only. No npm package contains the Linux helper or the setup scripts.
 
+The first version, **0.1.0**, is an explicit exception: the owner uses
+`packaging/npm/publish-manual-0.1.0.sh` with account 2FA set to authorization and writes and npm's OTP prompts.
+It checks organization ownership first, downloads only the draft's assets, verifies their checksums and GitHub
+attestations, and checks registry integrity, maintainer identity and all four downloaded platform binaries after
+publication. **There is no npm provenance claim for 0.1.0.** The workflow skips `v0.1.0`. Before 0.1.1, the owner
+must configure trusted publishers on all five packages and set publishing access to require 2FA and disallow
+tokens; the script does not change those settings. See [npm distribution](../../packaging/npm/README.md).
+
+For later releases:
+
 1. **prepare** (`contents: read`, `attestations: read`) checks that the tagged commit is on `main`, downloads
    the release files, and verifies the attestation of `SHA256SUMS` and then of every file it lists, bound to
    `release.yml`, the tag and the tagged commit. It runs the Linux binary only after that. It then builds the

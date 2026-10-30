@@ -1,6 +1,6 @@
 # npm distribution
 
-Version **0.1.0** uses a launcher package and four optional platform packages. The scripts here prepare and audit local tarballs; they do not publish, reserve names, log in to npm, build binaries or change a privileged installation. The checked-in manifests are private templates, not publishable packages.
+Version **0.1.0** uses a launcher package and four optional platform packages. `prepare.mjs` and `pack.mjs` only prepare and audit local tarballs. The separate `publish-manual-0.1.0.sh` is an operator-run publication script: it uses the operator's npm login and OTP prompts. No script builds native binaries or changes a privileged installation. The checked-in manifests are private templates, not publishable packages.
 
 | Output directory | Default package | Platform | Payload beyond metadata, README and license |
 | --- | --- | --- | --- |
@@ -30,7 +30,7 @@ The full release also contains `blackice-linux-helper-0.1.0-x86_64-linux`, which
 
 Verify release attestations before preparing public packages. The preparer checks CLI integrity, not provenance: its output records `verification: "sha256-only"`. A locally produced checksum file does not establish release identity. Label local fixtures as test inputs, not attested releases.
 
-From the repository root:
+The lower-level packaging interface below supports offline tests and the later publication workflow. **For the manual 0.1.0 publish, use the script under [Manual first publish](#manual-first-publish-010): it downloads and verifies the draft's assets itself and accepts no local-build input.** From the repository root:
 
 ```sh
 node packaging/npm/prepare.mjs \
@@ -86,6 +86,7 @@ The release contains four CLIs, the x86_64 helper and `SHA256SUMS`. Scripts are 
 
 ```sh
 node --test packaging/npm/test.mjs
+node --test packaging/npm/manual-release.test.mjs
 ```
 
 The suite checks changed bytes and malformed checksums, CLI-only releases, configurable scope/name/version, exact archive contents, launcher arguments and I/O, missing packages, numeric exits and signal exits. It exercises the production packer on all five packages, then installs local tarballs offline with scripts disabled and runs the installed launcher. Synthetic test executables do not establish native enforcement.
@@ -94,20 +95,37 @@ To exercise a real local binary, prepare a clearly labeled local build fixture, 
 
 The launcher uses `spawnSync` with inherited stdio and no shell. It mirrors numeric exit status and re-emits the child's termination signal. Terminal signals reach both processes through their shared foreground process group. Because synchronous spawning blocks JavaScript signal handlers, a signal addressed only to the launcher PID is not forwarded while its child runs. Use a supervisor that signals the process group or invoke the native binary directly; immediate PID-only forwarding would require an asynchronous launcher. See [Node's synchronous child-process contract](https://nodejs.org/api/child_process.html#child_processspawnsynccommand-args-options).
 
-## Publication handoff
+## Manual first publish (0.1.0)
 
-Security owns `release.yml` and `npm-publish.yml`; they are reviewed separately from this packaging change. Publication is authorized by the operator publishing the reviewed draft release, followed by approval of the protected `npm` environment. Use the reviewed workflows as the source of truth for job permissions and toolchain pins.
+Version **0.1.0 has no npm provenance statement**. The native release files have GitHub build attestations, which the preparation step verifies; those do not attest to the assembly or manual publication of the npm packages. The OIDC workflow explicitly skips `v0.1.0`.
 
-Required operator configuration:
+The operator runs this only after security clears the release and the `v0.1.0` **draft** exists. Use the matching tag checkout with unchanged packaging files and license, Node.js 22+, npm, `tar`, `sha256sum`, and a GitHub CLI supporting the attestation flags below. Authenticate to npm beforehand if necessary; the script's first check will otherwise stop.
 
-1. Set repository variables `NPM_SCOPE=@legios` and `NPM_PACKAGE_NAME=@legios/blackice`. A different namespace or launcher name needs a new explicit decision and workflow review.
-2. Create GitHub environment **npm**, require the operator's review, and restrict deployment refs to approved release tags. The YAML selects this environment; its protection rules are repository settings.
-3. Configure each of the five npm packages' trusted publishers for repository `ValentinTorassa/blackice`, workflow filename **npm-publish.yml**, environment **npm**, with direct `npm publish` allowed. Initial package setup and ownership verification are operator work; this branch does neither.
+```sh
+bash packaging/npm/publish-manual-0.1.0.sh out/npm-manual-0.1.0
+```
 
-[npm trusted publishing](https://docs.npmjs.com/trusted-publishers/) uses OIDC on a GitHub-hosted runner. Publication must use the reviewed, pinned toolchain and no npm token, login or credential fallback. These local packaging scripts never request an identity token or publish.
+The output directory must not exist. The script:
 
-Before packing, the publication workflow must download the tag's assets, validate the manifest and file set, check the checksums, and verify [GitHub attestations](https://cli.github.com/manual/gh_attestation_verify) against `release.yml`, the repository, tag and commit. Only verified binaries may be run or packaged; the CLI's version must match the release tag. Scripts are not release assets and do not have script attestations.
+1. Runs `npm whoami` and `npm org ls legios --json`, requiring the authenticated account's role to be `owner`. A failed check stops with a message to contact the release lead; there is no scope fallback.
+2. Reminds the operator to set account 2FA to **authorization and writes** and asks for confirmation. npm handles login and OTP prompts; the script never accepts an OTP argument or records one. It rechecks ownership after login. See [npm's 2FA publishing requirements](https://docs.npmjs.com/requiring-2fa-for-package-publishing-and-settings-modification/).
+3. Downloads the exact six assets from the draft, requires the tag's commit to be on `main` and match the checkout, verifies `SHA256SUMS` with `gh attestation verify`, runs `sha256sum -c SHA256SUMS`, and verifies every binary/helper attestation. Every verification binds the repository, `release.yml`, `refs/tags/v0.1.0`, the source commit, and `--deny-self-hosted-runners`. It checks that the tag and draft asset identities have not changed before preparing any package. No locally built binary is accepted by this path.
+4. Packs the four platform packages and `@legios/blackice`, keeping the four optional dependencies pinned to **exactly `0.1.0`**. It checks archive bytes and all platform binaries against the attested checksums before publication.
+5. Publishes platforms first and launcher last using `npm publish <tarball> --access public --ignore-scripts`, with provenance disabled. After each publish it queries `npm view <package>@0.1.0 dist.integrity` and `maintainers`, compares integrity with the prepared archive, and requires the authenticated account to appear as a maintainer. For every platform it also runs `npm pack <package>@0.1.0 --ignore-scripts`, checks the downloaded archive, and compares the binary inside with `SHA256SUMS`. A failed publish or repeated verification failure stops before the next package.
 
-After all five archives pass the packer's checks, publish the four platform tarballs first and the launcher last with `npm publish --provenance --access public --ignore-scripts`. A failed platform publish must stop before the launcher. npm versions are immutable; a partial publication needs operator reconciliation rather than an automatic overwrite or name change. Publishing is never part of the local tests.
+Reports are under the output's `registry-checks/`; the attestation logs and original draft assets remain beside them. Security can repeat all five integrity/maintainer checks and the four registry-download binary checks independently:
 
-Release attestations establish where the native bytes came from; npm provenance establishes where their packages were assembled. Local tests and mocked workflow checks do not verify live OIDC, registry ownership or release attestations. Those require the configured environment and a real reviewed release.
+```sh
+node packaging/npm/manual-release.mjs verify-all out/npm-manual-0.1.0 YOUR_NPM_USERNAME
+```
+
+The checks prove byte equality and the reported maintainer identity, not npm provenance. Local tests simulate service responses and never log in or publish. A partial publication needs operator reconciliation; immutable versions must not be overwritten, and this script must not be blindly rerun after a partial publish.
+
+## Before 0.1.1: trusted publishing follow-up
+
+This is a written follow-up, **not an action performed by the 0.1.0 script**:
+
+1. Configure [npm trusted publishing](https://docs.npmjs.com/trusted-publishers/) on **all five packages**, bound to repository `ValentinTorassa/blackice`, workflow **npm-publish.yml**, and environment **npm**.
+2. Set each package's publishing access to **require 2FA and disallow tokens**. Keep the operator's account 2FA enabled for authorization and writes.
+3. Set repository variables `NPM_SCOPE=@legios` and `NPM_PACKAGE_NAME=@legios/blackice`. Require the owner's review for the GitHub **npm** environment and restrict its deployment refs to approved release tags.
+4. Have security verify those settings before `0.1.1`. The later workflow uses OIDC and provenance on a GitHub-hosted runner, with no npm token or login fallback. Its preparation still verifies the native assets against [GitHub attestations](https://cli.github.com/manual/gh_attestation_verify) and checksums before packing.
