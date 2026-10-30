@@ -36,7 +36,7 @@ Network filtering alone does not isolate files, protect all existing credentials
 
 ## Linux installation and privileges
 
-The intended Linux path uses a root-owned workload cgroup outside the user's delegated subtree, a narrowly scoped helper and kernel packet enforcement. A separate backend implementation must prove enrollment, attribution and protocol coverage before advertising support.
+The intended Linux path uses a root-owned workload cgroup outside the user's delegated subtree and BPF `connect4`/`connect6` and `sendmsg4`/`sendmsg6` admission programs. A narrowly scoped helper forks its own paused child, binds it through a pidfd, enrolls it and arms containment before releasing it; callers cannot submit an arbitrary PID to attach. Denial events use a per-scope ring buffer, with loss counted separately. This design does not modify host nftables rules. The backend must prove enrollment, attribution and protocol coverage before advertising support.
 
 An operator reads and runs the setup script with sudo. The launcher does not invoke sudo on behalf of a workload. Setup and teardown must operate on owned paths, validate ownership and symlinks, and leave unrelated firewall/cgroup configuration intact. File capabilities are privileges: group membership and executable access do not replace validation of each helper operation.
 
@@ -48,7 +48,7 @@ The provider key stays in the relay outside every workload scope. It must not ap
 
 The relay needs a fixed upstream, a model allowlist, bounded body/response sizes, request and spending limits, and a verified scope/lifetime binding. Client input must not override upstream credentials, choose arbitrary upstream destinations, or redirect a credential-bearing request elsewhere. Authentication to the relay is distinct from authentication of its upstream provider.
 
-A local listening port is not a scope identity. Prevent cross-scope reuse, stale-port takeover and unbound requests. The first whole-agent wrapper shares one network envelope with its tools: tools may use destinations or relay access granted to the agent. Per-tool isolation requires a separately verified launch integration.
+A local listening port is not a scope identity. Prevent cross-scope reuse, stale-port takeover and unbound requests. The intended fx integration uses a declared `PreToolUse` patch to launch each shell command in a blackice scope while the controller stays outside. Every relevant execution path must be audited before claiming that all launched commands are covered; a hook's existence does not establish coverage. The L0 whole-agent wrapper remains a fallback and shares one network envelope with its tools, including any destinations or relay access granted to the agent.
 
 ## Owner-grant limitation in the initial design
 

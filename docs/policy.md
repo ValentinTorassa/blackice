@@ -47,7 +47,7 @@ The importer consumes the JSON value of `networkPolicy`, not a complete SDK crea
 | `{"allow":["api.example.com","*.example.org"]}` | Convert supported hostname patterns. |
 | `{"allow":{"api.example.com":[]}}` | Convert a domain map only when every rule array is empty. |
 | `subnets.allow` / `subnets.deny` | Accept canonical IPv4 CIDRs, with zero host bits. |
-| `"allow-all"`, catch-all `*`, middle/partial/multiple wildcards | Reject as outside this subset. |
+| `"allow-all"`, catch-all `*`, middle wildcards such as `www.*.com`, partial/multiple wildcards | Reject as outside this subset. |
 | Nonempty request-rule arrays | Reject the entire import, including `match`, `transform`, `forwardURL`, `response`, or an empty rule object. |
 | IPv6 CIDRs, URLs, ports in names, IPs in domain lists, non-ASCII hostnames | Reject. They are not silently converted or omitted. |
 
@@ -79,7 +79,11 @@ These flags are integration requirements, not an implemented capability detector
 
 ## Protocol differences that block a parity claim
 
-Vercel's [firewall documentation](https://vercel.com/docs/sandbox/concepts/firewall) distinguishes TLS-name rules from address-range access. Plain HTTP needs address permission; a proxy that simply accepts a permitted CONNECT or HTTP hostname does not establish the same TLS behavior. Domain and subnet permissions also have different DNS effects. The importing backend must qualify those semantics or refuse activation.
+Vercel's [firewall documentation](https://vercel.com/docs/sandbox/concepts/firewall#http-and-https) matches domain rules against the TLS hostname. Plain HTTP cannot be allowed by a domain rule; it needs an allowed IP range. The blackice PoC proxy applies hostname rules to plain HTTP as well as CONNECT requests. That native behavior differs from Sandbox semantics.
+
+For example, with only `api.example.com` allowed and no allowed subnet, the native proxy can admit `http://api.example.com`; Sandbox's domain rule does not permit that plaintext connection. A backend using that behavior must leave `bound_tls_domains` false, so `policyForBackend()` refuses a candidate containing domain permissions. A documentation warning or acknowledgement of the local address ceiling does not satisfy this gate. An adapter needs a qualified protocol-specific path before it can activate such imports.
+
+Admitting a CONNECT authority alone also does not establish the negotiated TLS name. Domain and subnet permissions have different DNS effects, and subnet allows are independent of domain allows. The importing backend must qualify those semantics or refuse activation.
 
 blackice additionally binds a declared name to a checked dial address. An allowed name alone must not authorize an arbitrary attacker-selected IP. Neither a client-supplied name nor SNI authenticates the server or prevents application data from reaching an allowed destination. The local address ceiling must remain explicit; import is not a silent relaxation or a claim of complete Vercel equivalence.
 
