@@ -132,8 +132,10 @@ Run 2:
   rewritten command would go to fx's reviewer.
 - fx itself, its model traffic and its own reads (`read_file`, `glob_files`, `grep_files`) run
   outside the scopes. What the model reads goes to its provider.
-- On macOS a `kernel_drop` receipt exists only when the refused program is signed by Apple (here
-  curl, Python, zsh, cp and mv).
+- macOS writes a kernel log line, and blackice turns it into a `kernel_drop` receipt, only for
+  refusals of Apple-signed binaries (here curl, Python, zsh, cp and mv). A refusal of an ad-hoc-signed
+  binary (tested with blackice itself and a program built with cc) is enforced but leaves no receipt.
+  Binaries signed with a third-party Developer ID were not tested.
 - fx starts no MCP servers in blackice mode, and only the fx profile files that exist when fx starts
   are protected. Those checks are in `integrations/fx/README.md` ("Checked"), not in this entry.
 - A command in a scope can still change other files of the user, such as `~/.zshrc`. blackice
