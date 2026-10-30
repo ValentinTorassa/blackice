@@ -62,6 +62,8 @@ pub fn create(gpa: std.mem.Allocator, io: Io, env: *const std.process.Environ.Ma
     const scopes = try std.fs.path.join(gpa, &.{ root, "scopes" });
     defer gpa.free(scopes);
     _ = try Io.Dir.cwd().createDirPathStatus(io, scopes, private_dir);
+    // An older run may have left them more open; make them owner-only again (best effort).
+    for ([_][]const u8{ root, scopes }) |p| Io.Dir.cwd().setFilePermissions(io, p, private_dir, .{}) catch {};
 
     var attempt: usize = 0;
     while (true) : (attempt += 1) {

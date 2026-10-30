@@ -49,6 +49,13 @@ pub const Error = error{
     OutOfMemory,
 };
 
+/// The enforcing backend's name, for receipts and messages.
+pub const name = switch (builtin.os.tag) {
+    .macos => "macos-seatbelt",
+    .linux => "linux-cgroup-bpf",
+    else => "none",
+};
+
 pub const available = switch (builtin.os.tag) {
     .macos => true,
     .linux => @import("../linux/backend.zig").available,
