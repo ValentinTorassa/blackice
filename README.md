@@ -7,17 +7,19 @@
 
 # blackice
 
-blackice gives each app and each task on your machine its own network permissions, decided by a policy file.
-It runs natively on macOS and Linux, with no per-connection prompts.
+blackice decides which hosts each app and each task on your machine can reach, from a policy file. It runs
+natively on macOS and Linux, headless, with no per-connection prompts.
 
-Today it works for tasks: a command, such as one an AI agent runs, and everything that command starts. That is
-tested on macOS and on Debian 13 (x86_64), and on macOS also inside fx's hook. For apps, the macOS app filter
-is built and waits for Developer ID signing, and the Linux app filter is in design.
+Today it works for tasks: a command, such as one an AI agent runs, and everything that command starts. The rules
+are in place before the command runs, and nothing inside can loosen them. Tasks are tested on macOS and on
+Debian 13 (x86_64), and on macOS also inside fx's hook. For apps, the macOS app filter is built and waits for
+Developer ID signing, and the Linux app filter is in design.
+
+**v0, not ready for production.** Only what is listed under [Evidence](#evidence) has been tested.
 
 ## Status
 
-blackice is at v0 and not production-ready. A cell is marked verified only when it has entries in
-[`evidence/`](evidence/).
+A cell is marked verified only when it has entries in [`evidence/`](evidence/).
 
 | | Apps | Tasks |
 |---|---|---|
@@ -44,8 +46,9 @@ $ sudo ./scripts/linux-setup.sh "$USER" <that sha256>
 ```
 
 Setup copies the helper to `/usr/local/libexec` with four file capabilities (`CAP_BPF`, `CAP_NET_ADMIN`,
-`CAP_CHOWN`, `CAP_DAC_OVERRIDE`), runnable by your group, and creates `/sys/fs/cgroup/blackice`.
-[`scripts/linux-teardown.sh`](scripts/linux-teardown.sh), run with sudo, removes both. Setup needs `setcap` and
+`CAP_CHOWN`, `CAP_DAC_OVERRIDE`), runnable by your group, creates `/sys/fs/cgroup/blackice`, and writes the
+host's namespace IDs to `/etc/blackice-linux/namespaces`. [`scripts/linux-teardown.sh`](scripts/linux-teardown.sh),
+run with sudo, removes all three. Setup needs `setcap` and
 `getcap` (on Debian, the `libcap2-bin` package). [`docs/linux.md`](docs/linux.md) has the details. macOS needs
 no setup.
 
@@ -92,25 +95,26 @@ set. `blackice policy check policy.json` validates a policy without running anyt
 
 ## How it works
 
-- A **task scope** wraps a command and every process it starts: `blackice run --policy policy.json -- <command>`.
-  The policy is in place before the command runs.
+- `blackice run --policy policy.json -- <command>` puts the command in a **task scope**. The policy is in place
+  before the command starts, and every process it starts inherits it.
+- The command reaches the network only through a local proxy that runs outside the scope. The proxy checks each
+  name against the policy, then checks every address that name resolves to.
+- Nothing inside a scope can widen its own policy. The owner can, from outside, for a limited time:
+  `blackice grant SCOPE HOST --for 10m`.
+- The policy is a strict JSON file (`blackice.policy/v0`): a mode (`deny-all`, `allow-all` or `allowlist`) plus
+  allowed names, subnets and ports. Unknown fields are an error. See [`docs/policy.md`](docs/policy.md).
+- Every decision is written as one JSON line with the scope, the policy hash and generation, where it was
+  enforced, the verdict, a reason code and the destination.
 - An **app scope** applies a policy to an app that is already installed, however it was opened. See
-  [Status](#status) for where each platform is.
-- A planned **host ceiling** sits over every scope. Nested scopes can only narrow it.
-- The policy is a strict JSON file (`blackice.policy/v0`): a mode (`deny-all`, `allow-all` or `allowlist`),
-  allowed names, subnets and ports. Unknown fields are rejected. See [`docs/policy.md`](docs/policy.md).
-- A command in a scope reaches the network only through a local proxy outside it. The proxy checks every name
-  against the policy, and checks every address it resolves again.
-- Only the owner can widen a scope, from outside it, for a limited time: `blackice grant SCOPE HOST --for 10m`.
-- Each decision leaves a receipt: the scope, the policy hash and generation, where it was enforced, the verdict,
-  a stable reason code and the destination.
+  [Status](#status) for where each platform is. A **host ceiling** over every scope is planned. Nested scopes
+  can only narrow.
 - No model or remote service takes part in a decision. No account, no telemetry.
 
 ## Evidence
 
-The runs were on macOS 27.0.1 on Apple silicon with SIP on, and on Debian 13 (kernel 6.12.113) on x86_64. Each
-entry is one run, made by the people building blackice on their own machines; none is an independent test.
-Each entry names the commit it was built from, the exact commands, the receipts and its own limits.
+The runs were on macOS 27.0.1 on Apple silicon with SIP on, and on Debian 13 (kernel 6.12.113) on x86_64. We
+ran them ourselves, on our own machines; nobody else has reproduced them yet. Each entry names the commit it was
+built from, the exact commands, the receipts and its own limits.
 
 | Checkpoint | What it shows | macOS | Linux |
 |---|---|---|---|
@@ -153,7 +157,7 @@ Since 0.0.5, [fx](https://github.com/vercel-labs/fx) runs approved commands as o
 with it:
 
 - **A scope per command.** A small patch to fx's PreToolUse hook, in [`integrations/fx/`](integrations/fx/) and
-  not part of fx upstream, runs every shell command fx launches as `blackice run`.
+  not part of fx upstream, runs every shell command fx launches as `blackice run`. This is what P0-07 tested.
 - **One scope around fx.** `blackice run --policy policy.json -- fx` puts fx and everything it starts in one
   task scope, with no changes to fx. This mode has no evidence entry yet.
 

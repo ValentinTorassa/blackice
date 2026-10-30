@@ -42,19 +42,19 @@ const NOUNS = [
     name: 'Scope',
     Icon: IconNested,
     Art: IsoScope,
-    text: 'Where a policy applies: a task and every process it starts, an app on the machine, or the host.',
+    text: 'What a policy applies to: one command and everything it starts, an app on the machine, or the whole host.',
   },
   {
     name: 'Policy',
     Icon: IconPolicy,
     Art: IsoPolicy,
-    text: 'Deny by default, with allow lists for names, subnets and ports. Every resolved address is checked again.',
+    text: 'A JSON file. Anything it doesn\'t allow by name, subnet or port is refused, and every address a name resolves to is checked too.',
   },
   {
     name: 'Receipt',
     Icon: IconReceipt,
     Art: IsoReceipt,
-    text: 'One JSON line per decision: the scope, the policy and its generation, where it was enforced, and why. tail, grep and jq work on them.',
+    text: 'One JSON line per decision: which scope, which version of the policy, where it was enforced, and why. tail, grep and jq work on them.',
   },
 ];
 
@@ -90,8 +90,8 @@ export default function Home() {
               for apps and tasks.
             </h1>
             <p className="lede">
-              Network rules for each app and each task, decided by a policy file. It runs headless, with no
-              per-connection prompts.
+              blackice decides which hosts a command can reach, along with every process it starts. The rules are in
+              place before the command runs, and nothing inside can loosen them.
             </p>
             <p className="hero-status">
               Task scopes work today on macOS and on Debian 13 (x86_64). The macOS app filter is built in its pull
@@ -199,29 +199,30 @@ export default function Home() {
             <span className="badge">v0 design · verified for task scopes on macOS and Debian 13 (x86_64)</span>
           </div>
           <p className="sub">
-            Each connection passes these layers in order. The first layer that refuses it stops it, and the decision
-            writes a receipt.
+            Each connection passes these layers in order and stops at the first one that refuses it. Every decision
+            leaves a receipt.
           </p>
           <Layers />
         </section>
 
         <section className="container section">
-          <h2 className="h2">Example session</h2>
+          <h2 className="h2">A shell inside a scope</h2>
           <p className="sub">
-            It goes in front of a command, like nice or timeout. Everything the command starts stays in the scope. More
-            access comes from the owner, outside the scope, for a set time.
+            Put blackice in front of a shell, a test run or fx. Everything started inside stays in the scope. Only the
+            owner, from another terminal, can allow more, and that access expires on its own.
           </p>
-          <TypedTerminal lines={SESSION} title="~/project" badge="Illustrative · CLI not frozen" />
+          <TypedTerminal lines={SESSION} title="~/project" badge="Example · the CLI may change" />
         </section>
 
         <section className="container section">
           <div className="head-row">
-            <h2 className="h2">Status</h2>
+            <h2 className="h2">What works today</h2>
             <Link className="link" href="/docs/status/">
               Status page
               <IconArrowRight size={14} />
             </Link>
           </div>
+          <p className="sub">A part is marked Verified only when a recorded run in the repository backs it.</p>
           <div className="progress">
             <p className="progress-top">
               <span className="progress-count">
@@ -251,7 +252,7 @@ export default function Home() {
         <section className="container section">
           <div className="cta">
             <CubeMark />
-            <h2 className="h2">Docs and source</h2>
+            <h2 className="h2">Read the code and the evidence</h2>
             <p className="sub">The design, its limits and the evidence for each checkpoint are in the repository.</p>
             <div className="actions">
               <Link className="btn btn-primary" href="/docs/">
