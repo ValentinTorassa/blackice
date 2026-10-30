@@ -372,6 +372,41 @@ Readable bound-app flow receipts are now a required demo gate. An owner-readable
 JSONL file is in design review; it is not implemented here. The public log is
 not a substitute, and this branch does not change the earlier privacy fix.
 
+The proposed file is
+`/Library/Application Support/blackice/receipts/<uid>/receipts.jsonl`, written
+only by the system extension. Root-owned install/activation metadata pins the
+owner; a client message cannot choose it. Planned directories are root:wheel
+0700 with owner read/traverse ACLs, and files are root:wheel 0640 with an explicit
+owner read-only ACL. Root remains privileged. Detailed flow records require
+both a bound app and an audit-token UID matching the enrolled owner.
+
+Before accepting that future implementation, verify:
+
+| Requirement | Evidence required |
+| --- | --- |
+| Live flat JSON lines | Owner `tail -f` sees complete records with the core fields and caps; measured append/flush latency, not only a final file dump. |
+| Probe correspondence | An isolated TLS/TCP run matches each probe result to exactly one attributable flow decision, with zero loss/uncertainty; preserve extra/missing matches and qualify them as failures of this strict case. |
+| New generation | `policy_activated` / `snapshot_installed` and its exact installed `gen` appear in the same file before the next test request. |
+| Read access | The owner can read; another unprivileged local user cannot list/traverse/read; repeat after rotation. |
+| Write integrity | Owner processes cannot append, truncate, unlink, rename or change ACLs; planted links and permissive ancestors are refused. |
+| Limits and loss | Runtime records report the actual queue/line/rotation limits, zero and nonzero loss counts, and separately unconfirmed flush batches; overflow/full-disk warnings remain visible. |
+| Rotation and restart | `tail -F` follows rotation within the recorded byte/file bounds; an unclean restart reports an unknown gap when RAM counts are unavailable. |
+
+The proposal bounds the queue at 1,024 records, each below 4 KiB, and retains
+one 8 MiB file plus four archives (40 MiB of receipt payload). Worker batches
+target at most 64 records or 250 ms before append/flush; this is a scheduling
+target to measure, not a disk-latency guarantee. File I/O must never block a flow
+callback or change its verdict. Disk failure drops and counts records; it cannot
+grow the queue without bound. A crash can lose queued/unflushed data, so this
+does not promise a complete audit trail.
+
+Probe results are client observations, not provider receipts. A single request
+can make several connection attempts or fail before a flow reaches the filter.
+The [probe qualification notes](../macos/Probe/README.md#policy-and-evidence)
+explain how to assess the strict one-to-one case without hiding records.
+These are design requirements only; permission, burst, full-disk, rotation,
+restart and signed-provider tests have not run.
+
 The host's `status` always reports `enforcement_verified: false` in this build.
 Saving an enabled filter preference reports only `preferences_saved`. Neither
 configuration save nor system-extension activation is an enforcement health
@@ -511,8 +546,8 @@ with real profiles remains a post-enrollment validation gate.
 There is no Endpoint Security entitlement, app-group container or custom Mach
 service in this implementation. Configuration travels through
 `NEFilterManager.providerConfiguration.vendorConfiguration`; diagnostic receipts
-use unified logging. A future durable control/receipt channel will need its own
-authenticated transport and entitlement review.
+use unified logging. The proposed root-owned receipt writer needs reviewed
+owner enrollment, filesystem protections and deployment tests before use.
 
 After signing and notarization, install the host under `/Applications`, then
 explicitly run the deployment helper from the bundle:
@@ -585,7 +620,9 @@ fresh user-presence check.
 The separate [`BlackiceProbe.app`](../macos/Probe/README.md) target uses
 foreground URLSession with a stable signing identifier,
 `com.valentorassa.blackice.probe`. It offers both sequential CLI requests and a
-small Service/Telemetry window. Build it without signing or opening it:
+small Service/Telemetry window in one executable: no arguments select the
+window; one to three URL arguments select ordered JSON results and exit. Both
+use the same request implementation. Build it without signing or opening it:
 
 ```sh
 PROBE_WORK="$(mktemp -d /private/tmp/blackice-probe.XXXXXX)"

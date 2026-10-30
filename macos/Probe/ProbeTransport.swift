@@ -1,12 +1,15 @@
 import Foundation
 
-/// After start(), mutable state is confined to URLSession's serial delegate
-/// queue. The completion delivers an immutable result; UI work dispatches to main.
+/// After start(), request state is confined to URLSession's serial delegate
+/// queue. The session handle has its own lock for CLI watchdog cancellation.
+/// The completion delivers an immutable result; UI work dispatches to main.
 final class ProbeFetch: NSObject, URLSessionDataDelegate, @unchecked Sendable {
     private let target: ProbeTarget
     private let completion: @Sendable (ProbeResult) -> Void
+    private let sessionLock = NSLock()
     private var session: URLSession?
     private var started: TimeInterval = 0
+    private var startedAt = ""
     private var received = 0
     private var status: Int?
     private var refusal: String?
@@ -32,13 +35,23 @@ final class ProbeFetch: NSObject, URLSessionDataDelegate, @unchecked Sendable {
         let queue = OperationQueue()
         queue.maxConcurrentOperationCount = 1
         let session = URLSession(configuration: config, delegate: self, delegateQueue: queue)
+        sessionLock.lock()
         self.session = session
+        sessionLock.unlock()
         var request = URLRequest(url: target.url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 15)
         request.httpMethod = "GET"
         request.assumesHTTP3Capable = false
         request.setValue("close", forHTTPHeaderField: "Connection")
         started = ProcessInfo.processInfo.systemUptime
+        startedAt = probeTimestamp()
         session.dataTask(with: request).resume()
+    }
+
+    func cancel() {
+        sessionLock.lock()
+        let current = session
+        sessionLock.unlock()
+        current?.invalidateAndCancel()
     }
 
     func urlSession(_ session: URLSession, task: URLSessionTask,
@@ -98,9 +111,12 @@ final class ProbeFetch: NSObject, URLSessionDataDelegate, @unchecked Sendable {
         let outcome = ProbeResult.classify(errorCode: code, refusal: refusal, status: status, evidence: evidence)
         let result = ProbeResult(label: target.label, host: target.url.host ?? "unavailable", outcome: outcome,
             status: status, networkProtocol: evidence.protocolName, tls: evidence.tls, freshTCP: evidence.verifiedTCP,
-            bytes: received, durationMS: Int((ProcessInfo.processInfo.systemUptime - started) * 1000), errorCode: code)
+            bytes: received, durationMS: Int((ProcessInfo.processInfo.systemUptime - started) * 1000), errorCode: code,
+            startedAt: startedAt, completedAt: probeTimestamp())
         session.finishTasksAndInvalidate()
+        sessionLock.lock()
         self.session = nil
+        sessionLock.unlock()
         completion(result)
     }
 }

@@ -3,8 +3,8 @@ import Foundation
 
 let usage = """
 Blackice Probe — URLSession evidence app (not the filter)
-  BlackiceProbe URL1 URL2 [URL3]          Sequential HTTPS requests; JSON on stdout
-  BlackiceProbe --check URL1 URL2 [URL3]  Validate inputs only; no network or window
+  BlackiceProbe URL1 [URL2 [URL3]]        Sequential HTTPS requests; JSON on stdout
+  BlackiceProbe --check URL1 [URL2 [URL3]] Validate inputs only; no network or window
   BlackiceProbe --gui [SERVICE TELEMETRY] Open buttons; no request until clicked
   BlackiceProbe --help                   No network or window
 With no arguments, show Service and Telemetry buttons for example.com/httpbingo.org.
@@ -84,14 +84,6 @@ Failed requests are not proof of filter denial: correlate the filter's receipts.
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
 }
 
-// CLI results cross a delegate queue; keep the shared aggregate behind a lock.
-final class ProbeCLIState: @unchecked Sendable {
-    private let lock = NSLock()
-    private var allPassed = true
-    func record(_ result: ProbeResult) { lock.lock(); defer { lock.unlock() }; allPassed = allPassed && result.succeeded }
-    var passed: Bool { lock.lock(); defer { lock.unlock() }; return allPassed }
-}
-
 do {
     switch try ProbeOptions.parse(Array(CommandLine.arguments.dropFirst())) {
     case .help:
@@ -100,20 +92,21 @@ do {
         // Only caller-supplied, validated public URLs are printed in this mode.
         FileHandle.standardOutput.write(probeJSON(targets))
     case .cli(let targets):
-        let state = ProbeCLIState()
+        var allPassed = true
         for target in targets {
-            let done = DispatchSemaphore(value: 0)
-            let fetch = ProbeFetch(target: target) { result in
-                FileHandle.standardOutput.write(probeJSON(result))
-                state.record(result)
-                done.signal()
-            }
+            let completion = ProbeCompletion()
+            let fetch = ProbeFetch(target: target) { result in _ = completion.complete(result) }
+            let started = ProcessInfo.processInfo.systemUptime
+            let startedAt = probeTimestamp()
             fetch.start()
-            guard done.wait(timeout: .now() + 25) == .success else {
-                FileHandle.standardError.write(Data("probe_request_watchdog_timeout\n".utf8)); exit(1)
-            }
+            let result = completion.wait(until: .now() + 25, timeout: .timeout(
+                target: target, startedAt: startedAt,
+                durationMS: Int((ProcessInfo.processInfo.systemUptime - started) * 1000)))
+            if result.outcome == "watchdog_timeout" { fetch.cancel() }
+            FileHandle.standardOutput.write(probeJSON(result))
+            allPassed = allPassed && result.succeeded
         }
-        exit(state.passed ? 0 : 1)
+        exit(allPassed ? 0 : 1)
     case .gui(let targets):
         let app = NSApplication.shared
         let delegate = ProbeWindow(targets: targets)

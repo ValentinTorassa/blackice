@@ -6,6 +6,14 @@
 entitlements and does not share a process with the filter host. It can later be
 signed with the owner's Developer ID Application certificate.
 
+There is **one production executable**:
+`BlackiceProbe.app/Contents/MacOS/BlackiceProbe`. Normal launch with no arguments
+shows the window; passing one to three HTTPS URLs selects the CLI. Both paths
+call the same `ProbeFetch` URLSession implementation compiled into that binary.
+There is no separate CLI helper or different binary for the video. The defaults
+are Service at `https://example.com/` and Telemetry at
+`https://httpbingo.org/status/200`.
+
 Current state: source prepared, **not yet compiled or run**; the Mac was
 unreachable during this change. No window was opened and no request was made by
 the probe. Signing, notarization, actual transport and filter enforcement remain
@@ -28,14 +36,19 @@ Neither build script calls `codesign` or runs the probe. Output directories must
 belong to the current user and must not be group/other-writable. Keep this shell
 and `PROBE_WORK` for the configuration step; do not substitute a shared path.
 
-After the signed-run gate, the CLI makes two or three sequential requests:
+After the signed-run gate, the same executable makes one to three sequential requests:
 
 ```sh
 /Applications/BlackiceProbe.app/Contents/MacOS/BlackiceProbe https://example.com/ https://httpbingo.org/status/200 https://example.com/
 ```
 
-Each result is a JSON line labeled `kind: "probe_result"`, with a host, HTTP
-status or numeric error, protocol, TLS/fresh-connection checks and elapsed time.
+Each result is one JSON line labeled `kind: "probe_result"`, with a request
+label, host, HTTP status or error outcome, protocol, TLS/fresh-connection checks,
+start/completion UTC timestamps and elapsed time. URLSession errors also carry
+their numeric code. Output follows input order, including repeated URLs. A CLI
+watchdog timeout emits `outcome: "watchdog_timeout"`, cancels that session and
+continues to the next URL; a late callback cannot print a duplicate result. It
+does not invent an HTTP status or an unobserved byte count.
 It is a client observation, **not a filter receipt**. A failed request must match
 a provider denial before claiming enforcement. Exit 0 means every result was
 2xx with verified transport; a failed or unverified request returns 1; invalid
@@ -50,7 +63,9 @@ normal OS server-certificate validation, no HTTP/client-certificate
 authentication, and no redirects. Only HTTPS DNS names on port 443 are accepted;
 userinfo, query strings and fragments are rejected. Response bodies are counted
 and discarded, with cancellation after 64 KiB. Request/resource timeouts are
-15/20 seconds; the CLI has an additional 25-second watchdog per request.
+15/20 seconds; the CLI has an additional 25-second watchdog per request. The
+result guarantee applies to valid input while the process runs; a launch
+rejection, crash or OS kill can leave no result and must be recorded separately.
 
 Transport is checked, not assumed. `assumesHTTP3Capable = false` prevents opting
 into QUIC racing without discovery; it **does not disable discovered HTTP/3**.
@@ -62,6 +77,36 @@ produce `transport_unverified`. Use endpoints without HTTP/3 advertisement for a
 controlled TCP-only evidence run; the default public endpoints are convenience
 targets, not transport-qualified fixtures. The filter also denies UDP/QUIC under
 domain rules. No private URLSession API or OS HTTP/3 setting is changed.
+
+## Keep GUI and command-line evidence on the same build
+
+Record the executable SHA-256 and bundle cdhash of the installed signed probe
+used by both modes. These are read-only inspection commands, for the later
+signed-run gate:
+
+```sh
+PROBE_APP=/Applications/BlackiceProbe.app
+PROBE="$PROBE_APP/Contents/MacOS/BlackiceProbe"
+shasum -a 256 "$PROBE"
+/usr/bin/codesign -dv --verbose=4 "$PROBE_APP" 2>&1 | awk '/^(Identifier|TeamIdentifier|CDHash)=/'
+```
+
+For a renamed-copy test, copy the **whole signed bundle** into a private
+workspace, without rebuilding or signing it again, then invoke its same
+`Contents/MacOS/BlackiceProbe` executable. The renamed bundle's executable hash
+and cdhash must match the original; validate the copied bundle's signature too.
+Changing its enclosing path does not require a different CLI. The single-URL
+form supports the tampered-copy attempt:
+
+```text
+/path/to/copy.app/Contents/MacOS/BlackiceProbe https://example.com/
+```
+
+If macOS refuses or kills a tampered copy before it runs, record that OS outcome,
+not a fabricated probe line or filter denial. No copy/tampering/signing test or
+window launch has been performed by this preparation. The default 20-second
+resource timeout and 64 KiB limit also bound any slow-download evidence; qualify
+the fixture and timing before relying on it to span an authenticated update.
 
 ## Policy and evidence
 
@@ -81,6 +126,18 @@ the probe is Developer ID signed, the intended comparison is Service, Telemetry,
 Service, correlated with provider receipts. An unsigned/ad hoc probe follows
 `unmatched` and cannot prove the bound-app policy. The owner-readable receipt
 file is required for that comparison and awaits security design review.
+
+One result per URL is not a guarantee of one OS socket per URL. Keep all flow
+receipts: IPv4/IPv6 racing, retries and HTTP/3 fallback can produce additional
+attempts, and a DNS or TLS failure is not automatically a filter denial. The
+strict one-to-one evidence case needs an isolated, controlled TLS/TCP run with
+exactly one attributable decision per result and no loss or uncertainty. Match
+scope, generation, host/destination and the timestamps; retain extra/missing
+matches and mark the case unqualified instead of deleting records. Apple's
+[networking guidance](https://developer.apple.com/documentation/technotes/tn3151-choosing-the-right-networking-api)
+and [transaction metrics](https://developer.apple.com/documentation/foundation/urlsessiontaskmetrics/transactionmetrics)
+describe the connection-selection and per-transaction behavior underlying this
+qualification. Probe observations are not an audit authority.
 
 For one wrapper containing both apps and an explicit update generation, see the
 [multi-app recipe](../Examples/README.md#probe-and-netnewswire-in-one-configuration).

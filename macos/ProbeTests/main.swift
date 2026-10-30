@@ -12,14 +12,21 @@ func rejects(_ values: [String]) {
 
 do {
     let urls = ["https://example.com/", "https://httpbingo.org/status/200"]
+    if case .cli(let targets) = try ProbeOptions.parse([urls[0]]) {
+        expect(targets.count == 1 && targets[0].label == "request_1", "single URL supports renamed/tampered-copy evidence")
+    } else { expect(false, "single URL CLI mode") }
     if case .cli(let targets) = try ProbeOptions.parse(urls + [urls[0]]) {
         expect(targets.count == 3 && targets[2].label == "request_3", "three sequential evidence targets")
     } else { expect(false, "CLI mode") }
     if case .check(let targets) = try ProbeOptions.parse(["--check"] + urls) {
         expect(targets.count == 2, "read-only input check")
     } else { expect(false, "check mode") }
+    if case .check(let targets) = try ProbeOptions.parse(["--check", urls[0]]) {
+        expect(targets.count == 1, "single URL read-only input check")
+    } else { expect(false, "single URL check mode") }
     if case .gui(let targets) = try ProbeOptions.parse([]) {
         expect(targets.map { $0.label } == ["Service", "Telemetry"], "GUI has two explicit test roles")
+        expect(targets.map { $0.url.absoluteString } == urls, "GUI default URLs are the same CLI fixture URLs")
     } else { expect(false, "GUI mode") }
     if case .help = try ProbeOptions.parse(["--help"]) { expect(true, "help mode") }
     else { expect(false, "help mode") }
@@ -30,7 +37,7 @@ do {
                     "https://example.com/\n", "https://" + String(repeating: "a", count: 2048) + ".com/"] {
         rejects([invalid, urls[0]])
     }
-    for values in [[urls[0]], urls + urls, ["--check"], ["--gui", urls[0]], ["--unknown", urls[0]]] { rejects(values) }
+    for values in [urls + urls, ["--check"], ["--gui", urls[0]], ["--gui"] + urls + [urls[0]], ["--unknown", urls[0]]] { rejects(values) }
 
     let verified = ProbeTransportEvidence(protocolName: "h2", tls: true, reused: false, proxy: false, networkLoad: true, transactions: 1)
     expect(verified.verifiedTCP, "TLS HTTP/2 fresh network connection is evidence")
@@ -61,6 +68,22 @@ do {
     let output = try JSONSerialization.jsonObject(with: probeJSON(result)) as! [String: Any]
     expect(result.succeeded && output["kind"] as? String == "probe_result", "client observations labeled distinctly from receipts")
     expect(output["verdict"] == nil && output["url"] == nil && output["body"] == nil && output["error_code"] == nil, "no invented verdict, URL, body or absent error field")
+    expect(probeJSON(result).filter { $0 == 10 }.count == 1, "one physical JSON line per result")
+    let target = try ProbeTarget(label: "request_1", text: urls[0])
+    let timeout = ProbeResult.timeout(target: target, startedAt: "2026-10-30T00:00:00.000Z", durationMS: 25_000)
+    let timeoutJSON = try JSONSerialization.jsonObject(with: probeJSON(timeout)) as! [String: Any]
+    expect(!timeout.succeeded && timeoutJSON["outcome"] as? String == "watchdog_timeout", "watchdog is a client error, not a filter deny")
+    expect(timeoutJSON["status"] == nil && timeoutJSON["verdict"] == nil && timeoutJSON["bytes"] == nil, "watchdog invents no HTTP status, verdict or byte count")
+    expect(timeoutJSON["started_at"] as? String == "2026-10-30T00:00:00.000Z" && timeoutJSON["completed_at"] != nil, "timestamps support receipt correlation")
+    let completed = ProbeCompletion()
+    expect(completed.complete(result), "first completion wins")
+    expect(!completed.complete(timeout), "duplicate completion rejected")
+    expect(completed.wait(until: .now(), timeout: timeout).succeeded, "completed result survives wait deadline")
+    let expired = ProbeCompletion()
+    expect(expired.wait(until: .now(), timeout: timeout).outcome == "watchdog_timeout", "deadline supplies missing result")
+    expect(!expired.complete(result), "late network completion cannot replace printed timeout")
+    let nextRequest = ProbeCompletion()
+    expect(nextRequest.complete(result) && nextRequest.wait(until: .now(), timeout: timeout).succeeded, "next URL has independent completion")
     print("PASS: \(assertions) offline probe assertions; no network, keychain, window or filter action")
 } catch {
     FileHandle.standardError.write(Data("FAIL: unexpected probe fixture error\n".utf8)); exit(1)

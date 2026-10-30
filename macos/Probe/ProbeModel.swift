@@ -44,7 +44,7 @@ enum ProbeOptions {
     }
 
     private static func targets(_ args: [String], gui: Bool) throws -> [ProbeTarget] {
-        guard (2...3).contains(args.count) else { throw ProbeInputError.usage }
+        guard (gui ? args.count == 2 : (1...3).contains(args.count)) else { throw ProbeInputError.usage }
         return try args.enumerated().map {
             try ProbeTarget(label: gui ? ($0.offset == 0 ? "Service" : "Telemetry") : "request_\($0.offset + 1)", text: $0.element)
         }
@@ -74,13 +74,16 @@ struct ProbeResult: Encodable, Sendable {
     let networkProtocol: String?
     let tls: Bool
     let freshTCP: Bool
-    let bytes: Int
+    let bytes: Int?
     let durationMS: Int
     let errorCode: Int?
+    var startedAt: String? = nil
+    var completedAt: String? = nil
 
     enum CodingKeys: String, CodingKey {
         case kind, label, host, outcome, status, tls, bytes
         case networkProtocol = "network_protocol", freshTCP = "fresh_tcp", durationMS = "duration_ms", errorCode = "error_code"
+        case startedAt = "started_at", completedAt = "completed_at"
     }
 
     static func classify(errorCode: Int?, refusal: String?, status: Int?, evidence: ProbeTransportEvidence) -> String {
@@ -91,6 +94,42 @@ struct ProbeResult: Encodable, Sendable {
     }
 
     var succeeded: Bool { outcome == "http_response" && status.map { (200...299).contains($0) } == true }
+
+    static func timeout(target: ProbeTarget, startedAt: String, durationMS: Int) -> ProbeResult {
+        ProbeResult(label: target.label, host: target.url.host ?? "unavailable", outcome: "watchdog_timeout",
+                    status: nil, networkProtocol: nil, tls: false, freshTCP: false, bytes: nil,
+                    durationMS: durationMS, errorCode: nil, startedAt: startedAt, completedAt: probeTimestamp())
+    }
+}
+
+func probeTimestamp() -> String {
+    let formatter = ISO8601DateFormatter()
+    formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    return formatter.string(from: Date())
+}
+
+/// The CLI prints only the winning result, on its own thread. A late callback
+/// after the watchdog cannot print a second line or disturb the next request.
+final class ProbeCompletion: @unchecked Sendable {
+    private let lock = NSLock()
+    private let done = DispatchSemaphore(value: 0)
+    private var result: ProbeResult?
+
+    @discardableResult func complete(_ candidate: ProbeResult) -> Bool {
+        lock.lock()
+        guard result == nil else { lock.unlock(); return false }
+        result = candidate
+        lock.unlock()
+        done.signal()
+        return true
+    }
+
+    func wait(until deadline: DispatchTime, timeout: @autoclosure () -> ProbeResult) -> ProbeResult {
+        if done.wait(timeout: deadline) != .success { complete(timeout()) }
+        lock.lock(); defer { lock.unlock() }
+        // A callback or this wait's timeout has always supplied the result.
+        return result!
+    }
 }
 
 func probeJSON<T: Encodable>(_ value: T) -> Data {
