@@ -17,11 +17,13 @@ I'm [Valen Torassa](https://valentorassa.com), a security and backend engineer i
 AI agent runs commands on my machine: tests, package installs, scripts. Each of those runs with my user's
 permissions, so any of them can connect to anywhere my user can reach.
 
-I wanted that limit written down in a file I can review in a pull request, and enforced by the operating system
-before the command starts. My earlier project, [VT-Agent-Firewall](https://github.com/ValentinTorassa/VT-Agent-Firewall),
+I wanted that limit written down in a file I can review in a pull request, and in place before the command
+starts. The operating system keeps the command away from everything except a local proxy, and the proxy applies
+the file. My earlier project, [VT-Agent-Firewall](https://github.com/ValentinTorassa/VT-Agent-Firewall),
 checks which tools an agent calls. blackice works one layer down, on the connections the commands themselves open.
 
-It's v0 and not ready for production. What works is what has an entry under [Evidence](#evidence).
+It's v0 and not ready for production. Only what has an entry under [Evidence](#evidence) has been tested, and each
+entry says what held and what didn't.
 
 ## Status
 
@@ -93,7 +95,7 @@ curl: (56) CONNECT tunnel failed, response 403
 blackice: scope s-f79c31a5 ended with status 56; 5 receipts
 ```
 
-What the proxy decides goes to the scope's `receipts.jsonl`, one JSON line each:
+Each receipt is one JSON line in the scope's `receipts.jsonl`:
 
 ```json
 {"ts":"2026-10-30T14:36:01.279Z","scope":"s-1b1f4870","policy":"353b7e8328f9","gen":1,"point":"proxy","event":"connect","verdict":"allow","reason":"allowed_by_rule","rule":"example.com","host":"example.com","ip":"104.20.23.154","port":443,"detail":"sni_match"}
@@ -113,8 +115,8 @@ set. To check a policy without running anything: `blackice policy check policy.j
   `blackice grant SCOPE HOST --for 10m`.
 - The policy is a strict JSON file (`blackice.policy/v0`): a mode (`deny-all`, `allow-all` or `allowlist`) plus
   allowed names, subnets and ports. Unknown fields are an error. See [`docs/policy.md`](docs/policy.md).
-- What the proxy decides is logged as one JSON line each, with the scope, the policy hash and generation, the
-  verdict, a stable reason code and the destination. Some refusals leave no line; see [Limits](#limits).
+- Each receipt is one JSON line with the scope, the policy hash and generation, where it was enforced, the
+  verdict, a reason code and the destination. Some refusals leave no receipt; see [Limits](#limits).
 - An **app scope** applies a policy to an installed app. A **host ceiling** over every scope is planned. Nested
   scopes can only narrow.
 - No model or remote service takes part in a decision. No account, no telemetry.
@@ -122,7 +124,7 @@ set. To check a policy without running anything: `blackice policy check policy.j
 ## Evidence
 
 Every run below happened on my own machines: a MacBook Air (macOS 27.0.1, Apple silicon, SIP on) and a Debian 13
-box (kernel 6.12.113, x86_64). Nobody else has reproduced them yet. Each entry names the commit it was built
+box (kernel 6.12.113, x86_64), plus a disposable virtual machine on that box for part of P0-06. Nobody else has reproduced them yet. Each entry names the commit it was built
 from, the exact commands, the receipts and its own limits.
 
 | Checkpoint | What it shows | macOS | Linux |
@@ -132,7 +134,7 @@ from, the exact commands, the receipts and its own limits.
 | P0-03 | With an allowlist, allowed names go through the proxy and other names are refused, each with a receipt. | [entry](evidence/P0-03-explicit-allow-macos.md) | [entry](evidence/P0-03-explicit-allow-linux.md) |
 | P0-04 | A command inside a scope can't widen its own policy. The owner's `blackice grant`, from outside, lets one more name through until an end time. | [entry](evidence/P0-04-owner-grant-macos.md) | [entry](evidence/P0-04-owner-grant-linux.md) |
 | P0-05 | When a grant ends, the proxy resets the connection opened under it, and new connections to that name are refused. | [entry](evidence/P0-05-grant-expiry-macos.md) | [entry](evidence/P0-05-grant-expiry-linux.md) |
-| P0-06 | Faults: the proxy stopped, the launcher or the helper killed, a full disk. No scoped connection left the host, but the run found four problems, written down as failures. An extra, not part of v0's list. | | [entry](evidence/P0-06-faults-linux.md) |
+| P0-06 | Faults: the proxy stopped, the launcher or the helper killed, a full disk. No scoped connection left the host. After a helper kill, a surviving process could reach a local program on the dead proxy's port, and recovery and the receipts did not always hold: four findings, written down as failures. An extra, not part of v0's list. | | [entry](evidence/P0-06-faults-linux.md) |
 | P0-07 | With fx 0.0.16 and the blackice hook patch, each shell command fx runs gets its own scope and receipts. One run used a scripted test model; the other, a real model asking for one command. | [scripted](evidence/P0-07-fx-hook-scripted-macos.md), [real model](evidence/P0-07-fx-real-model-macos.md) | |
 | P0-08 | P0-01 to P0-05 pass on both platforms, each with its own mechanism. | [entry](evidence/P0-08-second-platform.md) | [entry](evidence/P0-08-second-platform.md) |
 
@@ -157,6 +159,9 @@ from, the exact commands, the receipts and its own limits.
 - On macOS, a refusal leaves a receipt only when the refused program is signed by Apple. A program you built
   yourself is still refused, without a receipt. Programs signed with a Developer ID weren't tested. A burst of
   refusals can lose receipts, and a process that outlives the command gets none.
+- On Linux, if the helper is killed while a scope runs, processes that detached from the command keep running
+  with access only to the dead proxy's local port, which another local program can later listen on. Removing
+  them needs root, and the receipts wrongly say the command didn't start.
 - On Linux, ping, SCTP and raw sockets are refused when they are created, so they leave no receipt. Only x86_64
   was run. On Ubuntu 24.04 and later, where `kernel.apparmor_restrict_unprivileged_userns=1` is the default,
   scopes are expected to fail closed. Ubuntu wasn't tested.

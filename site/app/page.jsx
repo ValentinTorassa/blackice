@@ -49,7 +49,7 @@ const NOUNS = [
     name: 'Receipt',
     Icon: IconReceipt,
     Art: IsoReceipt,
-    text: 'What the proxy decides is logged as flat JSON lines: which scope, which version of the policy, the verdict and a stable reason code. tail, grep and jq work on them.',
+    text: 'Flat JSON lines with a stable reason code: which scope, which version of the policy, where it was enforced, and why. tail, grep and jq work on them.',
   },
 ];
 
@@ -85,7 +85,7 @@ const UNIX = [
   {
     name: 'Everything is a file',
     Icon: IconLines,
-    text: 'The policy is a file, and what the proxy decides is appended to another one, a line at a time. grep and jq work on both, and tail -f follows the receipts.',
+    text: 'The policy is a file, and each logged decision is a line appended to another one. grep and jq work on both, and tail -f follows the receipts.',
   },
 ];
 
@@ -201,8 +201,9 @@ export default function Home() {
             user's permissions, so any of them can connect to anywhere my user can reach.
           </p>
           <p className="sub">
-            I wanted that limit in a file I can review in a pull request, enforced by the operating system before the
-            command starts. My earlier project,{' '}
+            I wanted that limit in a file I can review in a pull request, in place before the command starts. The
+            operating system keeps the command away from everything except a local proxy, and the proxy applies the
+            file. My earlier project,{' '}
             <a href="https://github.com/ValentinTorassa/VT-Agent-Firewall">VT-Agent-Firewall</a>, checks which tools an
             agent calls. blackice works one layer down, on the connections the commands themselves open.
           </p>
