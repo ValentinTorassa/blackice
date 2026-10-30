@@ -31,7 +31,7 @@ it, and every decision is written down. It runs locally, headless, with no accou
 | Checkpoint | What it shows | Evidence |
 |---|---|---|
 | P0-01 Policy before execution | A command cannot connect before its scope is armed, even at its first instruction. | macOS: [entry](../evidence/P0-01-policy-before-exec-macos.md). Linux: pending |
-| P0-02 Real deny | A direct connection is refused by the OS, and a receiver on another machine sees nothing. Each protocol and address family is stated separately. | macOS, TCP and UDP over IPv4 and IPv6: [entry](../evidence/P0-02-real-deny-macos.md). Linux: pending |
+| P0-02 Real deny | A direct connection is refused by the OS, and a receiver on another machine sees nothing. Each protocol and address family is stated separately. | macOS, TCP and UDP over IPv4 and IPv6, name lookup, listening and launchd jobs: [entry](../evidence/P0-02-real-deny-macos.md). Linux: pending |
 | P0-03 Small explicit allow | One allowed destination works through the proxy; another is refused. | macOS: [entry](../evidence/P0-03-explicit-allow-macos.md). Linux: pending |
 | P0-04 Authorized change | The owner widens a scope from outside; the same request from inside fails. | macOS: [entry](../evidence/P0-04-owner-grant-macos.md). Linux: pending |
 | P0-05 Bounded grant | The extra access ends at its expiry or when the scope ends. | pending |
@@ -49,7 +49,7 @@ means the code compiles and its tests pass, not that it was shown working.
 
 | | Agent tasks (task scopes) | Apps (app scopes) |
 |---|---|---|
-| **macOS** | Built, experimental: a Seatbelt sandbox profile plus the local proxy. Shown on one Mac in the entries above. Not shown yet: listening and launchd launches refused, a process that outlives the command, fx with a real model. | Built, unsigned: a Network Extension filter. It has never been activated. Needs an Apple Developer ID, a signed Network Extension, tests on a live system, and receipts written through blackice. |
+| **macOS** | Built, experimental: a Seatbelt sandbox profile plus the local proxy. Shown on one Mac in the entries above. Not shown yet: launches through `open` or Apple Events refused, fx with a real model. | Built, unsigned: a Network Extension filter. It has never been activated. Needs an Apple Developer ID, a signed Network Extension, tests on a live system, and receipts written through blackice. |
 | **Linux** | Built: cgroup v2 with eBPF socket programs, and a small helper installed once by a setup script run with sudo. Not shown yet: no evidence entry so far. | Not built. Identifying an app by its desktop or service group still has to be proven. |
 
 Windows is planned for after macOS and Linux. Nothing is built for it.
