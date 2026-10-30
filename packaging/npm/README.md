@@ -4,7 +4,7 @@ Version **0.1.0** uses a launcher package and four optional platform packages. T
 
 | Output directory | Default package | Platform | Payload beyond metadata, README and license |
 | --- | --- | --- | --- |
-| `blackice/` | `blackice` | Node.js 22+ | 33-line launcher |
+| `blackice/` | `@legios/blackice` | Node.js 22+ | 33-line launcher; command `blackice` |
 | `darwin-arm64/` | `@legios/blackice-darwin-arm64` | macOS arm64 | `bin/blackice` |
 | `darwin-x64/` | `@legios/blackice-darwin-x64` | macOS x64 | `bin/blackice` |
 | `linux-x64/` | `@legios/blackice-linux-x64` | Linux x64 | `bin/blackice` |
@@ -36,14 +36,16 @@ From the repository root:
 node packaging/npm/prepare.mjs \
   --release-dir /absolute/path/to/verified-release \
   --out-dir out/npm-0.1.0 \
-  --version 0.1.0 --scope @legios --name blackice
+  --version 0.1.0 --scope @legios --name @legios/blackice
 
 node packaging/npm/pack.mjs \
   --prepared-dir out/npm-0.1.0 \
   --out-dir out/npm-tarballs-0.1.0
 ```
 
-`--version`, `--scope` and `--name` default to the values shown. A different scope and main name leave the command name `blackice` unchanged; platform packages retain the `blackice-<platform>` prefix. The workflow requires explicit `NPM_SCOPE` and `NPM_PACKAGE_NAME` repository variables instead of relying on defaults. The operator must control all five identities and configure their trusted publishers before release.
+`--version`, `--scope` and `--name` default to the values shown. The preparer supports an explicitly selected scope and main name while keeping the command name `blackice`; platform packages retain the `blackice-<platform>` prefix. Changing `--scope` alone does not change the launcher name. The release workflow requires `NPM_SCOPE=@legios` and `NPM_PACKAGE_NAME=@legios/blackice`, and refuses different values. The operator must own the `legios` organization; if that check fails, stop and ask the release lead. Never switch scopes automatically.
+
+After publication, the install command is `npm install --global --ignore-scripts @legios/blackice@0.1.0`. The launcher tarball is `legios-blackice-0.1.0.tgz` and remains last in `publish-order.txt`.
 
 Both output directories must be new. Required checksums must occur exactly once; duplicate, unknown, path-bearing and missing CLI entries are rejected. Versions must be stable `X.Y.Z`. Inputs must be bounded regular files, not symlinks. The preparer hashes each CLI and copies that same in-memory snapshot, preserving its bytes with explicit executable permissions, then atomically moves the completed output into place. `manifest.json` records source asset hashes and platform-first package order.
 
@@ -98,7 +100,7 @@ Security owns `release.yml` and `npm-publish.yml`; they are reviewed separately 
 
 Required operator configuration:
 
-1. Set repository variables `NPM_SCOPE=@legios` and `NPM_PACKAGE_NAME=blackice`, or explicitly approved alternatives whose identities the operator owns.
+1. Set repository variables `NPM_SCOPE=@legios` and `NPM_PACKAGE_NAME=@legios/blackice`. A different namespace or launcher name needs a new explicit decision and workflow review.
 2. Create GitHub environment **npm**, require the operator's review, and restrict deployment refs to approved release tags. The YAML selects this environment; its protection rules are repository settings.
 3. Configure each of the five npm packages' trusted publishers for repository `ValentinTorassa/blackice`, workflow filename **npm-publish.yml**, environment **npm**, with direct `npm publish` allowed. Initial package setup and ownership verification are operator work; this branch does neither.
 

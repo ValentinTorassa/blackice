@@ -38,7 +38,7 @@ jobs:
       packs: ${{ steps.pack.outputs.packs }}
     env:
       TAG: ${{ github.event.release.tag_name }}
-      # Set by the owner. There is no default, so nothing is published under a name nobody chose.
+      # Set by the owner: @legios and @legios/blackice. No default or namespace fallback.
       NPM_SCOPE: ${{ vars.NPM_SCOPE }}
       NPM_PACKAGE_NAME: ${{ vars.NPM_PACKAGE_NAME }}
     steps:
@@ -48,6 +48,7 @@ jobs:
           [[ "$TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || { echo '::error::expected a vX.Y.Z tag'; exit 1; }
           : "${NPM_SCOPE:?set the NPM_SCOPE repository variable}"
           : "${NPM_PACKAGE_NAME:?set the NPM_PACKAGE_NAME repository variable}"
+          [[ "$NPM_SCOPE" == '@legios' && "$NPM_PACKAGE_NAME" == '@legios/blackice' ]] || { echo '::error::release names must be @legios and @legios/blackice; stop and contact the release lead'; exit 1; }
           # runner.temp is not available in job-level env, so the paths are set here for the later steps.
           : > "$RUNNER_TEMP/npm-userconfig"
           : > "$RUNNER_TEMP/npm-globalconfig"

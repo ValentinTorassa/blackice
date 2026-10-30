@@ -61,7 +61,7 @@ function launcher(f, args = [], options = {}) {
 test('source templates pin the owned namespace without stale platform identities', () => {
   const main = load(new URL('./blackice/package.json', import.meta.url));
   const platformNames = Object.fromEntries(platforms.map(p => [p.id, `@legios/blackice-${p.id}`]));
-  assert.equal(main.name, 'blackice');
+  assert.equal(main.name, '@legios/blackice');
   assert.deepEqual(main.blackicePlatforms, platformNames);
   assert.deepEqual(main.optionalDependencies,
     Object.fromEntries(Object.values(platformNames).map(name => [name, main.version])));
@@ -81,6 +81,8 @@ test('all five manifests, exact pins and unchanged release bytes', t => {
   assert.equal(report.verification, 'sha256-only');
   assert.equal(report.packages.length, 5);
   assert.equal(report.packages.at(-1).directory, 'blackice');
+  assert.equal(report.name, '@legios/blackice');
+  assert.equal(report.packages.at(-1).name, '@legios/blackice');
   for (const pkg of report.packages) {
     const dir = join(f.outDir, pkg.directory);
     const metadata = load(join(dir, 'package.json'));
@@ -177,17 +179,31 @@ test('scope, main name and version can change together without changing the comm
   assert.equal(launcher(f, ['exit', '19']).status, 19);
 });
 
-test('CLI --scope selects a different organization with prefixed platform package names', t => {
+test('CLI --scope changes platform names without implicitly moving the scoped launcher', t => {
   const f = fixture(t);
   const result = spawnSync(process.execPath, [fileURLToPath(new URL('./prepare.mjs', import.meta.url)),
     '--release-dir', f.releaseDir, '--out-dir', f.outDir, '--scope', '@blackice-sh'], { encoding: 'utf8' });
   assert.equal(result.status, 0, result.stderr);
   const main = load(join(f.outDir, 'blackice/package.json'));
-  assert.equal(main.name, 'blackice');
+  assert.equal(main.name, '@legios/blackice');
   assert.deepEqual(main.blackicePlatforms,
     Object.fromEntries(platforms.map(p => [p.id, `@blackice-sh/blackice-${p.id}`])));
   linkPlatform(f);
   assert.equal(launcher(f, ['exit', '17']).status, 17);
+});
+
+test('release CLI accepts the explicit scoped main name and documents the same install command', t => {
+  const f = fixture(t);
+  const result = spawnSync(process.execPath, [fileURLToPath(new URL('./prepare.mjs', import.meta.url)),
+    '--release-dir', f.releaseDir, '--out-dir', f.outDir,
+    '--version', '0.1.0', '--scope', '@legios', '--name', '@legios/blackice'], { encoding: 'utf8' });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(JSON.parse(result.stdout).packages.at(-1).name, '@legios/blackice');
+  assert.deepEqual(load(join(f.outDir, 'blackice/package.json')).bin, { blackice: 'bin/blackice.cjs' });
+  const readme = readFileSync(join(f.outDir, 'blackice/README.md'), 'utf8');
+  assert.match(readme, /^# @legios\/blackice\n/);
+  assert.ok(readme.includes('npm install --global --ignore-scripts @legios/blackice@0.1.0'));
+  assert.doesNotMatch(readme, /npm install[^\n]*\sblackice@/);
 });
 
 test('only stable X.Y.Z versions are accepted, without prerelease, build or whitespace suffixes', t => {
@@ -318,6 +334,8 @@ test('npm pack dry-run for all packages, then offline installation with scripts 
   const env = { PATH: process.env.PATH, npm_config_userconfig: userconfig, npm_config_globalconfig: globalconfig, npm_config_cache: join(f.root, 'npm-cache') };
   const records = pack({ preparedDir: f.outDir, outDir: tarballs, env });
   assert.deepEqual(records.map(p => p.directory), [...platforms.map(p => p.id), 'blackice']);
+  assert.equal(records.at(-1).name, '@legios/blackice');
+  assert.equal(records.at(-1).filename, 'legios-blackice-0.1.0.tgz');
   assert.equal(readFileSync(join(tarballs, 'publish-order.txt'), 'utf8'), records.map(p => p.path).join('\n') + '\n');
   for (const pkg of records) {
     assert.equal(pkg.files.length, 4);
@@ -328,6 +346,7 @@ test('npm pack dry-run for all packages, then offline installation with scripts 
   const install = join(f.root, 'installed');
   const result = spawnSync('npm', ['install', '--prefix', install, '--ignore-scripts', '--offline', '--no-audit', '--no-fund', '--package-lock=false', packs.get(host), packs.get('blackice')], { env, encoding: 'utf8', timeout: 30000 });
   assert.equal(result.status, 0, result.stderr);
+  assert.equal(load(join(install, 'node_modules/@legios/blackice/package.json')).name, '@legios/blackice');
   const run = spawnSync(join(install, 'node_modules/.bin/blackice'), ['exit', '23'], { encoding: 'utf8', timeout: 5000 });
   assert.equal(run.status, 23, run.stderr);
 });

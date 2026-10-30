@@ -1,5 +1,5 @@
 {
-  "name": "blackice",
+  "name": "@legios/blackice",
   "version": "0.1.0",
   "private": true,
   "description": "Local network permissions for apps and agent tasks",

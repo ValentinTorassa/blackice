@@ -71,7 +71,7 @@ function write(file, bytes, mode = 0o644) {
 }
 const json = value => `${JSON.stringify(value, null, 2)}\n`;
 
-export function prepare({ releaseDir, outDir, version = '0.1.0', scope = '@legios', name = 'blackice' }) {
+export function prepare({ releaseDir, outDir, version = '0.1.0', scope = '@legios', name = '@legios/blackice' }) {
   if (!releaseDir || !outDir) throw new Error('--release-dir and --out-dir are required');
   if (!/^@[a-z0-9][a-z0-9._-]*$/.test(scope) || scope.length > 180) throw new Error('invalid npm scope');
   if (!/^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/.test(name) || name.length > 214) {
@@ -185,7 +185,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
     const { values } = parseArgs({ options: {
       'release-dir': { type: 'string' }, 'out-dir': { type: 'string' },
       version: { type: 'string', default: '0.1.0' }, scope: { type: 'string', default: '@legios' },
-      name: { type: 'string', default: 'blackice' },
+      name: { type: 'string', default: '@legios/blackice' },
     } });
     const result = prepare({ releaseDir: values['release-dir'], outDir: values['out-dir'], ...values });
     console.log(json(result));
