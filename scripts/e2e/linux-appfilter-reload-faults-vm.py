@@ -168,14 +168,19 @@ def main():
         committed = a.mode in ('after_validation', 'after_intent')
         expected_generation = generation + committed
         expected_hash = new_hash if committed else old_hash
-        end = time.monotonic() + 12
+        recovery_started = time.monotonic()
+        # The reviewed unit backs off failed restarts up to 60 seconds. This
+        # separate recovery budget never extends the five-second child exchange.
+        end = recovery_started + 75
         while True:
-            answer = subprocess.run([str(a.cli), 'app', 'status'], capture_output=True, text=True, timeout=20)
+            vm.require(time.monotonic() < end, 'recovery exceeded the restart-backoff budget')
+            answer = subprocess.run([str(a.cli), 'app', 'status'], capture_output=True, text=True, timeout=max(0.1, end - time.monotonic()))
             if answer.returncode == 0 and answer.stdout.startswith(f'OK armed gen={expected_generation} '):
                 report['status'] = answer.stdout.strip()
                 break
             vm.require(time.monotonic() < end, f'recovery failed: {answer.stdout} {answer.stderr}')
             time.sleep(0.2)
+        report['recovery_wait_seconds'] = time.monotonic() - recovery_started
         state = vm.lookup('state')
         vm.require(vm.state_hash(state) == expected_hash, 'kernel does not follow committed intent')
         raw = vm.decode_bytes(state['value'])

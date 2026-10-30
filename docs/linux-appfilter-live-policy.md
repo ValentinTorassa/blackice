@@ -205,12 +205,14 @@ period, with exactly one `policy_narrowed` receipt at the new generation. The
 still-allowed stream must continue transferring body bytes. Remote HTTP errors
 and stalled endpoints fail the test; they are not enforcement evidence.
 
-Run independent VM cases with a fresh systemd start budget. The unchanged
-`StartLimitIntervalSec=600` / `StartLimitBurst=5` limit counts successful socket
-activations too, including off-state status requests. A test operator may reset
-the failed/start budget between isolated cases in VM3; the test drivers do not
-reset it inside a case or hide a restart loop. Preserve any rate-limit failure
-and its journal before rerunning. Do not loosen the installed unit's limit.
+The reviewed unit restarts failures with a one-to-60-second backoff over five
+steps. `StartLimitIntervalSec=600` / `StartLimitBurst=60` is a backstop; successful
+off-state control requests also count as starts. Recovery tests allow 75 seconds
+for that separate restart budget. The child exchange still has its total
+five-second deadline. A test operator may reset the start budget between isolated
+VM3 cases; the drivers do not reset it inside a case or hide a restart loop.
+Preserve any rate-limit failure and its journal before rerunning. Do not loosen
+the installed unit's limits.
 
 Crash testing has a separate opt-in build:
 

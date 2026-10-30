@@ -154,12 +154,15 @@ def main():
         old_pid = vm.command(['systemctl', 'show', 'blackice-appfilter.service', '-p', 'MainPID', '--value']).strip()
         kill_code = 'import os,signal,socket,subprocess,sys; assert socket.gethostname()=="test3-vm"; fd=os.pidfd_open(int(sys.argv[1])); assert subprocess.check_output(["systemctl","show","blackice-appfilter.service","-p","MainPID","--value"],text=True).strip()==sys.argv[1]; signal.pidfd_send_signal(fd,signal.SIGKILL); os.close(fd)'
         vm.command(['sudo', '-n', '/usr/bin/python3', '-c', kill_code, old_pid])
-        end = time.monotonic() + 10
+        recovery_started = time.monotonic()
+        end = recovery_started + 75  # reviewed unit: restart backoff up to 60s
         while True:
-            answer = subprocess.run([str(a.cli), 'app', 'status'], capture_output=True, text=True, timeout=10)
+            vm.require(time.monotonic() < end, 'retirement recovery exceeded the restart-backoff budget')
+            answer = subprocess.run([str(a.cli), 'app', 'status'], capture_output=True, text=True, timeout=max(0.1, end - time.monotonic()))
             if answer.returncode == 0 and answer.stdout.startswith('OK armed gen=4 '): break
             vm.require(time.monotonic() < end, 'retirement recovery did not complete')
             time.sleep(0.2)
+        report['recovery_wait_seconds'] = time.monotonic() - recovery_started
         vm.require(vm.tag(original.pid) == 1, 'restart lost the retired process tag')
         probe(original, 'tls', False)
         time.sleep(0.3)
