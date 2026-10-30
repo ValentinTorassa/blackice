@@ -136,6 +136,12 @@ the owner re-arms, status says `disarmed_by_reboot`; missing pins during the sam
 `disarmed_pins_missing`. Rearming another policy first requires authorized `off`, even after reboot.
 A partially completed off reports `stopping_partial` and retains its stopping phase until cleanup succeeds.
 
+The loopback listeners set `SO_REUSEADDR` before binding so a restart can reuse a port whose earlier
+connections remain in `TIME_WAIT`. They do not enable `SO_REUSEPORT`: an existing live listener must still
+make arming or recovery refuse. The dedicated IPv4/IPv6 socket test checks the options, observes server-side
+`TIME_WAIT`, rebinds immediately and rejects a competing live listener. It is compiled separately from the
+pure unit suite and runs only in a disposable QEMU VM; the full crash/restart check still belongs to the VM gate.
+
 ## Limits to review before installation
 
 - Fresh arming requires the five user.slice hooks and the two root connect hooks to be vacant. Restart also
