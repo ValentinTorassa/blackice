@@ -137,7 +137,7 @@ key out of the scope; it does not decide what content may be sent to the model.
 | Block absolute, `~` and `..` paths in fx's file tools in blackice mode; refuse when blackice, the policy or fx is inside the workspace (b88c52e) | lead | done | |
 | Protect fx's existing profile files in every scope; start no MCP servers in blackice mode (08e34f3) | lead | done | |
 | Relay token: random per relay, exported as `BLACKICE_RELAY_TOKEN`, sent by fx as a bearer token | network | done | |
-| End-to-end scripts in `scripts/e2e/` (`linux-run.sh`, `linux-grant.sh`, `fx-l0.sh`), PASS, FAIL or NOT RUN per check | network | done | |
+| End-to-end scripts in `scripts/e2e/` (`linux-run.sh`, `linux-grant.sh`, `fx-l0.sh`, `linux-offhost.sh`, `grant-expiry.sh`), PASS, FAIL, NOT RUN, LIMIT or CHANGED per check; declared limits count apart from failures (db1ff91) | network | done | |
 | Relay: loopback endpoint, key on stdin, forwarding to the gateway | network | done | |
 | Relay limits: model allow list, size cap, request cap, one receipt per call | network | done | |
 | Relay header checks (`Origin`, `Sec-Fetch-*`, `Host`, `Content-Type`) | network | done | |

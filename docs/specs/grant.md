@@ -84,6 +84,8 @@ the operating system rules, which keep allowing only the proxy and relay ports.
 | Close plain HTTP requests at grant expiry or revoke | network | done | |
 | Reset, not drain, connections when a grant ends (`SO_LINGER` 0), so queued bytes stop at expiry (de93f22) | network | done | |
 | `ip` and `port` in `grant_expired` and `grant_revoked` receipts (afe126d; P0-05 at 58b9491 predates it) | network | done | |
+| `scripts/e2e/grant-expiry.sh` for P0-05 on Linux and macOS (b51a7aa) | network | done | |
+| P0-05 on Linux, after the helper install | network | todo | the 07:00 install |
 | `blackice grant` and `blackice revoke` commands (PR #7) | lead | done | |
 | Grant, revoke and expiry receipts; granted decisions name the grant | network | done | |
 | Show on macOS that a scoped process cannot reach the control socket | lead | done | |
