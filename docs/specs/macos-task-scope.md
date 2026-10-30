@@ -83,6 +83,12 @@ or addresses, only "any host" or "localhost", so every decision about names happ
   - The proxy port: what happens if the proxy restarts or another local process takes its port, and how one
     scope's proxy is kept from serving another, belong to [proxy](proxy.md) and are untested.
   - Inherited sockets (R7) are untested.
+  - The pasteboard is shared: a command in a scope read a value copied outside it (`pbcopy`/`pbpaste`, a
+    synthetic value, reported by the lead on 58e73cc). blackice limits the network, not the clipboard.
+  - Reading another process's environment from a scope was refused the two ways tried: `/bin/ps` (setuid)
+    does not start inside a scope, and `sysctl` `KERN_PROCARGS2` returns the arguments without the
+    environment, inside a scope and outside alike (lead's probe). Other paths, such as a debugger attach,
+    are untested.
   - Sandbox refusals reach the receipts by reading the kernel log (`log stream`, filtered to the scope's tag).
     Other processes of the same user can tag their own profiles, so receipts can be added to but not removed;
     bursts lose lines in the kernel log (239 of 300 in a tight loop), and repeats of one refusal are folded
