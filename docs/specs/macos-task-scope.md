@@ -34,7 +34,7 @@ control that a signed Network Extension will provide later (see [app-scopes](app
 | macos-task-scope.R9 | When the same policy and the same test destinations run in a macOS and a Linux task scope, blackice shall reach the same verdict for each destination. The receipts may differ only in the enforcement point. | P0-08 |
 | macos-task-scope.R10 | A process inside a macOS task scope shall not be able to write the blackice state directory: receipts, the policy copy or the control socket. | P0-04 |
 | macos-task-scope.R11 | A process inside a macOS task scope shall not be able to bind a socket or accept a connection on any address, loopback included: task scopes are clients only. | P0-02 |
-| macos-task-scope.R12 | When the sandbox refuses something a process in the scope tried, blackice shall write a `kernel_drop` receipt with a reason (`loopback_proxy_only`, `clients_only`, `protected_path`, `launch_outside_scope`, or `seatbelt_refused` with the raw line when it cannot be parsed). If receipts are folded, lost or cannot be read, it shall say so in a `warning` receipt (`kernel_receipts_folded`, `kernel_receipts_lost`, `kernel_receipts_off`). | P0-02 |
+| macos-task-scope.R12 | When the sandbox refuses something a process in the scope tried, and macOS logs that refusal, blackice shall write a `kernel_drop` receipt with a reason (`loopback_proxy_only`, `clients_only`, `protected_path`, `launch_outside_scope`, or `seatbelt_refused` with the raw line when it cannot be parsed). If receipts are folded, lost or cannot be read, it shall say so in a `warning` receipt (`kernel_receipts_folded`, `kernel_receipts_lost`, `kernel_receipts_off`). | P0-02 |
 
 ## Design
 
@@ -86,8 +86,13 @@ or addresses, only "any host" or "localhost", so every decision about names happ
   - Sandbox refusals reach the receipts by reading the kernel log (`log stream`, filtered to the scope's tag).
     Other processes of the same user can tag their own profiles, so receipts can be added to but not removed;
     bursts lose lines in the kernel log (239 of 300 in a tight loop), and repeats of one refusal are folded
-    and counted. In the P0-04 run, the refused connect to the control socket left no receipt, and a
-    follow-up `log show` found no sandbox line for it. The cause is being checked.
+    and counted.
+  - macOS logs a sandbox refusal only when the refused process is an Apple-signed binary (`curl`, `nc`,
+    `python3`, `git`, ...). Refusals of other binaries (third-party, self-built, blackice itself) are still
+    enforced, but leave no log line, so no `kernel_drop` receipt, and the end-of-scope check cannot detect the
+    gap. Found when blackice's own connect to the control socket in P0-04 left no receipt while the same
+    connect from `python3` did; a locally built C probe behaved like blackice. `(with report)` and
+    `(debug deny)` do not change it.
   - The state root's parent directories are also denied rename, hard links to files in the state root are refused,
     and the root is checked by its real path. An earlier build let a command rename a parent and then write
     its own receipts.

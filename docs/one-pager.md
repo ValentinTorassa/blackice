@@ -66,6 +66,8 @@ HTTPS through the proxy, observe mode, and recovery after faults.
   where a test shows it; otherwise it is a stated limit.
 - An allowed name on a shared CDN can reach other sites on that CDN through domain fronting inside TLS: the
   proxy checks the TLS server name, not the encrypted request.
+- On macOS, a connection the sandbox refuses leaves a receipt only when the refused program is signed by Apple;
+  other programs are still blocked, without a receipt.
 - Receipts are a local record for diagnosis. Other programs of the same user, and administrators, can change
   them. The scoped command itself is designed not to write them: on macOS that held in probes, without an
   evidence entry yet; on Linux it is not yet tested.
