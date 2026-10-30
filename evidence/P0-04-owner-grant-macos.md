@@ -99,10 +99,12 @@ Enforcement points:
 - **Self-grant: the Seatbelt profile (OS).** The socket file is visible from inside, mode 0600 and owned by the
   same user, but connecting to it fails with PermissionDenied (EPERM), while the same connect from outside the
   scope works (the owner's grant). The scope's profile denies every outbound network operation except TCP to
-  the scope's own localhost ports (`(deny network-outbound)` plus one allow per port), and denies writes under
-  the state root. **No kernel_drop receipt was written for this refusal**, and the cause is not established.
-  The evidence is the PermissionDenied error, exit 1, the absence of any grant receipt from inside, and
-  github.com still answering 403 afterwards. See the follow-up check below.
+  the scope's own localhost ports (`(deny network-outbound)` plus one allow per port), and a connect to a Unix
+  socket is refused under that rule (see the follow-up check). **There is no kernel_drop receipt for this
+  refusal: macOS wrote no Sandbox log line for it.** macOS does not log Sandbox refusals of binaries that are
+  not Apple-signed, and blackice is ad-hoc signed. A python3 connect to the same socket under the same rule was
+  logged and receipted. The evidence for the self-grant is therefore the PermissionDenied error, exit 1, the
+  absence of any grant receipt from inside, and github.com still answering 403 afterwards.
 - **Owner grant: the control socket and the proxy.** The control socket records the owner's grant
   (`owner_grant`, with the caller's pid and the end time). The proxy then lets github.com through with reason
   `granted` and rule `grant:github.com`, and refuses www.github.com (`no_matching_rule`): a grant covers one
@@ -110,27 +112,48 @@ Enforcement points:
 - **End of scope.** The control socket is removed with the scope, and a later grant finds nothing to connect
   to.
 
-Follow-up check, 06:51 UTC, same Mac and build. One more scope (`s-e57861aa`) that only runs the self-grant,
-then the Sandbox log for that minute:
+Follow-up checks on the same Mac and build, each a new scope:
 
-```sh
-blackice run --policy policy.json -- /bin/bash -c '"$1" grant "$BLACKICE_SCOPE" github.com --for 1m; echo self-grant-exit=$?' inner /tmp/ns-net/blackice
-/usr/bin/log show --last 5m --style compact --predicate 'sender == "Sandbox"' | grep -B3 -A1 'blackice s-e57861aa'
-```
+1. 06:51 UTC, scope `s-e57861aa`, running only the self-grant. Then the Sandbox log for that minute:
 
-The self-grant failed the same way (`PermissionDenied`, `self-grant-exit=1`), and the scope's receipts are
-scope_start, backend_armed and scope_end only. The only Sandbox log lines tagged with the scope are blackice's
-own start and end probes (a sandboxed curl to 127.0.0.1:9; see `src/macos/kernel_log.zig`):
+   ```sh
+   blackice run --policy policy.json -- /bin/bash -c '"$1" grant "$BLACKICE_SCOPE" github.com --for 1m; echo self-grant-exit=$?' inner /tmp/ns-net/blackice
+   /usr/bin/log show --last 5m --style compact --predicate 'sender == "Sandbox"' | grep -B3 -A1 'blackice s-e57861aa'
+   ```
 
-```
-2026-10-30 03:51:02.307 E  kernel[0:44465] (Sandbox) Sandbox: curl(8879) deny(1) network-outbound remote:*:9
-blackice s-e57861aa
-2026-10-30 03:51:02.330 E  kernel[0:445a8] (Sandbox) Sandbox: curl(8882) deny(1) network-outbound remote:*:9
-blackice s-e57861aa
-```
+   The self-grant failed the same way (`PermissionDenied`, `self-grant-exit=1`). The only Sandbox lines tagged
+   with the scope are blackice's own start and end probes (a sandboxed curl to 127.0.0.1:9; see
+   `src/macos/kernel_log.zig`). There is no line for the Unix-socket connect:
 
-There is no Sandbox line for the Unix-socket connect. The missing receipt is therefore not a line the reader
-skipped: the kernel log has no such line.
+   ```
+   2026-10-30 03:51:02.307 E  kernel[0:44465] (Sandbox) Sandbox: curl(8879) deny(1) network-outbound remote:*:9
+   blackice s-e57861aa
+   2026-10-30 03:51:02.330 E  kernel[0:445a8] (Sandbox) Sandbox: curl(8882) deny(1) network-outbound remote:*:9
+   blackice s-e57861aa
+   ```
+
+2. 06:53 UTC, scope `s-bab51b00`: the Apple-signed python3 from the Command Line Tools connects to the same
+   control socket first, then blackice tries its self-grant:
+
+   ```sh
+   blackice run --policy policy.json -- /bin/bash -c 'sock=$XDG_STATE_HOME/blackice/scopes/$BLACKICE_SCOPE/control.sock
+     /Library/Developer/CommandLineTools/usr/bin/python3 -I -c "import socket,sys; s=socket.socket(socket.AF_UNIX); s.connect(sys.argv[1])" "$sock" 2>&1 | tail -1
+     "$1" grant "$BLACKICE_SCOPE" github.com --for 1m; echo self-grant-exit=$?' inner /tmp/ns-net/blackice
+   ```
+
+   Both are refused (`PermissionError: [Errno 1] Operation not permitted`, then `PermissionDenied`,
+   `self-grant-exit=1`). Only python3's refusal is in the Sandbox log, and only it has a receipt:
+
+   ```
+   2026-10-30 03:53:49.675 E  kernel[0:46704] (Sandbox) Sandbox: Python(9084) deny(1) network-outbound /private/tmp/ns-net/state-cause-1793343229/blackice/scopes/s-bab51b00/control.sock
+   ```
+   ```
+   {"ts":"2026-10-30T06:53:49.679Z","scope":"s-bab51b00","policy":"b0aa1758b9c7","gen":1,"point":"kernel","event":"kernel_drop","verdict":"deny","reason":"loopback_proxy_only","detail":"backend=seatbelt op=network-outbound target=/private/tmp/ns-net/state-cause-1793343229/blackice/scopes/s-bab51b00/control.sock process=Python pid=9084"}
+   ```
+
+   `codesign -dv` shows python3 signed with a team identifier, and blackice `Signature=adhoc` (linker-signed).
+   The lead's separate check on this Mac fits the same rule: a C probe built locally with cc and connecting to
+   127.0.0.1:9 was not logged, while curl was.
 
 **Receipts.** `s-a388327c`, verbatim:
 
@@ -153,8 +176,9 @@ receipt between them.
 **Limits.**
 - In v0, any process of the same user outside every scope counts as the owner. The grant came from such a
   process (pid 8260). There is no separate owner credential.
-- The self-grant refusal is shown by its error and its effects, not by a kernel receipt. Why the Sandbox log
-  has no line for it is not established (see the follow-up check).
+- The self-grant refusal is shown by its error and its effects, not by a kernel receipt. macOS writes no
+  Sandbox log line for refusals of binaries that are not Apple-signed, so blackice's own refusals never get
+  kernel_drop receipts on macOS. Commands such as curl and python3 do (see the follow-up checks).
 - The grant's expiry and the closing of live connections are P0-05, not shown here (the scope ended before the
   2-minute grant did).
 - One run, by the person who built it. Not a recording.
