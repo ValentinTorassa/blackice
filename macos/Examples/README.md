@@ -9,14 +9,15 @@ app-selector fields to the unchanged `blackice.policy/v0` format.
 | --- | --- | --- |
 | `probe-service-only.json` | Blackice Probe, `com.valentorassa.blackice.probe` | Allow `example.com:443`; exclude the `httpbingo.org` test role. Bind the enrolled owner's actual Team ID. |
 | `netnewswire-feeds.json` | NetNewsWire | Starting policy for public Swift/NetNewsWire feeds; inspect the installed app's exact signing identity and discover its actual hostnames before binding it. |
-| `demo-apps.json` | Firefox (`app-firefox`) and VS Code (`app-vscode`) | Legacy syntax fixture with explicit identity pairs and embedded policy hashes; **not per-domain evidence** for these networking stacks. |
-| `firefox-mozilla-only.json`, `vscode-without-crash-telemetry.json` | The matching app in `demo-apps.json` | Original policy-byte fixtures used by that wrapper; no claim of live enforcement. |
+| Generated `demo-apps.json` (recipe below) | Blackice Probe and NetNewsWire | Exact original policy bytes/hashes and the actual enrolled/inspected signing identities, with `unmatched: allow`. |
 | `deny-all.json`, `allow-test-subnet.json` | The synthetic `com.example.probe` binding in the guide | Parser/evaluator fixtures; the subnet example uses documentation addresses. |
 
 The [probe guide](../Probe/README.md#policy-and-evidence) shows how to build the
 named probe wrapper without activating it. No example invents Valen's Team ID or
 an installed NetNewsWire identity. An unsigned/ad hoc probe follows unmatched
 allow and cannot prove an app binding.
+The generated two-app wrapper belongs in the private workspace below; it is
+not checked in with placeholder or unverified signing identities.
 
 ## Probe and NetNewsWire in one configuration
 
@@ -36,9 +37,9 @@ APP=./macos/build/Blackice.app/Contents/MacOS/BlackiceApp
 "$APP" make-config --generation 2 --unmatched allow --hostname-mode os-metadata \
   --app macos/Examples/probe-service-only.json "$PROBE_TEAM_ID" com.valentorassa.blackice.probe app-probe \
   --app macos/Examples/netnewswire-feeds.json "$NEWS_TEAM_ID" "$NEWS_SIGNING_ID" app-netnewswire \
-  > "$MULTI_WORK/apps.json"
-"$APP" validate "$MULTI_WORK/apps.json"
-jq '{generation, unmatched, hostname_mode, apps: [.apps[] | {scope, signing_id, policy: (.policy_json | fromjson | .network)}]}' "$MULTI_WORK/apps.json"
+  > "$MULTI_WORK/demo-apps.json"
+"$APP" validate "$MULTI_WORK/demo-apps.json"
+jq '{generation, unmatched, hostname_mode, apps: [.apps[] | {scope, signing_id, policy: (.policy_json | fromjson | .network)}]}' "$MULTI_WORK/demo-apps.json"
 ```
 
 Generation 2 is an example, not an automatic read of installed state. Choose a
@@ -51,8 +52,8 @@ git diff -- macos/Examples/netnewswire-feeds.json
 "$APP" make-config --generation 3 --unmatched allow --hostname-mode os-metadata \
   --app macos/Examples/probe-service-only.json "$PROBE_TEAM_ID" com.valentorassa.blackice.probe app-probe \
   --app macos/Examples/netnewswire-feeds.json "$NEWS_TEAM_ID" "$NEWS_SIGNING_ID" app-netnewswire \
-  > "$MULTI_WORK/apps-next.json"
-"$APP" validate "$MULTI_WORK/apps-next.json"
+  > "$MULTI_WORK/demo-apps-next.json"
+"$APP" validate "$MULTI_WORK/demo-apps-next.json"
 ```
 
 The builder preserves each policy's bytes, recalculates its original-byte

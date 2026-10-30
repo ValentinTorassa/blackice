@@ -462,8 +462,12 @@ and [notarization guidance](https://developer.apple.com/documentation/security/n
 
 The owner's exact portal, certificate and keychain steps are in
 [`macos-apple-setup.txt`](macos-apple-setup.txt). Nothing has been signed,
-submitted to Apple, installed or activated by this preparation. Enrollment and
-security review must finish before the owner runs the following manual recipe.
+submitted to Apple, installed or activated by this preparation. Payment is not
+enrollment approval: the owner must receive Apple's approval email and confirm
+active membership. The checklist targets about 20 minutes of owner work after
+the unsigned preflight, excluding Apple's processing/wait time. Enrollment,
+current Mac build/tests and security review must finish before the owner runs
+the following manual recipe.
 `build.sh` and `test.sh` never invoke the signing script.
 
 ```sh
@@ -656,11 +660,12 @@ Firefox are not domain-rule demonstration targets: their networking stacks and
 helpers do not establish the required OS hostname metadata. IP/subnet rules are
 a separate capability.
 
-The older [`demo-apps.json`](../macos/Examples/demo-apps.json) with Firefox and
-VS Code remains a **configuration syntax fixture only**, not evidence that those
-apps can satisfy domain rules. Its default is now `unmatched: allow`, and its
-embedded network policies/hashes remain unchanged. Do not use it as the live
-per-domain demonstration.
+Generate the demo's `demo-apps.json` with the
+[two-app recipe](../macos/Examples/README.md#probe-and-netnewswire-in-one-configuration):
+only the probe and NetNewsWire, their original policy bytes and hashes, their
+actual signing identity pairs, and `unmatched: allow`. The wrapper stays in a
+private temporary workspace. There is no checked-in demo wrapper with guessed
+owner or NetNewsWire identities.
 
 ### Defaults and recovery
 
@@ -786,8 +791,8 @@ filter decision, identity, authorization and receipt-emission code is unchanged.
 The Mac was unreachable for a fresh run, so the 351-assertion/build result above
 is prior evidence and does not validate the new command or probe. The signing
 preparation has eighteen passing offline Python tests, including path rejection,
-probe isolation and both pipelines' failure gates. The example wrapper's
-original-byte hashes and `jq` stream parser were checked locally; stream input
+probe isolation and both pipelines' failure gates. Example JSON and the
+`jq` stream parser were checked locally; stream input
 was synthetic, not a captured provider receipt. Mac build/tests for the complete
 current branch, host validation of the new command, compiling/running the probe,
 and signing with real Apple profiles remain pending. No credentials or keychain

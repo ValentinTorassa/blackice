@@ -1,67 +1,129 @@
-Blackice: Apple setup for the owner (prepared, not executed)
+Blackice: owner checklist after Apple approval (prepared, not executed)
 
-Wait for individual Apple Developer Program enrollment to be active. Security
-must review appfilter/demo-prep before any signing. No installation, activation,
-profile import or keychain change has been performed by these preparation steps.
+Steps 1-5 start only after the owner forwards Apple's enrollment approval email
+and the Developer account shows active membership. A payment receipt is not
+approval. The unsigned preflight below can run before enrollment; signing also
+requires security clearance and passing Mac build/tests for the exact checkout.
+No certificate/keychain operation, signing, submission, install or activation has
+been performed by this preparation. The owner performs the portal/UI steps.
 
-1. Sign in at https://developer.apple.com/account/ as the Account Holder.
-   In Membership details, record the ten-character Team ID. It is not an App ID
-   or an Apple Account email address.
+Plan for about 20 minutes of owner work after the unsigned preflight below.
+Enrollment, portal availability, downloads and Apple's notarization processing
+are external waits, so finished notarization is not promised within 20 minutes.
+Stop on a failed step; do not continue with partial output.
 
-2. Certificates, Identifiers & Profiles > Identifiers > + > App IDs > App.
-   Register two explicit bundle IDs (not wildcards):
+Before the timed session: unsigned preflight from the reviewed checkout root.
+Compare git rev-parse HEAD with the full commit cleared by security. Keep this
+terminal and APPLE_WORK for every later step; its path is private and temporary.
+Current preparation still awaits a Mac build of the new probe/config builder.
+
+  APPLE_WORK="$(mktemp -d /private/tmp/blackice-apple.XXXXXX)"
+  (
+    set -e
+    test -z "$(git status --porcelain)"
+    git rev-parse HEAD > "$APPLE_WORK/source-commit.txt"
+    xcrun --find swiftc
+    xcrun --find notarytool
+    xcrun --find stapler
+    /usr/bin/python3 macos/Tests/test_signing.py
+    ./macos/build.sh "$APPLE_WORK/build"
+    ./macos/test.sh "$APPLE_WORK/tests"
+    ./macos/build-probe.sh "$APPLE_WORK/probe-build"
+    ./macos/test-probe.sh "$APPLE_WORK/probe-tests"
+    "$APPLE_WORK/probe-build/BlackiceProbe.app/Contents/MacOS/BlackiceProbe" --check https://example.com/ https://httpbingo.org/status/200
+  )
+
+This compiles/tests and checks URL syntax only: it makes no probe request and
+opens no window. Do not sign until every command succeeds. Missing Apple tools
+must be resolved through the owner's normal Apple tool installation first.
+
+1. Account and App IDs (roughly minutes 0-4).
+   Sign in at https://developer.apple.com/account/ as Account Holder. In Membership
+   details, record the ten-character Team ID (not an email or App ID).
+   Certificates, Identifiers & Profiles > Identifiers > + > App IDs > App.
+   Register these two explicit IDs:
      Host:      com.valentorassa.blackice
      Extension: com.valentorassa.blackice.filter
-   The extension's directory ends in .systemextension; that suffix is NOT part
-   of its CFBundleIdentifier. Keep the IDs above consistent with Resources/*.plist.
-   Enable Network Extensions for BOTH IDs. The required Developer ID entitlement
-   value is content-filter-provider-systemextension, not content-filter-provider.
-   The HOST also needs System Extension installation capability, represented by
-   com.apple.developer.system-extension.install = true. In Xcode this is the
-   System Extension capability; our Host.entitlements already declares it.
-   Enable System Extensions for the host if the portal presents that checkbox.
-   The extension does not install other extensions and does not claim this key.
-   No Endpoint Security entitlement or App Group is needed for this build.
-   The separate evidence probe uses com.valentorassa.blackice.probe. It is an
-   ordinary app with no restricted capabilities; it needs no Network Extension
-   provisioning profile. sign-notarize.sh accepts it through --probe-app, using
-   the same identity but no host/extension profile or entitlements. Its later
-   signing recipe is in macos/Probe/README.md.
+   Enable Network Extensions for BOTH. The required profile entitlement value
+   is content-filter-provider-systemextension, not content-filter-provider.
+   The host also claims com.apple.developer.system-extension.install = true;
+   enable System Extensions for that ID if the portal presents the checkbox.
+   The extension needs no install entitlement. Neither needs Endpoint Security
+   or an App Group. The .systemextension directory suffix is NOT part of its ID.
+   The probe is com.valentorassa.blackice.probe: an ordinary app with no restricted
+   capabilities, so it needs no Network Extension profile or extra capability.
 
-3. On the Mac, use Keychain Access > Certificate Assistant > Request a
-   Certificate from a Certificate Authority. Enter the owner email and a key
-   name, leave CA Email Address empty, and save the CSR to disk outside the repo.
-   In the portal: Certificates > + > Developer ID > Developer ID Application.
-   Upload the CSR, generate/download the .cer, and import it into the same Mac's
-   login keychain. Its private key stays there. Do not choose Developer ID
-   Installer, Apple Development, or Mac App Distribution. Record the exact
-   identity name: Developer ID Application: OWNER NAME (TEAM_ID).
+2. Developer ID Application certificate (roughly minutes 4-9).
+   On this Mac: Keychain Access > Certificate Assistant > Request a Certificate
+   from a Certificate Authority. Enter the owner email and key name, leave CA
+   Email Address empty, save the CSR outside Git (APPLE_WORK is suitable).
+   Portal: Certificates > + > Developer ID > Developer ID Application. Upload
+   that CSR, generate and download the .cer, then import it into the SAME Mac's
+   login keychain. Verify My Certificates shows its associated private key.
+   Keep the private key in the keychain; no .p12 export is needed. Record the exact
+   identity: Developer ID Application: OWNER NAME (TEAM_ID). Do not select
+   Developer ID Installer, Apple Development or Mac App Distribution.
 
-4. Profiles > + > Distribution > Developer ID. Select the HOST App ID and the
-   Developer ID Application certificate from step 3. Generate/download a profile
-   named Blackice Host Developer ID. Repeat for the EXTENSION App ID, naming its
-   profile Blackice Filter Developer ID. Keep both .provisionprofile files
-   outside the repo. If capabilities were changed after profile creation,
-   regenerate the profiles. Each must authorize the exact ID, that team and
-   certificate, and content-filter-provider-systemextension. A development or
-   App Store profile cannot substitute. If Developer ID profiles are unavailable,
-   finish enrollment/role setup with Apple; do not bypass the profile requirement.
+3. Two Developer ID provisioning profiles (roughly minutes 9-13).
+   Portal: Profiles > + > Distribution > Developer ID. Select the host's exact
+   App ID and the certificate from step 2. Generate/download the host profile.
+   Repeat for the extension ID with the same certificate. Save them as:
+     $APPLE_WORK/Blackice-Host.provisionprofile
+     $APPLE_WORK/Blackice-Filter.provisionprofile
+   Each must authorize its exact ID, the same team/certificate and the Network
+   Extension entitlement above. Regenerate after any capability change. Keep
+   profiles outside Git; the script embeds them in the appropriate copied bundle.
+   If Developer ID profiles or the required capability are unavailable, stop and
+   resolve the account/capability with Apple. Do not substitute a development,
+   wildcard or App Store profile. The probe receives neither of these profiles.
 
-5. Check tool availability (read-only):
-     xcrun --find notarytool
-     xcrun --find stapler
-   Current Command Line Tools include notarytool; no project in Xcode is needed.
-   On the owner's Mac, create a notary keychain profile interactively:
+4. Notary keychain profile (roughly minutes 13-16, off camera).
+   Replace the two public identity placeholders, then run:
      xcrun notarytool store-credentials blackice-notary --apple-id OWNER_APPLE_ID --team-id TEAM_ID
-   Enter an Apple Account app-specific password ONLY at the tool's prompt. Obtain
-   it from the owner's Apple Account security page if needed. Never put it in
-   command arguments, shell variables, environment variables, a file in the repo,
-   chat or a recording. The release script accepts only the keychain profile name.
+   At the tool's interactive prompt only, the owner enters an Apple Account
+   app-specific password. Obtain it from Apple Account > Sign-In and Security >
+   App-Specific Passwords if needed. Never put it in arguments, environment,
+   shell variables, Git, chat or a recording. Wait for credential validation and
+   confirmation of storage. Later calls use only --keychain-profile blackice-notary.
 
-6. Stop here until security clears the branch and the owner authorizes signing.
-   Build and tests remain unsigned. The later manual invocation and its exact
-   inputs are in docs/macos-app-filter.md under Signing preparation. A notarized
-   app is still not installed or active; those are separate owner actions.
+5. Sign and submit both apps (roughly minutes 16-20 plus Apple processing).
+   Only after the owner authorizes signing and security has cleared this exact
+   revision, replace TEAM_ID and the complete identity name below. Profile paths
+   already refer to the private files saved in step 3. The output must not exist.
+
+  (
+    set -e
+    test -z "$(git status --porcelain)"
+    test "$(git rev-parse HEAD)" = "$(cat "$APPLE_WORK/source-commit.txt")"
+    ./macos/sign-notarize.sh \
+      --team-id TEAM_ID \
+      --identity 'Developer ID Application: OWNER NAME (TEAM_ID)' \
+      --host-profile "$APPLE_WORK/Blackice-Host.provisionprofile" \
+      --extension-profile "$APPLE_WORK/Blackice-Filter.provisionprofile" \
+      --keychain-profile blackice-notary \
+      --app "$APPLE_WORK/build/Blackice.app" \
+      --probe-app "$APPLE_WORK/probe-build/BlackiceProbe.app" \
+      --output "$APPLE_WORK/notarized"
+  )
+
+The script checks input ownership/modes, the identity and profiles, and prints
+all three unsigned executable SHA-256 values before signing. It signs the nested
+extension before the host, with hardened runtime and the reviewed entitlements.
+The same identity signs the probe, without NE entitlements or a profile. Each
+app is submitted separately with notarytool --keychain-profile --wait. Each must
+be Accepted, stapled, codesign --verify --strict --deep verified, spctl -a -vv
+accepted and stapler validate verified. The final archives are made AFTER staples:
+  $APPLE_WORK/notarized/Blackice-notarized.zip
+  $APPLE_WORK/notarized/BlackiceProbe-notarized.zip
+Keep source-commit.txt, both unsigned-hash files and both notary-result JSON files
+with the local evidence. Partial output or In Progress/Invalid is not success.
+No command above installs, activates or opens either app; stop at these archives.
+
+Demo configuration: macos/Examples/README.md generates demo-apps.json for ONLY
+the probe and NetNewsWire from their real signing identities, always unmatched:
+allow. Do not guess Team IDs or bind browser helpers for this demo. Receipt-file
+implementation/review and signed enforcement/recovery evidence remain separate
+gates before an app-scope demo or operational claim.
 
 Apple references checked for these steps:
 https://developer.apple.com/help/account/identifiers/register-an-app-id/
@@ -69,5 +131,6 @@ https://developer.apple.com/help/account/certificates/create-a-certificate-signi
 https://developer.apple.com/help/account/certificates/create-developer-id-certificates/
 https://developer.apple.com/documentation/bundleresources/entitlements/com.apple.developer.networking.networkextension
 https://developer.apple.com/documentation/bundleresources/entitlements/com.apple.developer.system-extension.install
-https://developer.apple.com/forums/thread/737894
 https://developer.apple.com/documentation/technotes/tn3147-migrating-to-the-latest-notarization-tool
+https://developer.apple.com/documentation/security/customizing-the-notarization-workflow
+https://support.apple.com/102654
