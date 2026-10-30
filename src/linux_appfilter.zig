@@ -26,4 +26,5 @@ test "appfilter units register only pure fixtures" {
     _ = @import("linux/apps/polkit.zig");
     _ = @import("linux/apps/unlisted.zig");
     _ = @import("linux/apps/unlisted_programs.zig");
+    _ = @import("linux/apps/unlisted_kernel.zig");
 }

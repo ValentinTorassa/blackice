@@ -10,7 +10,7 @@ const a = @import("assembler.zig");
 pub const pin_root = "/run/blackice-appfilter/bpf";
 pub const cgroup_path = "/sys/fs/cgroup/user.slice";
 pub const root_cgroup_path = "/sys/fs/cgroup";
-const Map = struct { name: [:0]const u8, kind: bpf.MapType, key: u32, value: u32, count: u32 };
+pub const Map = struct { name: [:0]const u8, kind: bpf.MapType, key: u32, value: u32, count: u32 };
 const maps = [_]Map{
     .{ .name = "state", .kind = .array, .key = 4, .value = @sizeOf(abi.State), .count = 1 },
     .{ .name = "files", .kind = .hash, .key = @sizeOf(abi.FileKey), .value = 4, .count = 4096 },
@@ -199,7 +199,7 @@ pub const Loaded = struct {
     }
 };
 
-fn load(code: *const a.Program, kind: bpf.ProgType, attach_type: bpf.AttachType, btf_id: u32, name: []const u8, verifier: []u8) !l.fd_t {
+pub fn load(code: *const a.Program, kind: bpf.ProgType, attach_type: bpf.AttachType, btf_id: u32, name: []const u8, verifier: []u8) !l.fd_t {
     try a.validate(code);
     @memset(verifier, 0);
     var attr: bpf.Attr = .{ .prog_load = std.mem.zeroes(bpf.ProgLoadAttr) };
@@ -223,7 +223,7 @@ fn load(code: *const a.Program, kind: bpf.ProgType, attach_type: bpf.AttachType,
     try verifyProgram(fd, code, kind, btf_id);
     return fd;
 }
-const ProgInfo = extern struct {
+pub const ProgInfo = extern struct {
     kind: u32,
     id: u32,
     tag: [8]u8,
@@ -271,12 +271,12 @@ fn getInfo(fd: l.fd_t, value: anytype) !void {
     var attr: bpf.Attr = .{ .info = .{ .bpf_fd = fd, .info_len = @intCast(@sizeOf(@TypeOf(value.*))), .info = @intFromPtr(value) } };
     _ = try sys.check(l.bpf(.obj_get_info_by_fd, &attr, @sizeOf(bpf.InfoAttr)));
 }
-fn programInfo(fd: l.fd_t) !ProgInfo {
+pub fn programInfo(fd: l.fd_t) !ProgInfo {
     var info: ProgInfo = undefined;
     try getInfo(fd, &info);
     return info;
 }
-fn verifyProgram(fd: l.fd_t, code: *const a.Program, kind: bpf.ProgType, btf_id: u32) !void {
+pub fn verifyProgram(fd: l.fd_t, code: *const a.Program, kind: bpf.ProgType, btf_id: u32) !void {
     var ids: [16]u32 = @splat(0);
     var info: ProgInfo = std.mem.zeroes(ProgInfo);
     info.map_count = ids.len;
@@ -301,7 +301,7 @@ fn verifyProgram(fd: l.fd_t, code: *const a.Program, kind: bpf.ProgType, btf_id:
     if (count != info.map_count) return error.ProgramMapMismatch;
     for (ids[0..info.map_count]) |id| if (std.mem.findScalar(u32, expected[0..count], id) == null) return error.ProgramMapMismatch;
 }
-fn verifyMap(fd: l.fd_t, want: Map) !void {
+pub fn verifyMap(fd: l.fd_t, want: Map) !void {
     var got: MapInfo = undefined;
     try getInfo(fd, &got);
     if (got.kind != @backingInt(want.kind) or got.key != want.key or got.value != want.value or got.count != want.count or got.flags != 0) return error.MapLayoutMismatch;
@@ -323,14 +323,14 @@ pub fn programTag(code: *const a.Program) [8]u8 {
 fn pinPath(name: []const u8, buf: *[160]u8) ![:0]const u8 {
     return std.fmt.bufPrintSentinel(buf, pin_root ++ "/{s}", .{name}, 0);
 }
-fn pinFd(fd: l.fd_t, name: []const u8) !void {
+pub fn pinFd(fd: l.fd_t, name: []const u8) !void {
     var path: [160]u8 = undefined;
     var attr: bpf.Attr = .{ .obj = std.mem.zeroes(bpf.ObjAttr) };
     attr.obj.pathname = @intFromPtr((try pinPath(name, &path)).ptr);
     attr.obj.bpf_fd = fd;
     _ = try sys.check(l.bpf(.obj_pin, &attr, @sizeOf(bpf.ObjAttr)));
 }
-fn getPin(name: []const u8) !?l.fd_t {
+pub fn getPin(name: []const u8) !?l.fd_t {
     var path: [160]u8 = undefined;
     var attr: bpf.Attr = .{ .obj = std.mem.zeroes(bpf.ObjAttr) };
     attr.obj.pathname = @intFromPtr((try pinPath(name, &path)).ptr);
@@ -348,12 +348,12 @@ pub fn unpinAll() !void {
     inline for (maps[1..]) |m| try unpin(m.name);
     try unpin("state");
 }
-fn unpin(name: []const u8) !void {
+pub fn unpin(name: []const u8) !void {
     var path: [160]u8 = undefined;
     const rc = l.unlink((try pinPath(name, &path)).ptr);
     if (l.errno(rc) != .NOENT) _ = try sys.check(rc);
 }
-fn query(cgroup: l.fd_t, hook: bpf.AttachType, ids: *[128]u32) ![]const u32 {
+pub fn query(cgroup: l.fd_t, hook: bpf.AttachType, ids: *[128]u32) ![]const u32 {
     var attr: bpf.Attr = .{ .query = std.mem.zeroes(bpf.QueryAttr) };
     attr.query.target_fd = cgroup;
     attr.query.attach_type = @backingInt(hook);

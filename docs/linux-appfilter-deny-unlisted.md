@@ -1,6 +1,7 @@
 # Deny unlisted applications: disabled implementation draft
 
-This branch contains a policy parser, recovery-state functions and a separate BPF instruction emitter.
+This branch contains a policy parser, recovery-state functions, a separate BPF instruction emitter and an
+unconnected pin/attachment adapter.
 **It cannot arm deny-unlisted mode.** The CLI and service refuse `"unlisted": "deny"` with
 `ExperimentalUnlistedRuntimeNotReady` before new policy persistence or attachment. This is not a released feature,
 a kernel-verifier result or permission to install it. Experiments belong only in the designated VM4.
@@ -17,10 +18,17 @@ list. Unknown fields and duplicate keys are refused. The existing app filter is 
   no app tag, and an unexpired window. Confirmation commits until off/reboot; repeated confirmation adds no time.
   These are pure decisions, **not a wired polkit command**. The privileged adapter must collect the observations.
 - Timer decisions ignore a stale epoch or a confirmed state. Deadline expiry disables B even with no userspace
-  process running. There is no root timer service or emergency detach implementation in this draft yet.
+  process running. There is no root timer service or wired emergency-off command in this draft yet.
 - Five independent emitted programs: IPv4/IPv6 connect, IPv4/IPv6 UDP sendmsg, and inet socket creation.
   The existing listener guards and tracing programs are unchanged. The new emitter is not reachable from the loader.
   Unit tests execute the emitted instructions in a userspace interpreter; they do not load them into the kernel.
+- An adapter prepares only an inactive gate, pins and verifies five separate programs and an alias of the base
+  tag map, then requires the exact base program IDs before attachment. Partial failure leaves pins for recovery.
+  Detachment targets only verified B descriptors and checks that all other IDs remain. Duplicate IDs, swapped
+  pins and a B ID still present at any of the five hooks prevent cleanup. Gate pins are removed last.
+  Pure tests cover the ID checks; taking references to the adapter's methods makes the compiler check their
+  bodies without calling them. **Its privileged operations have not run.** Existing loader primitives are now
+  public for reuse; their implementations and the base emitted programs are unchanged.
 - A read-only VM4 identity preflight, with explicit guest machine/boot IDs, SSH key pin and KVM check. No sudo,
   polkit, install, BPF, service control or enforcement test is executed by that script.
 
@@ -47,9 +55,10 @@ a machine running agent sessions.** A separate exception design would need its o
 
 ## Runtime work required before lifting the gate
 
-1. Verify and pin the complete B program set and its own state, without altering base program bytes or tag maps.
-   The base loader currently requires exactly one root attachment: restart verification must account for verified
-   B IDs, while continuing to refuse foreign IDs. Five hooks mean five attachments, not one literal program ID.
+1. Integrate and verify the inactive adapter, without altering base program bytes or tag maps. The base loader
+   currently requires exactly one root attachment: restart verification must account for verified B IDs, while
+   continuing to refuse foreign IDs. Five hooks mean five attachments, not one literal program ID. The adapter
+   deliberately has no activation API until recovery and receipt accounting are complete.
 2. Add a root-owned timer/service outside `user.slice`, with a narrow fixed-unit authorization path from the
    dedicated service account. It must operate after service death. Use a separate bounded transition lock:
    the base service holds `instance.lock` for its entire lifetime. An old timer must not detach a new arming.
