@@ -1,6 +1,6 @@
 # blackice in one page
 
-**Proof of concept, not production.** This page lists only what the entries in [`evidence/`](../evidence/)
+**v0, not production-ready yet.** This page lists only what the entries in [`evidence/`](../evidence/)
 show. A row without an entry was not shown and says so.
 
 ## What it is
@@ -26,7 +26,7 @@ it, and every decision is written down. It runs locally, headless, with no accou
 - **fx**: a small declared patch to fx's `PreToolUse` hook runs every command fx launches in its own scope. As a
   fallback, all of fx can run in one scope, reaching its model through a relay that holds the key outside.
 
-## What this proof of concept shows
+## What the v0 checkpoints show
 
 | Checkpoint | What it shows | Evidence |
 |---|---|---|
@@ -40,11 +40,11 @@ it, and every decision is written down. It runs locally, headless, with no accou
 | P0-09 Forwardable proof | Evidence entries, a short recording and this page. | pending |
 | P0-10 Release gap | The table below. | this page |
 
-P0-06 (faults and recovery) is not part of this proof of concept.
+P0-06 (faults and recovery) is not part of the v0 checkpoints.
 
 ## What is not done yet (release gap)
 
-The first usable release needs all four cells. This proof of concept covers agent tasks only, and "built" below
+The first usable release needs all four cells. v0 covers agent tasks only, and "built" below
 means the code compiles and its tests pass, not that it was shown working.
 
 | | Agent tasks (task scopes) | Apps (app scopes) |
@@ -54,7 +54,7 @@ means the code compiles and its tests pass, not that it was shown working.
 
 Windows is planned for after macOS and Linux. Nothing is built for it.
 
-Also not in this proof of concept: limits for a whole machine and nested scopes, protocols other than HTTP and
+Also not in v0: limits for a whole machine and nested scopes, protocols other than HTTP and
 HTTPS through the proxy, observe mode, and recovery after faults.
 
 ## Limits

@@ -2,7 +2,7 @@
 id: proxy
 title: Proxy
 owner: network
-stage: poc
+stage: v0
 paths: src/proxy/
 cases: P0-02, P0-03
 depends: policy, receipts, scope-core

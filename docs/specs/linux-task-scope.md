@@ -2,7 +2,7 @@
 id: linux-task-scope
 title: Linux task scope
 owner: codex-linux
-stage: poc
+stage: v0
 paths: src/linux/, scripts/linux-setup.sh, scripts/linux-teardown.sh
 cases: P0-01, P0-02, P0-03, P0-04, P0-08, P0-09
 depends: policy, proxy, receipts

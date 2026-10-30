@@ -9,7 +9,7 @@
 
 Network permissions for apps and agent tasks on macOS and Linux. Native and headless.
 
-> **Status: proof of concept, not production.** Only macOS agent tasks have evidence entries so far (see
+> **Status: v0, not production-ready yet.** Only macOS agent tasks have evidence entries so far (see
 > [Evidence](#evidence)); everything else is not verified yet. A capability is listed as working only when a
 > recorded test backs it; see [`evidence/`](evidence/). Parts that are not built yet are written in the future tense.
 

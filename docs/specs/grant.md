@@ -2,7 +2,7 @@
 id: grant
 title: Grant
 owner: lead, network
-stage: poc
+stage: v0
 paths: src/control/, src/proxy/grants.zig
 cases: P0-04, P0-05
 depends: policy, proxy, receipts, scope-core
