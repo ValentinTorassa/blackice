@@ -154,7 +154,7 @@ export const DOCS = [
     slug: '',
     group: 'Overview',
     title: 'Introduction',
-    description: `${SITE.name} gives each app and each task its own network permissions, decided by a policy file, on macOS and Linux.`,
+    description: `${SITE.name} gives each app and each task its own network permissions, decided by a policy file. v0: task scopes work on macOS and Debian 13 (x86_64).`,
     body: ({ recorded }) => (
       <>
         <Note>

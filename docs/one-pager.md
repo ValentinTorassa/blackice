@@ -8,7 +8,7 @@ runs natively on macOS and Linux, headless, with no per-connection prompts, no a
 Today it works for tasks. You put it in front of a command: `blackice run --policy policy.json -- <command>`.
 The command and every process it starts can then reach only the destinations the policy allows. The limit is
 in place before the command runs, nothing inside can widen it, and every decision leaves a receipt. For apps,
-the macOS app filter is built and waits for Developer ID signing, and the Linux app filter is in design.
+the macOS app filter is built and waits for Developer ID signing, and the Linux app filter is in review.
 blackice is at v0 and not production-ready.
 
 ## Design
@@ -56,7 +56,7 @@ was shown working.
 | | Tasks | Apps |
 |---|---|---|
 | **macOS** | Shown on one Mac in the entries above. Not shown yet: launches through `open` or Apple Events refused, fx with a real model through the relay. | Built, unsigned, in #8: a Network Extension filter. It has never been activated. Needs an Apple Developer ID, a signed Network Extension, tests on a live system, and receipts written through blackice. |
-| **Linux** | Shown on one Debian 13 machine in the entries above. A small helper is installed once by a setup script run with sudo. The first two real runs on 30 Oct failed closed before the command ran, and were fixed. Not shown yet: aarch64, fx, other distributions. On Ubuntu 24.04 and later, where `kernel.apparmor_restrict_unprivileged_userns=1` is the default, scopes are expected to fail closed. | In design. |
+| **Linux** | Shown on one Debian 13 machine in the entries above. A small helper is set up by a script run with sudo, again after each reboot (cgroups do not persist). The first two real runs on 30 Oct failed closed before the command ran, and were fixed. Not shown yet: aarch64, fx, other distributions. On Ubuntu 24.04 and later, where `kernel.apparmor_restrict_unprivileged_userns=1` is the default, scopes are expected to fail closed. | In review, not cleared: a first build and the fixes from its security review. Kernel tests in a virtual machine and a security clearance come before any install. |
 
 Windows comes after macOS and Linux. Nothing is built for it.
 
@@ -68,6 +68,9 @@ proxy, observe mode, and recovery after faults.
 - Network only. Files, processes and credentials need their own controls. In the recorded macOS build (58e73cc),
   a command in a scope could read and write the clipboard; main refuses that since 727a5db.
 - On Linux, ping, SCTP and raw sockets are refused when they are created, so they leave no receipt.
+- On Linux, if the helper is killed while a scope runs, processes that detached from the command keep running
+  with access only to the dead proxy's local port, which another local program can later listen on; removing
+  them needs root, and the receipts wrongly say the command did not start.
 - blackice does not detect prompt injection. It blocks connections the policy does not allow; what is sent to an
   allowed destination is up to that destination.
 - With the fx hook, fx itself runs outside the scopes. Its file tools are kept inside the workspace, so install

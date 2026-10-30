@@ -172,8 +172,13 @@ unless it receives activation, successful cleanup, and an exit record from a suc
 
 Normal command exit, cancellation or supervisor death kills all remaining scope descendants before cgroup
 removal. BPF attachments are persistent cgroup attachments, not links whose close would detach policy.
-If the helper is killed, its direct child has a parent-death signal and surviving descendants retain BPF
-restrictions. Open proxy connections and the proxy's lifetime and reuse are handled by the core and the proxy;
+If the helper is killed while a scope runs, its direct child has a parent-death signal, but processes that
+detached from the command keep running. They keep the BPF restrictions, so their only allowed destination is the
+dead proxy's local port, and another local program can later listen on that port and receive their connections.
+Removing them needs root: kill the processes listed in the scope cgroup's `cgroup.procs`, then remove the cgroup
+(killing them by name misses children that were re-parented), or run the teardown script, which does both but
+also removes the helper. In that case the receipts wrongly say the command did not start (`command_not_started`,
+`scope_end` status 127). The P0-06 Linux fault run showed both. Open proxy connections and the proxy's lifetime and reuse are handled by the core and the proxy;
 this backend does not revoke TCP connections that are already open.
 
 ## Testing
