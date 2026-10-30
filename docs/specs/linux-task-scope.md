@@ -36,7 +36,8 @@ loosen its own rules.
 | linux-task-scope.R10 | The setup script shall be the only step that needs root. After it runs, a member of the configured group can start scopes without sudo, and the teardown script shall remove everything the setup installed. | P0-01 |
 | linux-task-scope.R11 | A process inside a scope shall not be able to connect to a Unix socket created outside it: path-based sockets are hidden or refused, and abstract sockets are scoped with Landlock where the kernel supports it. | P0-04 |
 | linux-task-scope.R12 | When the same policy and the same test destinations run in a Linux and a macOS task scope, blackice shall reach the same verdict for each destination. The receipts may differ only in the enforcement point. | P0-08 |
-| linux-task-scope.R13 | If a process inside a scope tries to open a raw socket or a socket in an unsupported family, to enter another network namespace, or to send through io_uring, blackice shall refuse it. | P0-02 |
+| linux-task-scope.R13 | If a process inside a scope tries to open a raw socket, a socket in an unsupported family, or an IPv4 or IPv6 socket with a protocol other than TCP or UDP (for example SCTP or ICMP "ping" sockets, which the cgroup socket hooks do not fully cover), to enter another network namespace, or to send through io_uring, blackice shall refuse it. | P0-02 |
+| linux-task-scope.R14 | A process inside a scope shall not be able to accept connections from outside the scope: `bind`, `listen` and `accept` on network sockets shall be refused. | P0-02 |
 
 ## Design
 
@@ -72,8 +73,10 @@ the system resolver's sockets do not exist, so it cannot ask a system service to
   the user's session bus and the Docker socket (R6). glibc then falls back to the servers in `resolv.conf`,
   which the kernel programs refuse.
 - Other channels: Landlock scopes abstract Unix sockets and signals where the kernel supports it (ABI 6), and a
-  seccomp filter refuses creating Unix sockets that would reach outside the scope, raw sockets, other socket
-  families, new network namespaces and io_uring. Two processes inside the same scope can still talk to each
+  seccomp filter refuses creating Unix sockets, raw sockets, other socket families, protocols other than TCP
+  and UDP (SCTP has no cgroup socket-address hook, and an unconnected send on an ICMP ping socket skips
+  `sendmsg4/6`), `bind`, `listen` and `accept`, new network namespaces and io_uring. The blackice state
+  directory is read-only inside the scope. Two processes inside the same scope can still talk to each
   other over a socket pair.
 - Why not nftables: matching packets by cgroup lets packets the kernel cannot attribute fall through the match.
   Admission at the socket call avoids that path. nftables with NFLOG was the first plan and stays a documented
@@ -86,6 +89,11 @@ the system resolver's sockets do not exist, so it cannot ask a system service to
   - Containers and other network namespaces are refused, not supported.
   - The proxy's own upstream sockets are outside the scope's cgroup; their limits are the proxy's job.
   - No general claim that a same-user process outside the scope cannot interfere.
+  - The state directory is a read-only mount inside the scope. That does not cover every path to the same
+    files (another process's `/proc/<pid>/root`, hard links made before the scope), so it is not a
+    tamper-proof record. The policy is kept in memory, never re-read from that directory.
+  - The setup script installs the helper only if its SHA-256 matches the expected value given to it, checked on
+    the root-owned copy. The helper is built stripped, without Zig's crash handler.
 
 ## Tasks
 
@@ -94,18 +102,18 @@ the system resolver's sockets do not exist, so it cannot ask a system service to
 | Placeholder backend that refuses to run commands | lead | done | |
 | Backend design: socket-address admission programs instead of nftables | codex-linux | done | |
 | Privileged helper: fork a paused child, hold it by pidfd, enroll it in the scope cgroup, release when armed | codex-linux | doing | |
-| `blackice-linux-helper` build target in build.zig | lead | todo | |
-| cgroup eBPF programs on connect4, connect6, sendmsg4 and sendmsg6 | codex-linux | todo | |
+| `blackice-linux-helper` build target in build.zig | codex-linux | doing | |
+| cgroup eBPF programs on connect4, connect6, sendmsg4 and sendmsg6 | codex-linux | doing | |
 | Ring buffer reader that reports refusals to the receipt writer, with a lost-event count | codex-linux | todo | |
-| Private mount namespace that hides resolver and daemon sockets | codex-linux | todo | |
-| Landlock scoping and seccomp filter | codex-linux | todo | |
-| `scripts/linux-setup.sh` and `scripts/linux-teardown.sh` | codex-linux | todo | |
-| Security review of the setup script before it runs | security | todo | |
+| Private mount namespace that hides resolver and daemon sockets | codex-linux | doing | |
+| Landlock scoping and seccomp filter | codex-linux | doing | |
+| `scripts/linux-setup.sh` and `scripts/linux-teardown.sh` | codex-linux | doing | |
+| Security review of the setup script before it runs | security | doing | |
 | Run the setup script with sudo, once it is reviewed | valen | todo | waits for: the scripts and their review |
-| Fixtures: immediate connect, fork and exec, TCP and both UDP modes on IPv4 and IPv6, migration, `systemd-run --user`, Docker socket, raw sockets, io_uring, DNS paths (`getent hosts`, `resolvectl query`, `busctl call org.freedesktop.resolve1`) | codex-linux | todo | |
+| Fixtures: immediate connect, fork and exec, TCP and both UDP modes on IPv4 and IPv6, migration, `systemd-run --user`, Docker socket, raw sockets, io_uring, `ping`, an SCTP connect, an unconnected ICMP `sendto`, `bind` and `listen`, DNS paths (`getent hosts`, `resolvectl query`, `busctl call org.freedesktop.resolve1`) | codex-linux | doing | |
 | End-to-end kernel deny with receipts, an off-host receiver that sees nothing per protocol and family, and an evidence entry | codex-linux | todo | |
 | docs/linux.md | codex-linux | todo | |
-| docs/threat-model.md | codex | todo | |
+| docs/threat-model.md | codex | done | |
 
 ## Evidence
 

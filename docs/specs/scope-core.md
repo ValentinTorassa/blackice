@@ -80,10 +80,11 @@ loopback ports; names and addresses are then decided by the proxy.
 | `blackice run`: arguments, policy load, scope creation, launch, exit status | lead | doing | |
 | Write the policy bytes into the state directory | lead | todo | |
 | State directory read-only inside the scope on macOS (`state_dir` in the launch contract) | lead | todo | |
-| State directory read-only or hidden inside the scope on Linux | codex-linux | todo | |
+| State directory read-only or hidden inside the scope on Linux | codex-linux | doing | |
 | Proxy variables in the command's environment | lead | todo | |
 | `scope_start` and `scope_end` receipts, with the failed-write count | lead | todo | |
 | Decide and document what happens to processes left running after CMD exits | lead | todo | |
+| Create each scope's state directory exclusively, never reusing an existing path | lead | todo | |
 | Linux enforcing backend behind the same contract | codex-linux | todo | |
 
 ## Evidence

@@ -30,6 +30,7 @@ them does not leak what a program sent.
 | receipts.R6 | If a receipt cannot be written, blackice shall leave the verdict unchanged, count the failure, and report the count in the scope's `scope_end` receipt. | P0-09 |
 | receipts.R7 | Receipts shall hold metadata only: no request or response bodies, no TLS content, no headers or credentials, no URL paths or query strings, no environment variables and no full command arguments. | P0-09 |
 | receipts.R8 | blackice shall keep reason codes stable; renaming or removing one is a recorded contract change. | P0-09 |
+| receipts.R9 | A decision receipt shall always be written: when a field is too long or not valid UTF-8, blackice shall shorten or replace it and mark the line `truncated`, instead of dropping the line. | P0-02 |
 
 ## Design
 
@@ -53,13 +54,16 @@ and `jq` are enough to read it.
 - `reason`: a policy reason code (see [policy](policy.md)) or a short error name for `warning` events.
 - `policy`: the first 12 hex digits of the SHA-256 of the policy file. `gen` starts at 1 and goes up by one
   with each accepted grant or expiry ([grant](grant.md)).
-- Writer: `receipt.Log` serialises each line into a fixed 4 KiB buffer and appends it under a lock. A line
-  that does not fit, or a failed write, increments `failures`.
+- Writer: `receipt.Log` serialises each line into a fixed 4 KiB buffer and appends it under a lock. Long string
+  fields are shortened and invalid UTF-8 is replaced, and the line is marked `truncated`, so a decision line is
+  always written (R9); only a failed write increments `failures`. The first version dropped a line that did not
+  fit, which would let a workload hide its own refusals behind long names.
 - Linux kernel drops reach the log through the `blackice` process, never by a second writer
   ([linux-task-scope](linux-task-scope.md)).
 - Limits:
-  - Receipts are not tamper-proof. The file belongs to the user, and in v0 the scoped command runs as that
-    user.
+  - Receipts are not tamper-proof against the user's other processes outside the scope. The scoped command
+    itself cannot write them: on macOS a Seatbelt rule denies writes to the state directory, and on Linux the
+    state directory is read-only inside the scope.
   - v0 has no per-line sequence number, so a gap inside the file is visible only through the failure count.
   - No size or time limit on the file yet.
   - A receipt explains a decision; it does not say whether traffic sent to an allowed destination was
@@ -72,9 +76,10 @@ and `jq` are enough to read it.
 | Receipt line format and single writer | lead | done | |
 | Count failed writes | lead | done | |
 | Report the failed-write count in `scope_end` | lead | todo | |
-| Proxy decisions write receipts | lead | todo | |
-| Relay calls and grants write receipts | lead | todo | |
-| Linux kernel drops (NFLOG) passed to the `blackice` process as receipts | codex-linux | todo | |
+| Proxy decisions write receipts | network | done | |
+| Relay calls and grants write receipts | network | doing | |
+| Shorten long fields and mark the line `truncated` instead of dropping it | lead | todo | |
+| Linux kernel refusals (ring buffer) passed to the `blackice` process as receipts | codex-linux | todo | |
 
 ## Evidence
 

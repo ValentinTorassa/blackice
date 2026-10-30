@@ -1,9 +1,9 @@
 ---
 id: grant
 title: Grant
-owner: lead
+owner: lead, network
 stage: poc
-paths:
+paths: src/control/, src/proxy/grants.zig
 cases: P0-04, P0-05
 depends: policy, proxy, receipts, scope-core
 ---
@@ -26,10 +26,12 @@ written as receipts.
 | grant.R2 | If `blackice grant` is run from inside any scope, it shall fail because it cannot reach the control socket, and no scope's access shall change. | P0-04 |
 | grant.R3 | When a grant is accepted, blackice shall raise the scope's policy generation by one, write a `grant` receipt with point `control`, the host and the expiry time, and stamp every later receipt with the new generation. | P0-05 |
 | grant.R4 | When a grant expires, blackice shall refuse new connections to that host unless the base policy allows them, raise the generation, and write a receipt for the expiry. | P0-05 |
-| grant.R5 | blackice shall state, in the `grant` command's output and in the grant receipt, that ending a grant affects new connections only: a connection opened while the grant was active stays open until it closes or the scope ends. | P0-05 |
+| grant.R5 | When a grant ends, the proxy shall close every connection it opened under that grant and write a `grant_expired` receipt. If it cannot arm the timer that does this, it shall refuse the connection instead of opening it without a limit. | P0-05 |
 | grant.R6 | A grant shall add only a host name or a `*.name` pattern to one scope; the address checks of the policy still apply, and a grant cannot change the mode, the subnets or another scope. | P0-04 |
 | grant.R7 | If the grant names a scope that does not exist or has ended, an invalid host, or a duration that is missing, zero or above the maximum, blackice shall refuse it and change nothing. | P0-04 |
 | grant.R8 | When a scope ends, blackice shall end all of its grants; a new scope started from the same policy file starts without them. | P0-05 |
+| grant.R9 | When a control connection arrives, blackice shall check its peer: the same user ID (`SO_PEERCRED` on Linux, `getpeereid` on macOS) and, on Linux, a cgroup outside `/sys/fs/cgroup/blackice/`. Any other peer shall be refused with a receipt. | P0-04 |
+| grant.R10 | blackice shall measure a grant's duration on a clock that a change of the system time cannot move back (a monotonic clock), and use wall-clock time only to print the expiry. | P0-05 |
 
 ## Design
 
@@ -40,21 +42,30 @@ the operating system rules, which keep allowing only the proxy and relay ports.
 
 **Technical.**
 
-- CLI: `blackice grant <scope> <host> --for <duration>`, for example `--for 10m`. The maximum duration is not
-  set yet.
-- Control socket: a Unix socket in the scope's state directory, mode 0600. On macOS the scope's Seatbelt
-  profile already refuses outbound connections to Unix sockets; on Linux the scope's private mount namespace
-  hides the state directory, and abstract Unix sockets are restricted with Landlock where the kernel supports
-  it.
-- The grant is held in memory by the `blackice` process. Expiry uses its monotonic clock; grants are not
-  written to disk and do not survive the process.
+- CLI: `blackice grant <scope> <host> --for <duration>`, for example `--for 10m`; at most one hour.
+- Protocol on the control socket: one JSON line in, one out, then the connection closes. `grant` (host, seconds,
+  1 to 3600) and `revoke` (host). Unknown fields, IP literals and other durations are refused, each with a
+  receipt (`peer_not_owner`, `bad_request`, `invalid_duration`, `invalid_host`). Granting a host again extends
+  the grant, never shortens it.
+- Control socket: a Unix socket in the scope's state directory, mode 0600.
+  - macOS: the profile's outbound deny covers Unix-socket connections, and the profile denies writes to the
+    state directory. That the scope cannot reach the control socket still needs its own test.
+  - Linux: the scope's seccomp filter refuses `socket(AF_UNIX, ...)` altogether; only `socketpair` works inside,
+    so the scope cannot open a connection to the control socket. The state directory stays visible, read-only.
+    Abstract Unix sockets are also scoped with Landlock where the kernel supports it.
+  - Every control connection is checked for its peer (R9), so one leaked descriptor or a missed rule is not
+    enough to accept a grant from inside a scope.
+- The grant is held in memory by the proxy, as a name or `*.name`, never an IP literal. It never lifts a port or
+  address refusal. Grants are not written to disk and do not survive the process.
+- At expiry the proxy closes the `CONNECT` tunnels opened under the grant (R5).
 - Receipts: `event: grant` with `point: control`, `verdict: allow`, `host`, and the expiry in `detail`; an
   expiry receipt when the time runs out (see [receipts](receipts.md)).
 - Owner in v0: any process of the same user that runs outside every scope. This is a declared limit, not a
   security boundary against the user's own software.
 - Limits:
-  - Revocation covers new connections only. A tunnel the proxy opened during the grant is not cut when it
-    ends.
+  - The first code measures grants on the wall clock and does not yet close plain HTTP requests at expiry,
+    and a failure to start the expiry timer lets the tunnel stay open. Each has a task below; until they are
+    done, R5 and R10 are not met.
   - No operating system authentication (Touch ID, polkit) yet.
   - A program inside the scope can still leave something behind, such as a script, that the owner later runs
     outside the scope. A grant cannot prevent that.
@@ -64,18 +75,23 @@ the operating system rules, which keep allowing only the proxy and relay ports.
 
 | Task | Owner | State | Blocked by |
 |---|---|---|---|
-| Control socket owned by the `blackice` process | lead | todo | |
-| `blackice grant` command and in-memory grants with expiry | lead | todo | |
+| In-memory grants in the proxy (names only), with expiry that closes tunnels | network | done | |
+| Control socket: one-line JSON protocol, peer check, receipts (`src/control/`) | network | doing | |
+| Grants on a monotonic clock | network | todo | |
+| Refuse the connection when the expiry timer cannot start | network | todo | |
+| Close plain HTTP requests at grant expiry | network | todo | |
+| `blackice grant` command | lead | todo | |
 | Grant, expiry and generation in receipts | lead | todo | |
 | Show on macOS that a scoped process cannot reach the control socket | lead | todo | |
-| Hide the control socket from Linux scopes | codex-linux | todo | |
+| Refuse Unix sockets inside Linux scopes (seccomp), so the control socket is out of reach | codex-linux | doing | |
 
 ## Evidence
 
 | Covers | Kind | Link | Note |
 |---|---|---|---|
+| grant.R1, grant.R6 | test | `zig build test`, src/proxy/test.zig: "a grant allows a refused name until it expires, and expiry closes the tunnel" | 36/36 passed at dd44a0e (PR #4), Zig 0.17.0, Linux x86_64; only the proxy side, no control socket |
 
 ## Terms
 
-grant, owner, control socket, scope, policy generation, receipt, CONNECT proxy, Seatbelt, mount namespace,
+grant, owner, control socket, scope, policy generation, receipt, CONNECT proxy, Seatbelt, seccomp, mount namespace,
 Landlock, revocation

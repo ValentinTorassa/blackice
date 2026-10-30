@@ -22,7 +22,7 @@ names the rule that made it, so a person can see why a connection was allowed or
 
 | ID | Requirement | Checks |
 |---|---|---|
-| policy.R1 | If a policy file is not valid JSON, has a field blackice does not know, or names a version other than `blackice.policy/v0`, blackice shall refuse it, say which field or value is at fault, and exit non-zero without starting any command. | P0-01 |
+| policy.R1 | If a policy file is not valid JSON, has a field blackice does not know, repeats a key, or names a version other than `blackice.policy/v0`, blackice shall refuse it, say which field or value is at fault, and exit non-zero without starting any command. | P0-01 |
 | policy.R2 | If an allow entry is an IP address, uses `*` anywhere except a leading `*.`, or is not a valid host name, blackice shall refuse the policy. | P0-01 |
 | policy.R3 | When the mode is `deny-all`, blackice shall refuse every destination, by name or by address. | P0-02 |
 | policy.R4 | When the mode is `allowlist`, blackice shall allow a name only if an entry matches it: `example.com` matches only `example.com`, and `*.example.com` matches names below `example.com` but not `example.com` itself. Names are compared without case and without a trailing dot. | P0-03 |
@@ -31,6 +31,8 @@ names the rule that made it, so a person can see why a connection was allowed or
 | policy.R7 | blackice shall give every decision a stable reason code and, when a policy entry decided it, that entry exactly as written in the file. | P0-09 |
 | policy.R8 | blackice shall identify each loaded policy by a digest of its exact bytes, and carry that identifier in every receipt of the scope. | P0-09 |
 | policy.R9 | When a destination port is not in `network.ports` (80 and 443 when the field is absent), blackice shall refuse it with reason `port_not_allowed`, even if the host is allowed. | P0-03 |
+| policy.R10 | If a host name, in the policy or in a request, has a last label that is all digits or a `0x` number (for example `127.1`, `2130706433`, `0x7f000001`), blackice shall treat it as invalid (`invalid_host`), because the system resolver would turn it into an address. | P0-02 |
+| policy.R11 | When an IPv6 address carries an IPv4 address (`::ffff:0:0/96`, `64:ff9b::/96`, `::/96`), blackice shall judge it by that IPv4 address; `64:ff9b:1::/48` and `2002::/16` count as local unless an allowed subnet covers them. | P0-02 |
 
 ## Design
 
@@ -80,13 +82,17 @@ asked for, then every address that name resolves to. The second step stops an al
 | `blackice policy check FILE` | lead | done | |
 | `network.ports` (default 80 and 443) and `checkPort` | lead | todo | |
 | Shared test vectors that every enforcement point runs against the same verdicts | codex | todo | |
-| docs/policy.md for users | codex | todo | |
+| docs/policy.md for users | codex | done | |
+| Numeric names and `0x` names refused (R10) | lead | todo | |
+| IPv4-embedded IPv6 judged by its IPv4 address, in requests and in policy subnets (R11) | lead | todo | |
+| Repeated keys refused (R1) | lead | todo | |
+| Error messages keep their own copy of the rejected text, and a parsed policy owns all its strings | lead | todo | |
 
 ## Evidence
 
 | Covers | Kind | Link | Note |
 |---|---|---|---|
-| policy.R1, policy.R2 | test | `zig build test`, src/core/policy.zig: "invalid policies fail closed" | 11/11 passed at 0c43c6f, Zig 0.17.0, Linux x86_64 |
+| policy.R1, policy.R2 | test | `zig build test`, src/core/policy.zig: "invalid policies fail closed" | 11/11 passed at 0c43c6f, Zig 0.17.0, Linux x86_64. Repeated keys are not in this test yet |
 | policy.R3 | test | `zig build test`, src/core/policy.zig: "deny-all and allow-all" | same run |
 | policy.R4 | test | `zig build test`, src/core/policy.zig: "allowlist: exact and wildcard names" | same run |
 | policy.R5 | test | `zig build test`, src/core/policy.zig: "resolved addresses: local and private are refused, subnets decide" | same run |

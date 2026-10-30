@@ -28,10 +28,12 @@ control that a signed Network Extension will provide later (see [app-scopes](app
 | macos-task-scope.R3 | While a command runs in a macOS task scope, a name lookup from inside the scope shall fail unless it is made by the proxy on the command's behalf. | P0-02 |
 | macos-task-scope.R4 | When a process in the scope starts a child, including a child that outlives its parent and is adopted by launchd, the child shall keep the same restrictions. | P0-01, P0-02 |
 | macos-task-scope.R5 | If the sandbox cannot be applied (sandbox-exec is missing, the profile is rejected, or the spawn fails), blackice shall not run the command, shall exit non-zero, and shall write a receipt with the reason. | P0-01 |
-| macos-task-scope.R6 | When hardening is on, blackice shall refuse attempts from inside the scope to have launchd, LaunchServices (`open`) or Apple Events (`osascript`) start a process outside the sandbox. | P0-02 |
+| macos-task-scope.R6 | blackice shall refuse attempts from inside the scope to have launchd, LaunchServices (`open`) or Apple Events (`osascript`) start a process outside the sandbox. | P0-02 |
 | macos-task-scope.R7 | When blackice starts a command on macOS, the command shall not inherit any network socket from blackice. | P0-02 |
 | macos-task-scope.R8 | blackice shall label this backend as experimental wherever it reports the backend: CLI help, the scope start receipt and the docs. | P0-10 |
 | macos-task-scope.R9 | When the same policy and the same test destinations run in a macOS and a Linux task scope, blackice shall reach the same verdict for each destination. The receipts may differ only in the enforcement point. | P0-08 |
+| macos-task-scope.R10 | A process inside a macOS task scope shall not be able to write the blackice state directory: receipts, the policy copy or the control socket. | P0-04 |
+| macos-task-scope.R11 | A process inside a macOS task scope shall not be able to bind or accept connections on any address other than loopback. | P0-02 |
 
 ## Design
 
@@ -53,21 +55,25 @@ or addresses, only "any host" or "localhost", so every decision about names happ
   (allow network-outbound (remote ip "localhost:18781"))
   ```
 
-  With hardening on, three more lines: `(deny job-creation)`, `(deny lsopen)`, `(deny appleevent-send)`.
+  The profile also always denies `job-creation`, `lsopen` and `appleevent-send` (R6), writes under the blackice
+  state directory (`(deny file-write* (subpath (param "STATE_ROOT")))`, R10), and binding or accepting
+  connections on any address other than loopback (R11). These rules are being added with the core; each needs
+  its own test.
 - Launch: `/usr/bin/sandbox-exec -p <profile> <command...>` with the environment the core prepared
   (`HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY` and lowercase forms point at the proxy). The backend contract is
   `src/core/backend.zig` (`LaunchSpec`, `launch`).
 - `(deny network-outbound)` also covers Unix-socket connections. That blocks the system DNS resolver socket
   (mDNSResponder) and is expected to keep the scope away from blackice's own control socket (see
   [grant](grant.md)); the second point still needs its own test.
-- `(allow default)` means files, processes and other IPC are not restricted. This is a network boundary only.
+- `(allow default)` means files, processes and other IPC are not restricted, except the state directory. This
+  is a network boundary only.
 - `sandbox-exec` is deprecated by Apple but still ships and still applies profiles. This backend stays
   experimental for that reason and because it covers only commands blackice starts.
 - Limits until tested:
   - Mach and XPC services: a process can still ask a system service to connect on its behalf. Such
     connections run outside the scope.
-  - Processes started through launchd, `open` or `osascript` run outside the sandbox unless hardening is on and
-    tested.
+  - Processes started through launchd, `open` or `osascript` run outside the sandbox until the deny rules for
+    them (R6) are tested.
   - Name lookups through other system services (for example Directory Services) are untested.
   - The proxy port: what happens if the proxy restarts or another local process takes its port, and how one
     scope's proxy is kept from serving another, belong to [proxy](proxy.md) and are untested.
