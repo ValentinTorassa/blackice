@@ -21,4 +21,11 @@ Each entry records:
 - **Limits**: what this run does not show.
 - **Date**.
 
-No entries yet.
+## Entries
+
+The entries are the `P0-xx-*.md` files in this folder. Each one names its own platform, build and limits.
+
+An entry that names a `claude/run` build used a commit from the stack that
+[#1](https://github.com/ValentinTorassa/blackice/pull/1) squashed into main as 727a5db. Those commits stay fetchable
+with `git fetch origin pull/7/head`. The fx patch that P0-07 names, from `claude/fx-hook` at 08e34f3, is fetchable with
+`git fetch origin pull/9/head`, and it has the same sha256 as `integrations/fx/fx-v0.0.16-blackice-hook.patch` on main.

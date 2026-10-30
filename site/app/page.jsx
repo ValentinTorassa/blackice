@@ -1,3 +1,5 @@
+import fs from 'node:fs';
+import path from 'node:path';
 import Link from 'next/link';
 import { Nav, Footer } from '../components/Chrome';
 import Scene from '../components/Scene';
@@ -8,6 +10,7 @@ import Layers from '../components/Layers';
 import CubeMark from '../components/CubeMark';
 import StatusCards from '../components/StatusCards';
 import Corners from '../components/Corners';
+import DemoVideo from '../components/DemoVideo';
 import { IsoScope, IsoPolicy, IsoReceipt } from '../components/Iso';
 import {
   Logo,
@@ -29,6 +32,14 @@ import {
 import { SITE } from '../content/site';
 import { CHECKPOINTS } from '../content/status';
 import { recordedCheckpoints } from '../lib/evidence';
+
+// The demo video is not in the repository. A deployment copies it into site/public/demo/ before the build; without
+// it, the demo section is left out.
+const DEMO = [
+  { lang: 'en', label: 'English', src: '/demo/blackice-demo-en.mp4' },
+  { lang: 'es', label: 'Español', src: '/demo/blackice-demo-es.mp4' },
+].filter((s) => fs.existsSync(path.join(process.cwd(), 'public', s.src)));
+const DEMO_POSTER = fs.existsSync(path.join(process.cwd(), 'public', 'demo', 'poster.jpg')) ? '/demo/poster.jpg' : null;
 
 const NOUNS = [
   {
@@ -82,7 +93,7 @@ export default function Home() {
           <div className="container hero-inner">
             <Link href="/docs/status/" className="pill">
               <span className="pill-dot" aria-hidden="true" />
-              Proof of concept · macOS and Linux
+              v0 · macOS and Linux
               <IconArrowRight size={13} className="pill-arrow" />
             </Link>
             <h1>
@@ -124,6 +135,17 @@ export default function Home() {
             </ul>
           </div>
         </section>
+
+        {DEMO.length ? (
+          <section className="container demo-section" id="demo" aria-labelledby="demo-title">
+            <p className="eyebrow">Demo</p>
+            <h2 className="h2" id="demo-title">
+              fx, with blackice in front of every shell command.
+            </h2>
+            <DemoVideo sources={DEMO} poster={DEMO_POSTER} />
+            <p className="caption">v0. Labels on screen mark what is scripted and what is not verified.</p>
+          </section>
+        ) : null}
 
         <section className="container">
           <div className="frame">
