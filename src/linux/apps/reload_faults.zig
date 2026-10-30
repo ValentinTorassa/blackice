@@ -6,7 +6,7 @@ const sys = @import("../sys.zig");
 const l = sys.l;
 pub const enabled = @import("appfilter_build").vm_faults;
 const path = "/etc/blackice-appfilter/vm-reload-fault";
-pub const Mode = enum { none, after_validation, after_prepare, after_intent, stop_child, kill_child, invalid_policy };
+pub const Mode = enum { none, after_validation, after_prepare, after_intent, stop_child, kill_child, invalid_policy, off_stopping };
 
 pub fn requireGuest() !void {
     if (!enabled) return;
@@ -63,6 +63,7 @@ pub fn announce(selected: Mode) !void {
 test "appfilter VM faults are PID scoped strict and inert in default builds" {
     try std.testing.expectEqual(Mode.after_intent, try parse("123 after_intent\n", 123));
     try std.testing.expectEqual(Mode.none, try parse("123 after_intent\n", 124));
+    try std.testing.expectEqual(Mode.off_stopping, try parse("123 off_stopping\n", 123));
     for ([_][]const u8{ "0 after_intent\n", "123 after_intent", "123 bad\n", "123 after_intent extra\n" }) |bad|
         try std.testing.expectError(error.InvalidReloadFault, parse(bad, 123));
     if (!enabled) try std.testing.expectEqual(Mode.none, try read());

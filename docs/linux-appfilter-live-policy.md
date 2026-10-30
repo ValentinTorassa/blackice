@@ -183,6 +183,11 @@ without a password: stale/invalid policies, raw unauthenticated owner, concurren
 request, root non-owner, tagged curl and a real terminal prompt cancelled with
 Ctrl-C. It verifies unchanged kernel state and service PID plus refusal receipts.
 It neither installs an auth rule nor exercises a successful reload.
+With `--off-stopping` against the opt-in VM fault build, it additionally performs
+a freshly authorized off interrupted after entering `stopping`, verifies reload
+returns `Stopping` without changing that epoch, completes a second authorized
+off, and verifies `NotArmed` plus the absence of pins. The owner-only test selector
+is removed before retrying off; this option therefore changes VM state.
 
 `scripts/e2e/linux-appfilter-reload-membership-vm.py` covers an already-running
 untagged addition (refused), the later successfully added app's allow/deny flows,

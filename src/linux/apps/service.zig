@@ -569,6 +569,9 @@ const Runtime = struct {
                     state.phase = .stopping;
                     try r.loaded.?.setState(state);
                     r.stopping = true;
+                    // Test only: exercise a partial off before teardown. The
+                    // default build contains no selector read or interruption.
+                    if (faults.enabled and try faults.read() == .off_stopping) return error.VMOffStopping;
                     r.closeListeners();
                     try r.loaded.?.detach(r.cg, r.root_cg);
                     try kernel.unpinAll();

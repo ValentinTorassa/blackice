@@ -88,6 +88,7 @@ def main():
     p.add_argument('--current-policy', type=Path, required=True)
     p.add_argument('--next-policy', type=Path, required=True)
     p.add_argument('--output', type=Path, required=True)
+    p.add_argument('--off-stopping', action='store_true', help='VM fault build only: interrupt an authorized off, refuse reload while stopping, finish off and check NotArmed')
     a = p.parse_args()
     vm.require(os.geteuid() != 0, 'unprivileged owner required')
     vm.require(socket.gethostname() == a.hostname, 'wrong guest name')
@@ -105,6 +106,9 @@ def main():
     vm.require(vm.state_hash(before) == hashlib.sha256(current).hexdigest(), 'wrong armed configuration')
     service_pid = vm.command(['systemctl', 'show', UNIT, '-p', 'MainPID', '--value']).strip()
     vm.require(int(service_pid) > 0, 'service not active')
+    if a.off_stopping:
+        vm.require(os.isatty(0), 'owner tty required for the two real off authorizations')
+        vm.require(b'VM-ONLY RELOAD FAULT BUILD' in Path('/usr/local/libexec/blackice-linux-appfilter').read_bytes(), 'opt-in VM fault build required')
     a.output.mkdir(mode=0o700, parents=False, exist_ok=False)
     sizes = {str(path): path.stat().st_size for path in vm.STATE.glob('receipt-*.jsonl')}
     report = {'result': 'FAIL', 'generation': generation, 'cases': {}, 'service_sha256': a.service_sha256}
@@ -165,6 +169,33 @@ def main():
         time.sleep(0.2)
         unchanged()
         report['cases']['cancelled_prompt'] = 'real org.blackice.appfilter.reload prompt; Ctrl-C; no credential entered'
+        if a.off_stopping:
+            fault_spec = importlib.util.spec_from_file_location('fault_controller', Path(__file__).with_name('linux-appfilter-reload-faults-vm.py'))
+            faults = importlib.util.module_from_spec(fault_spec)
+            fault_spec.loader.exec_module(faults)
+            def selector(operation):
+                return vm.command(['sudo', '-n', '/usr/bin/python3', '-c', faults.ROOT_CONTROL, operation, service_pid, 'off_stopping'])
+            selector('create')
+            try:
+                off = subprocess.run([str(a.cli), 'app', 'off'], timeout=35)
+                vm.require(off.returncode != 0, 'test interruption unexpectedly completed off')
+                stopping = vm.lookup('state')
+                vm.require(int.from_bytes(vm.decode_bytes(stopping['value'])[:4], 'little') == 6, 'test did not reach stopping state')
+                response = exchange(candidate)
+                vm.require(response == 'ERROR Stopping', f'reload while stopping: {response}')
+                vm.require(vm.lookup('state') == stopping, 'refused reload modified stopping epoch')
+                report['cases']['stopping'] = response
+                report['stopping_state'] = stopping
+            finally:
+                selector('remove')
+                off = subprocess.run([str(a.cli), 'app', 'off'], timeout=35)
+                vm.require(off.returncode == 0, 'authorized off retry failed')
+            response = exchange(candidate)
+            vm.require(response == 'ERROR NotArmed', f'reload while unarmed: {response}')
+            report['cases']['unarmed'] = response
+            vm.require(vm.command([str(a.cli), 'app', 'status']).startswith('OK off'), 'off status missing')
+            vm.command(['sudo', '-n', 'test', '!', '-e', vm.PIN + '/state'])
+            report['cleanup'] = 'fresh authorized off retry completed; pins absent'
         time.sleep(0.2)
         records = vm.receipts(sizes)
         (a.output / 'receipts.jsonl').write_text(''.join(json.dumps(x) + '\n' for x in records))
@@ -173,6 +204,9 @@ def main():
         reasons = {x.get('reason') for x in records}
         for reason in ('ExpectedNextGeneration', 'OwnerAuthorizationRequired', 'ChangeInProgress', 'NotOwner', 'TaggedCaller'):
             vm.require(reason in reasons, f'missing refusal record: {reason}')
+        if a.off_stopping:
+            for reason in ('Stopping', 'NotArmed'):
+                vm.require(reason in reasons, f'missing state refusal receipt: {reason}')
         report.update(result='PASS', receipt_count=len(records), state=before, service_pid=service_pid)
     except Exception as error:
         report['error'] = str(error)

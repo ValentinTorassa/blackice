@@ -29,7 +29,7 @@ assert os.geteuid()==0 and socket.gethostname()=='test3-vm'
 assert subprocess.check_output(['systemd-detect-virt'],text=True).strip() in ('qemu','kvm')
 op,pid,mode=sys.argv[1:]
 assert pid.isdecimal() and int(pid)>1
-assert mode in ('after_validation','after_prepare','after_intent','stop_child','kill_child','invalid_policy')
+assert mode in ('after_validation','after_prepare','after_intent','stop_child','kill_child','invalid_policy','off_stopping')
 path='/etc/blackice-appfilter/vm-reload-fault'
 expected=(pid+' '+mode+'\n').encode()
 if op=='create':
