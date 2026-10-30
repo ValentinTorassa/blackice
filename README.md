@@ -51,7 +51,7 @@ macOS agent tasks only: macOS 27.0.1 on Apple silicon with SIP on, release build
 | [P0-03](evidence/P0-03-explicit-allow-macos.md) | With a policy that allows only `example.com`, the command reaches example.com over HTTPS and plain HTTP; github.com is refused on both, with a receipt for each connection. |
 | [P0-04](evidence/P0-04-owner-grant-macos.md) | A command inside a scope cannot widen its own policy. The owner's `blackice grant` from outside lets exactly one more name through, with an end time. |
 | [P0-05](evidence/P0-05-grant-expiry-macos.md) | When the owner's grant ends, the proxy resets the connection opened under it within milliseconds, and a new connection to that name is refused again. |
-| [P0-07](evidence/P0-07-fx-hook-scripted-macos.md) | With fx 0.0.16 and the blackice hook patch, in full-access mode and with a **scripted test model, not a real model**, every shell command fx runs gets its own scope and receipts, fx's tools that would act outside the scopes are blocked, and a command cannot change blackice, fx, the policy or fx's settings. A run with a real model is pending. |
+| [P0-07](evidence/P0-07-fx-hook-scripted-macos.md) | With fx 0.0.16 and the blackice hook patch, in full-access mode and with a **scripted test model, not a real model**, every shell command fx runs gets its own scope and receipts, and a command cannot change blackice, fx, the policy or fx's settings. fx's `write_file` outside the workspace and its web tools are blocked; fx's own reads (`read_file`, `glob_files`, `grep_files`) and its model traffic still run outside the scopes, and what they read goes to the model's provider. A run with a real model is pending. |
 
 Linux task scopes, the app filter and Windows are not verified.
 
@@ -60,7 +60,8 @@ Linux task scopes, the app filter and Windows are not verified.
 - Network only. Files, processes and credentials need their own controls.
 - On macOS, a refusal is logged, and so gets a receipt, only when the refused program is signed by Apple. An
   ad-hoc-signed program, such as one you built yourself, is still refused, but leaves no receipt. Programs signed
-  with a Developer ID were not tested.
+  with a Developer ID were not tested. Even then, a burst of refusals can lose some receipts, and a process that
+  outlives the command gets none.
 - In v0, only HTTP and TLS through the proxy can be allowed.
 - In v0, processes of the same user outside every scope count as the owner.
 - In v0, nothing inside a task scope can listen, not even on loopback. Dev servers and tests that open a port
