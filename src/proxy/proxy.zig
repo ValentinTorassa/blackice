@@ -34,7 +34,7 @@
 //!   allowed host can carry any data to that host.
 //! - Any port of an allowed host is allowed.
 //! - Every process that can reach the port can use the proxy; there is no per-scope credential yet
-//!   (TODO: Proxy-Authorization token per scope, claude-followup D4).
+//!   (TODO: a Proxy-Authorization token per scope).
 
 const std = @import("std");
 const Io = std.Io;
