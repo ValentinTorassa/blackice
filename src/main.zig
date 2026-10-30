@@ -1,0 +1,75 @@
+const std = @import("std");
+const Io = std.Io;
+
+pub const policy = @import("core/policy.zig");
+pub const receipt = @import("core/receipt.zig");
+pub const scope = @import("core/scope.zig");
+pub const backend = @import("core/backend.zig");
+pub const seatbelt = @import("macos/seatbelt.zig");
+
+pub const version = "0.0.0-poc";
+
+const usage =
+    \\blackice: network permissions for apps and agent tasks (proof of concept)
+    \\
+    \\usage:
+    \\  blackice version
+    \\  blackice policy check FILE
+    \\
+;
+
+pub fn main(init: std.process.Init) !u8 {
+    const arena = init.arena.allocator();
+    const io = init.io;
+    const args = try init.minimal.args.toSlice(arena);
+
+    var out_buf: [4096]u8 = undefined;
+    var out_w: Io.File.Writer = .init(.stdout(), io, &out_buf);
+    const out = &out_w.interface;
+    defer out.flush() catch {};
+    var err_buf: [4096]u8 = undefined;
+    var err_w: Io.File.Writer = .init(.stderr(), io, &err_buf);
+    const errw = &err_w.interface;
+    defer errw.flush() catch {};
+
+    if (args.len < 2) {
+        try errw.writeAll(usage);
+        return 2;
+    }
+    const cmd = args[1];
+    if (std.mem.eql(u8, cmd, "version")) {
+        try out.print("blackice {s}\n", .{version});
+        return 0;
+    }
+    if (std.mem.eql(u8, cmd, "policy") and args.len == 4 and std.mem.eql(u8, args[2], "check")) {
+        return policyCheck(init.gpa, io, args[3], out, errw);
+    }
+    try errw.writeAll(usage);
+    return 2;
+}
+
+fn policyCheck(gpa: std.mem.Allocator, io: Io, path: []const u8, out: *Io.Writer, errw: *Io.Writer) !u8 {
+    const bytes = Io.Dir.cwd().readFileAlloc(io, path, gpa, .limited(1 << 20)) catch |err| {
+        try errw.print("blackice: cannot read {s}: {s}\n", .{ path, @errorName(err) });
+        return 1;
+    };
+    defer gpa.free(bytes);
+    var diag: policy.Diagnostic = .{};
+    var p = policy.Policy.parse(gpa, bytes, &diag) catch |err| {
+        try errw.print("blackice: {s}: {s}: {s} ({s})\n", .{ path, @errorName(err), diag.message, diag.item });
+        return 1;
+    };
+    defer p.deinit();
+    try out.print("ok: {s}, mode {s}, {d} allowed names, {d} allowed subnets, {d} denied subnets, policy {s}\n", .{
+        path, p.mode.label(), p.allow.len, p.allow_subnets.len, p.deny_subnets.len, p.id(),
+    });
+    return 0;
+}
+
+test {
+    _ = policy;
+    _ = receipt;
+    _ = scope;
+    _ = backend;
+    _ = seatbelt;
+}
