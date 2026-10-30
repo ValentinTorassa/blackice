@@ -109,7 +109,8 @@ scope).
 - **Expiry.** A grant's expiry and the closing of live connections are P0-05, not shown here. The revoke came
   before the 2-minute grant ended.
 - **The host.** This entry covers only this host. On Ubuntu 24.04 and later, where
-  `kernel.apparmor_restrict_unprivileged_userns=1` is the default, a scope fails closed before the command starts.
+  `kernel.apparmor_restrict_unprivileged_userns=1` is the default, a scope is expected to fail closed before
+  the command starts (not tested on Ubuntu).
 - **The run.** One run, by the people building blackice, on the owner's machine. Not a recording.
 
 **Date.** 2026-10-30, 13:31 UTC.
