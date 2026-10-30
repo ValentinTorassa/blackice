@@ -298,8 +298,12 @@ case that caused it.
   - While `app on` runs, the service is single-stepped with SIGSTOP/SIGCONT. The pinned `state` map's phase is
     read with raw `bpf()`, and the service is SIGKILLed when the phase is maps (1), cgroup (2), listeners (3),
     tracking (4) or armed (5).
-  - If a step jumps past the target, the attempt is retried with a shorter run slice, up to five times. If
-    every attempt misses, "reached" fails: that is a harness limit, not a product result.
+  - Single-stepping only reaches `maps`: each SIGSTOP/SIGCONT leaves a signal pending, the kernel verifier then
+    returns EAGAIN from BPF_PROG_LOAD, and `app on` fails with KernelFailure and rolls back (8ba8cca run). So each
+    case first tries three free-running attempts: `app on` runs unstopped, a tight loop reads the pinned phase,
+    and the service is SIGKILLed when it equals the target. The phase at death is read back from the pin before
+    the restart, and the attempt counts only if it is the target. Two single-stepping attempts follow as a
+    fallback. If every attempt misses, "reached" fails: that is a harness limit, not a product result.
   - After the restart, for phases 1–4: `OK off`, no attachments, programs, pins or listeners, foreign
     attachments equal to the baseline, one more `app_filter_on_failed` receipt with reason
     `interrupted_arming`, and arming works again.

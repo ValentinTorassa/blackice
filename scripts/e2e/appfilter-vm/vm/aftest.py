@@ -2202,6 +2202,50 @@ def kill_at(target, run_slice):
     return killed, seen
 
 
+def kill_at_free(target):
+    """Arms without stopping the service and SIGKILLs it as soon as a tight loop reads the target phase from the
+    pinned state map. Single-stepping cannot reach the phases after `maps`: every SIGSTOP/SIGCONT leaves a signal
+    pending, and the kernel verifier then returns EAGAIN from BPF_PROG_LOAD, so `app on` fails (KernelFailure) and
+    rolls back. The phase at the moment of death is read back from the pin before the restart (RestartSec=1); the
+    attempt counts only if that phase is the target."""
+    want = PHASES_ARMING[target]
+    reset_start_limit()
+    pid = main_pid()
+    p = subprocess.Popen(as_user(OWNER, [CLI, "app", "on", "--policy", POLICY]), stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    fd, seen, last, sent, at_death = None, [], None, False, None
+    end = time.time() + 120
+    try:
+        while time.time() < end:
+            if fd is None:
+                if os.path.exists(PIN_ROOT + "/state"):
+                    fd = bpf_obj_get(PIN_ROOT + "/state")
+                if fd is None:
+                    if p.poll() is not None:
+                        break
+                    continue
+            phase = read_phase(fd)
+            if phase != last:
+                seen.append(phase)
+                last = phase
+            if phase == want:
+                os.kill(pid, signal.SIGKILL)
+                sent = True
+                t0 = time.time()
+                while os.path.exists(f"/proc/{pid}") and time.time() - t0 < 0.5:
+                    time.sleep(0.001)
+                at_death = read_phase(fd)
+                break
+            if (phase is not None and want < phase <= 5) or p.poll() is not None:
+                break
+    finally:
+        if fd is not None:
+            os.close(fd)
+    out = p.communicate(timeout=60)[0]
+    killed = sent and at_death == want
+    note(f"  free-running: phases seen {seen}; SIGKILL sent={sent}; pinned phase after death={at_death}; client: {out.strip()[:300]}\n")
+    return killed, seen + ([f"at death: {at_death}"] if sent else [])
+
+
 def phase_kill_phases(_args):
     ok = True
     for target in ("maps", "cgroup", "listeners", "tracking", "armed"):
@@ -2213,10 +2257,11 @@ def phase_kill_phases(_args):
             run(["systemctl", "reset-failed", UNIT], timeout=15)
             failed_before = count_receipts(event="app_filter_on_failed", reason="interrupted_arming")
             attempts = []
-            for run_slice in (0.0002, 0.00005, 0.0, 0.0, 0.0):
+            # Free-running first (no signals while the programs load), single-stepping as the fallback.
+            for run_slice in (None, None, None, 0.0002, 0.00005):
                 since = time.time()
-                killed, seen = kill_at(target, run_slice)
-                attempts.append({"run_slice": run_slice, "phases": seen, "killed": killed})
+                killed, seen = kill_at_free(target) if run_slice is None else kill_at(target, run_slice)
+                attempts.append({"mode": "free" if run_slice is None else "step", "run_slice": run_slice, "phases": seen, "killed": killed})
                 if killed:
                     break
                 time.sleep(1)
