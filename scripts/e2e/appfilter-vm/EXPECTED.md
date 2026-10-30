@@ -107,6 +107,10 @@ request is a start that counts against `StartLimitBurst`.
 - A3R1b: root holds `127.0.0.1:765` and the owner runs `app on`: refused with `ListenerPortOccupied`. In the
   journal from that moment on: at most one automatic restart, no start-limit line, the service not failed and
   the socket listening, and status answers `OK off`.
+- A3R1d (`sustained`, its own phase): one owner `app status` every 5 s for 11 minutes while off. Recorded only
+  (OBSERVE): the first failing call (StartLimitBurst 60 per 600 s on 8ba8cca, so near call 61), both units'
+  `Result`, and whether any later call succeeds. Then root's documented recovery (sleep 3, reset-failed on both
+  units, start the socket) must bring status back to `OK off`.
 - A3R1c: 30 `app status` calls by the owner, 2 s apart (30 in 60 s, security's criterion). All answer `OK ...`,
   and the journal has no start-limit or trigger-limit line.
 

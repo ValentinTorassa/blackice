@@ -2094,6 +2094,40 @@ def phase_startlimit(_args):
     return ok
 
 
+def phase_sustained(_args):
+    """A3-R1 known limit, the StartLimit half: while off, one owner `app status` every 5 s for 11 minutes. Each
+    call is a service start, so StartLimitBurst per StartLimitIntervalSec is expected to stop the socket near call
+    61. Recorded only (security: OBSERVE). Then root's documented recovery, which is checked."""
+    write_policies()
+    with Case("A3R1d-sustained-status-calls", "one owner `app status` every 5 s for 11 minutes while off", "A3-R1") as case:
+        limits = unit_props(UNIT, "StartLimitBurst,StartLimitIntervalUSec")
+        since, calls, t0 = time.time(), [], time.time()
+        for n in range(1, 133):
+            while time.time() < t0 + (n - 1) * 5.0:
+                time.sleep(0.1)
+            rc, out, err = cli("status")
+            calls.append({"n": n, "rc": rc, "out": (out + err).strip()[:160], "t": round(time.time() - t0, 2)})
+        with open(f"{case.dir}/calls.json", "w") as f:
+            json.dump(calls, f, indent=1)
+        bad = [c for c in calls if c["rc"] != 0 or not c["out"].startswith("OK ")]
+        svc, sock = unit_props(UNIT, "ActiveState,Result,NRestarts"), unit_props(SOCKET_UNIT, "ActiveState,Result")
+        text = journal("sustained", since)
+        record("A3R1d.sustained", "A3-R1", "the first failing call (StartLimitBurst per StartLimitIntervalSec expected near 61), and whether it came back by itself",
+               {"limits": limits, "first_failure": bad[0] if bad else None, "failed_calls": len(bad), "last_call": calls[-1],
+                "ok_after_first_failure": [c["n"] for c in calls if bad and c["n"] > bad[0]["n"] and c not in bad][:10],
+                "service": svc, "socket": sock, "starts_in_journal": text.count("Started blackice-appfilter.service"),
+                "systemd": [l for l in text.splitlines() if "limit" in l.lower() or "repeated too quickly" in l][:6]}, "OBSERVE")
+        if bad:
+            # Security's host recovery, exactly: sleep 3, reset-failed both units, start the socket.
+            time.sleep(3)
+            run(["systemctl", "reset-failed", UNIT, SOCKET_UNIT], timeout=15)
+            run(["systemctl", "start", SOCKET_UNIT], timeout=30)
+            status = cli_status()
+            check("A3R1d.root-recovers", "A3-R1", "sleep 3, reset-failed both units, start the socket: status OK off", status, status_label(status) == "off",
+                  socket_after=unit_props(SOCKET_UNIT, "ActiveState,Result"))
+        return not case.failed
+
+
 def phase_kill_fork(_args):
     trigger, out = f"{DROP}/{OWNER}/fork-trigger", f"{DROP}/{OWNER}/fork-out.jsonl"
     for path in (trigger, out):
@@ -2915,7 +2949,7 @@ PHASES = {
     "preflight": phase_preflight, "provision": phase_provision, "baseline": phase_baseline, "setup": phase_setup,
     "arm": phase_arm, "guard": phase_guard, "inbound": phase_inbound, "bind": phase_bind, "srh": phase_srh,
     "dns-redirect": phase_dns_redirect, "restart": phase_restart, "kill-fork": phase_kill_fork, "off": phase_off,
-    "kill-phases": phase_kill_phases, "v1": phase_v1, "startlimit": phase_startlimit, "host-like": phase_host_like, "teardown": phase_teardown, "summary": phase_summary,
+    "kill-phases": phase_kill_phases, "v1": phase_v1, "startlimit": phase_startlimit, "sustained": phase_sustained, "host-like": phase_host_like, "teardown": phase_teardown, "summary": phase_summary,
     "interactive-setup": phase_interactive_setup, "interactive-pre": phase_interactive_pre, "interactive-post": phase_interactive_post,
     "service": phase_service, "reboot-check": phase_reboot_check,
     "extra-m4": phase_extra_m4, "extra-uring": phase_extra_uring, "extra-flood": phase_extra_flood,
