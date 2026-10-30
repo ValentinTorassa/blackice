@@ -84,7 +84,13 @@ key out of the scope; it does not decide what content may be sent to the model.
 - Limits:
   - Main mode: fx itself is not confined. Its own network features (web fetch, MCP servers, skill installs,
     upgrades) run as they do today. The hook confines the commands fx launches through its shell tool.
-  - Main mode: MCP and ACP are not covered. In `auto` mode, fx's reviewer sees the rewritten command. `cd` and
+  - Main mode, fx's own permission modes: the hook runs before fx's permission check, so fx judges the
+    rewritten `blackice run ...` command. In `auto` mode no rewritten command is on fx's short no-review list,
+    so each one goes to fx's model reviewer. The reviewer sees the command text, the user's request and short
+    excerpts of earlier tool output in the turn; it cannot read the files the command runs. If the reviewer is
+    unavailable, fx refuses the command. In `full-access` mode nothing asks or reviews; the command still runs
+    in its scope.
+  - Main mode: MCP and ACP are not covered. `cd` and
     `export` do not carry over between commands, since each runs in its own scope. Scopes are clients only.
   - Main mode: the hook is a patch, not an fx feature. Until fx offers a supported launch hook, each fx release
     needs the patch checked again.
