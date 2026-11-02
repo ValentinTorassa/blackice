@@ -5,8 +5,8 @@ and sees every new outbound connection on the machine, from any app. It has thre
 ask. In ask mode a new connection waits while a hook asks an agent, such as [fx](https://github.com/vercel-labs/fx),
 whether to allow it, and the agent answers with `netshield approve`.
 
-**Status: planning. Nothing here runs yet.** Phase 0, signing with an Apple Developer ID, is in progress. The
-phases and the decisions behind them are in [`docs/plan.md`](docs/plan.md).
+**Status: planning. The network extension does not exist yet.** Phase 0, signing with an Apple Developer ID,
+is in progress. The phases and the decisions behind them are in [`docs/plan.md`](docs/plan.md).
 
 ## Who's building it and why
 
@@ -45,6 +45,26 @@ An approval needs the one-time token that came with the event, or Touch ID from 
 policy file, and never asks. netshield covers the whole machine and asks an agent about each new connection.
 The architecture was worked out in blackice, and netshield starts from its macOS app filter: the Network Extension,
 app identity from code signatures, and the TLS server name reader.
+
+## Code so far
+
+[`macos/`](macos/) is a Swift package that builds with the Command Line Tools alone:
+
+- the `netshield.toml` reader, strict: an unknown key, a duplicate key or anything outside the
+  small TOML subset the file uses is an error with its line number;
+- the event a hook receives and its one-time token;
+- the `netshield` command. `netshield validate PATH` checks a configuration file. The other
+  commands check their arguments and exit with status 69, because they need the extension;
+- from blackice's macOS app filter: app identity from code signatures, host name rules and the
+  TLS server name reader.
+
+```console
+$ macos/test.sh     # swift test
+$ macos/smoke.sh    # builds and runs the binary
+$ cd macos && swift run netshield validate Examples/netshield.toml
+```
+
+[`integrations/fx/`](integrations/fx/) holds a draft skill for fx to decide connections.
 
 ## Site
 
