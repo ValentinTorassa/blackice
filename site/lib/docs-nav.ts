@@ -18,7 +18,7 @@ export const docsNav: DocsNavSection[] = [
       {
         title: 'Introduction',
         href: '/docs',
-        description: 'netshield is a headless network extension and CLI for macOS, where an agent can approve each new connection.',
+        description: 'netshield is a headless application firewall for macOS, operated through a CLI. A connection that no rule covers can wait for you, or for an agent behind a hook, to approve or deny it.',
       },
       {
         title: 'How it works',
