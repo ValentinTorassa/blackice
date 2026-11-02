@@ -39,11 +39,20 @@ done when its check passes on a real Mac, not when the code compiles.
    *So far*, without the extension: the Swift package in `macos/` with the `netshield.toml` parser, rule matching,
    the hook event and token, the CLI's argument parsing and `netshield validate`, plus the parts ported from
    blackice (code identity, host names, TLS server name). Unit tests run in CI on macOS.
+   Also without the extension: the JSONL event log, and a daemon skeleton that logs each event and runs its hooks.
+   Its intake from the extension is only a protocol until phase 2, so `netshield daemon` checks its configuration and
+   exits with status 69. A LaunchAgent template is in `macos/LaunchAgent/`; nothing installs it.
 2. **Ask mode.** Pausing, XPC, the pending list, deny on timeout, `netshield pending/approve/deny` with `--app`,
    `--host` and `--for`, the event token and Touch ID. A repeated connection (same app, host and port) raises one
    event. *Done when* a `curl` waits, `approve` releases it, and with no answer the timeout drops it.
 3. **Hooks.** `run = '…'` in `netshield.toml`, the event as JSON on stdin plus its token, and a limit on hooks
    running at once. *Done when* a sample hook approves one host and denies another.
+   *So far*, tested without the extension: the hook runner. It runs `run` with `/bin/sh -c` and never puts event
+   data in the command line. The event goes on stdin and in a 0600 file inside a private 0700 directory, named in
+   `NETSHIELD_EVENT_FILE`. The hook runs in that directory, which is deleted afterwards. Hooks get a short, explicit
+   environment without the token. At the deadline the hook's process group gets SIGTERM, then SIGKILL after a grace
+   period, and anything a hook leaves in its group is killed when it exits. At most 4 hooks run at once; a hook with
+   no free slot is not started, is logged as dropped, and the connection is denied when its timeout passes.
 4. **The agent decides.** An fx skill that says what to look at, when to approve and how to call `approve`. A fixed
    allow rule for the deciding agent and its model provider, bound to their signatures. *Done when* fx decides ten
    test connections with nobody touching the keyboard.
@@ -67,8 +76,14 @@ done when its check passes on a real Mac, not when the code compiles.
 - **Unsigned code.** Connections from unsigned or ad hoc signed code have no signing identity, so an approval
   cannot name them. What ask mode does with them is open.
 - **Event delivery to an agent.** Hooks get the event as JSON on stdin, but `fx ask` reads stdin as its prompt only
-  when no prompt arguments are given. The fx skill assumes the daemon also writes the event to a file and names it
-  in `NETSHIELD_EVENT_FILE` (see `integrations/fx/README.md`).
+  when no prompt arguments are given. The hook runner also writes the event to a file named in
+  `NETSHIELD_EVENT_FILE`, which is what the fx skill reads (see `integrations/fx/README.md`). Not yet tried with fx.
+- **Hooks that leave their process group.** A process started by a hook that calls `setsid` or `setpgid` escapes
+  the kill at the deadline and when the hook exits. Running hooks under a separate user or in a sandbox would close
+  this; neither is planned yet.
+- **Hook limits.** The limit of 4 hooks at once, the 2 s grace period and the 4 KiB of stderr kept per hook are
+  first guesses, set in code rather than in `netshield.toml`.
+- **Log rotation.** The event log only grows. Rotation, or leaving it to newsyslog, is not decided.
 - **Installation.** No dialog per connection, but macOS asks once to allow the extension in System Settings, unless
   the Mac is managed with an MDM profile.
 - **Name.** Proton VPN uses NetShield for its ad and malware blocker. The name stays for now.
