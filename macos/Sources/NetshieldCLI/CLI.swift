@@ -7,12 +7,16 @@ public enum ExitCode {
     public static let usage: Int32 = 64       // EX_USAGE
     public static let invalidConfig: Int32 = 65 // EX_DATAERR
     public static let unreadable: Int32 = 66  // EX_NOINPUT
-    public static let unavailable: Int32 = 69 // EX_UNAVAILABLE: needs the extension, which does not exist yet
+    public static let unavailable: Int32 = 69 // EX_UNAVAILABLE: needs the signed app or the extension
+    public static let software: Int32 = 70    // EX_SOFTWARE: a system request failed
+    public static let tempFail: Int32 = 75    // EX_TEMPFAIL: the saved configuration changed meanwhile; retry
+    public static let noPermission: Int32 = 77 // EX_NOPERM: Touch ID cancelled or failed
 }
 
 public enum Command: Equatable, Sendable {
     case help
-    case start, stop, status, pending
+    case start(configPath: String?)
+    case stop, status, pending
     case mode(Mode)
     case approve(Approval)
     case deny(Denial)
@@ -66,7 +70,9 @@ public enum CLI {
 
     Commands:
       validate PATH                      Check a netshield.toml file
-      start | stop                       Start or stop the daemon and the extension
+      start [--config PATH]              Activate the extension and start filtering with PATH
+                                         (default ~/.config/netshield/netshield.toml)
+      stop                               Stop filtering and deactivate the extension
       status                             Mode, rules, approvals and paused connections
       mode accept-all | ask | block-all  Change the mode
       pending                            Connections waiting for an answer
@@ -77,9 +83,10 @@ public enum CLI {
       daemon --config PATH               Run the hooks for paused connections (the LaunchAgent)
       help                               Show this help
 
-    Only validate works so far. The other commands need the network extension,
-    which is not built yet; they check their arguments and exit with status 69.
-    daemon checks its configuration first.
+    validate works anywhere. start, stop, status and mode need Netshield.app signed
+    with the Developer ID; any other build says so and exits with status 69. They ask
+    for Touch ID before changing filtering. pending, approve, deny and daemon arrive
+    with ask mode (phase 2); they check their arguments and exit with status 69.
     Without --team, --app names Apple platform code, which has no Team ID.
     """
 
@@ -90,7 +97,10 @@ public enum CLI {
         case "help", "-h", "--help":
             try noArguments(first, rest)
             return .help
-        case "start": try noArguments(first, rest); return .start
+        case "start":
+            let options = try parseOptions(rest, allowed: ["config"], command: first)
+            if let path = options["config"], path.hasPrefix("-") { throw UsageError("start: --config needs a path") }
+            return .start(configPath: options["config"])
         case "stop": try noArguments(first, rest); return .stop
         case "status": try noArguments(first, rest); return .status
         case "pending": try noArguments(first, rest); return .pending
@@ -130,8 +140,14 @@ public enum CLI {
     }
 
     /// Runs one command line and returns the exit status.
-    public static func run(_ arguments: [String], stdout: (String) -> Void, stderr: (String) -> Void,
-                           readFile: (String) throws -> Data = readConfigFile) -> Int32 {
+    /// Where start looks for netshield.toml without --config.
+    public static var defaultConfigPath: String {
+        NSHomeDirectory() + "/.config/netshield/netshield.toml"
+    }
+
+    public static func run(_ arguments: [String], stdout: @escaping (String) -> Void, stderr: @escaping (String) -> Void,
+                           readFile: (String) throws -> Data = readConfigFile,
+                           system: SystemControlling = UnsignedSystem()) -> Int32 {
         if arguments.isEmpty {
             stderr(usage)
             return ExitCode.usage
@@ -151,21 +167,32 @@ public enum CLI {
         case .validate(let path):
             switch loadConfig(path, readFile: readFile, stderr: stderr) {
             case .failure(let status): return status.code
-            case .success(let config):
-                stdout("\(path): valid (\(config.summary))")
+            case .success(let loaded):
+                stdout("\(path): valid (\(loaded.config.summary))")
                 return ExitCode.success
             }
         case .daemon(let path):
             switch loadConfig(path, readFile: readFile, stderr: stderr) {
             case .failure(let status): return status.code
-            case .success(let config):
-                stdout("\(path): valid (\(config.summary))")
+            case .success(let loaded):
+                stdout("\(path): valid (\(loaded.config.summary))")
                 stderr("netshield daemon: not implemented yet (needs the extension, phase 2)")
                 return ExitCode.unavailable
             }
-        case .start, .stop, .status, .mode:
-            stderr("netshield \(command.name): not implemented yet (needs the extension, phase 1)")
-            return ExitCode.unavailable
+        case .start(let configPath):
+            let path = configPath ?? defaultConfigPath
+            switch loadConfig(path, readFile: readFile, stderr: stderr) {
+            case .failure(let status): return status.code
+            case .success(let loaded):
+                stdout("\(path): valid (\(loaded.config.summary))")
+                return system.start(configText: loaded.text, output: SystemOutput(stdout: stdout, stderr: stderr))
+            }
+        case .stop:
+            return system.stop(output: SystemOutput(stdout: stdout, stderr: stderr))
+        case .status:
+            return system.status(output: SystemOutput(stdout: stdout, stderr: stderr))
+        case .mode(let mode):
+            return system.setMode(mode, output: SystemOutput(stdout: stdout, stderr: stderr))
         case .pending, .approve, .deny:
             stderr("netshield \(command.name): not implemented yet (needs the extension, phase 2)")
             return ExitCode.unavailable
@@ -174,9 +201,15 @@ public enum CLI {
 
     private struct Status: Error { let code: Int32 }
 
+    /// The parsed file and the exact text it was parsed from, read once.
+    private struct Loaded {
+        let config: NetshieldConfig
+        let text: String
+    }
+
     /// Reads and parses a netshield.toml, reporting problems the way validate does.
     private static func loadConfig(_ path: String, readFile: (String) throws -> Data,
-                                   stderr: (String) -> Void) -> Result<NetshieldConfig, Status> {
+                                   stderr: (String) -> Void) -> Result<Loaded, Status> {
         let data: Data
         do {
             data = try readFile(path)
@@ -185,7 +218,8 @@ public enum CLI {
             return .failure(Status(code: ExitCode.unreadable))
         }
         do {
-            return .success(try NetshieldConfig(data: data))
+            // NetshieldConfig refuses anything that is not UTF-8, so the text is always there.
+            return .success(Loaded(config: try NetshieldConfig(data: data), text: String(decoding: data, as: UTF8.self)))
         } catch let error as ConfigError {
             stderr(error.line.map { "\(path):\($0): \(error.message)" } ?? "\(path): \(error.message)")
             return .failure(Status(code: ExitCode.invalidConfig))

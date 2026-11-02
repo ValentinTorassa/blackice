@@ -9,13 +9,37 @@ private struct Run {
     let stderr: String
 }
 
-private func run(_ arguments: [String], files: [String: Data] = [:]) -> Run {
-    var out: [String] = [], err: [String] = []
+private func run(_ arguments: [String], files: [String: Data] = [:],
+                 system: SystemControlling = UnsignedSystem()) -> Run {
+    let out = Recorder<String>(), err = Recorder<String>()
     let status = CLI.run(arguments, stdout: { out.append($0) }, stderr: { err.append($0) }, readFile: { path in
         guard let data = files[path] else { throw CocoaError(.fileReadNoSuchFile) }
         return data
-    })
-    return Run(status: status, stdout: out.joined(separator: "\n"), stderr: err.joined(separator: "\n"))
+    }, system: system)
+    return Run(status: status, stdout: out.items.joined(separator: "\n"), stderr: err.items.joined(separator: "\n"))
+}
+
+/// Stands in for NESystemControl: records each call and answers with a fixed status.
+private final class FakeSystem: SystemControlling {
+    var calls: [String] = []
+    let answer: Int32
+
+    init(status: Int32 = 0) { answer = status }
+
+    func start(configText: String, output: SystemOutput) -> Int32 {
+        calls.append("start " + configText)
+        output.stdout("started")
+        return answer
+    }
+
+    func stop(output: SystemOutput) -> Int32 { calls.append("stop"); return answer }
+    func status(output: SystemOutput) -> Int32 { calls.append("status"); output.stdout("filter: enabled"); return answer }
+
+    func setMode(_ mode: Mode, output: SystemOutput) -> Int32 {
+        calls.append("mode " + mode.rawValue)
+        output.stderr("mode refused")
+        return answer
+    }
 }
 
 private func usageError(_ arguments: [String]) -> String? {
@@ -29,7 +53,9 @@ private func usageError(_ arguments: [String]) -> String? {
 
 struct ParseTests {
     @Test func simpleCommands() throws {
-        #expect(try CLI.parse(["start"]) == .start)
+        #expect(try CLI.parse(["start"]) == .start(configPath: nil))
+        #expect(try CLI.parse(["start", "--config", "a.toml"]) == .start(configPath: "a.toml"))
+        #expect(try CLI.parse(["start", "--config=/etc/n.toml"]) == .start(configPath: "/etc/n.toml"))
         #expect(try CLI.parse(["stop"]) == .stop)
         #expect(try CLI.parse(["status"]) == .status)
         #expect(try CLI.parse(["pending"]) == .pending)
@@ -62,7 +88,13 @@ struct ParseTests {
         let cases: [([String], String)] = [
             ([], "missing command"),
             (["frobnicate"], "unknown command"),
-            (["start", "now"], "takes no arguments"),
+            (["start", "now"], "unexpected argument 'now'"),
+            (["start", "--config"], "--config needs a value"),
+            (["start", "--config", "--force"], "--config needs a path"),
+            (["start", "--config", "a", "--config", "b"], "given twice"),
+            (["start", "--mode", "ask"], "unknown option --mode"),
+            (["stop", "now"], "takes no arguments"),
+            (["status", "--verbose"], "takes no arguments"),
             (["mode"], "accept-all, ask or block-all"),
             (["mode", "allow-all"], "accept-all, ask or block-all"),
             (["mode", "ask", "extra"], "accept-all, ask or block-all"),
@@ -134,13 +166,55 @@ struct RunTests {
         #expect(result.status == 66 && result.stderr.hasPrefix("missing.toml: cannot read the file"))
     }
 
-    @Test func commandsThatNeedTheExtensionSaySoAndFail() {
-        let phaseOne: [[String]] = [["start"], ["stop"], ["status"], ["mode", "ask"]]
-        for arguments in phaseOne {
+    @Test func commandsThatNeedTheSignedAppSaySoAndFail() {
+        for arguments in [["stop"], ["status"], ["mode", "ask"]] {
             let result = run(arguments)
             #expect(result.status == 69 && result.stdout.isEmpty)
-            #expect(result.stderr == "netshield \(arguments[0]): not implemented yet (needs the extension, phase 1)")
+            #expect(result.stderr == UnsignedSystem.refusal(arguments[0]))
+            #expect(result.stderr.hasSuffix("(see docs/phase-0.md)"))
         }
+        // start checks its configuration first, so a bad file is reported even here.
+        let start = run(["start", "--config", "n.toml"], files: ["n.toml": Data("mode = \"block-all\"\n".utf8)])
+        #expect(start.status == 69)
+        #expect(start.stdout == "n.toml: valid (mode block-all, timeout 10 s, 0 allow rules, 0 hooks)")
+        #expect(start.stderr == UnsignedSystem.refusal("start"))
+    }
+
+    @Test func startReadsTheFileOnceAndPassesItsText() {
+        let text = "mode = \"accept-all\"\n\n[[allow]]\napp = \"com.apple.curl\"\nhosts = [\"pypi.org\"]\n"
+        let system = FakeSystem()
+        let result = run(["start", "--config", "n.toml"], files: ["n.toml": Data(text.utf8)], system: system)
+        #expect(result.status == 0)
+        #expect(result.stdout == "n.toml: valid (mode accept-all, timeout 10 s, 1 allow rule, 0 hooks)\nstarted")
+        #expect(system.calls == ["start " + text])
+
+        let defaultPath = FakeSystem()
+        let fallback = run(["start"], files: [CLI.defaultConfigPath: Data("mode = \"ask\"\n".utf8)], system: defaultPath)
+        #expect(fallback.status == 0 && defaultPath.calls == ["start mode = \"ask\"\n"])
+        #expect(CLI.defaultConfigPath.hasSuffix("/.config/netshield/netshield.toml"))
+
+        // A missing or bad file never reaches the system.
+        let untouched = FakeSystem()
+        #expect(run(["start", "--config", "missing.toml"], system: untouched).status == 66)
+        #expect(run(["start", "--config", "b.toml"], files: ["b.toml": Data("mode = 'x'\n".utf8)], system: untouched).status == 65)
+        #expect(run(["start"], system: untouched).status == 66)
+        #expect(untouched.calls.isEmpty)
+    }
+
+    @Test func systemCommandsPassThroughTheirStatus() {
+        let system = FakeSystem(status: ExitCode.noPermission)
+        let stop = run(["stop"], system: system)
+        let status = run(["status"], system: system)
+        let mode = run(["mode", "block-all"], system: system)
+        #expect(system.calls == ["stop", "status", "mode block-all"])
+        #expect(stop.status == 77 && status.status == 77 && mode.status == 77)
+        #expect(status.stdout == "filter: enabled" && mode.stderr == "mode refused")
+        // Phase 2 commands never reach the system.
+        _ = run(["pending"], system: system)
+        #expect(system.calls.count == 3)
+    }
+
+    @Test func phaseTwoCommandsSaySoAndFail() {
         let phaseTwo: [[String]] = [["pending"], ["approve", "--app", "com.a", "--host", "example.com"],
                                     ["deny", "--app", "com.a", "--host", "example.com"]]
         for arguments in phaseTwo {
