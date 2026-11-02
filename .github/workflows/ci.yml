@@ -1,0 +1,118 @@
+# Build and test the Swift package on macOS and the site on Linux.
+# Read-only token, actions pinned to full commit SHAs, no secrets, no pull_request_target.
+# Each job runs only when its part of the repository (or this file) changed.
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  changes:
+    name: changed paths
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      swift: ${{ steps.diff.outputs.swift }}
+      site: ${{ steps.diff.outputs.site }}
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      # Plain git instead of a third-party paths action. When the range is unknown
+      # (a new branch, a force push), both jobs run.
+      - name: Diff
+        id: diff
+        env:
+          EVENT: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.sha }}
+        run: |
+          if [[ "$EVENT" == pull_request ]]; then
+            range="$PR_BASE...$PR_HEAD"
+          else
+            range="$BEFORE..$AFTER"
+          fi
+          if files="$(git diff --name-only "$range" 2>/dev/null)"; then
+            printf 'Changed files:\n%s\n' "$files"
+          else
+            echo "No usable range ($range); running every job."
+            files="macos/ site/"
+          fi
+          swift=false; site=false
+          grep -qE '^(macos/|integrations/|\.github/workflows/ci\.yml$)' <<<"$files" && swift=true
+          grep -qE '^(site/|\.github/workflows/ci\.yml$)' <<<"$files" && site=true
+          echo "swift=$swift" >> "$GITHUB_OUTPUT"
+          echo "site=$site" >> "$GITHUB_OUTPUT"
+
+  swift:
+    name: swift (macOS)
+    needs: changes
+    if: needs.changes.outputs.swift == 'true'
+    runs-on: macos-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Toolchain
+        run: |
+          sw_vers
+          swift --version
+
+      # Unsigned build and unit tests only: nothing is signed, installed or activated.
+      - name: Build
+        working-directory: macos
+        run: swift build -Xswiftc -warnings-as-errors
+
+      - name: Test
+        run: macos/test.sh
+
+      - name: Smoke test the binary
+        run: macos/smoke.sh
+
+  site:
+    name: site (Next.js)
+    needs: changes
+    if: needs.changes.outputs.site == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22.23.3
+          cache: npm
+          cache-dependency-path: site/package-lock.json
+
+      - name: Install
+        working-directory: site
+        run: npm ci
+
+      - name: Build
+        working-directory: site
+        run: npm run build
