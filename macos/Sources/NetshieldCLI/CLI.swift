@@ -17,6 +17,7 @@ public enum Command: Equatable, Sendable {
     case approve(Approval)
     case deny(Denial)
     case validate(path: String)
+    case daemon(configPath: String)
 
     public var name: String {
         switch self {
@@ -29,6 +30,7 @@ public enum Command: Equatable, Sendable {
         case .approve: return "approve"
         case .deny: return "deny"
         case .validate: return "validate"
+        case .daemon: return "daemon"
         }
     }
 }
@@ -72,10 +74,12 @@ public enum CLI {
                                          Let one app reach one host until the approval expires
       deny --app ID [--team TEAM] --host HOST [--token TOKEN]
                                          Drop the waiting connection and the ones like it
+      daemon --config PATH               Run the hooks for paused connections (the LaunchAgent)
       help                               Show this help
 
     Only validate works so far. The other commands need the network extension,
     which is not built yet; they check their arguments and exit with status 69.
+    daemon checks its configuration first.
     Without --team, --app names Apple platform code, which has no Team ID.
     """
 
@@ -100,6 +104,10 @@ public enum CLI {
                 throw UsageError("validate takes one path")
             }
             return .validate(path: rest[0])
+        case "daemon":
+            let options = try parseOptions(rest, allowed: ["config"], command: first)
+            guard let path = options["config"], !path.hasPrefix("-") else { throw UsageError("daemon needs --config PATH") }
+            return .daemon(configPath: path)
         case "approve":
             let options = try parseOptions(rest, allowed: ["app", "team", "host", "for", "token"], command: first)
             let target = try target(options, command: first)
@@ -141,23 +149,19 @@ public enum CLI {
             stdout(usage)
             return ExitCode.success
         case .validate(let path):
-            let data: Data
-            do {
-                data = try readFile(path)
-            } catch {
-                stderr("\(path): cannot read the file: \(error.localizedDescription)")
-                return ExitCode.unreadable
-            }
-            do {
-                let config = try NetshieldConfig(data: data)
+            switch loadConfig(path, readFile: readFile, stderr: stderr) {
+            case .failure(let status): return status.code
+            case .success(let config):
                 stdout("\(path): valid (\(config.summary))")
                 return ExitCode.success
-            } catch let error as ConfigError {
-                stderr(error.line.map { "\(path):\($0): \(error.message)" } ?? "\(path): \(error.message)")
-                return ExitCode.invalidConfig
-            } catch {
-                stderr("\(path): \(error)")
-                return ExitCode.invalidConfig
+            }
+        case .daemon(let path):
+            switch loadConfig(path, readFile: readFile, stderr: stderr) {
+            case .failure(let status): return status.code
+            case .success(let config):
+                stdout("\(path): valid (\(config.summary))")
+                stderr("netshield daemon: not implemented yet (needs the extension, phase 2)")
+                return ExitCode.unavailable
             }
         case .start, .stop, .status, .mode:
             stderr("netshield \(command.name): not implemented yet (needs the extension, phase 1)")
@@ -165,6 +169,29 @@ public enum CLI {
         case .pending, .approve, .deny:
             stderr("netshield \(command.name): not implemented yet (needs the extension, phase 2)")
             return ExitCode.unavailable
+        }
+    }
+
+    private struct Status: Error { let code: Int32 }
+
+    /// Reads and parses a netshield.toml, reporting problems the way validate does.
+    private static func loadConfig(_ path: String, readFile: (String) throws -> Data,
+                                   stderr: (String) -> Void) -> Result<NetshieldConfig, Status> {
+        let data: Data
+        do {
+            data = try readFile(path)
+        } catch {
+            stderr("\(path): cannot read the file: \(error.localizedDescription)")
+            return .failure(Status(code: ExitCode.unreadable))
+        }
+        do {
+            return .success(try NetshieldConfig(data: data))
+        } catch let error as ConfigError {
+            stderr(error.line.map { "\(path):\($0): \(error.message)" } ?? "\(path): \(error.message)")
+            return .failure(Status(code: ExitCode.invalidConfig))
+        } catch {
+            stderr("\(path): \(error)")
+            return .failure(Status(code: ExitCode.invalidConfig))
         }
     }
 
