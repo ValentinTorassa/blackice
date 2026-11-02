@@ -108,17 +108,16 @@ export default function Home() {
             Who&apos;s building it and why
           </h2>
           <p className="sub">
-            I&apos;m <a href={SITE.authorUrl}>{SITE.author}</a>, a security and backend engineer in Rosario, Argentina.{' '}
-            <a href={SITE.designerUrl}>{SITE.designer}</a> is working on the design with me.
+            We&apos;re <a href={SITE.authorUrl}>{SITE.author}</a> and <a href={SITE.coauthorUrl}>{SITE.coauthor}</a>.
           </p>
           <p className="sub">
-            Agents run on my machines all day, and I want them to decide about network access themselves, without anyone
-            clicking Allow in a dialog.
+            Agents run on developer machines all day, and we want them to decide about network access themselves, without
+            anyone clicking Allow in a dialog.
           </p>
           <p className="sub">
-            The code that sees every connection on a machine is a sensitive place for a dependency. I&apos;d rather own
+            The code that sees every connection on a machine is a sensitive place for a dependency. We&apos;d rather own
             that code and keep it small than install a third-party firewall with that access. {SITE.name} starts from the
-            macOS app filter I wrote for <a href="https://github.com/ValentinTorassa/blackice">blackice</a>.
+            macOS app filter in <a href="https://github.com/ValentinTorassa/blackice">blackice</a>.
           </p>
         </section>
       </main>

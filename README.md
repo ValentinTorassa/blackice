@@ -10,13 +10,12 @@ phases and the decisions behind them are in [`docs/plan.md`](docs/plan.md).
 
 ## Who's building it and why
 
-I'm [Valen Torassa](https://valentorassa.com), a security and backend engineer in Rosario, Argentina.
-[Esteban Suárez](https://github.com/suarezesteban) is working on the design with me.
+We're [Valen Torassa](https://valentorassa.com) and [Esteban Suárez](https://github.com/suarezesteban).
 
-Agents run on my machines all day, and I want them to decide about network access themselves, without anyone
-clicking Allow in a dialog. The macOS firewalls I know are built around a person answering prompts.
+Agents run on developer machines all day, and we want them to decide about network access themselves, without
+anyone clicking Allow in a dialog. The macOS firewalls we know are built around a person answering prompts.
 
-The code that sees every connection on a machine is a sensitive place for a dependency. I'd rather own that code,
+The code that sees every connection on a machine is a sensitive place for a dependency. We'd rather own that code,
 keep it small and readable, than install a third-party firewall with that access.
 
 ## How it will work
@@ -44,7 +43,7 @@ An approval needs the one-time token that came with the event, or Touch ID from 
 
 [blackice](https://github.com/ValentinTorassa/blackice) confines one command and everything it starts, with a fixed
 policy file, and never asks. netshield covers the whole machine and asks an agent about each new connection.
-blackice was where I worked out the architecture. netshield starts from its macOS app filter: the Network Extension,
+The architecture was worked out in blackice, and netshield starts from its macOS app filter: the Network Extension,
 app identity from code signatures, and the TLS server name reader.
 
 ## Site

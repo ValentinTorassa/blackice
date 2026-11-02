@@ -6,8 +6,8 @@ export const SITE = {
   repo: 'https://github.com/ValentinTorassa/netshield',
   author: 'Valen Torassa',
   authorUrl: 'https://valentorassa.com',
-  designer: 'Esteban Suárez',
-  designerUrl: 'https://github.com/suarezesteban',
+  coauthor: 'Esteban Suárez',
+  coauthorUrl: 'https://github.com/suarezesteban',
 };
 
 // Where the project is. Changes when a phase in docs/plan.md is done.
