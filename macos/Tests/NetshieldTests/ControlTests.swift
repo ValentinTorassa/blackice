@@ -10,6 +10,16 @@ struct ControlTests {
         #expect(ControlAction.stop.reason == "netshield: stop filtering and deactivate the network extension")
         #expect(ControlAction.mode(from: .acceptAll, to: .blockAll, generation: 5).reason
             == "netshield: change the mode from accept-all to block-all (generation 5)")
+        let tool = AppIdentity.signed(SigningIdentity(signingID: "com.example.tool", teamID: "ABCDE12345"))
+        #expect(ControlAction.approve(tool, host: "example.com", seconds: 3600).reason
+            == "netshield: let ABCDE12345/com.example.tool reach example.com for 1 h")
+        let build = AppIdentity.cdhash(String(repeating: "0f", count: 20))
+        #expect(ControlAction.approve(build, host: "example.com", seconds: 600).reason
+            == "netshield: let cdhash/\(String(repeating: "0f", count: 20)) reach example.com for 10 min")
+        #expect(ControlAction.deny(tool, host: "example.com").reason
+            == "netshield: deny ABCDE12345/com.example.tool reaching example.com and drop its waiting connections")
+        #expect(ControlAction.duration(45) == "45 s" && ControlAction.duration(90) == "90 s")
+        #expect(ControlAction.duration(5400) == "1 h 30 min" && ControlAction.duration(86_400) == "24 h")
     }
 
     @Test func replacementNeverGoesBack() {

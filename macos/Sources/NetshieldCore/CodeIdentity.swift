@@ -1,6 +1,7 @@
 // Ported from blackice macos/Shared/CodeIdentity.swift at commit 45a7870
 // (https://github.com/ValentinTorassa/blackice/blob/45a7870/macos/Shared/CodeIdentity.swift).
-// Changes: public API, IdentityCache marked @unchecked Sendable (all state is behind its lock).
+// Changes: public API, IdentityCache marked @unchecked Sendable (all state is behind its lock);
+// ad hoc code comes back with its cdhash, and path(auditToken:) is new (phase 2).
 import Darwin
 import Foundation
 import Security
@@ -104,7 +105,10 @@ public enum CodeIdentity {
         if flags.uint32Value & SecCodeSignatureFlags.adhoc.rawValue != 0 {
             // Valid ad hoc signatures satisfy validity without an identity anchor.
             guard teamID == nil, SecCodeCheckValidity(code, strict, nil) == errSecSuccess else { return .invalidSignature }
-            return .adHoc
+            // kSecCodeInfoUnique is the cdhash, 20 bytes. Approvals for ad hoc code name it, so
+            // code without one cannot be named at all.
+            guard let unique = info[kSecCodeInfoUnique as String] as? Data, unique.count == 20 else { return .unresolved }
+            return .adHoc(cdhash: unique.map { String(format: "%02x", $0) }.joined())
         }
         guard let signingID = info[kSecCodeInfoIdentifier as String] as? String, validSigningID(signingID) else {
             return SecCodeCheckValidity(code, strict, nil) == errSecSuccess ? .unresolved : .invalidSignature
@@ -121,6 +125,20 @@ public enum CodeIdentity {
         // the certificate's OU. An ad hoc signature cannot satisfy either anchor.
         guard let exact = requirement(expression), SecCodeCheckValidity(code, strict, exact) == errSecSuccess else { return .invalidSignature }
         return .verified(SigningIdentity(signingID: signingID, teamID: teamID))
+    }
+
+    /// Where the code behind this audit token lives on disk, for the event a hook reads. Taken from
+    /// the same guest as the identity, never from a PID. nil when the system does not say.
+    public static func path(auditToken: Data?) -> String? {
+        guard let auditToken, auditToken.count == MemoryLayout<audit_token_t>.size else { return nil }
+        var code: SecCode?
+        let attributes = [kSecGuestAttributeAudit as String: auditToken] as CFDictionary
+        guard SecCodeCopyGuestWithAttributes(nil, attributes, [], &code) == errSecSuccess, let code else { return nil }
+        var staticCode: SecStaticCode?
+        guard SecCodeCopyStaticCode(code, [], &staticCode) == errSecSuccess, let staticCode else { return nil }
+        var url: CFURL?
+        guard SecCodeCopyPath(staticCode, [], &url) == errSecSuccess, let url else { return nil }
+        return (url as URL).path
     }
 
     public static func currentResolution() -> IdentityResolution {

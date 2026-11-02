@@ -1,5 +1,5 @@
-// Pieces of netshield start, stop and mode that need no system framework, so they can be
-// unit-tested: what the Touch ID prompt says, which configurations the CLI refuses to touch,
+// Pieces of netshield start, stop, mode, approve and deny that need no system framework, so they
+// can be unit-tested: what the Touch ID prompt says, which configurations the CLI refuses to touch,
 // and when activation may replace an installed extension.
 //
 // ExtensionReplacement is ported from blackice macos/Shared/HostAuthorization.swift at commit
@@ -10,6 +10,10 @@ public enum ControlAction: Equatable, Sendable {
     case start(ProviderConfiguration)
     case stop
     case mode(from: Mode, to: Mode, generation: UInt64)
+    /// approve without the event's token: a person confirms.
+    case approve(AppIdentity, host: String, seconds: Int)
+    /// deny without the event's token.
+    case deny(AppIdentity, host: String)
 
     /// One sentence for the terminal and the Touch ID dialog. Every change to filtering asks.
     public var reason: String {
@@ -20,7 +24,19 @@ public enum ControlAction: Equatable, Sendable {
             return "netshield: stop filtering and deactivate the network extension"
         case .mode(let from, let to, let generation):
             return "netshield: change the mode from \(from.rawValue) to \(to.rawValue) (generation \(generation))"
+        case .approve(let identity, let host, let seconds):
+            return "netshield: let \(identity.label) reach \(host) for \(Self.duration(seconds))"
+        case .deny(let identity, let host):
+            return "netshield: deny \(identity.label) reaching \(host) and drop its waiting connections"
         }
+    }
+
+    /// "90 s", "10 min", "1 h", "1 h 30 min".
+    static func duration(_ seconds: Int) -> String {
+        if seconds < 60 || seconds % 60 != 0 { return "\(seconds) s" }
+        let minutes = seconds / 60
+        if minutes < 60 { return "\(minutes) min" }
+        return minutes % 60 == 0 ? "\(minutes / 60) h" : "\(minutes / 60) h \(minutes % 60) min"
     }
 }
 

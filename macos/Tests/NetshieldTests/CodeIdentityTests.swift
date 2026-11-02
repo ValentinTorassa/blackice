@@ -22,7 +22,7 @@ private func ownAuditToken() -> Data? {
 struct CodeIdentityTests {
     @Test func cacheStaysBounded() {
         let small = IdentityCache(limit: 2)
-        for byte in UInt8(1)...3 { small.store(Data([byte]), .adHoc) }
+        for byte in UInt8(1)...3 { small.store(Data([byte]), .adHoc(cdhash: String(repeating: "a", count: 40))) }
         #expect(small.count <= 2)
     }
 

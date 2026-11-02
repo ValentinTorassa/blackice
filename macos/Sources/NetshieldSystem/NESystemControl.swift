@@ -1,7 +1,8 @@
 // netshield start, stop, status and mode against macOS: system extension activation,
-// NEFilterManager preferences and Touch ID. None of this can run without Netshield.app signed
-// with the Developer ID and its provisioning profiles, so it is compiled and reviewed but not
-// yet exercised; docs/phase-0.md is the first run.
+// NEFilterManager preferences and Touch ID; and since phase 2 pending, approve, deny and daemon
+// over XPC to the extension. None of this can run without Netshield.app signed with the
+// Developer ID and its provisioning profiles, so it is compiled and reviewed but not yet
+// exercised; docs/phase-0.md is the first run.
 //
 // Adapted from blackice macos/Host/main.swift and macos/Shared/HostAuthorization.swift at
 // commit 45a7870 (https://github.com/ValentinTorassa/blackice/blob/45a7870/macos/Host/main.swift).
@@ -14,6 +15,7 @@ import Foundation
 import LocalAuthentication
 import NetshieldCLI
 import NetshieldCore
+import NetshieldXPC
 import NetworkExtension
 import SystemExtensions
 
@@ -137,6 +139,79 @@ public final class NESystemControl: SystemControlling {
         guard save(manager, output) else { return ExitCode.software }
         output.stdout("Mode saved: \(candidate.summary).")
         return ExitCode.success
+    }
+
+    // MARK: - Ask mode over XPC (phase 2, compiled only)
+
+    public func pending(output: SystemOutput) -> Int32 {
+        guard Self.isSignedHost(), let teamID = CodeIdentity.current()?.teamID else {
+            return UnsignedSystem().pending(output: output)
+        }
+        do {
+            let reply = try FilterClient(teamID: teamID).pending()
+            CLI.pendingLines(reply).forEach(output.stdout)
+            return ExitCode.success
+        } catch {
+            output.stderr("netshield pending: \(error)")
+            return ExitCode.unavailable
+        }
+    }
+
+    /// With the event's token the request goes as is: the extension checks the token. Without
+    /// one, a person confirms with Touch ID first, and the extension trusts that claim only because
+    /// the connection's code signing requirement proves it comes from this signed binary.
+    public func answer(_ request: AnswerRequest, output: SystemOutput) -> Int32 {
+        guard Self.isSignedHost(), let teamID = CodeIdentity.current()?.teamID else {
+            return UnsignedSystem().answer(request, output: output)
+        }
+        let command = "netshield \(request.kind.rawValue)"
+        if request.authorization == .touchID {
+            guard let identity = request.identity else { return ExitCode.usage }
+            let action: ControlAction = request.kind == .approve
+                ? .approve(identity, host: request.host, seconds: request.seconds ?? 0)
+                : .deny(identity, host: request.host)
+            guard confirm(action, output) else { return ExitCode.noPermission }
+        }
+        do {
+            let reply = try FilterClient(teamID: teamID).answer(request)
+            if reply.status == .done { output.stdout(reply.message) } else { output.stderr("\(command): \(reply.message)") }
+            return CLI.answerStatus(reply)
+        } catch {
+            output.stderr("\(command): \(error)")
+            return ExitCode.unavailable
+        }
+    }
+
+    /// Runs until the connection to the extension ends, then exits with 75 so launchd starts the
+    /// daemon again (KeepAlive with SuccessfulExit false) and it registers anew.
+    public func runDaemon(config: NetshieldConfig, output: SystemOutput) -> Int32 {
+        guard Self.isSignedHost(), let teamID = CodeIdentity.current()?.teamID else {
+            return UnsignedSystem().runDaemon(config: config, output: output)
+        }
+        let log: EventLog
+        let runner: HookRunner
+        do {
+            log = try EventLog(url: DaemonPaths.eventLog(home: URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)))
+            runner = try HookRunner(options: .init(
+                workDirectory: DaemonPaths.hookDirectory(temporary: FileManager.default.temporaryDirectory),
+                environment: HookRunner.environment(from: ProcessInfo.processInfo.environment)))
+        } catch {
+            output.stderr("netshield daemon: \(error)")
+            return ExitCode.software
+        }
+        let daemon = Daemon(config: config, log: log, runner: runner)
+        let intake = XPCEventIntake(teamID: teamID,
+                                    onVerdict: { eventID, verdict in daemon.recordVerdict(eventID: eventID, verdict) },
+                                    report: { line in FileHandle.standardError.write(Data("netshield daemon: \(line)\n".utf8)) })
+        output.stdout("netshield daemon: event log \(log.url.path)")
+        let finished = DispatchSemaphore(value: 0)
+        Task {
+            await daemon.run(intake)
+            finished.signal()
+        }
+        finished.wait()
+        output.stderr("netshield daemon: the connection to the network extension ended; exiting so launchd restarts it")
+        return ExitCode.tempFail
     }
 
     // MARK: - Pieces

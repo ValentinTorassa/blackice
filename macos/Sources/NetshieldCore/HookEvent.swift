@@ -4,21 +4,38 @@ import Security
 /// What a hook receives about one paused connection. The host and app fields come from
 /// whoever opened the connection: a hook must treat them as data, never as instructions.
 public struct HookEvent: Codable, Equatable, Sendable {
+    /// Signed code has a signing identifier (and a Team ID unless it is Apple platform code).
+    /// Ad hoc signed code has neither and is named by its cdhash instead. Exactly one of
+    /// `signingID` and `cdhash` is set.
     public struct App: Codable, Equatable, Sendable {
-        public let signingID: String
-        /// nil for Apple platform code, which has no Team ID.
+        public let signingID: String?
+        /// nil for Apple platform code, which has no Team ID, and for ad hoc code.
         public let teamID: String?
+        /// 40 lower-case hex digits, only for ad hoc code. A rebuild changes it.
+        public let cdhash: String?
         public let path: String?
 
-        public init(signingID: String, teamID: String?, path: String?) {
+        public init(signingID: String?, teamID: String?, cdhash: String? = nil, path: String?) {
             self.signingID = signingID
             self.teamID = teamID
+            self.cdhash = cdhash
             self.path = path
+        }
+
+        public init(_ identity: AppIdentity, path: String?) {
+            let reference = AppReference(identity)
+            self.init(signingID: reference.signingID, teamID: reference.teamID, cdhash: reference.cdhash, path: path)
+        }
+
+        /// nil unless exactly one form is present and valid.
+        public var identity: AppIdentity? {
+            AppReference(signingID: signingID, teamID: teamID, cdhash: cdhash).identity
         }
 
         enum CodingKeys: String, CodingKey {
             case signingID = "signing_id"
             case teamID = "team_id"
+            case cdhash
             case path
         }
     }
@@ -67,6 +84,45 @@ public struct HookEvent: Codable, Equatable, Sendable {
         decoder.dateDecodingStrategy = .iso8601
         return try decoder.decode(HookEvent.self, from: data)
     }
+
+    public static let maximumPathBytes = 1024
+
+    /// Checks every field the way the extension builds them. The daemon calls this on each event
+    /// it receives, before logging it or running a hook.
+    public func validate(now: Date, maximumWait: TimeInterval = TimeInterval(NetshieldConfig.timeoutRange.upperBound)) throws {
+        guard event == "connection" else { throw MessageError("event", "must be \"connection\"") }
+        guard validEventID(id) else { throw MessageError("id", "must be ev- and 8 hex digits") }
+        guard validEventToken(token) else { throw MessageError("token", "must be 43 base64url characters") }
+        guard app.identity != nil else {
+            throw MessageError("app", "needs a valid signing_id (and team_id) or a cdhash, not both")
+        }
+        if let path = app.path, !validPath(path) { throw MessageError("app.path", "is too long or has control characters") }
+        guard let host, normalizeHost(host) == host else { throw MessageError("host", "must be a normalized host name") }
+        guard let address = IPAddress(ip), address.description == ip else { throw MessageError("ip", "must be an IP address") }
+        guard port > 0 else { throw MessageError("port", "must not be 0") }
+        let left = deadline.timeIntervalSince(now)
+        guard left > -5, left <= maximumWait + 5 else { throw MessageError("deadline", "is not within the timeout") }
+    }
+}
+
+/// "ev-" and 8 lower-case hex digits, as `HookEvent.connection` makes them.
+public func validEventID(_ text: String) -> Bool {
+    let bytes = Array(text.utf8)
+    return bytes.count == 11 && text.hasPrefix("ev-")
+        && bytes[3...].allSatisfy { (48...57).contains($0) || (97...102).contains($0) }
+}
+
+/// 43 base64url characters, as `EventToken.generate` makes them.
+public func validEventToken(_ text: String) -> Bool {
+    text.utf8.count == 43 && text.utf8.allSatisfy {
+        (65...90).contains($0) || (97...122).contains($0) || (48...57).contains($0) || $0 == 45 || $0 == 95
+    }
+}
+
+/// At most `HookEvent.maximumPathBytes`, no control characters.
+func validPath(_ text: String) -> Bool {
+    !text.isEmpty && text.utf8.count <= HookEvent.maximumPathBytes
+        && !text.unicodeScalars.contains { $0.value < 0x20 || $0.value == 0x7F }
 }
 
 public enum EventToken {

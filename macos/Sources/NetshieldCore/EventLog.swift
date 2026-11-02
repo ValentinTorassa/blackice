@@ -11,10 +11,13 @@ import Foundation
 //
 // The event token is never written to the log. There is no rotation yet.
 
-public enum Verdict: String, Sendable {
+public enum Verdict: String, Codable, Sendable {
     case approved
     case denied
     case timedOut = "timed_out"
+    /// The extension dropped the connection without an answer: the configuration changed or the
+    /// filter stopped.
+    case cancelled
 }
 
 public enum LogRecord: Sendable {
@@ -22,7 +25,7 @@ public enum LogRecord: Sendable {
     case noHooks(eventID: String)
     case hookStarted(eventID: String, hookLine: Int, pid: Int32)
     case hookFinished(eventID: String, HookResult)
-    /// Written when the extension reports how a paused connection ended (phase 2).
+    /// Written when the extension reports how a paused connection ended.
     case verdict(eventID: String, Verdict)
 }
 
@@ -98,8 +101,9 @@ public final class EventLog: @unchecked Sendable {
         case .eventReceived(let event):
             fields["type"] = .string("event_received")
             fields["event"] = .string(event.id)
-            fields["app_signing_id"] = .string(event.app.signingID)
+            fields["app_signing_id"] = event.app.signingID.map(Field.string)
             fields["app_team_id"] = event.app.teamID.map(Field.string)
+            fields["app_cdhash"] = event.app.cdhash.map(Field.string)
             fields["app_path"] = event.app.path.map(Field.string)
             fields["host"] = event.host.map(Field.string)
             fields["ip"] = .string(event.ip)

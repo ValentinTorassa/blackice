@@ -2,11 +2,26 @@ import Foundation
 
 /// Where the daemon's events come from: connections the extension paused in ask mode.
 ///
-/// Phase 2 implements this over XPC from the extension. Until then only tests provide events.
+/// NetshieldXPC.XPCEventIntake implements this over XPC from the extension, checking the
+/// extension's code signature and every event (`Messages.decode`). Tests provide their own.
 /// Do not back it with a socket, a file or anything else another local process could write to:
 /// a forged event would make the daemon run hooks with data the attacker chose.
 public protocol EventIntake: Sendable {
     func events() -> AsyncStream<HookEvent>
+}
+
+/// Where `netshield daemon` keeps its files.
+public enum DaemonPaths {
+    /// The JSONL event log, in a private directory under ~/Library/Logs.
+    public static func eventLog(home: URL) -> URL {
+        home.appendingPathComponent("Library/Logs/netshield", isDirectory: true).appendingPathComponent("events.jsonl")
+    }
+
+    /// The private directory for the hooks' per-event directories, under the user's own temporary
+    /// directory.
+    public static func hookDirectory(temporary: URL) -> URL {
+        temporary.appendingPathComponent("netshield-hooks", isDirectory: true)
+    }
 }
 
 /// The user-level side of netshield: takes paused connections from the intake, runs the hooks
@@ -53,6 +68,11 @@ public final class Daemon: Sendable {
                 self.record(.hookFinished(eventID: event.id, result))
             }
         }
+    }
+
+    /// The extension reported how a paused connection ended.
+    public func recordVerdict(eventID: String, _ verdict: Verdict) {
+        record(.verdict(eventID: eventID, verdict))
     }
 
     private func record(_ record: LogRecord) {
