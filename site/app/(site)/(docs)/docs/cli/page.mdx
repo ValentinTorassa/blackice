@@ -1,0 +1,21 @@
+export const metadata = {
+  title: 'CLI',
+  description: 'The planned commands.',
+}
+
+# CLI
+
+The planned commands.
+
+<Planned />
+
+| Command | What it does |
+| --- | --- |
+| `netshield start` / `netshield stop` | Start or stop the daemon and the extension. |
+| `netshield status` | Mode, rules, approvals and paused connections. |
+| `netshield mode accept-all \| ask \| block-all` | Change the mode. |
+| `netshield pending` | Connections waiting for an answer. |
+| `netshield approve --app ID --host HOST [--for 1h]` | Allow one app to reach one host until the approval expires. |
+| `netshield deny --app ID --host HOST` | Drop the waiting connection and the ones like it. |
+
+`approve` and `deny` need the event's token when a hook calls them. A person can run them by hand after confirming with Touch ID.

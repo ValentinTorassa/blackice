@@ -1,8 +1,12 @@
 .DS_Store
 node_modules/
+.vercel
+.env*
 site/.next/
 site/out/
 site/AGENTS.md
+site/next-env.d.ts
+site/*.tsbuildinfo
 macos/build/
 *.provisionprofile
 *.p12
