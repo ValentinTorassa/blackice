@@ -1,0 +1,30 @@
+export const metadata = {
+  title: 'How it works',
+  description: 'The planned parts of netshield, and what happens to one connection in ask mode.',
+}
+
+# How it works
+
+The planned parts of netshield, and what happens to one connection in ask mode.
+
+<Planned />
+
+## The parts
+
+<FigArchitecture n={1} />
+
+- **Netshield.app** has no UI and lives in `/Applications`, because macOS activates system extensions only from there. It contains the network extension and the `netshield` binary.
+- **The extension** is an `NEFilterDataProvider`. It allows or drops each new flow, and in ask mode it pauses the flow until an answer arrives.
+- **The daemon** runs as a LaunchAgent for the user, receives events over XPC and runs the hooks.
+
+## One connection in ask mode
+
+<FigAsk n={2} />
+
+Rules from `netshield.toml` and current approvals are checked first, so the agent only hears about new destinations. A repeated connection, with the same app, host and port, raises one event.
+
+## Open problems
+
+- The deciding agent needs the network to reach its model. A fixed rule for it, bound to its signature, keeps it from waiting on its own approval.
+- Host names and app names come from whoever opens the connection and end up in the model's prompt. Events carry them as structured fields, and the only answers are approve and deny.
+- How long macOS keeps a paused flow is not measured yet. It sets the upper bound for the timeout.

@@ -48,7 +48,8 @@ app identity from code signatures, and the TLS server name reader.
 
 ## Site
 
-The project page lives in [`site/`](site/), a static Next.js export.
+The project page lives in [`site/`](site/), a Next.js app with Cache Components. The docs are MDX, and every
+page has a markdown twin listed in `/llms.txt`.
 
 ```console
 $ cd site && npm ci && npm run dev
