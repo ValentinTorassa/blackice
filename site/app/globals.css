@@ -620,7 +620,6 @@ td p { margin: 8px 0 0; color: var(--fg-2); font-size: 14px; line-height: 1.55; 
 .notfound .eyebrow { justify-content: center; }
 .notfound-title { margin: 0; font-size: clamp(40px, 7vw, 64px); }
 .notfound .sub { margin: 16px auto 0; }
-.notfound-receipt { margin-top: 28px; max-width: 100%; padding: 12px 16px; border: 1px solid var(--line-2); border-radius: 10px; background: var(--bg-1); font-size: 12.5px; text-align: left; overflow-wrap: anywhere; }
 .notfound .actions { margin-top: 28px; }
 
 @media (max-width: 1100px) {

@@ -54,7 +54,8 @@ export function Footer({ wide = false }) {
             <Wordmark />
           </Link>
           <p className="faint">
-            In planning, by <a href={SITE.authorUrl}>{SITE.author}</a>.
+            In planning, by <a href={SITE.authorUrl}>{SITE.author}</a>, with{' '}
+            <a href={SITE.designerUrl}>{SITE.designer}</a> on design.
           </p>
         </div>
         {FOOTER.map(([title, links]) => (

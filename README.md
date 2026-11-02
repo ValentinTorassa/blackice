@@ -8,11 +8,13 @@ whether to allow it, and the agent answers with `netshield approve`.
 **Status: planning. Nothing here runs yet.** Phase 0, signing with an Apple Developer ID, is in progress. The
 phases and the decisions behind them are in [`docs/plan.md`](docs/plan.md).
 
-## Why I'm building it
+## Who's building it and why
 
-I'm [Valen Torassa](https://valentorassa.com), a security and backend engineer in Rosario, Argentina. Agents run on
-my machines all day, and I want them to decide about network access themselves, without anyone clicking Allow in a
-dialog. The macOS firewalls I know are built around a person answering prompts.
+I'm [Valen Torassa](https://valentorassa.com), a security and backend engineer in Rosario, Argentina.
+[Esteban Suárez](https://github.com/suarezesteban) is working on the design with me.
+
+Agents run on my machines all day, and I want them to decide about network access themselves, without anyone
+clicking Allow in a dialog. The macOS firewalls I know are built around a person answering prompts.
 
 The code that sees every connection on a machine is a sensitive place for a dependency. I'd rather own that code,
 keep it small and readable, than install a third-party firewall with that access.
@@ -30,7 +32,8 @@ run = 'fx ask "Use the netshield skill to decide whether to approve the pending 
 ```
 
 1. A new connection that no rule covers is paused by the network extension.
-2. The netshield daemon receives the event and runs the hook, with the event as JSON on stdin.
+2. The netshield daemon receives the event and runs the hook, with the event as JSON on stdin and in a file named in
+   `NETSHIELD_EVENT_FILE`.
 3. The agent answers, for example `netshield approve --app <signing id> --host example.com --for 1h`.
 4. The extension lets the paused connection through, or drops it when the timeout passes.
 

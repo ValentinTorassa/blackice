@@ -1,7 +1,6 @@
 import Link from 'next/link';
 import { Nav, Footer } from '../components/Chrome';
 import { Logo, IconArrowRight, IconBook } from '../components/Icons';
-import { highlight } from '../content/highlight';
 
 export const metadata = { title: 'Not found' };
 
@@ -16,11 +15,8 @@ export default function NotFound() {
             <Logo size={128} />
           </div>
           <p className="eyebrow">404</p>
-          <h1 className="notfound-title">Denied: no rule for this page.</h1>
+          <h1 className="notfound-title">Page not found</h1>
           <p className="sub">There is no page at this address.</p>
-          <code className="notfound-receipt">
-            {highlight('{"event":"connection","verdict":"deny","reason":"no_matching_rule","host":"this page"}')}
-          </code>
           <div className="actions">
             <Link className="btn btn-primary" href="/">
               Home

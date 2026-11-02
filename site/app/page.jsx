@@ -30,8 +30,8 @@ export default function Home() {
               decided by an agent.
             </h1>
             <p className="lede">
-              {SITE.name} is a network extension and a CLI, with no other UI. In ask mode, each new connection waits
-              while a hook asks an agent such as fx to approve or deny it.
+              {SITE.name} is a network extension and a CLI, with no other UI. In ask mode, a new connection that no
+              rule covers waits while a hook asks an agent such as fx to approve or deny it.
             </p>
             <p className="hero-status">{STATUS} There is nothing to install yet.</p>
             <div className="actions">
@@ -64,11 +64,11 @@ export default function Home() {
         <section className="container section" aria-labelledby="modes-title">
           <p className="eyebrow">Modes</p>
           <h2 className="h2" id="modes-title">
-            Three modes, one switch
+            Three modes
           </h2>
           <p className="sub">
-            <code>netshield mode ask</code> changes the mode while it runs. Rules in <code>netshield.toml</code> apply in
-            every mode.
+            <code>netshield mode</code> switches between them while netshield runs. Allow rules in{' '}
+            <code>netshield.toml</code> apply in ask and block-all.
           </p>
           <div className="modes">
             {MODES.map(([cmd, name, text]) => (
@@ -87,7 +87,7 @@ export default function Home() {
             The agent answers on the command line
           </h2>
           <p className="sub">
-            The hook gets the event as JSON on stdin, with a one-time token. The agent runs{' '}
+            The hook gets the event as JSON, with a one-time token. The agent runs{' '}
             <code>netshield approve</code> or <code>netshield deny</code>, and the paused connection continues or is
             dropped.
           </p>
@@ -105,10 +105,13 @@ export default function Home() {
 
         <section className="container section about" aria-labelledby="why-title">
           <h2 className="h2" id="why-title">
-            Why I&apos;m building it
+            Who&apos;s building it and why
           </h2>
           <p className="sub">
-            I&apos;m <a href={SITE.authorUrl}>Valen Torassa</a>, a security and backend engineer in Rosario, Argentina.
+            I&apos;m <a href={SITE.authorUrl}>{SITE.author}</a>, a security and backend engineer in Rosario, Argentina.{' '}
+            <a href={SITE.designerUrl}>{SITE.designer}</a> is working on the design with me.
+          </p>
+          <p className="sub">
             Agents run on my machines all day, and I want them to decide about network access themselves, without anyone
             clicking Allow in a dialog.
           </p>

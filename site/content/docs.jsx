@@ -157,9 +157,10 @@ export const DOCS = [
       <>
         <Planned />
         <p>
-          {SITE.name} runs as a daemon and sees every new outbound connection on the Mac, from any app. It has three
-          modes. Accept all lets everything through, block all drops everything that no rule allows, and ask pauses each
-          new connection while a hook asks an agent what to do.
+          {SITE.name} is a network extension, a small daemon and a CLI. The extension sees every new outbound
+          connection on the Mac, from any app. There are three modes. Accept all lets everything through, block all drops
+          everything that no rule allows, and ask pauses each new connection that no rule covers while a hook asks an
+          agent what to do.
         </p>
         <p>
           The agent answers on the command line, for example{' '}
@@ -169,8 +170,8 @@ export const DOCS = [
         <H2>Why</H2>
         <p>
           Agents run on developer machines all day and need to make network decisions without a person at the
-          keyboard. The code that sees every connection on a machine is also a sensitive place for a dependency, so{' '}
-          {SITE.name} keeps that code small and in one repository.
+          keyboard. The code that sees every connection on a machine is also a sensitive place for a dependency, so the
+          aim is to keep {SITE.name} small and without third-party dependencies.
         </p>
         <H2>Relation to blackice</H2>
         <p>
@@ -243,7 +244,11 @@ export const DOCS = [
           being guessed at.
         </p>
         <H2>The event a hook receives</H2>
-        <p>The hook gets the event as JSON on stdin. Its token is good for one answer to that event.</p>
+        <p>
+          The hook gets the event as JSON on stdin. The daemon also writes it to a file named in{' '}
+          <code>NETSHIELD_EVENT_FILE</code>, because <code>fx ask</code> does not read stdin when the prompt is on the
+          command line. The token is good for one answer to that event.
+        </p>
         <Code title="stdin" label="Proposal">
           {EVENT_EXAMPLE}
         </Code>

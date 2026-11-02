@@ -123,7 +123,7 @@ export function FigAsk({ n }) {
       {msg(74, 80, 270, 'connect example.com:443')}
       {note(280, 90, 170, 'no rule matches: pause')}
       {msg(146, 270, 450, 'event over XPC', 'warn')}
-      {msg(186, 450, 630, 'run hook (JSON on stdin)')}
+      {msg(186, 450, 630, 'run hook with the event')}
       {note(490, 202, 130, 'agent decides')}
       {msg(256, 630, 270, 'netshield approve … --host example.com --for 1h', 'ok')}
       {note(280, 272, 150, 'resume: allow')}
