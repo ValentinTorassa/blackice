@@ -30,9 +30,10 @@ done when its check passes on a real Mac, not when the code compiles.
 ## Phases
 
 0. **Developer ID signing.** Apple Developer Program membership, a Developer ID Application certificate, App IDs
-   and Developer ID provisioning profiles with the content filter entitlement. Sign blackice's app filter and
-   activate it on a test Mac. *Done when* a small binary signed with our Team ID is blocked by the extension and the
-   rest of the Mac keeps working.
+   and Developer ID provisioning profiles with the content filter entitlement. Sign Netshield.app (phase 1's
+   skeleton) and activate it on a test Mac. *Done when* a small binary signed with our Team ID is blocked by the
+   extension and the rest of the Mac keeps working. The steps, scripts and rollback are in
+   [`phase-0.md`](phase-0.md).
 1. **Skeleton.** Netshield.app, `netshield start/stop/status/mode`, accept-all and block-all, a JSONL event log, and
    the `netshield.toml` parser with tests. *Done when* `mode block-all` stops a `curl`, `mode accept-all` lets it
    through, and both leave a log line.
@@ -42,6 +43,14 @@ done when its check passes on a real Mac, not when the code compiles.
    Also without the extension: the JSONL event log, and a daemon skeleton that logs each event and runs its hooks.
    Its intake from the extension is only a protocol until phase 2, so `netshield daemon` checks its configuration and
    exits with status 69. A LaunchAgent template is in `macos/LaunchAgent/`; nothing installs it.
+   Written and compiled, not run until phase 0: Netshield.app, built with SwiftPM and scripts, whose executable
+   is the CLI, with the content filter as a system extension. `netshield start/stop/mode` activate and deactivate
+   the extension and save the filter preference, each after Touch ID; the CLI saves netshield.toml's text, the mode
+   and a generation number in the provider configuration, and the extension reads only that. The extension's
+   decision is unit-tested. In every mode inbound connections pass and Apple's resolver may reach port 53, since
+   rules name hosts. Without a host name from the system, the extension reads the TLS server name, but only for
+   an app that has a rule. It logs one line per decision to unified logging; the JSONL event log is not wired to
+   it yet.
 2. **Ask mode.** Pausing, XPC, the pending list, deny on timeout, `netshield pending/approve/deny` with `--app`,
    `--host` and `--for`, the event token and Touch ID. A repeated connection (same app, host and port) raises one
    event. *Done when* a `curl` waits, `approve` releases it, and with no answer the timeout drops it.
@@ -73,6 +82,11 @@ done when its check passes on a real Mac, not when the code compiles.
   and one event per repeated connection keep the questions to new destinations.
 - **Paused flow lifetime.** How long macOS keeps a paused flow before dropping it is not measured yet. It sets the
   upper bound for the timeout.
+- **Host names are taken as given.** Rules match the host name macOS attaches to a flow, or the TLS server name
+  the app sends. Neither is checked against the address the app connects to, so an app with a rule for one host
+  could name that host and connect elsewhere. Checking them is phase 5 work.
+- **DNS in block-all.** Apple's resolver may reach port 53 in every mode, so in block-all any app can still make
+  name lookups through it, which can carry data out. Closing this needs DNS answers to be tied to rules.
 - **Unsigned code.** Connections from unsigned or ad hoc signed code have no signing identity, so an approval
   cannot name them. What ask mode does with them is open.
 - **Event delivery to an agent.** Hooks get the event as JSON on stdin, but `fx ask` reads stdin as its prompt only
