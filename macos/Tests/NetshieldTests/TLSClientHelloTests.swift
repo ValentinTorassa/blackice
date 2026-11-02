@@ -6,8 +6,8 @@ import Testing
 
 private func word(_ value: Int) -> [UInt8] { [UInt8(value >> 8), UInt8(value & 255)] }
 
-/// A TLS 1.3 ClientHello with supported_versions and, optionally, SNI.
-private func clientHello(_ host: String?, extra: [UInt8] = [], duplicateSNI: Bool = false) -> Data {
+/// A TLS 1.3 ClientHello with supported_versions and, optionally, SNI. Also used by FilterPolicyTests.
+func clientHello(_ host: String?, extra: [UInt8] = [], duplicateSNI: Bool = false) -> Data {
     var extensions: [UInt8] = [0, 43, 0, 3, 2, 3, 4]
     if let host {
         let name = Array(host.utf8)
