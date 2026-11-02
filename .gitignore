@@ -7,3 +7,5 @@ macos/build/
 *.provisionprofile
 *.p12
 *.cer
+macos/.build/
+macos/.swiftpm/
