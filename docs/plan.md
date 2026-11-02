@@ -36,6 +36,9 @@ done when its check passes on a real Mac, not when the code compiles.
 1. **Skeleton.** Netshield.app, `netshield start/stop/status/mode`, accept-all and block-all, a JSONL event log, and
    the `netshield.toml` parser with tests. *Done when* `mode block-all` stops a `curl`, `mode accept-all` lets it
    through, and both leave a log line.
+   *So far*, without the extension: the Swift package in `macos/` with the `netshield.toml` parser, rule matching,
+   the hook event and token, the CLI's argument parsing and `netshield validate`, plus the parts ported from
+   blackice (code identity, host names, TLS server name). Unit tests run in CI on macOS.
 2. **Ask mode.** Pausing, XPC, the pending list, deny on timeout, `netshield pending/approve/deny` with `--app`,
    `--host` and `--for`, the event token and Touch ID. A repeated connection (same app, host and port) raises one
    event. *Done when* a `curl` waits, `approve` releases it, and with no answer the timeout drops it.
@@ -61,6 +64,11 @@ done when its check passes on a real Mac, not when the code compiles.
   and one event per repeated connection keep the questions to new destinations.
 - **Paused flow lifetime.** How long macOS keeps a paused flow before dropping it is not measured yet. It sets the
   upper bound for the timeout.
+- **Unsigned code.** Connections from unsigned or ad hoc signed code have no signing identity, so an approval
+  cannot name them. What ask mode does with them is open.
+- **Event delivery to an agent.** Hooks get the event as JSON on stdin, but `fx ask` reads stdin as its prompt only
+  when no prompt arguments are given. The fx skill assumes the daemon also writes the event to a file and names it
+  in `NETSHIELD_EVENT_FILE` (see `integrations/fx/README.md`).
 - **Installation.** No dialog per connection, but macOS asks once to allow the extension in System Settings, unless
   the Mac is managed with an MDM profile.
 - **Name.** Proton VPN uses NetShield for its ad and malware blocker. The name stays for now.
