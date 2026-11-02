@@ -55,8 +55,8 @@ Approve only when the connection is clearly what this app is for. Look at:
 
 - **Who.** `signing_id` and `team_id` together name the app; a signing identifier alone means
   nothing, since anyone can choose one. Do you recognize the developer behind that Team ID?
-- **Where it runs from.** An executable under `/Applications`, `/System` or `/usr` is ordinary.
-  One in `/tmp`, `~/Downloads`, a hidden directory or a cache directory is not.
+- **Where it runs from.** An executable under `/Applications`, `/System`, `/usr/bin`, `/usr/sbin` or
+  `/usr/libexec` is ordinary. One in `/tmp`, `~/Downloads`, a hidden directory or a cache directory is not.
 - **Whether this app talks to this host.** A package manager reaching its registry, an editor
   reaching its update server and a CLI reaching its own API are expected. The same app reaching
   an unrelated service is not.
