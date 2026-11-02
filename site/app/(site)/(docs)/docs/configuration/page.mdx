@@ -1,0 +1,47 @@
+export const metadata = {
+  title: 'Configuration',
+  description: 'netshield.toml and the event a hook receives. A proposal, not a stable format.',
+}
+
+# Configuration
+
+netshield.toml and the event a hook receives. A proposal, not a stable format.
+
+<Planned />
+
+## netshield.toml
+
+```toml
+# netshield.toml
+mode = "ask"            # "accept-all", "ask" or "block-all"
+timeout_seconds = 10    # no answer in time means deny
+
+# Permanent rules. Checked before anything is asked.
+[[allow]]
+app = "com.example.agent"      # signing identifier
+team = "ABCDE12345"            # Team ID
+hosts = ["api.example.com"]
+
+[[hook]]
+on = "connection"
+run = 'fx ask "Use the netshield skill to decide whether to approve the pending connection"'
+```
+
+The parser is strict: an unknown key or a value of the wrong type stops netshield from starting instead of being guessed at.
+
+## The event a hook receives
+
+The hook gets the event as JSON on stdin. The daemon also writes it to a file named in `NETSHIELD_EVENT_FILE`, because `fx ask` does not read stdin when the prompt is on the command line. The token is good for one answer to that event.
+
+```json
+{
+  "event": "connection",
+  "id": "ev-7f3a91c2",
+  "token": "<one-time token>",
+  "app": { "signing_id": "com.example.tool", "team_id": "ABCDE12345", "path": "/Applications/Tool.app" },
+  "host": "example.com",
+  "ip": "203.0.113.7",
+  "port": 443,
+  "deadline": "2026-11-02T14:36:11Z"
+}
+```
