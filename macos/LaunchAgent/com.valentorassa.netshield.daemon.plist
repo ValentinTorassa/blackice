@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Template for the netshield daemon's LaunchAgent. Nothing installs it yet: `netshield daemon`
+  still exits with status 69 until the extension can send it events (phase 2).
+
+  Replace NETSHIELD_BIN with the absolute path of the netshield binary inside Netshield.app,
+  NETSHIELD_CONFIG with the absolute path of netshield.toml, and NETSHIELD_LOGS with an
+  absolute directory for launchd's copy of stderr (the event log is separate). The label
+  is provisional, like the bundle identifiers.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.valentorassa.netshield.daemon</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>NETSHIELD_BIN</string>
+        <string>daemon</string>
+        <string>--config</string>
+        <string>NETSHIELD_CONFIG</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+    <key>ProcessType</key>
+    <string>Standard</string>
+    <key>LimitLoadToSessionType</key>
+    <string>Aqua</string>
+    <key>StandardOutPath</key>
+    <string>NETSHIELD_LOGS/daemon.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>NETSHIELD_LOGS/daemon.err.log</string>
+</dict>
+</plist>

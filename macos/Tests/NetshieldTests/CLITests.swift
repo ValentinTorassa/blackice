@@ -150,6 +150,22 @@ struct RunTests {
         }
     }
 
+    @Test func daemonChecksItsConfigurationThenRefuses() throws {
+        #expect(usageError(["daemon"]) == "daemon needs --config PATH")
+        #expect(usageError(["daemon", "--config"]) == "daemon: --config needs a value")
+        #expect(usageError(["daemon", "--config", "a", "--log", "b"]) == "daemon: unknown option --log")
+        #expect(try CLI.parse(["daemon", "--config=/etc/netshield.toml"]) == .daemon(configPath: "/etc/netshield.toml"))
+
+        let good = run(["daemon", "--config", "n.toml"], files: ["n.toml": Data("mode = \"ask\"\n".utf8)])
+        #expect(good.status == 69)
+        #expect(good.stdout == "n.toml: valid (mode ask, timeout 10 s, 0 allow rules, 0 hooks)")
+        #expect(good.stderr == "netshield daemon: not implemented yet (needs the extension, phase 2)")
+
+        let bad = run(["daemon", "--config", "n.toml"], files: ["n.toml": Data("mode = \"loud\"\n".utf8)])
+        #expect(bad.status == 65 && bad.stderr.hasPrefix("n.toml:1: mode must be"))
+        #expect(run(["daemon", "--config", "missing.toml"]).status == 66)
+    }
+
     @Test func realFilesThroughReadConfigFile() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("netshield-cli-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
