@@ -1,17 +1,17 @@
 export const metadata = {
   title: 'Introduction',
-  description: 'netshield is a headless network extension and CLI for macOS, where an agent can approve each new connection.',
+  description: 'netshield is a headless application firewall for macOS, operated through a CLI. A connection that no rule covers can wait for you, or for an agent behind a hook, to approve or deny it.',
 }
 
 # Introduction
 
-netshield is a headless network extension and CLI for macOS, where an agent can approve each new connection.
+netshield is a headless application firewall for macOS, operated through a CLI. A connection that no rule covers can wait for you, or for an agent behind a hook, to approve or deny it.
 
 <Planned />
 
-netshield is a network extension, a small daemon and a CLI. The extension sees every new outbound connection on the Mac, from any app. There are three modes. Accept all lets everything through, block all drops everything that no rule allows, and ask pauses each new connection that no rule covers while a hook asks an agent what to do.
+netshield is a network extension, a small daemon and a CLI. The extension sees every new outbound connection on the Mac, from any app. There are three modes. Accept all lets everything through, block all drops everything that no rule allows, and ask pauses each new connection that no rule or approval covers until it gets an answer.
 
-The agent answers on the command line, for example `netshield approve --app com.example.tool --host example.com --for 1h`. Nobody has to click a dialog.
+Answers go through the command line, for example `netshield approve --app com.example.tool --host example.com --for 1h`. You can give them yourself, or a hook can pass the request to an agent such as fx, which answers the same way. There is no dialog to click.
 
 ## Why
 
@@ -19,4 +19,4 @@ Agents run on developer machines all day and need to make network decisions with
 
 ## Relation to blackice
 
-[blackice](https://github.com/ValentinTorassa/blackice) confines one command and everything it starts, with a fixed policy file, and never asks. netshield covers the whole machine and asks an agent about each new connection. It starts from blackice's macOS app filter: the Network Extension, app identity from code signatures, and the TLS server name reader.
+[blackice](https://github.com/ValentinTorassa/blackice) confines one command and everything it starts, with a fixed policy file, and never asks. netshield covers the whole machine, and in ask mode it holds a new connection until you or an agent answers. It starts from blackice's macOS app filter: the Network Extension, app identity from code signatures, and the TLS server name reader.
