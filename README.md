@@ -26,7 +26,7 @@ timeout_seconds = 10    # no answer in time means deny
 
 [[hook]]
 on = "connection"
-run = 'fx -p "Use the netshield skill to decide if this connection should be approved"'
+run = 'fx ask "Use the netshield skill to decide whether to approve the pending connection"'
 ```
 
 1. A new connection that no rule covers is paused by the network extension.

@@ -78,7 +78,7 @@ hosts = ["api.example.com"]
 
 [[hook]]
 on = "connection"
-run = 'fx -p "Use the netshield skill to decide if this connection should be approved"'`;
+run = 'fx ask "Use the netshield skill to decide whether to approve the pending connection"'`;
 
 const EVENT_EXAMPLE = `{
   "event": "connection",
