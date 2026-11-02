@@ -1,0 +1,12 @@
+{
+  "event": "connection",
+  "id": "ev-06",
+  "app": {
+    "signing_id": "com.microsoft.VSCode",
+    "team_id": "UBF8T346G9",
+    "path": "/Applications/Visual Studio Code.app/Contents/MacOS/Electron"
+  },
+  "ip": "203.0.113.5",
+  "port": 22,
+  "host": "203-0-113-5.dyn.example.net"
+}
