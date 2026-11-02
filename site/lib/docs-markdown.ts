@@ -50,10 +50,14 @@ function convertInternalLinks(source: string): string {
 }
 
 function stripMetadata(source: string): string {
-  return source.replace(/^export const metadata = \{[\s\S]*?\n\}\n+/m, '')
+  return source
+    .replace(/^import \{ getDocsMetadata \} from '@\/lib\/docs-metadata'\n+/m, '')
+    .replace(/^export const metadata = getDocsMetadata\([^\n]*\)\n+/m, '')
 }
 
 export async function getDocsMarkdown(href: string): Promise<string | null> {
+  'use cache'
+
   if (!getDocsPage(href)) return null
   const source = await readFile(getSourcePath(href), 'utf8')
   return `${convertInternalLinks(convertComponents(stripMetadata(source))).trim()}\n`
