@@ -14,7 +14,7 @@ Docs: [blackice-macos.vercel.app](https://blackice-macos.vercel.app)
 
 ## Status
 
-Early. 0.2.1 is the current release ([changelog](CHANGELOG.md)), and blackice has run on one Mac, a MacBook Air with
+Early. 0.3.0 is the current release ([changelog](CHANGELOG.md)), and blackice has run on one Mac, a MacBook Air with
 macOS 27.0.1. Each run is recorded in
 [`evidence/`](evidence/):
 
@@ -48,7 +48,7 @@ $ brew trust --cask valentintorassa/tap/blackice
 $ brew install --cask valentintorassa/tap/blackice
 ```
 
-Or download the zip from the [release](https://github.com/ValentinTorassa/blackice/releases/tag/v0.2.1). The first
+Or download the zip from the [release](https://github.com/ValentinTorassa/blackice/releases/tag/v0.3.0). The first
 `blackice start` asks a few questions to write your configuration, then opens System Settings so you can allow the
 extension. `blackice agent install` starts the daemon
 that runs hooks. Run `blackice stop` before you uninstall. [`docs/install.md`](docs/install.md) has the rest.
