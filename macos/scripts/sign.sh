@@ -2,7 +2,7 @@
 # Builds Blackice.app fresh and signs it with the Developer ID: checks both provisioning
 # profiles, signs the extension first and then the app with the hardened runtime and a secure
 # timestamp, verifies, and notarizes when given a notarytool profile. Never installs or
-# activates anything. Adapted from the phase 0 draft ~/netshield-fase0/firmar-blackice.sh and
+# activates anything. Adapted from the phase 0 draft firmar-blackice.sh and
 # blackice-poc macos/signing-copies.sh at commit 45a7870.
 #
 # usage: macos/scripts/sign.sh TEAM_ID APP_PROFILE FILTER_PROFILE [NOTARY_PROFILE]

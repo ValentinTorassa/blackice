@@ -2,7 +2,7 @@
 # The phase 0 "Done when" check on a real Mac: install the signed Blackice.app, start the
 # filter, and show that a small binary signed with our Team ID is blocked under block-all while
 # the system curl still reaches the host its rule allows. Then print the filter's log lines and
-# roll back. Adapted from the phase 0 draft ~/netshield-fase0/probar-filtro.sh.
+# roll back. Adapted from the phase 0 draft probar-filtro.sh.
 #
 # usage: macos/scripts/phase0-test.sh TEAM_ID PATH/Blackice.app
 #        macos/scripts/phase0-test.sh --rollback

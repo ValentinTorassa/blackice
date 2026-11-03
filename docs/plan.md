@@ -8,7 +8,7 @@ and each run on a Mac is recorded in [`evidence/`](../evidence/).
 
 | Topic | Decision |
 |---|---|
-| Name | The product ships as blackice (decided on 2 November 2026 with Esteban). netshield was the working name until then. The first proof of concept, also called blackice, is archived as [ValentinTorassa/blackice-poc](https://github.com/ValentinTorassa/blackice-poc). |
+| Name | The product ships as blackice (decided on 2 November 2026). The first proof of concept, also called blackice, is archived as [ValentinTorassa/blackice-poc](https://github.com/ValentinTorassa/blackice-poc). |
 | Repository | Its own repo. Swift files come from blackice-poc's macOS app filter, with the source commit noted in each file. |
 | Language | Swift for the extension, the CLI and the daemon. |
 | Ask mode | Asks only about connections that no rule or current approval covers. |

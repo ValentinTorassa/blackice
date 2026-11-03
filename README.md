@@ -111,8 +111,7 @@ counts only when the address the app connects to is among the host's answers fro
 The first blackice, now [blackice-poc](https://github.com/ValentinTorassa/blackice-poc) and archived, confines one
 command and everything it starts, with a fixed policy file, and never asks. This blackice covers the whole machine and
 asks an agent about each new connection. The architecture was worked out in blackice-poc, and this code starts from
-its macOS app filter: the Network Extension, app identity from code signatures, and the TLS server name reader. Until
-2 November 2026 this project was called netshield.
+its macOS app filter: the Network Extension, app identity from code signatures, and the TLS server name reader.
 
 ## Code
 
