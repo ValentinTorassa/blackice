@@ -92,6 +92,9 @@ public struct PendingFlow<Flow> {
     public let flow: Flow
     /// False when the flow's address was not among the host's answers: an approval drops it.
     public let addressMatches: Bool
+    /// Monotonic seconds when this flow is dropped although its event is still pending, for a
+    /// connection the server will not keep waiting; nil to wait for the event's deadline.
+    public let holdUntil: TimeInterval?
 }
 
 public struct PendingEntry<Flow> {
@@ -134,13 +137,16 @@ public struct PendingTable<Flow> {
     }
 
     /// Pauses `flow` under `key`. A new key gets a new event from `makeEvent`, which receives the
-    /// deadline as seconds from now; the event ID must not collide with a pending one.
+    /// deadline as seconds from now; the event ID must not collide with a pending one. With
+    /// `holdFor`, the flow itself goes after that many seconds (`expireHolds`) and its event stays.
     public mutating func add(_ flow: Flow, key: PendingKey, addressMatches: Bool, now: TimeInterval,
-                             timeout: TimeInterval, makeEvent: (TimeInterval) throws -> HookEvent) -> Added {
+                             timeout: TimeInterval, holdFor: TimeInterval? = nil,
+                             makeEvent: (TimeInterval) throws -> HookEvent) -> Added {
         guard flowCount < maximumFlows else { return .full }
+        let pendingFlow = PendingFlow(flow: flow, addressMatches: addressMatches, holdUntil: holdFor.map { now + $0 })
         if let id = idsByKey[key], var entry = entries[id] {
             guard entry.flows.count < maximumFlowsPerEvent else { return .full }
-            entry.flows.append(PendingFlow(flow: flow, addressMatches: addressMatches))
+            entry.flows.append(pendingFlow)
             entries[id] = entry
             flowCount += 1
             return .joined(eventID: id)
@@ -149,8 +155,7 @@ public struct PendingTable<Flow> {
         for _ in 0..<3 {
             guard let event = try? makeEvent(timeout) else { return .full }
             guard entries[event.id] == nil else { continue }
-            entries[event.id] = PendingEntry(event: event, key: key, deadline: now + timeout,
-                                             flows: [PendingFlow(flow: flow, addressMatches: addressMatches)])
+            entries[event.id] = PendingEntry(event: event, key: key, deadline: now + timeout, flows: [pendingFlow])
             idsByKey[key] = event.id
             flowCount += 1
             return .raised(event)
@@ -161,6 +166,21 @@ public struct PendingTable<Flow> {
     /// Removes and returns the events whose deadline has passed.
     public mutating func expire(now: TimeInterval) -> [PendingEntry<Flow>] {
         remove { $0.deadline <= now }
+    }
+
+    /// Removes the flows whose hold has run out from the events still pending, and returns them
+    /// with their event's ID. The events stay, token and all, possibly with no flow left: an
+    /// answer still counts, and an approval covers the app's next connection.
+    public mutating func expireHolds(now: TimeInterval) -> [(flow: Flow, eventID: String)] {
+        var dropped: [(flow: Flow, eventID: String)] = []
+        for id in entries.keys.sorted() {
+            guard var entry = entries[id], entry.flows.contains(where: { ($0.holdUntil ?? .infinity) <= now }) else { continue }
+            for paused in entry.flows where (paused.holdUntil ?? .infinity) <= now { dropped.append((paused.flow, id)) }
+            entry.flows.removeAll { ($0.holdUntil ?? .infinity) <= now }
+            entries[id] = entry
+        }
+        flowCount -= dropped.count
+        return dropped
     }
 
     /// Removes and returns every event for this app and host, on any port.
@@ -306,12 +326,17 @@ public struct AskState<Flow> {
                        released: released, verdicts: ids.map { ($0, verdict) })
     }
 
-    /// Drops the flows of events past their deadline and forgets expired approvals.
+    /// Drops the flows of events past their deadline, then the flows whose hold ran out while
+    /// their event stays pending (`hold_expired`), and forgets expired approvals. `timedOut`
+    /// lists only the events that ended.
     public mutating func expire(now: TimeInterval) -> (released: [Release<Flow>], timedOut: [String]) {
         approvals.expire(now: now)
         let entries = pending.expire(now: now)
-        let released = entries.flatMap { entry in
+        var released = entries.flatMap { entry in
             entry.flows.map { Release(flow: $0.flow, allow: false, reason: "timeout", eventID: entry.event.id) }
+        }
+        released += pending.expireHolds(now: now).map {
+            Release(flow: $0.flow, allow: false, reason: "hold_expired", eventID: $0.eventID)
         }
         return (released, entries.map(\.event.id))
     }
