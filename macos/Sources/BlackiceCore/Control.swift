@@ -15,19 +15,20 @@ public enum ControlAction: Equatable, Sendable {
     /// deny without the event's token.
     case deny(AppIdentity, host: String)
 
-    /// One sentence for the terminal and the Touch ID dialog. Every change to filtering asks.
+    /// What the Touch ID dialog says, completing macOS's "Blackice is trying to …". The terminal
+    /// prints it too. Every change to filtering asks.
     public var reason: String {
         switch self {
         case .start(let configuration):
-            return "blackice: start filtering (\(configuration.summary))"
+            return "start filtering in \(configuration.overview)"
         case .stop:
-            return "blackice: stop filtering and deactivate the network extension"
-        case .mode(let from, let to, let generation):
-            return "blackice: change the mode from \(from.rawValue) to \(to.rawValue) (generation \(generation))"
+            return "stop filtering and remove its network extension"
+        case .mode(let from, let to, _):
+            return "switch from \(from.rawValue) to \(to.rawValue) mode"
         case .approve(let identity, let host, let seconds):
-            return "blackice: let \(identity.label) reach \(host) for \(Self.duration(seconds))"
+            return "let \(identity.label) reach \(host) for \(Self.duration(seconds))"
         case .deny(let identity, let host):
-            return "blackice: deny \(identity.label) reaching \(host) and drop its waiting connections"
+            return "deny \(identity.label) access to \(host) and drop its waiting connections"
         }
     }
 

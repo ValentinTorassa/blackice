@@ -1,6 +1,6 @@
 {
   "name": "blackice-site",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "Project page and documentation for blackice. Nothing here is part of the native product.",
   "scripts": {

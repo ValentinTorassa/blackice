@@ -10,14 +10,19 @@ The commands.
 
 | Command | What it does |
 | --- | --- |
-| `blackice start` / `blackice stop` | Activate the extension and start filtering with `blackice.toml`, or stop filtering and deactivate it. |
-| `blackice status` | Mode, rules, approvals and paused connections. |
+| `blackice init [--config PATH]` | Ask a few questions and write `blackice.toml`: the mode, how long ask mode waits, and apps to allow, by path or signing identifier. It never replaces a file that is there. |
+| `blackice start [--config PATH]` / `blackice stop` | Activate the extension and start filtering with `blackice.toml` (asking `init`'s questions first when the file is missing), or stop filtering and deactivate it. The first `start` opens System Settings where you allow the extension. |
+| `blackice status` | Whether blackice is on, its mode and what it does, the rules and hooks, whether the daemon is running, and how many connections wait. |
 | `blackice mode accept-all \| ask \| block-all` | Change the mode. |
 | `blackice pending` | Connections waiting for an answer, and the approvals. |
 | `blackice approve (--app ID [--team TEAM] \| --cdhash HEX) --host HOST [--for 1h] [--token TOKEN]` | Allow one app to reach one host until the approval expires. |
 | `blackice deny (--app ID [--team TEAM] \| --cdhash HEX) --host HOST [--token TOKEN]` | Drop the waiting connections and remove the approval. |
 | `blackice daemon` | Run the hooks for paused connections. The LaunchAgent runs it. |
 | `blackice agent install` / `blackice agent uninstall` | Load the daemon's LaunchAgent for the current user, or unload and remove it. |
+| `blackice validate PATH` | Check a `blackice.toml` without loading it. |
+| `blackice version` | The installed version and build. |
+
+`start`, `stop`, `mode`, and `approve` or `deny` without a token ask for Touch ID, or your login password. Exit statuses follow sysexits: 0 done, 64 a usage error, 65 an invalid `blackice.toml`, 66 no file to read, 69 not running from the signed Blackice.app, or the filter did not answer, 70 a macOS request failed, 73 `init` found a file already there, 75 run it again (after restarting the Mac, when blackice says so), 77 Touch ID cancelled.
 
 `approve` and `deny` need the event's token when a hook calls them. A person can run them by hand after confirming with Touch ID. Without `--team`, `--app` names Apple's own code, which is signed without a Team ID. `--cdhash` names ad hoc signed code, which has no signing identity, by the CDHash that `codesign -dvvv` prints; a rebuild changes it and asks again.
 

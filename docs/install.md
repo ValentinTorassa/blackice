@@ -11,7 +11,7 @@ installed it into a temporary folder instead of `/Applications`
 or with the script, and uninstalling, have not been run from a published package yet.
 
 You need a Mac with Apple silicon (the build is arm64 only), macOS 14 or later, and an admin account. blackice has
-run on macOS 27.0.1 only. The commands below use 0.1.0 as the version.
+run on macOS 27.0.1 only. The commands below use 0.2.0 as the version.
 
 ## With the install script
 
@@ -49,9 +49,9 @@ continue with step 3.
 Download both files into the same folder, then, in Terminal, in that folder:
 
 ```console
-$ shasum -a 256 -c Blackice-0.1.0.zip.sha256
-Blackice-0.1.0.zip: OK
-$ ditto -x -k Blackice-0.1.0.zip .
+$ shasum -a 256 -c Blackice-0.2.0.zip.sha256
+Blackice-0.2.0.zip: OK
+$ ditto -x -k Blackice-0.2.0.zip .
 $ codesign --verify --strict --deep --verbose=2 Blackice.app
 $ codesign -dvv Blackice.app 2>&1 | grep -E '^(Identifier|TeamIdentifier)='
 Identifier=com.valentorassa.blackice
@@ -89,8 +89,10 @@ full path, and a script that runs the full path, worked.
 
 ## 3. Write blackice.toml
 
-`blackice start` reads `~/.config/blackice/blackice.toml` unless you pass `--config PATH`. Start in accept-all, which
-lets everything through and only logs:
+`blackice start` reads `~/.config/blackice/blackice.toml` unless you pass `--config PATH`. If the file is not there,
+`start` asks a few questions and writes it: the mode, how long ask mode waits, and apps to allow, by their path (such
+as `/Applications/Slack.app`) or their signing identifier. `blackice init` asks the same questions without starting
+anything. Or write it yourself, starting in accept-all, which lets everything through and only logs:
 
 ```toml
 mode = "accept-all"     # "accept-all", "ask" or "block-all"
@@ -120,9 +122,11 @@ $ blackice status
 ```
 
 `start` asks for Touch ID (or your login password), activates the network extension and saves the configuration.
-The first time, and after any deactivation, macOS holds the extension until you allow it: open System Settings →
-General → Login Items & Extensions → Network Extensions and turn Blackice on. macOS may also ask whether "Blackice"
-may filter network content: allow it. `start` waits up to 10 minutes for this. Labels vary between macOS versions.
+The first time, and after any deactivation, macOS holds the extension until you allow it. `start` opens System
+Settings at General → Login Items & Extensions: under Network Extensions, turn Blackice on. macOS may also ask whether
+"Blackice" may filter network content: allow it. `start` waits up to 10 minutes for this. Labels vary between macOS
+versions. `blackice status` then says which mode blackice is in, whether the daemon runs your hooks, and how many
+connections are waiting.
 
 ## 5. Start the daemon
 

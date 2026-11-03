@@ -7,7 +7,7 @@ description: >-
 
 # Deciding a blackice connection
 
-> **Draft.** blackice 0.1.0 is early. `blackice approve` and `blackice deny` have run against
+> **Draft.** blackice is early. `blackice approve` and `blackice deny` have run against
 > the network extension on one Mac, and the way the event reaches you can still change. See
 > `integrations/fx/README.md` in the blackice repository.
 

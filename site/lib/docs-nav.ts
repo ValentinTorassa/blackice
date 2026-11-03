@@ -23,7 +23,7 @@ export const docsNav: DocsNavSection[] = [
       {
         title: 'Install',
         href: '/docs/install',
-        description: 'Install blackice 0.1.0 with the install script, Homebrew or the release zip, check it, start it, remove it and roll it back.',
+        description: 'Install blackice 0.2.0 with the install script, Homebrew or the release zip, check it, start it, remove it and roll it back.',
       },
       {
         title: 'How it works',
@@ -44,6 +44,11 @@ export const docsNav: DocsNavSection[] = [
         title: 'CLI',
         href: '/docs/cli',
         description: 'The commands.',
+      },
+      {
+        title: 'Changelog',
+        href: '/docs/changelog',
+        description: 'What changed in each release.',
       },
     ],
   },

@@ -166,9 +166,10 @@ struct ParseTests {
 struct RunTests {
     @Test func helpAndNoArguments() {
         let help = run(["help"])
-        #expect(help.status == 0 && help.stdout.hasPrefix("usage: blackice") && help.stderr.isEmpty)
+        #expect(help.status == 0 && help.stdout.hasPrefix("blackice: an application firewall") && help.stderr.isEmpty)
+        #expect(help.stdout.contains("Usage: blackice <command>") && !help.stdout.contains("phase-0"))
         let none = run([])
-        #expect(none.status == ExitCode.usage && none.stderr.hasPrefix("usage: blackice") && none.stdout.isEmpty)
+        #expect(none.status == ExitCode.usage && none.stderr.hasPrefix("blackice: an application firewall") && none.stdout.isEmpty)
     }
 
     @Test func usageErrorExitsWith64() {
@@ -181,7 +182,7 @@ struct RunTests {
     @Test func validateReportsAValidFile() {
         let result = run(["validate", "n.toml"], files: ["n.toml": Data("mode = 'ask'\n".utf8)])
         #expect(result.status == 0)
-        #expect(result.stdout == "n.toml: valid (mode ask, timeout 10 s, 0 allow rules, 0 hooks)")
+        #expect(result.stdout == "✓ n.toml is valid: ask mode, no rules, no hooks, 10 s to answer")
         #expect(result.stderr.isEmpty)
     }
 
@@ -196,7 +197,7 @@ struct RunTests {
 
     @Test func validateMissingFile() {
         let result = run(["validate", "missing.toml"])
-        #expect(result.status == 66 && result.stderr.hasPrefix("missing.toml: cannot read the file"))
+        #expect(result.status == 66 && result.stderr == "missing.toml: there is no such file")
     }
 
     @Test func commandsThatNeedTheSignedAppSaySoAndFail() {
@@ -204,12 +205,12 @@ struct RunTests {
             let result = run(arguments)
             #expect(result.status == 69 && result.stdout.isEmpty)
             #expect(result.stderr == UnsignedSystem.refusal(arguments[0]))
-            #expect(result.stderr.hasSuffix("(see docs/phase-0.md)"))
+            #expect(result.stderr.contains("/Applications/Blackice.app/Contents/MacOS/blackice") && !result.stderr.contains("docs/"))
         }
         // start checks its configuration first, so a bad file is reported even here.
         let start = run(["start", "--config", "n.toml"], files: ["n.toml": Data("mode = \"block-all\"\n".utf8)])
         #expect(start.status == 69)
-        #expect(start.stdout == "n.toml: valid (mode block-all, timeout 10 s, 0 allow rules, 0 hooks)")
+        #expect(start.stdout == "Using n.toml: block-all mode, no rules, no hooks.")
         #expect(start.stderr == UnsignedSystem.refusal("start"))
     }
 
@@ -218,7 +219,7 @@ struct RunTests {
         let system = FakeSystem()
         let result = run(["start", "--config", "n.toml"], files: ["n.toml": Data(text.utf8)], system: system)
         #expect(result.status == 0)
-        #expect(result.stdout == "n.toml: valid (mode accept-all, timeout 10 s, 1 allow rule, 0 hooks)\nstarted")
+        #expect(result.stdout == "Using n.toml: accept-all mode, 1 rule, no hooks.\nstarted")
         #expect(system.calls == ["start " + text])
 
         let defaultPath = FakeSystem()
@@ -230,7 +231,11 @@ struct RunTests {
         let untouched = FakeSystem()
         #expect(run(["start", "--config", "missing.toml"], system: untouched).status == 66)
         #expect(run(["start", "--config", "b.toml"], files: ["b.toml": Data("mode = 'x'\n".utf8)], system: untouched).status == 65)
-        #expect(run(["start"], system: untouched).status == 66)
+        let missing = run(["start"], system: untouched)
+        #expect(missing.status == 66)
+        #expect(missing.stderr == "There is no configuration at ~/.config/blackice/blackice.toml yet. Write one with: blackice init")
+        let bad = run(["start", "--config", "b.toml"], files: ["b.toml": Data("mode = 'x'\n".utf8)], system: untouched)
+        #expect(bad.stderr.hasSuffix("Fix the file, then check it with: blackice validate b.toml"))
         #expect(untouched.calls.isEmpty)
     }
 
@@ -344,7 +349,7 @@ struct RunTests {
         #expect(run(["agent", "install"], system: system).status == 70)
         #expect(run(["agent", "uninstall"], system: system).status == 70)
         #expect(system.calls == ["agent install", "agent uninstall"])
-        #expect(CLI.usage.contains("agent install | uninstall"))
+        #expect(CLI.usage.contains("agent install|uninstall"))
         #expect(!CLI.usage.contains("daemon --config"))
     }
 

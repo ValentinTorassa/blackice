@@ -141,7 +141,6 @@ public struct LaunchAgentInstaller {
         guard chmod(plistURL.path, 0o644) == 0 else {
             throw FileSafetyError(plistURL.path, "cannot set mode 0644: \(errnoText(errno))")
         }
-        say("Wrote \(plistURL.path) for \(binary).")
         // Not loaded is the usual case here, and fine; anything else shows up in bootstrap.
         _ = launchctl(["bootout", service])
         let loaded = launchctl(["bootstrap", domain, plistURL.path])
@@ -149,8 +148,8 @@ public struct LaunchAgentInstaller {
             throw LaunchAgentError("launchctl bootstrap \(domain) failed with status \(loaded.status)" +
                                    (loaded.output.isEmpty ? "" : ": \(loaded.output)"))
         }
-        say("Loaded \(LaunchAgent.label) in \(domain): launchd runs blackice daemon now and at each login.")
-        say("Its stdout and stderr go to \(logDirectory.path), next to the event log.")
+        say("✓ The daemon is running, and starts again at each login. It runs your hooks for connections that wait.")
+        say("  Its logs are in \(Describe.path(logDirectory.path, home: account.homeURL.path)).")
     }
 
     /// Boots the agent out and removes its plist. When bootout fails for a reason other than the
@@ -158,17 +157,17 @@ public struct LaunchAgentInstaller {
     public func uninstall(say: (String) -> Void) throws {
         let result = launchctl(["bootout", service])
         if result.status == 0 {
-            say("Stopped and unloaded \(LaunchAgent.label).")
+            say("✓ The daemon is stopped.")
         } else if LaunchAgent.notLoadedStatuses.contains(result.status) {
-            say("\(LaunchAgent.label) was not loaded.")
+            say("The daemon was not running.")
         } else {
             throw LaunchAgentError("launchctl bootout \(service) failed with status \(result.status)" +
                                    (result.output.isEmpty ? "" : ": \(result.output)") + "; \(plistURL.path) was left in place")
         }
         if unlink(plistURL.path) == 0 {
-            say("Removed \(plistURL.path).")
+            say("✓ Removed its LaunchAgent; it no longer starts at login.")
         } else if errno == ENOENT {
-            say("There was no \(plistURL.path).")
+            say("There was no LaunchAgent to remove.")
         } else {
             throw FileSafetyError(plistURL.path, "cannot remove it: \(errnoText(errno))")
         }

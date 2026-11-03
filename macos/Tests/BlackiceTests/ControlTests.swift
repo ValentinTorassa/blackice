@@ -5,19 +5,18 @@ import Testing
 struct ControlTests {
     @Test func touchIDPromptSaysWhatChanges() throws {
         let configuration = try policySnapshot(.blockAll, generation: 4)
-        #expect(ControlAction.start(configuration).reason
-            == "blackice: start filtering (mode block-all, 2 allow rules, 0 hooks, generation 4)")
-        #expect(ControlAction.stop.reason == "blackice: stop filtering and deactivate the network extension")
+        #expect(ControlAction.start(configuration).reason == "start filtering in block-all mode, 2 rules, no hooks")
+        #expect(ControlAction.stop.reason == "stop filtering and remove its network extension")
         #expect(ControlAction.mode(from: .acceptAll, to: .blockAll, generation: 5).reason
-            == "blackice: change the mode from accept-all to block-all (generation 5)")
+            == "switch from accept-all to block-all mode")
         let tool = AppIdentity.signed(SigningIdentity(signingID: "com.example.tool", teamID: "ABCDE12345"))
         #expect(ControlAction.approve(tool, host: "example.com", seconds: 3600).reason
-            == "blackice: let ABCDE12345/com.example.tool reach example.com for 1 h")
+            == "let ABCDE12345/com.example.tool reach example.com for 1 h")
         let build = AppIdentity.cdhash(String(repeating: "0f", count: 20))
         #expect(ControlAction.approve(build, host: "example.com", seconds: 600).reason
-            == "blackice: let cdhash/\(String(repeating: "0f", count: 20)) reach example.com for 10 min")
+            == "let cdhash/\(String(repeating: "0f", count: 20)) reach example.com for 10 min")
         #expect(ControlAction.deny(tool, host: "example.com").reason
-            == "blackice: deny ABCDE12345/com.example.tool reaching example.com and drop its waiting connections")
+            == "deny ABCDE12345/com.example.tool access to example.com and drop its waiting connections")
         #expect(ControlAction.duration(45) == "45 s" && ControlAction.duration(90) == "90 s")
         #expect(ControlAction.duration(5400) == "1 h 30 min" && ControlAction.duration(86_400) == "24 h")
     }

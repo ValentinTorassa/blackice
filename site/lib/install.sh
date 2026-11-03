@@ -15,7 +15,7 @@
 
 set -eu
 
-VERSION=0.1.0
+VERSION=0.2.0
 REPOSITORY=ValentinTorassa/blackice
 TEAM_ID=M294LK997M
 IDENTIFIER=com.valentorassa.blackice
@@ -162,10 +162,9 @@ exec $EXECUTABLE \"\$@\""
 next_steps() {
   say ""
   say "Next:"
-  say "  1. Write ~/.config/blackice/blackice.toml and run \`blackice start\`. The first time, macOS holds"
-  say "     the extension until you allow it in System Settings > General > Login Items & Extensions >"
-  say "     Network Extensions."
-  say "  2. \`blackice agent install\` loads the daemon that runs the hooks in ask mode."
+  say "  1. Run \`blackice start\`. The first time, it asks a few questions to write"
+  say "     ~/.config/blackice/blackice.toml, then opens System Settings so you can allow the extension."
+  say "  2. \`blackice agent install\` starts the daemon that runs your hooks in ask mode."
   say ""
   say "Before removing the app, run \`blackice agent uninstall\` and \`blackice stop\`."
   if [ "$replace" = 1 ]; then

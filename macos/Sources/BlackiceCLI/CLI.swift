@@ -8,13 +8,15 @@ public enum ExitCode {
     public static let invalidConfig: Int32 = 65 // EX_DATAERR
     public static let unreadable: Int32 = 66  // EX_NOINPUT
     public static let unavailable: Int32 = 69 // EX_UNAVAILABLE: needs the signed app or the extension
+    public static let cannotCreate: Int32 = 73 // EX_CANTCREAT: init found a file already there
     public static let software: Int32 = 70    // EX_SOFTWARE: a system request failed
     public static let tempFail: Int32 = 75    // EX_TEMPFAIL: the saved configuration changed meanwhile; retry
     public static let noPermission: Int32 = 77 // EX_NOPERM: Touch ID cancelled or failed
 }
 
 public enum Command: Equatable, Sendable {
-    case help
+    case help, version
+    case initConfig(path: String?)
     case start(configPath: String?)
     case stop, status, pending
     case mode(Mode)
@@ -27,6 +29,8 @@ public enum Command: Equatable, Sendable {
     public var name: String {
         switch self {
         case .help: return "help"
+        case .version: return "version"
+        case .initConfig: return "init"
         case .start: return "start"
         case .stop: return "stop"
         case .status: return "status"
@@ -80,36 +84,34 @@ public enum CLI {
     public static let maximumApprovalSeconds = 86_400
 
     public static let usage = """
-    usage: blackice <command> [options]
+    blackice: an application firewall for macOS that you run from the command line.
 
-    Commands:
-      validate PATH                      Check a blackice.toml file
-      start [--config PATH]              Activate the extension and start filtering with PATH
-                                         (default ~/.config/blackice/blackice.toml)
-      stop                               Stop filtering and deactivate the extension
-      status                             Mode, rules, approvals and paused connections
-      mode accept-all | ask | block-all  Change the mode
-      pending                            Connections waiting for an answer, and the approvals
-      approve (--app ID [--team TEAM] | --cdhash HEX) --host HOST [--for 1h] [--token TOKEN]
-                                         Let one app reach one host until the approval expires
-      deny (--app ID [--team TEAM] | --cdhash HEX) --host HOST [--token TOKEN]
-                                         Drop the waiting connections and remove the approval
-      daemon                             Run the hooks for paused connections (the LaunchAgent)
-      agent install | uninstall          Load or remove the daemon's LaunchAgent for this user
-      help                               Show this help
+    Usage: blackice <command> [options]
 
-    validate works anywhere, and so does agent uninstall. agent install must run from
-    inside Blackice.app. Every other command needs Blackice.app signed with the
-    Developer ID; any other build says so and exits with status 69. start, stop and mode
-    ask for Touch ID before changing filtering, and so do approve and deny without the
-    event's --token. A token is good for one answer to its own event. agent install and
-    uninstall do not ask for Touch ID.
-    Without --team, --app names Apple platform code, which has no Team ID. --cdhash names
-    ad hoc signed code by its CDHash (codesign -dvvv); a rebuild changes it.
-    The daemon reads no file: it runs the hooks, with their timeout, of the configuration that
-    start and mode saved, which it gets from the extension. Hooks get HOME, USER, LOGNAME, TMPDIR,
-    PATH=\(HookRunner.defaultPath) and LANG=\(HookRunner.language), plus
-    BLACKICE_EVENT_FILE and BLACKICE_EVENT_ID; a hook that needs more sets it in its run line.
+    Get started
+      init [--config PATH]      Write blackice.toml by answering a few questions
+      start [--config PATH]     Start filtering with ~/.config/blackice/blackice.toml (Touch ID).
+                                With no file there yet, it asks the questions first.
+      status                    What blackice is doing
+
+    Every day
+      mode accept-all|ask|block-all
+                                Change how new connections are treated (Touch ID)
+      pending                   Connections waiting for an answer, and the approvals
+      approve --app ID [--team TEAM] --host HOST [--for 1h] [--token TOKEN]
+                                Let one app reach one host for a while (Touch ID without --token)
+      deny --app ID [--team TEAM] --host HOST [--token TOKEN]
+                                Refuse it and drop its waiting connections
+                                (--cdhash HEX in place of --app names ad hoc signed code)
+
+    Setup
+      validate PATH             Check a blackice.toml without loading it
+      agent install|uninstall   Run hooks for waiting connections, now and at each login
+      stop                      Stop filtering and remove the network extension (Touch ID)
+      version                   The installed version
+      help                      This help
+
+    Docs: https://blackice-macos.vercel.app/docs
     """
 
     public static func parse(_ arguments: [String]) throws -> Command {
@@ -119,6 +121,13 @@ public enum CLI {
         case "help", "-h", "--help":
             try noArguments(first, rest)
             return .help
+        case "version", "--version":
+            try noArguments(first, rest)
+            return .version
+        case "init":
+            let options = try parseOptions(rest, allowed: ["config"], command: first)
+            if let path = options["config"], path.hasPrefix("-") { throw UsageError("init: --config needs a path") }
+            return .initConfig(path: options["config"])
         case "start":
             let options = try parseOptions(rest, allowed: ["config"], command: first)
             if let path = options["config"], path.hasPrefix("-") { throw UsageError("start: --config needs a path") }
@@ -169,15 +178,16 @@ public enum CLI {
         }
     }
 
-    /// Runs one command line and returns the exit status.
     /// Where start looks for blackice.toml without --config.
     public static var defaultConfigPath: String {
         NSHomeDirectory() + "/.config/blackice/blackice.toml"
     }
 
+    /// Runs one command line and returns the exit status.
     public static func run(_ arguments: [String], stdout: @escaping (String) -> Void, stderr: @escaping (String) -> Void,
                            readFile: (String) throws -> Data = readConfigFile,
-                           system: SystemControlling = UnsignedSystem()) -> Int32 {
+                           system: SystemControlling = UnsignedSystem(),
+                           interaction: Interaction = .none) -> Int32 {
         if arguments.isEmpty {
             stderr(usage)
             return ExitCode.usage
@@ -194,11 +204,31 @@ public enum CLI {
         case .help:
             stdout(usage)
             return ExitCode.success
+        case .version:
+            stdout(interaction.version.map { "blackice \($0)" } ?? "blackice (a build outside Blackice.app)")
+            return ExitCode.success
+        case .initConfig(let configPath):
+            let path = configPath ?? defaultConfigPath
+            let shown = Describe.path(path, home: interaction.home)
+            if interaction.fileExists(path) {
+                stderr("\(shown) is already there. Edit it, then check it with: blackice validate \(shown)")
+                return ExitCode.cannotCreate
+            }
+            guard interaction.ask != nil else {
+                stderr("blackice init asks a few questions, so it needs a terminal.")
+                return ExitCode.usage
+            }
+            let status = writeConfig(at: path, interaction: interaction, stdout: stdout, stderr: stderr)
+            if status == ExitCode.success {
+                stdout("")
+                stdout("Start filtering with it: blackice start" + (configPath == nil ? "" : " --config \(shown)"))
+            }
+            return status
         case .validate(let path):
             switch loadConfig(path, readFile: readFile, stderr: stderr) {
             case .failure(let status): return status.code
             case .success(let loaded):
-                stdout("\(path): valid (\(loaded.config.summary))")
+                stdout("✓ \(path) is valid: \(loaded.config.overview)")
                 return ExitCode.success
             }
         case .daemon:
@@ -209,10 +239,24 @@ public enum CLI {
             return system.uninstallAgent(output: SystemOutput(stdout: stdout, stderr: stderr))
         case .start(let configPath):
             let path = configPath ?? defaultConfigPath
-            switch loadConfig(path, readFile: readFile, stderr: stderr) {
+            let shown = Describe.path(path, home: interaction.home)
+            var justWritten = false
+            if isMissing(path, readFile: readFile) {
+                guard interaction.ask != nil else {
+                    stderr("There is no configuration at \(shown) yet. Write one with: blackice init" +
+                           (configPath == nil ? "" : " --config \(shown)"))
+                    return ExitCode.unreadable
+                }
+                stdout("There is no configuration at \(shown) yet, so a few questions first.")
+                stdout("")
+                let written = writeConfig(at: path, interaction: interaction, stdout: stdout, stderr: stderr)
+                guard written == ExitCode.success else { return written }
+                justWritten = true
+            }
+            switch loadConfig(path, readFile: readFile, stderr: stderr, shown: shown, hint: true) {
             case .failure(let status): return status.code
             case .success(let loaded):
-                stdout("\(path): valid (\(loaded.config.summary))")
+                if !justWritten { stdout("Using \(shown): \(loaded.config.overview).") }
                 return system.start(configText: loaded.text, output: SystemOutput(stdout: stdout, stderr: stderr))
             }
         case .stop:
@@ -238,26 +282,97 @@ public enum CLI {
         let text: String
     }
 
-    /// Reads and parses a blackice.toml, reporting problems the way validate does.
-    private static func loadConfig(_ path: String, readFile: (String) throws -> Data,
-                                   stderr: (String) -> Void) -> Result<Loaded, Status> {
+    /// Reads and parses a blackice.toml, reporting problems the way validate does. With `hint`, a
+    /// problem also says how to go on, as start does.
+    private static func loadConfig(_ path: String, readFile: (String) throws -> Data, stderr: (String) -> Void,
+                                   shown: String? = nil, hint: Bool = false) -> Result<Loaded, Status> {
+        let name = shown ?? path
         let data: Data
         do {
             data = try readFile(path)
         } catch {
-            stderr("\(path): cannot read the file: \(error.localizedDescription)")
+            if isMissingFile(error) {
+                stderr(hint ? "There is no configuration at \(name). Write one with: blackice init" : "\(name): there is no such file")
+            } else {
+                stderr("\(name): cannot read the file: \(error.localizedDescription)")
+            }
             return .failure(Status(code: ExitCode.unreadable))
         }
         do {
             // BlackiceConfig refuses anything that is not UTF-8, so the text is always there.
             return .success(Loaded(config: try BlackiceConfig(data: data), text: String(decoding: data, as: UTF8.self)))
         } catch let error as ConfigError {
-            stderr(error.line.map { "\(path):\($0): \(error.message)" } ?? "\(path): \(error.message)")
-            return .failure(Status(code: ExitCode.invalidConfig))
+            stderr(error.line.map { "\(name):\($0): \(error.message)" } ?? "\(name): \(error.message)")
         } catch {
-            stderr("\(path): \(error)")
-            return .failure(Status(code: ExitCode.invalidConfig))
+            stderr("\(name): \(error)")
         }
+        if hint { stderr("Fix the file, then check it with: blackice validate \(name)") }
+        return .failure(Status(code: ExitCode.invalidConfig))
+    }
+
+    private static func isMissing(_ path: String, readFile: (String) throws -> Data) -> Bool {
+        do {
+            _ = try readFile(path)
+            return false
+        } catch {
+            return isMissingFile(error)
+        }
+    }
+
+    static func isMissingFile(_ error: Error) -> Bool {
+        let error = error as NSError
+        if error.domain == NSCocoaErrorDomain,
+           [CocoaError.fileNoSuchFile.rawValue, CocoaError.fileReadNoSuchFile.rawValue].contains(error.code) { return true }
+        if error.domain == NSPOSIXErrorDomain, error.code == Int(ENOENT) { return true }
+        if let underlying = error.userInfo[NSUnderlyingErrorKey] as? NSError { return isMissingFile(underlying) }
+        return false
+    }
+
+    /// Asks the wizard's questions and creates the file. The text is parsed before it is written,
+    /// so the file always loads.
+    private static func writeConfig(at path: String, interaction: Interaction, stdout: @escaping (String) -> Void,
+                                    stderr: (String) -> Void) -> Int32 {
+        guard let ask = interaction.ask else { return ExitCode.usage }
+        let wizard = ConfigWizard(ask: ask, say: stdout, identify: interaction.identify,
+                                  fileExists: interaction.fileExists, home: interaction.home)
+        let shown = Describe.path(path, home: interaction.home)
+        guard let answers = wizard.run() else {
+            stdout("")
+            stderr("Nothing was written.")
+            return ExitCode.unreadable
+        }
+        let text = ConfigWizard.render(answers)
+        let parsed: BlackiceConfig
+        do {
+            parsed = try BlackiceConfig(data: Data(text.utf8))
+        } catch {
+            stderr("blackice init: the file it would write does not parse (\(error)); nothing was written")
+            return ExitCode.software
+        }
+        do {
+            try interaction.createFile(path, Data(text.utf8))
+        } catch {
+            stderr("Cannot write \(shown): \(error.localizedDescription)")
+            return ExitCode.cannotCreate
+        }
+        stdout("")
+        stdout("✓ Wrote \(shown): \(parsed.overview).")
+        return ExitCode.success
+    }
+
+    /// Creates `path` with mode 0644, and its folder with 0700 if it is missing. Fails if the file
+    /// is already there.
+    public static func createFile(_ path: String, _ data: Data) throws {
+        let url = URL(fileURLWithPath: path)
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true,
+                                                attributes: [.posixPermissions: 0o700])
+        let descriptor = open(path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0o644)
+        guard descriptor >= 0 else {
+            throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno), userInfo: [NSFilePathErrorKey: path])
+        }
+        let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
+        try handle.write(contentsOf: data)
+        try handle.close()
     }
 
     /// What `blackice pending` prints. The fields came from the extension, already checked;
