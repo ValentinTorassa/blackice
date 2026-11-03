@@ -38,9 +38,10 @@ public final class NESystemControl: SystemControlling {
             output.stderr("blackice start: \(error)")
             return ExitCode.invalidConfig
         }
+        if output.setup { output.stdout(""); output.stdout(Style.heading("2 · Confirm with Touch ID")); output.stdout("") }
         guard confirm(.start(candidate), output) else { return ExitCode.noPermission }
 
-        output.stdout("Activating the network extension…")
+        if !output.setup { output.stdout("Activating the network extension…") }
         let (activation, replaced, neededApproval) = runExtensionRequest(
             OSSystemExtensionRequest.activationRequest(forExtensionWithIdentifier: BlackiceIdentifiers.filter, queue: .main),
             output)
@@ -62,14 +63,18 @@ public final class NESystemControl: SystemControlling {
         manager.providerConfiguration = provider
         manager.localizedDescription = "blackice"
         manager.isEnabled = true
-        guard save(manager, output) else { return ExitCode.software }
-        output.stdout("✓ blackice is on, in \(candidate.mode.rawValue) mode: \(candidate.mode.explanation).")
+        // A content filter saved for the first time (or again after stop removed it) makes macOS ask.
+        let firstSave = current.providerBundleID == nil
+        if firstSave { output.stdout((output.setup || neededApproval ? "  " : "") + ExtensionApproval.filterPrompt) }
+        guard save(manager, output, firstSave: firstSave) else { return ExitCode.software }
+        output.stdout("")
+        CLI.onLines(candidate).forEach(output.stdout)
         if replaced, !Self.extensionAnswers() {
             output.stderr("blackice was upgraded, and macOS needs a restart to finish. Restart the Mac, then run blackice start again.")
             output.stderr("Until then hooks, pending, approve and deny cannot reach the filter, and ask mode drops what it holds.")
             return ExitCode.tempFail
         }
-        if neededApproval {
+        if neededApproval || output.setup {
             CLI.firstStartLines(candidate, daemonRunning: Self.daemonRunning()).forEach(output.stdout)
         }
         return ExitCode.success
@@ -279,7 +284,7 @@ public final class NESystemControl: SystemControlling {
 
     /// Fresh Touch ID (or the login password) for this one change. No reuse window.
     private func confirm(_ action: ControlAction, _ output: SystemOutput) -> Bool {
-        output.stdout("Touch ID to \(action.reason)…")
+        output.stdout(output.setup ? "  Touch the sensor, or type your password, when macOS asks." : "Touch ID to \(action.reason)…")
         let context = LAContext()
         context.touchIDAuthenticationAllowableReuseDuration = 0
         context.localizedCancelTitle = "Cancel"
@@ -295,6 +300,7 @@ public final class NESystemControl: SystemControlling {
         let approved = MainLoop.wait(for: result, timeout: 120) == 0
         context.invalidate()
         if !approved { output.stderr("Touch ID was cancelled, so nothing changed.") }
+        if approved, output.setup { output.stdout("  " + Style.done("Confirmed")) }
         return approved
     }
 
@@ -312,11 +318,15 @@ public final class NESystemControl: SystemControlling {
                                      enabled: manager.isEnabled, configuration: configuration))
     }
 
-    private func save(_ manager: NEFilterManager, _ output: SystemOutput) -> Bool {
+    private func save(_ manager: NEFilterManager, _ output: SystemOutput, firstSave: Bool = false) -> Bool {
         let result = Completion()
         manager.saveToPreferences { error in result.finish(error == nil ? 0 : 1) }
         let saved = MainLoop.wait(for: result, timeout: Self.preferencesTimeout) == 0
-        if !saved { output.stderr("Saving the content filter settings failed. Try again in a moment.") }
+        if !saved {
+            output.stderr(firstSave
+                ? "macOS did not save blackice's filter. If you clicked Don't Allow, run blackice start again and click Allow."
+                : "Saving the content filter settings failed. Try again in a moment.")
+        }
         return saved
     }
 
@@ -340,8 +350,7 @@ public final class NESystemControl: SystemControlling {
         guard let status else {
             output.stderr(deactivating
                 ? "macOS did not finish removing the network extension in time. Run blackice stop again."
-                : "Gave up waiting after 10 minutes. Turn on Blackice in System Settings › General › " +
-                  "Login Items & Extensions › Network Extensions, then run blackice start again.")
+                : "Gave up waiting after 10 minutes. Allow the network extension as above, then run blackice start again.")
             return (ExitCode.software, delegate.replaced, delegate.neededApproval)
         }
         return (status, delegate.replaced, delegate.neededApproval)
@@ -395,14 +404,12 @@ final class ExtensionRequestDelegate: NSObject, OSSystemExtensionRequestDelegate
 
     func requestNeedsUserApproval(_ request: OSSystemExtensionRequest) {
         neededApproval = true
-        let place = "General › Login Items & Extensions › Network Extensions"
-        if !deactivating, SystemSettings.openExtensions() {
-            output.stdout("macOS asks you to allow the network extension, so System Settings is open. Under \(place),")
-            output.stdout("turn on Blackice, and allow it to filter network content if macOS asks. Waiting up to 10 minutes…")
-        } else {
-            output.stdout("macOS asks you to allow the network extension: open System Settings, and under \(place),")
-            output.stdout("turn on Blackice. Waiting up to 10 minutes…")
+        if deactivating {
+            output.stdout("macOS asks you to confirm removing the network extension: follow its dialog. Waiting up to 10 minutes…")
+            return
         }
+        ExtensionApproval.lines(macOS: SystemSettings.majorVersion, opened: SystemSettings.openExtensions(), setup: output.setup)
+            .forEach(output.stdout)
     }
 
     func request(_ request: OSSystemExtensionRequest, actionForReplacingExtension existing: OSSystemExtensionProperties,
@@ -419,10 +426,16 @@ final class ExtensionRequestDelegate: NSObject, OSSystemExtensionRequestDelegate
 
     func request(_ request: OSSystemExtensionRequest, didFinishWithResult result: OSSystemExtensionRequest.Result) {
         if result == .completed {
-            output.stdout(deactivating ? "✓ Network extension removed." : "✓ Network extension active.")
+            if deactivating {
+                output.stdout(Style.done("Network extension removed."))
+            } else if neededApproval {
+                output.stdout("  " + Style.done("Allowed"))
+            } else if !output.setup {
+                output.stdout(Style.done("Network extension active."))
+            }
             self.result.finish(ExitCode.success)
         } else if deactivating {
-            output.stdout("✓ Network extension removed; macOS finishes at the next restart.")
+            output.stdout(Style.done("Network extension removed; macOS finishes at the next restart."))
             self.result.finish(ExitCode.success)
         } else {
             output.stderr("macOS finishes setting up the network extension at the next restart. Restart the Mac, " +
@@ -448,14 +461,13 @@ final class ExtensionRequestDelegate: NSObject, OSSystemExtensionRequestDelegate
 
 /// Opens System Settings where macOS lists the network extensions waiting for the person's OK.
 enum SystemSettings {
-    /// General › Login Items & Extensions; macOS 15 and later list network extensions there.
-    static let extensionsURL = "x-apple.systempreferences:com.apple.LoginItems-Settings.extension"
+    static var majorVersion: Int { ProcessInfo.processInfo.operatingSystemVersion.majorVersion }
 
     /// false when it could not be opened, for example with nobody logged in at the screen.
     static func openExtensions() -> Bool {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-        process.arguments = [extensionsURL]
+        process.arguments = [ExtensionApproval.settingsURL(macOS: majorVersion)]
         process.standardOutput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice
         do {
