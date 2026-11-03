@@ -39,7 +39,10 @@ the run, never before it.
 |---|---|---|
 | [P0-01](P0-01-team-signed-probe-blocked-macos.md) | 0 | In block-all a binary signed with our Team ID and named by no rule is refused, and `curl` with a rule still reaches its host. |
 | [P2-01](P2-01-ask-mode-fx-hook-macos.md) | 2, 3, 4 | Ask mode with fx deciding through the hook: two approvals, one denial, one connection dropped at the deadline. |
+| [P2-02](P2-02-curl-passes-on-retry-nscurl-waits-macos.md) | 2, 3 | Build 4 in ask mode: the daemon takes its configuration from the extension; `curl`'s first try fails and its retry passes after fx approves; `nscurl` waits for fx and passes; no token in the event log. |
 | [P4-01](P4-01-fx-decides-ten-connections-macos.md) | 4 | fx decides ten connections in a row with nobody at the keyboard; nine match the expected answer. |
+| [P5-01](P5-01-faults-macos.md) | 5 | The fault tests: 24 checks pass; the last 4 of case 4 fail, three because the second Touch ID was cancelled and one because `blackice pending` rejected the extension's reply. |
 
-Not recorded yet: the fault tests of phase 5 (`macos/scripts/fault-test.sh`, to be run at the Mac, then recorded as
-`P5-01-faults-macos.md`) and an install from a notarized package by following [`docs/install.md`](../docs/install.md).
+Not recorded yet: a fault test run with no FAIL, and an install from the published package by following
+[`docs/install.md`](../docs/install.md). The in-place upgrade from build 3 to build 4 that left the extension without
+an XPC service until a restart has no entry yet; `docs/plan.md` describes it under "Upgrades in place".
