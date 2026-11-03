@@ -15,6 +15,9 @@ import Foundation
 // A host or address that does not check out is "no rule or approval matches", never an error.
 // In every mode, inbound flows pass (only outbound connections are filtered) and Apple's
 // resolver may reach port 53, since rules name hosts and need name lookups to work.
+// In ask and block-all the extension also reads the resolver's DNS responses, passing every
+// byte, to learn which names each address was given for (DNSMessage.swift). A flow with no host
+// name whose address was given for exactly one name is decided on that name.
 
 public enum FlowDirection: Sendable {
     case outbound, inbound, unknown
@@ -36,9 +39,14 @@ public struct FlowFacts: Equatable, Sendable {
     /// The process that opened the socket, when it is not the app the flow is for. mDNSResponder
     /// looks names up on behalf of apps, and macOS reports those DNS flows under the app.
     public let process: IdentityResolution?
+    /// The names, normalized, that the system resolver's recent answers gave `remoteAddress`
+    /// for, as the extension saw them in its DNS responses (DNSNameTable). Each came with the
+    /// address, so it passes the host and address check for this flow.
+    public let dnsNames: Set<String>
 
     public init(direction: FlowDirection, identity: IdentityResolution, internetSocket: Bool, tcp: Bool,
-                hostname: String?, port: UInt16?, remoteAddress: IPAddress?, process: IdentityResolution? = nil) {
+                hostname: String?, port: UInt16?, remoteAddress: IPAddress?, process: IdentityResolution? = nil,
+                dnsNames: Set<String> = []) {
         self.direction = direction
         self.identity = identity
         self.process = process
@@ -47,6 +55,14 @@ public struct FlowFacts: Equatable, Sendable {
         self.hostname = hostname
         self.port = port
         self.remoteAddress = remoteAddress
+        self.dnsNames = dnsNames
+    }
+
+    /// The one name the remote address was given for, when there is exactly one. Several
+    /// names (a shared CDN address) name nothing.
+    public var dnsName: String? {
+        guard remoteAddress != nil, dnsNames.count == 1 else { return nil }
+        return dnsNames.first
     }
 }
 
@@ -60,12 +76,16 @@ public enum FlowVerdict: Equatable, Sendable {
     /// Ask mode: pause the flow and raise an event, or join the one already pending for the same
     /// app, host and port. With `addressMatches` false an approval does not release this flow.
     case ask(reason: String, addressMatches: Bool)
+    /// The system resolver's DNS flow in ask and block-all: allow it, and read its responses to
+    /// learn which names its addresses were given for. Every byte passes unchanged.
+    case learnNames
 
     public var reason: String {
         switch self {
         case .allow(let reason), .drop(let reason), .ask(let reason, _): return reason
         case .readServerName: return "reading_server_name"
         case .resolveHost: return "resolving_host"
+        case .learnNames: return "system_resolver"
         }
     }
 }
@@ -90,6 +110,12 @@ public enum FilterPolicy {
     public static let dnsPort: UInt16 = 53
     /// The port where a missing host name is read from the TLS server name.
     public static let tlsPort: UInt16 = 443
+    /// Ask mode's limit for a paused flow the server already sees as connected, or a UDP flow.
+    /// Servers close a TCP connection that sends no TLS hello (GitHub after 11 s, Cloudflare
+    /// after 15 s, measured on 3 November 2026), and macOS drops a UDP flow paused for 10 s. The
+    /// flow is dropped with `hold_expired` and its event stays open until the deadline, so an
+    /// approval covers the app's next try.
+    public static let connectedHoldSeconds: TimeInterval = 8
 
     /// The verdict for a new flow. With no configuration installed, nothing passes.
     public static func decide(_ flow: FlowFacts, snapshot: ProviderConfiguration?, context: PolicyContext) -> FlowVerdict {
@@ -97,7 +123,7 @@ public enum FilterPolicy {
         if flow.direction == .inbound { return .allow(reason: "inbound_not_filtered") }
         if flow.port == dnsPort,
            flow.identity == .verified(systemResolver) || flow.process == .verified(systemResolver) {
-            return .allow(reason: "system_resolver")
+            return snapshot.mode == .acceptAll ? .allow(reason: "system_resolver") : .learnNames
         }
         if snapshot.mode == .acceptAll { return .allow(reason: "accept_all") }
         guard let identity = nameable(flow.identity, snapshot.mode) else { return .drop(reason: identityReason(flow.identity)) }
@@ -110,6 +136,10 @@ public enum FilterPolicy {
         // No host name from the system. Ask mode reads the TLS server name to have a host to ask
         // about; block-all reads it only when a rule or the Apple services table could match this app.
         let tls = flow.tcp && flow.port == tlsPort
+        // The system resolver gave the address for exactly one name: decide on that name now.
+        if let name = flow.dnsName, let verdict = dnsNamed(identity, name: name, tls: tls, snapshot, context) {
+            return verdict
+        }
         if snapshot.mode == .ask { return tls ? .readServerName : .drop(reason: "no_host") }
         let hasRule = flow.identity.verifiedIdentity.map { hasRuleOrService($0, snapshot.config) } ?? false
         if hasRule && tls { return .readServerName }
@@ -130,6 +160,17 @@ public enum FilterPolicy {
             guard let identity = nameable(flow.identity, snapshot.mode) else { return .drop(reason: identityReason(flow.identity)) }
             if let verdict = anyHost(flow, snapshot) { return verdict }
             guard let host = normalizeHost(name) else { return .drop(reason: "server_name_invalid") }
+            // The app looked one name up and names another server in its hello, perhaps on the
+            // same CDN address: that server name passes only if a rule or an approval covers it
+            // (and the address checks out), never by asking.
+            if flow.hostname == nil, let looked = flow.dnsName, host != looked {
+                guard covers(identity, host, snapshot, context) else { return .drop(reason: "server_name_mismatch") }
+                let verdict = named(identity, host: host, flow, snapshot, context, suffix: ";server_name")
+                switch verdict {
+                case .allow, .resolveHost: return verdict
+                default: return .drop(reason: "server_name_mismatch")
+                }
+            }
             return named(identity, host: host, flow, snapshot, context, suffix: ";server_name")
         }
     }
@@ -148,6 +189,57 @@ public enum FilterPolicy {
         config.allow.contains { $0.names(signing) } || (config.appleServices && AppleServices.covers(signing))
     }
 
+    /// A flow with no host name from the system whose address the resolver gave for exactly one
+    /// name. That name came with the address, so the address check is met. Rules and approvals
+    /// for it count; on the TLS port the ClientHello is still read, and a server name other than
+    /// this one must be covered by itself. Ask mode asks about the name before the app has sent
+    /// anything. nil in block-all when nothing covers the name: the server name may still be read.
+    private static func dnsNamed(_ identity: AppIdentity, name: String, tls: Bool,
+                                 _ snapshot: ProviderConfiguration, _ context: PolicyContext) -> FlowVerdict? {
+        var line: Int?
+        var service = false
+        if case .signed(let signing) = identity {
+            line = snapshot.config.allowRule(for: signing, host: name)?.line
+            service = line == nil && snapshot.config.appleServices && AppleServices.allows(signing, host: name)
+        }
+        let ask = snapshot.mode == .ask
+        if line != nil || service || (ask && context.approved(identity, name)) {
+            if tls { return .readServerName }
+            let reason = line.map { "rule_line_\($0)" } ?? (service ? "apple_service" : "approval")
+            return .allow(reason: reason + ";dns_name")
+        }
+        return ask ? .ask(reason: "no_rule", addressMatches: true) : nil
+    }
+
+    /// Whether a rule, the Apple services table, or in ask mode a current approval, names this app
+    /// and host.
+    private static func covers(_ identity: AppIdentity, _ host: String,
+                               _ snapshot: ProviderConfiguration, _ context: PolicyContext) -> Bool {
+        if case .signed(let signing) = identity {
+            if snapshot.config.allowRule(for: signing, host: host) != nil { return true }
+            if snapshot.config.appleServices && AppleServices.allows(signing, host: host) { return true }
+        }
+        return snapshot.mode == .ask && context.approved(identity, host)
+    }
+
+    /// A flow paused by ask mode is held until its event's deadline, except one the server
+    /// already sees as connected, or a UDP flow, which gets `connectedHoldSeconds`. That is a
+    /// flow paused after its TLS hello was read, and a TCP flow on the TLS port with no host
+    /// name from the system. Such an app connected with BSD sockets, and in XNU's published
+    /// source (tcp_usr_connect, soisconnected) connect() sends the SYN at once; a pending first
+    /// verdict only keeps the app from seeing the connection, so the server's clock is running.
+    /// nil: the whole timeout.
+    public static func holdLimit(_ flow: FlowFacts, afterServerName: Bool) -> TimeInterval? {
+        if afterServerName || !flow.tcp || needsServerName(flow) { return connectedHoldSeconds }
+        return nil
+    }
+
+    /// A TCP flow on the TLS port with no host name from the system: allowed only once its
+    /// ClientHello has been read, also after an approval.
+    public static func needsServerName(_ flow: FlowFacts) -> Bool {
+        flow.hostname == nil && flow.tcp && flow.port == tlsPort
+    }
+
     /// A flow with a host name: rules, then the Apple services table, then approvals, each only once
     /// the address checks out.
     private static func named(_ identity: AppIdentity, host: String, _ flow: FlowFacts,
@@ -163,7 +255,8 @@ public enum FilterPolicy {
         // Block-all with no rule or service by name: nothing to check.
         if !ask && line == nil && !service { return .drop(reason: "no_rule") }
         guard flow.remoteAddress != nil else { return .drop(reason: "no_address") }
-        switch context.address(host, flow.remoteAddress) {
+        // An answer the resolver gave for this host and address counts like a lookup that found it.
+        switch flow.dnsNames.contains(host) ? AddressCheck.match : context.address(host, flow.remoteAddress) {
         case .unknown:
             // Ask mode looks the host up even with no rule, so a paused flow knows whether an
             // approval may release it.
@@ -215,10 +308,11 @@ public struct FlowLogLine: Encodable, Sendable {
         case .readServerName: self.verdict = "hold"
         case .resolveHost: self.verdict = "resolve"
         case .ask: self.verdict = "ask"
+        case .learnNames: self.verdict = "allow"
         }
         reason = verdict.reason
         app = flow.identity.label
-        host = (serverName ?? flow.hostname).map { String($0.prefix(253)) }
+        host = (serverName ?? flow.hostname ?? flow.dnsName).map { String($0.prefix(253)) }
         port = flow.port
         mode = snapshot?.mode.rawValue ?? "none"
         generation = snapshot?.generation ?? 0

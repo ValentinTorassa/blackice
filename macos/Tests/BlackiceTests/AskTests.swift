@@ -284,4 +284,63 @@ struct AskStateTests {
         #expect(Set(timedOut) == Set(events.values.map(\.id)))
         #expect(ask.pending.eventCount == 0 && ask.approvals.count == 0)
     }
+
+    @Test func holdExpiredDropsTheFlowAndKeepsTheEvent() throws {
+        var ask = AskState<String>()
+        let maker = EventMaker()
+        let key = pendingKey()
+        // A curl the server will hang up on, and a connection that can wait the whole timeout.
+        guard case .raised(let event) = ask.pending.add("curl-1", key: key, addressMatches: true, now: 0, timeout: 60,
+                                                        holdFor: 8, makeEvent: maker.make(key)) else {
+            Issue.record("not raised"); return
+        }
+        _ = ask.pending.add("named", key: key, addressMatches: true, now: 1, timeout: 60, makeEvent: maker.make(key))
+        #expect(ask.expire(now: 7.5).released.isEmpty)
+        let (released, timedOut) = ask.expire(now: 8)
+        #expect(released.count == 1 && released[0].flow == "curl-1" && !released[0].allow)
+        #expect(released[0].reason == "hold_expired" && released[0].eventID == event.id)
+        #expect(timedOut.isEmpty && ask.pending.eventCount == 1 && ask.pending.flowCount == 1)
+        #expect(ask.pending.summaries(now: 8).first?.connections == 1)
+        // The app tries again: the retry joins the same event, with its own hold.
+        #expect(ask.pending.add("curl-2", key: key, addressMatches: true, now: 12, timeout: 60, holdFor: 8,
+                                makeEvent: maker.make(key)) == .joined(eventID: event.id))
+        // The agent answers after 15 s with the event's token, which still counts.
+        let outcome = ask.answer(request(.approve, token: event.token), now: 15)
+        #expect(outcome.reply.status == .done && outcome.verdicts.map(\.eventID) == [event.id])
+        #expect(Set(outcome.released.map(\.flow)) == ["named", "curl-2"] && outcome.released.allSatisfy(\.allow))
+        #expect(ask.approvals.covers(ApprovalKey(identity: tool, host: "example.com"), now: 16))
+    }
+
+    @Test func anEventWithNoFlowLeftStillTakesItsAnswer() throws {
+        var ask = AskState<String>()
+        let maker = EventMaker()
+        let key = pendingKey()
+        guard case .raised(let event) = ask.pending.add("curl", key: key, addressMatches: true, now: 0, timeout: 60,
+                                                        holdFor: 8, makeEvent: maker.make(key)) else {
+            Issue.record("not raised"); return
+        }
+        #expect(ask.expire(now: 8).released.map(\.reason) == ["hold_expired"])
+        #expect(ask.pending.eventCount == 1 && ask.pending.flowCount == 0)
+        #expect(ask.pending.summaries(now: 9).first?.connections == 0)
+        // Approved: nothing to release, but the approval covers the app's next connection.
+        let outcome = ask.answer(request(.approve, seconds: 600, token: event.token), now: 20)
+        #expect(outcome.reply.status == .done && outcome.released.isEmpty)
+        #expect(outcome.reply.message.contains("no connection was waiting"))
+        #expect(outcome.verdicts.map(\.eventID) == [event.id] && ask.pending.eventCount == 0)
+        #expect(ask.approvals.covers(ApprovalKey(identity: tool, host: "example.com"), now: 21))
+
+        // Unanswered, such an event still times out at its deadline.
+        var unanswered = AskState<String>()
+        guard case .raised(let late) = unanswered.pending.add("curl", key: key, addressMatches: true, now: 0, timeout: 60,
+                                                              holdFor: 8, makeEvent: maker.make(key)) else {
+            Issue.record("not raised"); return
+        }
+        _ = unanswered.expire(now: 8)
+        let (released, timedOut) = unanswered.expire(now: 60)
+        #expect(released.isEmpty && timedOut == [late.id] && unanswered.pending.eventCount == 0)
+        // A hold longer than the timeout changes nothing: the deadline drops the flow.
+        _ = unanswered.pending.add("slow", key: key, addressMatches: true, now: 100, timeout: 10, holdFor: 30,
+                                   makeEvent: maker.make(key))
+        #expect(unanswered.expire(now: 110).released.map(\.reason) == ["timeout"])
+    }
 }

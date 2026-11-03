@@ -36,9 +36,10 @@ private let flowAddress = "203.0.113.7"
 
 private func flow(_ identity: IdentityResolution, _ host: String?, port: UInt16? = 443, tcp: Bool = true,
                   direction: FlowDirection = .outbound, internet: Bool = true,
-                  address: String? = flowAddress, process: IdentityResolution? = nil) -> FlowFacts {
+                  address: String? = flowAddress, process: IdentityResolution? = nil,
+                  dnsNames: Set<String> = []) -> FlowFacts {
     FlowFacts(direction: direction, identity: identity, internetSocket: internet, tcp: tcp, hostname: host, port: port,
-              remoteAddress: address.flatMap(IPAddress.init), process: process)
+              remoteAddress: address.flatMap(IPAddress.init), process: process, dnsNames: dnsNames)
 }
 
 /// Every host resolves to the flow's address, and nothing is approved.
@@ -83,13 +84,14 @@ private let blockAllCases: [(FlowFacts, FlowVerdict)] = [
     (flow(agent, nil, port: 80), .drop(reason: "no_host")),
     (flow(agent, nil, port: nil), .drop(reason: "no_host")),
     (flow(probe, nil), .drop(reason: "no_rule")),
-    // The resolver may reach DNS, nothing else.
-    (flow(resolver, nil, port: 53, tcp: false), .allow(reason: "system_resolver")),
+    // The resolver may reach DNS, nothing else; its answers are read to learn names.
+    (flow(resolver, nil, port: 53, tcp: false), .learnNames),
+    (flow(resolver, nil, port: 53), .learnNames),
     (flow(resolver, nil, port: 443), .drop(reason: "no_rule")),
     (flow(signed("com.apple.mDNSResponder", "ABCDE12345"), nil, port: 53, tcp: false), .drop(reason: "no_rule")),
     (flow(probe, nil, port: 53, tcp: false), .drop(reason: "no_rule")),
     // A lookup mDNSResponder makes for an app is reported under the app; it is the resolver's.
-    (flow(curl, "example.com", port: 53, tcp: false, process: resolver), .allow(reason: "system_resolver")),
+    (flow(curl, "example.com", port: 53, tcp: false, process: resolver), .learnNames),
     (flow(probe, "example.com", port: 443, process: resolver), .drop(reason: "no_rule")),
     (flow(probe, "example.com", port: 53, tcp: false, process: probe), .drop(reason: "no_rule")),
 ]
@@ -180,8 +182,9 @@ struct FilterPolicyTests {
     @Test func acceptAllAllowsEveryOutboundFlow() throws {
         let snapshot = try policySnapshot(.acceptAll)
         for (facts, verdict) in blockAllCases {
-            // The resolver's DNS passes before the mode is looked at, in every mode.
-            let expected: FlowVerdict = verdict == .allow(reason: "system_resolver") ? verdict : .allow(reason: "accept_all")
+            // The resolver's DNS passes before the mode is looked at, in every mode, and accept-all
+            // does not read it.
+            let expected: FlowVerdict = verdict == .learnNames ? .allow(reason: "system_resolver") : .allow(reason: "accept_all")
             #expect(FilterPolicy.decide(facts, snapshot: snapshot, context: context()) == expected, "\(facts)")
         }
     }
@@ -192,7 +195,9 @@ struct FilterPolicyTests {
             let inbound = flow(adHoc, nil, port: 22, direction: .inbound)
             #expect(FilterPolicy.decide(inbound, snapshot: snapshot, context: context()) == .allow(reason: "inbound_not_filtered"))
             let dns = flow(resolver, nil, port: 53, tcp: false)
-            #expect(FilterPolicy.decide(dns, snapshot: snapshot, context: context()) == .allow(reason: "system_resolver"))
+            let expected: FlowVerdict = mode == .acceptAll ? .allow(reason: "system_resolver") : .learnNames
+            #expect(FilterPolicy.decide(dns, snapshot: snapshot, context: context()) == expected)
+            #expect(expected.reason == "system_resolver")
         }
         // A direction NetworkExtension did not report is treated as outbound.
         let unknown = flow(probe, "pypi.org", direction: .unknown)

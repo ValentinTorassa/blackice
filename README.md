@@ -94,8 +94,10 @@ its macOS app filter: the Network Extension, app identity from code signatures, 
   what an `[[allow]]` rule or the built-in list of macOS services names, and ask also allows what a
   current approval names and pauses the rest until a hook or a person answers. A rule, list entry or
   approval counts only when the address the app connects to is among the host's answers from the
-  system resolver; a `hosts = ["*"]` rule skips that check. Ad hoc signed code is approved by its
-  cdhash;
+  system resolver; a `hosts = ["*"]` rule skips that check. A connection made to an address, with no
+  host name (`curl` and most command-line tools), is named from the system resolver's DNS answers,
+  which the extension reads in ask and block-all and passes on unchanged, or else from its TLS server
+  name. Ad hoc signed code is approved by its cdhash;
 - ask mode's state (approvals, paused connections, one-time tokens, deadlines) and the XPC messages
   between the extension, the daemon and the CLI. These and the extension's decision are plain code
   with unit tests; the NetworkExtension and XPC code around them has run on one Mac, with no automated tests;

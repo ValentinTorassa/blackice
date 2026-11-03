@@ -16,6 +16,14 @@
 // list come in over XPC (BlackiceXPC.FilterServer); events and verdicts go out to the daemon on
 // its connection. The maintenance timer drops paused flows at their deadline. A configuration
 // change or a stop drops every paused flow.
+//
+// Names from DNS answers, also compiled only: in ask and block-all the system resolver's port-53
+// flows are filtered in both directions instead of allowed outright. DNSFlowTable reads the
+// queries and the responses that answer them, every byte passes unchanged, and DNSNameTable
+// keeps address -> names. A new flow carries the names its address was given for
+// (FlowFacts.dnsNames), and FilterPolicy decides a flow with no host name on the name when there
+// is exactly one. Ask mode drops a paused flow that the server already sees as connected after
+// FilterPolicy.connectedHoldSeconds, keeping its event open.
 import Darwin
 import Foundation
 import Network
@@ -28,6 +36,10 @@ import os
 final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
     static let maximumHeld = 256
     static let serverNameDeadline: TimeInterval = 10
+    /// More than any DNS message over UDP, so each datagram comes whole in one callback: XNU's
+    /// content filter copies at most the peek size of a datagram to the provider, and lets a
+    /// datagram through only once all of it is passed.
+    static let dnsPeekBytes = 65_536
 
     private let snapshots = ProviderSnapshotStore()
     private let lifecycle = DispatchQueue(label: "com.valentorassa.blackice.filter.lifecycle")
@@ -46,6 +58,11 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
     private let addresses = HostAddressCache(resolver: SystemHostResolver())
     private let resolverQueue = DispatchQueue(label: "com.valentorassa.blackice.filter.resolver", attributes: .concurrent)
     private var server: FilterServer?
+
+    // Names from DNS answers. dnsLock guards `dnsFlows` only and is never held with another lock.
+    private let dnsLock = NSLock()
+    private var dnsFlows = DNSFlowTable<UUID, NEFilterSocketFlow>()
+    private let dnsNames = DNSNameTable()
 
     private struct Held {
         let flow: NEFilterSocketFlow
@@ -67,7 +84,7 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
     }
 
     /// What to tell NetworkExtension now.
-    private enum Step { case allow, drop, hold, pause }
+    private enum Step { case allow, drop, hold, pause, learnNames }
 
     /// What to do once askLock is released.
     private enum After {
@@ -180,6 +197,11 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
             self.ask.approvals.removeAll()
             self.askLock.unlock()
             self.addresses.removeAll()
+            self.dnsLock.lock()
+            let reading = self.dnsFlows.removeAll()
+            self.dnsLock.unlock()
+            for flow in reading { self.update(flow, using: .allow(), for: .any) }
+            self.dnsNames.removeAll()
             self.control("stopped", "reason_\(reason.rawValue)")
             self.snapshots.clear()
             completionHandler()
@@ -195,11 +217,13 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
         let internet = socket?.socketFamily == AF_INET || socket?.socketFamily == AF_INET6
         let direction: FlowDirection = flow.direction == .outbound ? .outbound :
             (flow.direction == .inbound ? .inbound : .unknown)
+        let address = endpoint.flatMap { BlackiceCore.IPAddress($0.hostname) }
         let facts = FlowFacts(direction: direction, identity: CodeIdentity.resolve(auditToken: flow.sourceAppAuditToken),
                               internetSocket: internet && (tcp || udp), tcp: tcp,
                               hostname: socket?.remoteHostname, port: endpoint.flatMap { UInt16($0.port) },
-                              remoteAddress: endpoint.flatMap { BlackiceCore.IPAddress($0.hostname) },
-                              process: flow.sourceProcessAuditToken.map { CodeIdentity.resolve(auditToken: $0) })
+                              remoteAddress: address,
+                              process: flow.sourceProcessAuditToken.map { CodeIdentity.resolve(auditToken: $0) },
+                              dnsNames: dnsNames.names(for: address))
         let paused = Paused(flow: flow, facts: facts, serverName: nil, stage: .newFlow, generation: snapshot?.generation ?? 0)
         askLock.lock()
         let verdict = FilterPolicy.decide(facts, snapshot: snapshot, context: context(now: Self.now))
@@ -210,29 +234,44 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
         case .allow: return .allow()
         case .drop: return .drop()
         case .pause: return .pause()
-        case .hold:
-            guard let socket, let snapshot else {
-                log(facts, .drop(reason: "hold_failed"), snapshot)
-                return .drop()
-            }
-            heldLock.lock()
-            guard held.count < Self.maximumHeld, held[flow.identifier] == nil else {
-                heldLock.unlock()
-                log(facts, .drop(reason: "hold_capacity"), snapshot)
-                return .drop()
-            }
-            held[flow.identifier] = Held(flow: socket, facts: facts, generation: snapshot.generation,
-                                         deadline: Self.now + Self.serverNameDeadline,
-                                         reader: TLSServerNameReader())
-            heldLock.unlock()
-            // The 5-byte record header first; no byte is passed until a verdict.
-            return .filterDataVerdict(withFilterInbound: false, peekInboundBytes: 0,
-                                      filterOutbound: true, peekOutboundBytes: 5)
+        case .hold: return hold(flow, facts, snapshot)
+        case .learnNames:
+            guard let socket else { return .allow() }
+            dnsLock.lock()
+            let reading = dnsFlows.add(flow.identifier, flow: socket, stream: tcp, now: Self.now)
+            dnsLock.unlock()
+            // A full table only means this flow's answers go unread; it passes either way.
+            guard reading else { return .allow() }
+            return .filterDataVerdict(withFilterInbound: true, peekInboundBytes: Self.dnsPeekBytes,
+                                      filterOutbound: true, peekOutboundBytes: Self.dnsPeekBytes)
         }
+    }
+
+    /// Holds a flow to read its TLS ClientHello: from handleNewFlow, and when a flow paused at
+    /// the new-flow stage is resumed.
+    private func hold(_ flow: NEFilterFlow, _ facts: FlowFacts, _ snapshot: ProviderConfiguration?) -> NEFilterNewFlowVerdict {
+        guard let socket = flow as? NEFilterSocketFlow, let snapshot else {
+            log(facts, .drop(reason: "hold_failed"), snapshot)
+            return .drop()
+        }
+        heldLock.lock()
+        guard held.count < Self.maximumHeld, held[flow.identifier] == nil else {
+            heldLock.unlock()
+            log(facts, .drop(reason: "hold_capacity"), snapshot)
+            return .drop()
+        }
+        held[flow.identifier] = Held(flow: socket, facts: facts, generation: snapshot.generation,
+                                     deadline: Self.now + Self.serverNameDeadline,
+                                     reader: TLSServerNameReader())
+        heldLock.unlock()
+        // The 5-byte record header first; no byte is passed until a verdict.
+        return .filterDataVerdict(withFilterInbound: false, peekInboundBytes: 0,
+                                  filterOutbound: true, peekOutboundBytes: 5)
     }
 
     override func handleOutboundData(from flow: NEFilterFlow, readBytesStartOffset offset: Int,
                                      readBytes: Data) -> NEFilterDataVerdict {
+        if let verdict = dnsData(flow, offset: offset, bytes: readBytes, outbound: true) { return verdict }
         let snapshot = snapshots.read()
         heldLock.lock()
         guard var entry = held[flow.identifier] else {
@@ -261,13 +300,56 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
         askLock.unlock()
         perform(after)
         switch step {
-        case .allow: return .allow()
+        case .allow, .learnNames: return .allow()
         case .pause: return .pause()
         case .drop, .hold: return .drop()
         }
     }
 
+    /// Only the system resolver's DNS flows ask for inbound data.
+    override func handleInboundData(from flow: NEFilterFlow, readBytesStartOffset offset: Int,
+                                    readBytes: Data) -> NEFilterDataVerdict {
+        dnsData(flow, offset: offset, bytes: readBytes, outbound: false) ?? .allow()
+    }
+
+    /// A DNS flow whose inbound data ended is let go, not forgotten, so a late outbound callback
+    /// still passes instead of being dropped as a flow nobody held.
+    override func handleInboundDataComplete(for flow: NEFilterFlow) -> NEFilterDataVerdict {
+        dnsLock.lock()
+        dnsFlows.letGo(flow.identifier, now: Self.now)
+        dnsLock.unlock()
+        return .allow()
+    }
+
+    /// A DNS flow of the system resolver: every byte passes, whatever the reader makes of it.
+    /// nil for any other flow. In accept-all, or with no configuration, the flow is let go.
+    private func dnsData(_ flow: NEFilterFlow, offset: Int, bytes: Data, outbound: Bool) -> NEFilterDataVerdict? {
+        let learning = snapshots.read().map { $0.mode != .acceptAll } ?? false
+        dnsLock.lock()
+        let result: DNSFlowTable<UUID, NEFilterSocketFlow>.DataResult
+        if learning {
+            result = dnsFlows.data(flow.identifier, bytes, offset: offset, outbound: outbound, now: Self.now)
+        } else {
+            result = dnsFlows.letGo(flow.identifier, now: Self.now) ? .stop([]) : .unknown
+        }
+        dnsLock.unlock()
+        switch result {
+        case .unknown:
+            return nil
+        case .pass(let learned):
+            dnsNames.record(learned)
+            return NEFilterDataVerdict(passBytes: bytes.count, peekBytes: Self.dnsPeekBytes)
+        case .stop(let learned):
+            dnsNames.record(learned)
+            return .allow()
+        }
+    }
+
     override func handleOutboundDataComplete(for flow: NEFilterFlow) -> NEFilterDataVerdict {
+        dnsLock.lock()
+        let dns = dnsFlows.letGo(flow.identifier, now: Self.now)
+        dnsLock.unlock()
+        if dns { return .allow() }
         heldLock.lock()
         let entry = held.removeValue(forKey: flow.identifier)
         heldLock.unlock()
@@ -299,6 +381,9 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
         case .allow:
             log(facts, verdict, snapshot, serverName: paused.serverName)
             return (.allow, .nothing)
+        case .learnNames:
+            log(facts, verdict, snapshot, serverName: paused.serverName)
+            return (.learnNames, .nothing)
         case .drop:
             log(facts, verdict, snapshot, serverName: paused.serverName)
             return (.drop, .nothing)
@@ -318,14 +403,15 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
             }
         case .ask(_, let addressMatches):
             guard let snapshot, let identity = facts.identity.appIdentity,
-                  let host = (paused.serverName ?? facts.hostname).flatMap(normalizeHost),
+                  let host = (paused.serverName ?? facts.hostname ?? facts.dnsName).flatMap(normalizeHost),
                   let port = facts.port, let address = facts.remoteAddress else {
                 log(facts, .drop(reason: "ask_incomplete"), snapshot, serverName: paused.serverName)
                 return (.drop, .nothing)
             }
             let key = PendingKey(identity: identity, host: host, port: port)
             let added = ask.pending.add(paused, key: key, addressMatches: addressMatches, now: now,
-                                        timeout: TimeInterval(snapshot.config.timeoutSeconds)) { seconds in
+                                        timeout: TimeInterval(snapshot.config.timeoutSeconds),
+                                        holdFor: FilterPolicy.holdLimit(facts, afterServerName: paused.stage == .data)) { seconds in
                 try HookEvent.connection(app: HookEvent.App(identity, path: CodeIdentity.path(auditToken: paused.flow.sourceAppAuditToken)),
                                          host: host, ip: address.description, port: port,
                                          deadline: Date().addingTimeInterval(seconds))
@@ -380,7 +466,7 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
         askLock.unlock()
         for (paused, step, after) in outcomes {
             switch step {
-            case .allow: resume(paused, allow: true)
+            case .allow, .learnNames: resume(paused, allow: true)
             case .drop, .hold: resume(paused, allow: false)
             case .pause: break // waiting for an answer, or for another lookup of the same host
             }
@@ -388,11 +474,19 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
         }
     }
 
-    /// Resumes a flow paused by this provider. Called outside flow callbacks.
+    /// Resumes a flow paused by this provider. Called outside flow callbacks. A flow paused at
+    /// the new-flow stage that still needs its server name read (named by a DNS answer, on the
+    /// TLS port) resumes into the hold: NEFilterDataProvider.h takes a new-flow verdict, such as
+    /// filterDataVerdict, for a flow paused in handleNewFlow.
     private func resume(_ paused: Paused, allow: Bool) {
         let verdict: NEFilterVerdict
         switch paused.stage {
-        case .newFlow: verdict = allow ? NEFilterNewFlowVerdict.allow() : NEFilterNewFlowVerdict.drop()
+        case .newFlow:
+            if allow && FilterPolicy.needsServerName(paused.facts) {
+                verdict = hold(paused.flow, paused.facts, snapshots.read())
+            } else {
+                verdict = allow ? NEFilterNewFlowVerdict.allow() : NEFilterNewFlowVerdict.drop()
+            }
         case .data: verdict = allow ? NEFilterDataVerdict.allow() : NEFilterDataVerdict.drop()
         }
         resumeFlow(paused.flow, with: verdict)
@@ -458,6 +552,11 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
             self.askLock.unlock()
             self.release(released)
             for eventID in timedOut { self.server?.send(.verdict(.timedOut, eventID: eventID)) }
+            // Idle DNS flows stop being read; their data passes from now on.
+            self.dnsLock.lock()
+            let idle = self.dnsFlows.expire(now: now)
+            self.dnsLock.unlock()
+            for flow in idle { self.update(flow, using: .allow(), for: .any) }
         }
         self.timer = timer
         timer.resume()
