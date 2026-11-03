@@ -10,7 +10,9 @@ import Foundation
 //   - as the same bytes in a 0600 file inside a private 0700 directory, named in
 //     BLACKICE_EVENT_FILE (BLACKICE_EVENT_ID holds the event ID). The hook also runs in
 //     that directory, and the directory is deleted once the hook is done.
-// The token is only in those two places: never in the environment, never in the log.
+// The token is only in those two places: never in the environment, never in the log. A hook
+// that writes it to stderr (an agent printing the command it ran) gets it replaced with
+// "[token]" before stderr leaves the runner.
 //
 // Each hook gets its own process group. At the deadline the group gets SIGTERM and, after a
 // grace period, SIGKILL. When the hook's shell exits, whatever it left behind in its group
@@ -215,7 +217,31 @@ public final class HookRunner: @unchecked Sendable {
         } else {
             outcome = .signaled(signal: low)
         }
-        return finish(outcome, stderr: stderr, truncated: truncated)
+        return finish(outcome, stderr: Self.redactToken(event.token, in: stderr), truncated: truncated)
+    }
+
+    /// Replaces the token in what a hook wrote. Agents echo the commands they run, sometimes cut
+    /// short ("--token 'q8Zr0d3X..."), so every run of 8 or more base64url characters that is part
+    /// of the token, or that holds it, becomes "[token]". Shorter pieces say little about the token.
+    static func redactToken(_ token: String, in text: String) -> String {
+        guard !token.isEmpty, !text.isEmpty else { return text }
+        var result = ""
+        var run = ""
+        func flush() {
+            let hides = run.count >= 8 && (token.contains(run) || run.contains(token))
+            result += hides ? "[token]" : run
+            run = ""
+        }
+        for character in text {
+            if character.isASCII, character.isLetter || character.isNumber || character == "-" || character == "_" {
+                run.append(character)
+            } else {
+                flush()
+                result.append(character)
+            }
+        }
+        flush()
+        return result
     }
 
     /// Event IDs end up in an environment variable and the log; only plain characters are accepted.

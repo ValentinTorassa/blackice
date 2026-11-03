@@ -199,6 +199,36 @@ struct HookRunnerTests {
         #expect(result.stderrTruncated)
     }
 
+    @Test func theTokenNeverLeavesInStderr() async throws {
+        let dir = try makePrivateDirectory()
+        defer { removeTree(dir) }
+        // What fx printed on a real Mac: the full command, and once a copy cut short.
+        let command = """
+        printf "Running blackice deny --host 'pastebin.com' --token '%s'\\n" "\(testToken)" >&2; \
+        printf "Running blackice approve --for 10m --token '%s...\\n" "\(testToken.prefix(32))" >&2
+        """
+        let results = try await testRunner(dir).run([hook(command)], for: testEvent(), timeoutSeconds: 10)
+        let result = try #require(results.first)
+        #expect(result.outcome == .exited(status: 0))
+        #expect(result.stderr == """
+        Running blackice deny --host 'pastebin.com' --token '[token]'
+        Running blackice approve --for 10m --token '[token]...
+
+        """)
+    }
+
+    @Test(arguments: [
+        ("approved apple/com.apple.curl -> api.github.com for 600 s", "approved apple/com.apple.curl -> api.github.com for 600 s"),
+        ("token=\(testToken)!", "token=[token]!"),
+        ("x\(testToken)y", "[token]"),
+        ("cut \(testToken.prefix(8)) and \(testToken.dropFirst(35))", "cut [token] and [token]"),
+        ("too short to matter: \(testToken.prefix(7))", "too short to matter: \(testToken.prefix(7))"),
+        ("", ""),
+    ])
+    func redactionHidesOnlyTheToken(text: String, expected: String) {
+        #expect(HookRunner.redactToken(testToken, in: text) == expected)
+    }
+
     @Test func progressReportsStartAndFinish() async throws {
         let dir = try makePrivateDirectory()
         defer { removeTree(dir) }
