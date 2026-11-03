@@ -162,12 +162,15 @@ and each run on a Mac is recorded in [`evidence/`](../evidence/).
    `configuration_changed` and their five events were cancelled.
    Notarization has run in `sign.sh` since phase 0; builds 2, 3 and 4 were notarized and stapled.
    `macos/scripts/package.sh` zips the notarized, stapled app with a SHA-256 file and checks both as a download; it
-   has been recorded only in its dry run, on an ad hoc signed app. A `.pkg` would need a Developer ID Installer
+   built and checked the v0.1.0 release's zip (P5-02). A `.pkg` would need a Developer ID Installer
    certificate, which the account does not have, so the installer is the zip and `install.md`. The same zip is
    offered through a Homebrew cask (`valentintorassa/tap`), and `packaging/npm/` holds an npm package that downloads
-   and checks it, not published; neither has been run against a published release. Build 4 replaces the token in the
-   hooks' stderr (P2-02), which the builds of the earlier fx runs did not.
-   What remains for *done*: a fault test run with no FAIL, and an install, run and uninstall from the published
+   and checks it, not published. On 3 November 2026 the cask installed 0.1.0 from the published release over build 4
+   ([P5-02](../evidence/P5-02-homebrew-upgrade-from-release-macos.md)): the app verified as signed, notarized and
+   accepted, `blackice start` found the upgraded extension unreachable and exited with 75, and after a restart it
+   answered. Build 4 replaces the token in the hooks' stderr (P2-02), which the builds of the earlier fx runs did
+   not.
+   What remains for *done*: a fault test run with no FAIL, and a first install and an uninstall from the published
    package by following `install.md`.
 
 ## Open problems
@@ -238,8 +241,9 @@ and each run on a Mac is recorded in [`evidence/`](../evidence/).
   daemon, `pending`, `approve` and `deny` could not reach it, so ask mode dropped everything it paused at the
   deadline. A restart fixed it; P2-02 is the same build after the restart. `blackice start` now checks, after macOS
   replaces a running extension, that its XPC service answers, and if it does not, says to restart and exits with
-  status 75. [`install.md`](install.md)'s upgrade steps include the restart. Whether macOS does this on every
-  in-place upgrade, or only on some, is not known; for now an upgrade means a restart.
+  status 75. [`install.md`](install.md)'s upgrade steps include the restart. The upgrade from build 4 to build 5
+  with Homebrew did the same, and the check caught it ([P5-02](../evidence/P5-02-homebrew-upgrade-from-release-macos.md)):
+  two upgrades out of two. Why is not known; for now an upgrade means a restart.
 - **Events with no connection left.** In P5-01, `blackice pending` failed with "the network extension sent an
   invalid reply: events has an invalid entry": an event whose paused flows were all dropped with `hold_expired`
   stays pending, by design, and is listed with 0 connections, while the CLI's check of the reply required at
