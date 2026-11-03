@@ -36,9 +36,9 @@ private let flowAddress = "203.0.113.7"
 
 private func flow(_ identity: IdentityResolution, _ host: String?, port: UInt16? = 443, tcp: Bool = true,
                   direction: FlowDirection = .outbound, internet: Bool = true,
-                  address: String? = flowAddress) -> FlowFacts {
+                  address: String? = flowAddress, process: IdentityResolution? = nil) -> FlowFacts {
     FlowFacts(direction: direction, identity: identity, internetSocket: internet, tcp: tcp, hostname: host, port: port,
-              remoteAddress: address.flatMap(IPAddress.init))
+              remoteAddress: address.flatMap(IPAddress.init), process: process)
 }
 
 /// Every host resolves to the flow's address, and nothing is approved.
@@ -88,6 +88,10 @@ private let blockAllCases: [(FlowFacts, FlowVerdict)] = [
     (flow(resolver, nil, port: 443), .drop(reason: "no_rule")),
     (flow(signed("com.apple.mDNSResponder", "ABCDE12345"), nil, port: 53, tcp: false), .drop(reason: "no_rule")),
     (flow(probe, nil, port: 53, tcp: false), .drop(reason: "no_rule")),
+    // A lookup mDNSResponder makes for an app is reported under the app; it is the resolver's.
+    (flow(curl, "example.com", port: 53, tcp: false, process: resolver), .allow(reason: "system_resolver")),
+    (flow(probe, "example.com", port: 443, process: resolver), .drop(reason: "no_rule")),
+    (flow(probe, "example.com", port: 53, tcp: false, process: probe), .drop(reason: "no_rule")),
 ]
 
 struct FilterPolicyTests {

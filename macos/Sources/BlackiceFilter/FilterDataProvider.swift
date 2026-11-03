@@ -198,7 +198,8 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
         let facts = FlowFacts(direction: direction, identity: CodeIdentity.resolve(auditToken: flow.sourceAppAuditToken),
                               internetSocket: internet && (tcp || udp), tcp: tcp,
                               hostname: socket?.remoteHostname, port: endpoint.flatMap { UInt16($0.port) },
-                              remoteAddress: endpoint.flatMap { BlackiceCore.IPAddress($0.hostname) })
+                              remoteAddress: endpoint.flatMap { BlackiceCore.IPAddress($0.hostname) },
+                              process: flow.sourceProcessAuditToken.map { CodeIdentity.resolve(auditToken: $0) })
         let paused = Paused(flow: flow, facts: facts, serverName: nil, stage: .newFlow, generation: snapshot?.generation ?? 0)
         askLock.lock()
         let verdict = FilterPolicy.decide(facts, snapshot: snapshot, context: context(now: Self.now))

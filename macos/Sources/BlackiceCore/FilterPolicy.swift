@@ -30,11 +30,15 @@ public struct FlowFacts: Equatable, Sendable {
     public let port: UInt16?
     /// The address the flow connects to.
     public let remoteAddress: IPAddress?
+    /// The process that opened the socket, when it is not the app the flow is for. mDNSResponder
+    /// looks names up on behalf of apps, and macOS reports those DNS flows under the app.
+    public let process: IdentityResolution?
 
     public init(direction: FlowDirection, identity: IdentityResolution, internetSocket: Bool, tcp: Bool,
-                hostname: String?, port: UInt16?, remoteAddress: IPAddress?) {
+                hostname: String?, port: UInt16?, remoteAddress: IPAddress?, process: IdentityResolution? = nil) {
         self.direction = direction
         self.identity = identity
+        self.process = process
         self.internetSocket = internetSocket
         self.tcp = tcp
         self.hostname = hostname
@@ -88,7 +92,8 @@ public enum FilterPolicy {
     public static func decide(_ flow: FlowFacts, snapshot: ProviderConfiguration?, context: PolicyContext) -> FlowVerdict {
         guard let snapshot else { return .drop(reason: "configuration_unavailable") }
         if flow.direction == .inbound { return .allow(reason: "inbound_not_filtered") }
-        if flow.identity == .verified(systemResolver), flow.port == dnsPort {
+        if flow.port == dnsPort,
+           flow.identity == .verified(systemResolver) || flow.process == .verified(systemResolver) {
             return .allow(reason: "system_resolver")
         }
         if snapshot.mode == .acceptAll { return .allow(reason: "accept_all") }
