@@ -2,7 +2,7 @@
 # Runs the built blackice binary: validate works, a bad file fails with its line, the
 # commands that need the signed app or the extension refuse with status 69, and start and
 # daemon check their configuration before refusing. Also lints the LaunchAgent template and
-# the app's Info.plists and entitlements.
+# the app's Info.plists and entitlements, and checks the app icon.
 set -euo pipefail
 cd -- "$(dirname -- "${BASH_SOURCE[0]}")"
 swift build -Xswiftc -warnings-as-errors
@@ -35,6 +35,13 @@ plutil -lint LaunchAgent/com.valentorassa.blackice.daemon.plist Resources/*.plis
 # macOS refuses to activate a network extension without this key (OSSystemExtensionErrorDomain 9).
 plutil -extract NSSystemExtensionUsageDescription raw -o /dev/null Resources/Filter-Info.plist || {
     echo "Resources/Filter-Info.plist lacks NSSystemExtensionUsageDescription" >&2
+    exit 1
+}
+# The app icon that scripts/build-app.sh copies into Blackice.app: CFBundleIconFile names it,
+# and the file must be an icns file.
+icon="$(plutil -extract CFBundleIconFile raw -o - Resources/Blackice-Info.plist)"
+[[ -f "Resources/$icon.icns" && "$(head -c 4 "Resources/$icon.icns")" == icns ]] || {
+    echo "Resources/$icon.icns, named by CFBundleIconFile, is missing or not an icns file" >&2
     exit 1
 }
 echo "smoke: ok"
