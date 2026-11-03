@@ -129,6 +129,41 @@ struct ConfigParsingTests {
         #expect(config.hooks.map(\.run) == ["first", "second"])
     }
 
+    @Test func appleServicesIsOnByDefaultAndCanBeTurnedOff() throws {
+        #expect(try BlackiceConfig(text: "mode = 'ask'").appleServices)
+        #expect(try BlackiceConfig(text: "mode = 'ask'\napple_services = true").appleServices)
+        let off = try BlackiceConfig(text: "mode = 'ask'\napple_services = false # strict")
+        #expect(!off.appleServices)
+        #expect(off.summary == "mode ask, timeout 10 s, 0 allow rules, 0 hooks, apple_services off")
+        #expect(try BlackiceConfig(text: "apple_services = false\nmode = 'block-all'").appleServices == false)
+    }
+
+    @Test func starAloneAllowsAnyHost() throws {
+        let config = try BlackiceConfig(text: """
+        mode = "block-all"
+        [[allow]]
+        app = "io.tailscale.ipn.macsys.network-extension"
+        team = "W5364U7YZB"
+        hosts = ["*"]
+        [[allow]]
+        app = "com.example.agent"
+        team = "ABCDE12345"
+        hosts = ["api.example.com"]
+        """)
+        let tailscale = SigningIdentity(signingID: "io.tailscale.ipn.macsys.network-extension", teamID: "W5364U7YZB")
+        let rule = try #require(config.allow.first)
+        #expect(rule.anyHost && rule.hosts.isEmpty && rule.line == 2)
+        #expect(config.anyHostRule(for: tailscale)?.line == 2)
+        // It names no host, so per-host lookups do not return it.
+        #expect(config.allowRule(for: tailscale, host: "derp11e.tailscale.com") == nil)
+        #expect(config.anyHostRule(for: SigningIdentity(signingID: "io.tailscale.ipn.macsys.network-extension", teamID: "ZZZZZ99999")) == nil)
+        #expect(config.anyHostRule(for: SigningIdentity(signingID: "io.tailscale.ipn.macsys.network-extension", teamID: nil)) == nil)
+        #expect(config.anyHostRule(for: SigningIdentity(signingID: "com.example.agent", teamID: "ABCDE12345")) == nil)
+        #expect(!config.allow[1].anyHost)
+        // Literal strings too.
+        #expect(try BlackiceConfig(text: "mode = 'ask'\n[[allow]]\napp = 'com.a'\nteam = 'ABCDE12345'\nhosts = [ '*' ]").allow[0].anyHost)
+    }
+
     @Test func timeoutBounds() throws {
         #expect(try BlackiceConfig(text: "mode = 'ask'\ntimeout_seconds = 1").timeoutSeconds == 1)
         #expect(try BlackiceConfig(text: "mode = 'ask'\ntimeout_seconds = 120").timeoutSeconds == 120)
@@ -165,6 +200,11 @@ struct ConfigRejectionTests {
         expectError("mode = true", line: 1, containing: "mode must be a string, not a boolean")
         expectError("mode = ['ask']", line: 1, containing: "mode must be a string, not an array")
         expectError("mode = 'ask'\ntimeout_seconds = \"10\"", line: 2, containing: "must be an integer, not a string")
+        expectError("mode = 'ask'\napple_services = \"false\"", line: 2, containing: "apple_services must be true or false, not a string")
+        expectError("mode = 'ask'\napple_services = 0", line: 2, containing: "apple_services must be true or false, not an integer")
+        expectError("mode = 'ask'\napple_services = [false]", line: 2, containing: "apple_services must be true or false, not an array")
+        expectError("mode = 'ask'\napple_services = False", line: 2, containing: "strings need quotes")
+        expectError("mode = 'ask'\napple_services = no", line: 2, containing: "strings need quotes")
     }
 
     @Test(arguments: ["10.0", "1e3", "0x10", "0o17", "0b1", "+10", "-10", "1_000", "010", "inf", "nan", "1979-05-27", "07:32:00", "1234567890"])
@@ -183,6 +223,11 @@ struct ConfigRejectionTests {
         expectError("mode = 'ask'\n[[allow]]\napp = 'com.a'\nhost = ['a.example']", line: 4, containing: "unknown key 'host' in [[allow]]")
         expectError("mode = 'ask'\n[[hook]]\non = 'connection'\nrun = 'x'\ncommand = 'y'", line: 5, containing: "unknown key 'command' in [[hook]]")
         expectError("[[allow]]\napp = 'com.a'\nhosts = ['a.example']\nmode = 'ask'", line: 4, containing: "top-level keys go before the first table")
+        expectError("mode = 'ask'\napple_services = true\napple_services = false", line: 3,
+                    containing: "duplicate key 'apple_services' at the top level (first set on line 2)")
+        expectError("mode = 'ask'\n[[allow]]\napp = 'com.a'\nhosts = ['a.example']\napple_services = false", line: 5,
+                    containing: "unknown key 'apple_services' in [[allow]]; top-level keys go before the first table")
+        expectError("mode = 'ask'\napple_service = false", line: 2, containing: "unknown key 'apple_service' at the top level")
     }
 
     @Test func unsupportedSyntax() {
@@ -241,7 +286,14 @@ struct ConfigRejectionTests {
         expectError(head + "app = 'com.a'\nhosts = 'a.example'", line: 4, containing: "array of strings, not a string")
         expectError(head + "app = 'com.a'\nhosts = ['a.example', 7]", line: 4, containing: "holds an integer")
         expectError(head + "app = 'com.a'\nhosts = ['1.2.3.4']", line: 4, containing: "not a host name")
-        expectError(head + "app = 'com.a'\nhosts = ['*']", line: 4, containing: "not a host name")
+        expectError(head + "app = 'com.a'\nhosts = ['*', 'a.example']", line: 4, containing: "\"*\" must be the only entry in hosts")
+        expectError(head + "app = 'com.a'\nhosts = ['a.example', '*']", line: 4, containing: "\"*\" must be the only entry in hosts")
+        expectError(head + "app = 'com.a'\nhosts = ['*', '*']", line: 4, containing: "\"*\" must be the only entry in hosts")
+        expectError(head + "app = 'com.a'\nhosts = ['*', 7]", line: 4, containing: "\"*\" must be the only entry in hosts")
+        expectError(head + "app = 'com.a'\nhosts = ['**']", line: 4, containing: "not a host name")
+        expectError(head + "app = 'com.a'\nhosts = ['*.']", line: 4, containing: "not a host name")
+        expectError(head + "app = 'com.a'\nhosts = [' *']", line: 4, containing: "not a host name")
+        expectError(head + "app = 'com.a'\nhosts = '*'", line: 4, containing: "array of strings, not a string")
         expectError(head + "app = 'com.a'\nhosts = ['a.example', 'A.Example.']", line: 4, containing: "appears twice")
         let tooMany = "[" + (0...BlackiceConfig.maximumHostsPerRule).map { "'h\($0).example'" }.joined(separator: ",") + "]"
         expectError(head + "app = 'com.a'\nhosts = " + tooMany, line: 4, containing: "more than 256 entries")

@@ -15,6 +15,8 @@ done when its check passes on a real Mac, not when the code compiles.
 | Approval scope | One app (by signing identity) and one host, with an expiry: `blackice approve --app … --host … --for 1h`. |
 | Ad hoc signed code | Ask mode asks about it too, and the approval names its cdhash plus the host: `blackice approve --cdhash … --host …`. A rebuild changes the cdhash, so the next connection asks again. Rules in `blackice.toml` never name it, so block-all drops it. Code with no signature has no cdhash either and is dropped. |
 | Host and address | Before a rule or an approval counts, the host is resolved with the system resolver and the flow's remote address must be among the answers, which are kept for 30 s. A mismatch means no rule or approval matches: ask mode asks, block-all drops, and the log says `address_mismatch`. |
+| Apple services | macOS's own services pass without a rule, through a built-in table (`macos/Sources/BlackiceCore/AppleServices.swift`) of signing identifier → the Apple hosts that service uses. An entry counts only for Apple platform code (no Team ID, `anchor apple`) and only when the address checks out, as for a rule; the log says `apple_service`. The table comes from the first ask-mode run's event log plus well-known services. Tools that run commands or fetch any URL (curl, nscurl, python3, perl, ruby, the shells, ssh, scp, nc, git, osascript, Safari, WebKit's networking process, nsurlsessiond) are never in it, and a test checks that. trustd and ocspd get Apple's hosts and those of the main public certificate authorities, not any host on port 80: a certificate names its own OCSP, CRL and issuer URLs, so any app could reach a host of its choosing through trustd. On by default; `apple_services = false` turns it off. |
+| Any destination | `hosts = ["*"]`, alone in a rule, lets that app reach anything, including flows with an address and no host name, in block-all and ask. No host or address check applies, and the log says `rule_line_N`. For VPN clients and DNS proxies, which connect by address, and for a browser you would allow everywhere anyway. Everything the app does is then allowed. `*` next to other hosts is an error. |
 | DNS in block-all | Apple's resolver stays reachable on port 53 in every mode, so in block-all any app can still make name lookups through it, which can carry data out. Documented as a known gap; tying DNS answers to rules with an `NEDNSProxyProvider` is later work. |
 | Hooks that leave their process group | Best effort, and documented: a process started by a hook that calls `setsid` or `setpgid` escapes the kill at the deadline and when the hook exits. Running hooks under a separate user or in a sandbox would close this; neither is planned yet. |
 | Approval storage | In memory, inside the extension. Permanent rules live in `blackice.toml`. |
@@ -148,12 +150,20 @@ done when its check passes on a real Mac, not when the code compiles.
   names from the system resolver's answers, so the pause comes before the connection; or drop such a flow after
   a few seconds while its event stays open, so the approval covers the retry.
 - **The Mac's own services in ask mode.** With only the demo's rules, iCloud, CalDAV, Software Update, Maps and
-  AuthKit were paused and then dropped at the deadline, and the demo's three events were a few among dozens. Ask mode needs rules, or a default, for Apple's own services before it is used for real. The mode
-  also stays on until someone switches it with Touch ID: when the demo's window closed early, the Mac kept
-  pausing every new connection.
+  AuthKit were paused and then dropped at the deadline, and the demo's three events were a few among dozens. The
+  Apple services table (see the decisions) now covers those and other well-known services; so far only unit tests
+  check it. What remains: an ask-mode run on a Mac with the table, to see what is still asked about. A service or
+  host missing from the table is still asked about, and so is an account the user adds for another provider
+  (dataaccessd syncing a Google calendar), which needs a rule. A service's UDP flow with no host name is still
+  dropped (`no_host`), and Apple's CDN answers can fail the address check. The mode also stays on until someone
+  switches it with Touch ID: when the demo's window closed early, the Mac kept pausing every new connection.
 - **VPN and DNS proxies.** With Tailscale's DNS on, the system's lookups go to 100.100.100.100 through Tailscale's
-  extension: a flow with an address and no host name, which blackice drops (`no_host`), so names stop resolving
-  in ask and block-all. The demo ran with `tailscale set --accept-dns=false`.
+  extension, which forwards them with its own sockets by address: flows with no host name, which blackice drops
+  (`no_host`), so names stop resolving in ask and block-all. The demo ran with `tailscale set --accept-dns=false`.
+  A rule with `hosts = ["*"]` for the extension now allows those flows; the docs use the standalone build's
+  identity, read with `codesign -dv` on the test Mac (`io.tailscale.ipn.macsys.network-extension`, team
+  W5364U7YZB). It has not run on a Mac yet. What remains: blackice ships no such rule, so each VPN client or DNS
+  proxy needs one from the user, and the rule allows everything that extension does.
 - **A denial is not remembered.** After a deny, the app's next try (`curl` moving on to another address) raises a
   new event, and the agent is asked again.
 - **Touch ID count.** `start`, `stop` and `mode` each ask for Touch ID, so a demo takes two. A short unlock

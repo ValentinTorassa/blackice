@@ -20,13 +20,22 @@ public struct AllowRule: Equatable, Sendable {
     public let app: String
     /// The Team ID. nil means Apple platform code, which is signed without one.
     public let team: String?
+    /// Empty when `anyHost` is set.
     public let hosts: [DomainPattern]
+    /// `hosts = ["*"]`: the app may reach any destination, including flows with only an address
+    /// and no host name. No host or address check applies.
+    public let anyHost: Bool
     /// Line of the rule's [[allow]] header.
     public let line: Int
 
-    /// `host` must already be normalized.
+    public func names(_ identity: SigningIdentity) -> Bool {
+        identity.signingID == app && identity.teamID == team
+    }
+
+    /// Whether the rule names this host. Always false for a `*` rule, which names no host:
+    /// see `BlackiceConfig.anyHostRule(for:)`. `host` must already be normalized.
     public func matches(_ identity: SigningIdentity, host: String) -> Bool {
-        identity.signingID == app && identity.teamID == team && hosts.contains { $0.matches(host) }
+        names(identity) && hosts.contains { $0.matches(host) }
     }
 }
 
@@ -64,6 +73,9 @@ public struct BlackiceConfig: Equatable, Sendable {
 
     public let mode: Mode
     public let timeoutSeconds: Int
+    /// Whether the built-in allowance for macOS's own services applies (see `AppleServices`).
+    /// `apple_services = false` turns it off; it is on by default.
+    public let appleServices: Bool
     public let allow: [AllowRule]
     public let hooks: [Hook]
 
@@ -81,23 +93,31 @@ public struct BlackiceConfig: Equatable, Sendable {
 
     public init(text: String) throws { try self.init(data: Data(text.utf8)) }
 
-    private init(mode: Mode, timeoutSeconds: Int, allow: [AllowRule], hooks: [Hook]) {
+    private init(mode: Mode, timeoutSeconds: Int, appleServices: Bool, allow: [AllowRule], hooks: [Hook]) {
         self.mode = mode
         self.timeoutSeconds = timeoutSeconds
+        self.appleServices = appleServices
         self.allow = allow
         self.hooks = hooks
     }
 
-    /// The first rule that lets this app reach this host, if any. Rules say nothing about ports.
+    /// The first rule that names this app and this host, if any. Rules say nothing about ports.
+    /// A `*` rule names no host; see `anyHostRule(for:)`.
     public func allowRule(for identity: SigningIdentity, host: String) -> AllowRule? {
         guard let host = normalizeHost(host) else { return nil }
         return allow.first { $0.matches(identity, host: host) }
+    }
+
+    /// The first `hosts = ["*"]` rule for this app, if any.
+    public func anyHostRule(for identity: SigningIdentity) -> AllowRule? {
+        allow.first { $0.anyHost && $0.names(identity) }
     }
 
     public var summary: String {
         let rules = allow.count == 1 ? "1 allow rule" : "\(allow.count) allow rules"
         let hookCount = hooks.count == 1 ? "1 hook" : "\(hooks.count) hooks"
         return "mode \(mode.rawValue), timeout \(timeoutSeconds) s, \(rules), \(hookCount)"
+            + (appleServices ? "" : ", apple_services off")
     }
 }
 
@@ -118,6 +138,10 @@ extension BlackiceConfig {
                 throw ConfigError(line: entry.line, "timeout_seconds must be between \(timeoutRange.lowerBound) and \(timeoutRange.upperBound)")
             }
         }
+        var appleServices = true
+        if let entry = root.entries["apple_services"] {
+            appleServices = try entry.bool("apple_services")
+        }
         let allowTables = document.tables.filter { $0.kind == .allow }
         let hookTables = document.tables.filter { $0.kind == .hook }
         if allowTables.count > maximumAllowRules {
@@ -126,7 +150,7 @@ extension BlackiceConfig {
         if hookTables.count > maximumHooks {
             throw ConfigError(line: hookTables[maximumHooks].line, "more than \(maximumHooks) [[hook]] tables")
         }
-        return BlackiceConfig(mode: mode, timeoutSeconds: timeout,
+        return BlackiceConfig(mode: mode, timeoutSeconds: timeout, appleServices: appleServices,
                                allow: try allowTables.map(allowRule), hooks: try hookTables.map(hook))
     }
 
@@ -152,6 +176,14 @@ extension BlackiceConfig {
         guard items.count <= maximumHostsPerRule else {
             throw ConfigError(line: hostsEntry.line, "hosts has more than \(maximumHostsPerRule) entries")
         }
+        if items.contains(.string("*")) {
+            // Any destination. On its own only, so a typo next to a real host cannot widen a rule
+            // by accident, and a reader sees at once what the rule allows.
+            guard items.count == 1 else {
+                throw ConfigError(line: hostsEntry.line, "\"*\" must be the only entry in hosts")
+            }
+            return AllowRule(app: app, team: team, hosts: [], anyHost: true, line: table.line)
+        }
         var patterns: [DomainPattern] = []
         var seen = Set<String>()
         for item in items {
@@ -166,7 +198,7 @@ extension BlackiceConfig {
             }
             patterns.append(pattern)
         }
-        return AllowRule(app: app, team: team, hosts: patterns, line: table.line)
+        return AllowRule(app: app, team: team, hosts: patterns, anyHost: false, line: table.line)
     }
 
     private static func hook(_ table: Table) throws -> Hook {
@@ -237,6 +269,11 @@ private struct Entry {
         guard case .integer(let number) = value else { throw ConfigError(line: line, "\(key) must be an integer, not \(value.typeName)") }
         return number
     }
+
+    func bool(_ key: String) throws -> Bool {
+        guard case .bool(let flag) = value else { throw ConfigError(line: line, "\(key) must be true or false, not \(value.typeName)") }
+        return flag
+    }
 }
 
 private enum TableKind: String {
@@ -244,7 +281,7 @@ private enum TableKind: String {
 
     var keys: Set<String> {
         switch self {
-        case .root: return ["mode", "timeout_seconds"]
+        case .root: return ["mode", "timeout_seconds", "apple_services"]
         case .allow: return ["app", "team", "hosts"]
         case .hook: return ["on", "run"]
         }
