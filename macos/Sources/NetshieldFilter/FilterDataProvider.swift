@@ -377,9 +377,9 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
             switch step {
             case .allow: resume(paused, allow: true)
             case .drop, .hold: resume(paused, allow: false)
-            case .pause: break // now waiting for an answer
+            case .pause: break // waiting for an answer, or for another lookup of the same host
             }
-            if case .lookUp = after { resume(paused, allow: false) } else { perform(after) }
+            perform(after)
         }
     }
 
