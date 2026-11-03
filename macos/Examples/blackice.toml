@@ -1,12 +1,13 @@
 # blackice.toml (proposal; the format can still change)
 mode = "ask"            # "accept-all", "ask" or "block-all"
 timeout_seconds = 10    # no answer in time means deny
+apple_services = true   # macOS's own services reach Apple's hosts without a rule (the default)
 
 # Permanent rules. Checked before anything is asked.
 [[allow]]
 app = "com.example.agent"      # signing identifier
 team = "ABCDE12345"            # Team ID
-hosts = ["api.example.com"]
+hosts = ["api.example.com"]    # exact hosts or "*.domain"; ["*"] alone allows any destination
 
 [[hook]]
 on = "connection"

@@ -5,7 +5,10 @@ import Foundation
 //
 // - accept-all allows every flow (and the extension logs it);
 // - block-all allows a flow only when an [[allow]] rule names its verified signing identity and
-//   its host, and the flow's address is among the host's answers from the system resolver;
+//   its host, and the flow's address is among the host's answers from the system resolver. The
+//   built-in table of macOS services (AppleServices) counts like a rule unless blackice.toml
+//   turns it off, and a rule with hosts = ["*"] allows everything its app does, with no host
+//   or address check;
 // - ask allows what block-all allows, plus what a current approval names (with the same address
 //   check), and pauses the rest to ask. Ad hoc signed code has no signing identity, so in ask
 //   mode it is named by its cdhash; rules never name it.
@@ -99,17 +102,16 @@ public enum FilterPolicy {
         if snapshot.mode == .acceptAll { return .allow(reason: "accept_all") }
         guard let identity = nameable(flow.identity, snapshot.mode) else { return .drop(reason: identityReason(flow.identity)) }
         guard flow.internetSocket else { return .drop(reason: "unsupported_socket") }
+        if let verdict = anyHost(flow, snapshot) { return verdict }
         if let raw = flow.hostname {
             guard let host = normalizeHost(raw) else { return .drop(reason: "hostname_invalid") }
             return named(identity, host: host, flow, snapshot, context, suffix: "")
         }
         // No host name from the system. Ask mode reads the TLS server name to have a host to ask
-        // about; block-all reads it only when a rule could match this app at all.
+        // about; block-all reads it only when a rule or the Apple services table could match this app.
         let tls = flow.tcp && flow.port == tlsPort
         if snapshot.mode == .ask { return tls ? .readServerName : .drop(reason: "no_host") }
-        let hasRule = flow.identity.verifiedIdentity.map { signing in
-            snapshot.config.allow.contains { $0.app == signing.signingID && $0.team == signing.teamID }
-        } ?? false
+        let hasRule = flow.identity.verifiedIdentity.map { hasRuleOrService($0, snapshot.config) } ?? false
         if hasRule && tls { return .readServerName }
         return .drop(reason: hasRule ? "no_host" : "no_rule")
     }
@@ -126,20 +128,40 @@ public enum FilterPolicy {
         case .serverName(let name, _):
             if snapshot.mode == .acceptAll { return .allow(reason: "accept_all") }
             guard let identity = nameable(flow.identity, snapshot.mode) else { return .drop(reason: identityReason(flow.identity)) }
+            if let verdict = anyHost(flow, snapshot) { return verdict }
             guard let host = normalizeHost(name) else { return .drop(reason: "server_name_invalid") }
             return named(identity, host: host, flow, snapshot, context, suffix: ";server_name")
         }
     }
 
-    /// A flow with a host name: rules, then approvals, each only once the address checks out.
+    /// A rule with hosts = ["*"] for the flow's verified identity allows it outright: no host name
+    /// is needed and no address is checked. Checked before anything looks at the host, so a VPN
+    /// client or DNS proxy that connects by address is allowed instead of dropped as `no_host`.
+    private static func anyHost(_ flow: FlowFacts, _ snapshot: ProviderConfiguration) -> FlowVerdict? {
+        guard let signing = flow.identity.verifiedIdentity,
+              let rule = snapshot.config.anyHostRule(for: signing) else { return nil }
+        return .allow(reason: "rule_line_\(rule.line)")
+    }
+
+    /// Whether a rule names this app (for any host), or the Apple services table covers it.
+    private static func hasRuleOrService(_ signing: SigningIdentity, _ config: BlackiceConfig) -> Bool {
+        config.allow.contains { $0.names(signing) } || (config.appleServices && AppleServices.covers(signing))
+    }
+
+    /// A flow with a host name: rules, then the Apple services table, then approvals, each only once
+    /// the address checks out.
     private static func named(_ identity: AppIdentity, host: String, _ flow: FlowFacts,
                               _ snapshot: ProviderConfiguration, _ context: PolicyContext, suffix: String) -> FlowVerdict {
         var line: Int?
-        if case .signed(let signing) = identity { line = snapshot.config.allowRule(for: signing, host: host)?.line }
+        var service = false
+        if case .signed(let signing) = identity {
+            line = snapshot.config.allowRule(for: signing, host: host)?.line
+            service = line == nil && snapshot.config.appleServices && AppleServices.allows(signing, host: host)
+        }
         let ask = snapshot.mode == .ask
         let approved = ask && context.approved(identity, host)
-        // Block-all with no rule by name: nothing to check.
-        if !ask && line == nil { return .drop(reason: "no_rule") }
+        // Block-all with no rule or service by name: nothing to check.
+        if !ask && line == nil && !service { return .drop(reason: "no_rule") }
         guard flow.remoteAddress != nil else { return .drop(reason: "no_address") }
         switch context.address(host, flow.remoteAddress) {
         case .unknown:
@@ -148,10 +170,11 @@ public enum FilterPolicy {
             return .resolveHost(host)
         case .match:
             if let line { return .allow(reason: "rule_line_\(line)" + suffix) }
+            if service { return .allow(reason: "apple_service" + suffix) }
             if approved { return .allow(reason: "approval" + suffix) }
             return .ask(reason: "no_rule", addressMatches: true)
         case .mismatch:
-            let named = line != nil || approved
+            let named = line != nil || service || approved
             if !ask { return .drop(reason: "address_mismatch") }
             return .ask(reason: named ? "address_mismatch" : "no_rule", addressMatches: false)
         }
