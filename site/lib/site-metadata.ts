@@ -1,8 +1,9 @@
 import type { Metadata } from 'next'
 
 /* The public identity, stable across production, preview, and local
-   deployments. The site has no domain yet: set NEXT_PUBLIC_SITE_URL when it
-   does. On Vercel the production URL is used meanwhile. */
+   deployments. On Vercel, NEXT_PUBLIC_SITE_URL holds the production address,
+   https://blackice-macos.vercel.app; without it, Vercel's production URL is
+   used. */
 const vercelProductionHost = process.env.VERCEL_PROJECT_PRODUCTION_URL
 export const canonicalSiteUrl =
   process.env.NEXT_PUBLIC_SITE_URL ??
