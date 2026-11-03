@@ -25,6 +25,8 @@ public enum Command: Equatable, Sendable {
     case validate(path: String)
     case daemon
     case agent(AgentAction)
+    /// `blackice agent connect NAME`: set an agent up to answer what waits in ask mode.
+    case connectAgent(name: String, configPath: String?)
 
     public var name: String {
         switch self {
@@ -40,7 +42,7 @@ public enum Command: Equatable, Sendable {
         case .deny: return "deny"
         case .validate: return "validate"
         case .daemon: return "daemon"
-        case .agent: return "agent"
+        case .agent, .connectAgent: return "agent"
         }
     }
 }
@@ -106,6 +108,9 @@ public enum CLI {
 
     Setup
       validate PATH             Check a blackice.toml without loading it
+      agent connect fx [--config PATH]
+                                Let fx answer what waits in ask mode: its own home, a
+                                test, its rule and hook, then ask mode if you want
       agent install|uninstall   Run hooks for waiting connections, now and at each login
       stop                      Stop filtering and remove the network extension (Touch ID)
       version                   The installed version
@@ -153,8 +158,17 @@ public enum CLI {
             try noArguments(first, rest)
             return .daemon
         case "agent":
+            if rest.first == "connect" {
+                let arguments = Array(rest.dropFirst())
+                guard let name = arguments.first, !name.hasPrefix("-") else {
+                    throw UsageError("agent connect needs the agent's name: blackice agent connect fx")
+                }
+                let options = try parseOptions(Array(arguments.dropFirst()), allowed: ["config"], command: "agent connect")
+                if let path = options["config"], path.hasPrefix("-") { throw UsageError("agent connect: --config needs a path") }
+                return .connectAgent(name: name, configPath: options["config"])
+            }
             guard rest.count == 1, let action = AgentAction(rawValue: rest[0]) else {
-                throw UsageError("agent takes install or uninstall")
+                throw UsageError("agent takes install, uninstall or connect")
             }
             return .agent(action)
         case "approve":
@@ -187,7 +201,7 @@ public enum CLI {
     public static func run(_ arguments: [String], stdout: @escaping (String) -> Void, stderr: @escaping (String) -> Void,
                            readFile: (String) throws -> Data = readConfigFile,
                            system: SystemControlling = UnsignedSystem(),
-                           interaction: Interaction = .none) -> Int32 {
+                           interaction: Interaction = .none, agents: AgentMachine = .none) -> Int32 {
         if arguments.isEmpty {
             stderr(usage)
             return ExitCode.usage
@@ -237,6 +251,9 @@ public enum CLI {
             return system.installAgent(output: SystemOutput(stdout: stdout, stderr: stderr))
         case .agent(.uninstall):
             return system.uninstallAgent(output: SystemOutput(stdout: stdout, stderr: stderr))
+        case .connectAgent(let name, let configPath):
+            return connectAgent(name, configPath: configPath, readFile: readFile, system: system, interaction: interaction,
+                                machine: agents, stdout: stdout, stderr: stderr)
         case .start(let configPath):
             let path = configPath ?? defaultConfigPath
             let shown = Describe.path(path, home: interaction.home)
@@ -277,17 +294,17 @@ public enum CLI {
         }
     }
 
-    private struct Status: Error { let code: Int32 }
+    struct Status: Error { let code: Int32 }
 
     /// The parsed file and the exact text it was parsed from, read once.
-    private struct Loaded {
+    struct Loaded {
         let config: BlackiceConfig
         let text: String
     }
 
     /// Reads and parses a blackice.toml, reporting problems the way validate does. With `hint`, a
     /// problem also says how to go on, as start does.
-    private static func loadConfig(_ path: String, readFile: (String) throws -> Data, stderr: (String) -> Void,
+    static func loadConfig(_ path: String, readFile: (String) throws -> Data, stderr: (String) -> Void,
                                    shown: String? = nil, hint: Bool = false) -> Result<Loaded, Status> {
         let name = shown ?? path
         let data: Data
@@ -313,7 +330,7 @@ public enum CLI {
         return .failure(Status(code: ExitCode.invalidConfig))
     }
 
-    private static func isMissing(_ path: String, readFile: (String) throws -> Data) -> Bool {
+    static func isMissing(_ path: String, readFile: (String) throws -> Data) -> Bool {
         do {
             _ = try readFile(path)
             return false

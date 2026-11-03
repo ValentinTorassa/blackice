@@ -8,6 +8,7 @@ let status = CLI.run(
     stdout: { FileHandle.standardOutput.write(Data(($0 + "\n").utf8)) },
     stderr: { FileHandle.standardError.write(Data(($0 + "\n").utf8)) },
     system: NESystemControl(),
-    interaction: .terminal()
+    interaction: .terminal(),
+    agents: .real()
 )
 exit(status)

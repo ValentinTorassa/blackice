@@ -50,6 +50,14 @@ public struct HookResult: Equatable, Sendable {
     public let stderr: String
     public let stderrTruncated: Bool
     public let duration: TimeInterval
+
+    public init(hookLine: Int, outcome: Outcome, stderr: String, stderrTruncated: Bool, duration: TimeInterval) {
+        self.hookLine = hookLine
+        self.outcome = outcome
+        self.stderr = stderr
+        self.stderrTruncated = stderrTruncated
+        self.duration = duration
+    }
 }
 
 public enum HookProgress: Sendable {
