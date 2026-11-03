@@ -95,6 +95,8 @@ public enum AppleServices {
         ("com.apple.syspolicyd", ["*.apple-cloudkit.com"]),
         // known: network time from time.apple.com, which points into aaplimg.com.
         ("com.apple.timed", ["*.apple.com", "*.aaplimg.com"]),
+        // Mac (build 4 run): ipcdn.apple.com. The Tips app's content.
+        ("com.apple.tipsd", ["*.apple.com"]),
         // Apple: certificate validation. See the comment at the top of this file.
         ("com.apple.trustd", certificateHosts),
     ]
