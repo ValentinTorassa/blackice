@@ -47,6 +47,23 @@ private func decide(_ facts: FlowFacts, serverName: String, _ mode: Mode,
 }
 
 struct DNSNamePolicyTests {
+    @Test func theAppleServicesTableCoversADNSName() throws {
+        // A macOS service that connects by address is not asked about when the table covers the name.
+        let cloudd = signed("com.apple.cloudd", nil)
+        #expect(try decide(bare(cloudd, ["gateway.icloud.com"], port: 80), .ask) == .allow(reason: "apple_service;dns_name"))
+        #expect(try decide(bare(cloudd, ["gateway.icloud.com"], port: 80), .blockAll) == .allow(reason: "apple_service;dns_name"))
+        #expect(try decide(bare(cloudd, ["gateway.icloud.com"]), .ask) == .readServerName)
+        // A server name the table also covers goes on to its address check; any other is dropped.
+        #expect(try decide(bare(cloudd, ["gateway.icloud.com"]), serverName: "p1-content.icloud.com", .blockAll)
+                == .resolveHost("p1-content.icloud.com"))
+        #expect(try decide(bare(cloudd, ["gateway.icloud.com"]), serverName: "evil.example", .blockAll)
+                == .drop(reason: "server_name_mismatch"))
+        // Code with a Team ID that calls itself com.apple.cloudd gets nothing from the table.
+        let impostor = signed("com.apple.cloudd", "ABCDE12345")
+        #expect(try decide(bare(impostor, ["gateway.icloud.com"], port: 80), .blockAll) == .drop(reason: "no_rule"))
+        #expect(try decide(bare(impostor, ["gateway.icloud.com"], port: 80), .ask) == .ask(reason: "no_rule", addressMatches: true))
+    }
+
     @Test func aRuleCoversTheDNSName() throws {
         // No lookup: the name came with the address. Off the TLS port the flow passes at once.
         #expect(try decide(bare(curl, ["pypi.org"], port: 22), .blockAll) == .allow(reason: "rule_line_8;dns_name"))
