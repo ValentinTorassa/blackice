@@ -112,6 +112,12 @@ done when its check passes on a real Mac, not when the code compiles.
    team JW6Y669B67, to ai-gateway.vercel.sh, vercel.com and api.vercel.com). With nobody at the keyboard it
    approved api.github.com for `curl` and `nscurl`, denied pastebin.com each time, and approved a Homebrew `gh`
    (ad hoc signed, named by its cdhash) reaching api.github.com. Each decision took 13 to 22 s.
+   *Done* the same day: in one run, fx decided ten `nscurl` connections in a row with nobody at the keyboard. It
+   approved api.github.com, registry.npmjs.org, formulae.brew.sh and developer.apple.com, each of which then got
+   HTTP 200, and denied pastebin.com, wetransfer.com, webhook.site, 0x0.st and a random nip.io name. It also
+   denied pypi.org, which it was expected to approve. It printed only the command it ran, not its reasons, and it
+   approved npm and Homebrew for the same `nscurl`, so the skill's guidance on package registries needs a look.
+   Decisions took 11 to 28 s.
 5. **Hardening and evidence.** Fault tests (daemon down, hook hung, bursts of connections, restart), evidence
    entries in the style of blackice-poc, notarization and an installer.
 
