@@ -37,15 +37,15 @@ MACH_SERVICE="$APP_GROUP.filter"
 # A Developer ID profile for this team and App ID, with the content filter entitlement and not
 # expired. Decoded into $4.
 check_profile() {
-    local kind=$1 file=$2 bundle=$3 plist=$4 team appid expiry now
+    local kind=$1 file=$2 bundle=$3 plist=$4 team appid ne expiry now
     [[ -r "$file" ]] || die "cannot read the $kind profile: $file"
     security cms -D -i "$file" > "$plist" 2>/dev/null || die "the $kind profile is not a provisioning profile: $file"
     team=$("$BUDDY" -c 'Print :Entitlements:com.apple.developer.team-identifier' "$plist" 2>/dev/null) || team=
     [[ "$team" == "$TEAM_ID" ]] || die "the $kind profile is for team '$team', not $TEAM_ID"
     appid=$("$BUDDY" -c 'Print :Entitlements:com.apple.application-identifier' "$plist" 2>/dev/null) || appid=
     [[ "$appid" == "$TEAM_ID.$bundle" ]] || die "the $kind profile is for App ID '$appid', not $TEAM_ID.$bundle"
-    "$BUDDY" -c 'Print :Entitlements:com.apple.developer.networking.networkextension' "$plist" 2>/dev/null \
-        | grep -qx '[[:space:]]*content-filter-provider-systemextension' \
+    ne=$("$BUDDY" -c 'Print :Entitlements:com.apple.developer.networking.networkextension' "$plist" 2>/dev/null) || ne=
+    grep -qx '[[:space:]]*content-filter-provider-systemextension' <<<"$ne" \
         || die "the $kind profile lacks content-filter-provider-systemextension (Network Extensions on the App ID)"
     [[ "$("$BUDDY" -c 'Print :ProvisionsAllDevices' "$plist" 2>/dev/null)" == true ]] \
         || die "the $kind profile is not a Developer ID profile (ProvisionsAllDevices is not set)"

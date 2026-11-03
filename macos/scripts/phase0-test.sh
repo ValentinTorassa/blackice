@@ -48,7 +48,10 @@ TEAM_ID=$1 SRC_APP=${2%/}
 [[ "$TEAM_ID" =~ ^[A-Z0-9]{10}$ ]] || die 'TEAM_ID must be 10 upper-case letters or digits'
 [[ -d "$SRC_APP" ]] || die "no app at $SRC_APP"
 codesign --verify --strict --deep "$SRC_APP" || die "$SRC_APP does not verify; sign it with scripts/sign.sh"
-codesign -dvv "$SRC_APP" 2>&1 | grep -qx "TeamIdentifier=$TEAM_ID" || die "$SRC_APP is not signed by team $TEAM_ID"
+# Capture before grepping: under pipefail, grep -q exits at the first match and the writer's
+# SIGPIPE fails the pipeline even though the line is there.
+details=$(codesign -dvv "$SRC_APP" 2>&1)
+grep -qx "TeamIdentifier=$TEAM_ID" <<<"$details" || die "$SRC_APP is not signed by team $TEAM_ID"
 if [[ -e "$DEST" ]]; then die "$DEST already exists; run $0 --rollback first"; fi
 IDENTITY=$(security find-identity -v -p codesigning | grep -F 'Developer ID Application:' | grep -F "($TEAM_ID)\"" \
     | awk 'NR == 1 {print $2}')
@@ -83,7 +86,9 @@ echo "The first time, open System Settings > General > Login Items & Extensions 
 echo "and turn on Netshield. macOS may also ask to allow the content filter."
 "$BIN" start --config "$W/netshield.toml" || die "netshield start failed; run $0 --rollback"
 for _ in $(seq 1 30); do
-    systemextensionsctl list 2>/dev/null | grep -F "$FILTER_ID" | grep -q 'activated enabled' && break
+    listed=$(systemextensionsctl list 2>/dev/null) || listed=
+    awk -v id="$FILTER_ID" 'index($0, id) && /activated enabled/ {found = 1} END {exit !found}' \
+        <<<"$listed" && break
     sleep 2
 done
 systemextensionsctl list | grep -F "$FILTER_ID" || die "the extension is not listed; run $0 --rollback"
