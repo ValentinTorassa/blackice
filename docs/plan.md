@@ -12,6 +12,10 @@ done when its check passes on a real Mac, not when the code compiles.
 | Ask mode | Asks only about connections that no rule or current approval covers. |
 | No answer in time | Deny after N seconds. N is configurable; its default is set after measuring how long macOS keeps a paused flow. |
 | Approval scope | One app (by signing identity) and one host, with an expiry: `netshield approve --app … --host … --for 1h`. |
+| Ad hoc signed code | Ask mode asks about it too, and the approval names its cdhash plus the host: `netshield approve --cdhash … --host …`. A rebuild changes the cdhash, so the next connection asks again. Rules in `netshield.toml` never name it, so block-all drops it. Code with no signature has no cdhash either and is dropped. |
+| Host and address | Before a rule or an approval counts, the host is resolved with the system resolver and the flow's remote address must be among the answers, which are kept for 30 s. A mismatch means no rule or approval matches: ask mode asks, block-all drops, and the log says `address_mismatch`. |
+| DNS in block-all | Apple's resolver stays reachable on port 53 in every mode, so in block-all any app can still make name lookups through it, which can carry data out. Documented as a known gap; tying DNS answers to rules with an `NEDNSProxyProvider` is later work. |
+| Hooks that leave their process group | Best effort, and documented: a process started by a hook that calls `setsid` or `setpgid` escapes the kill at the deadline and when the hook exits. Running hooks under a separate user or in a sandbox would close this; neither is planned yet. |
 | Approval storage | In memory, inside the extension. Permanent rules live in `netshield.toml`. |
 | Who can approve | The hook, with the event's one-time token, or a person with Touch ID. |
 | Configuration | `netshield.toml`, read by a small strict parser for the subset the file uses. No third-party dependency. |
@@ -40,20 +44,31 @@ done when its check passes on a real Mac, not when the code compiles.
    *So far*, without the extension: the Swift package in `macos/` with the `netshield.toml` parser, rule matching,
    the hook event and token, the CLI's argument parsing and `netshield validate`, plus the parts ported from
    blackice (code identity, host names, TLS server name). Unit tests run in CI on macOS.
-   Also without the extension: the JSONL event log, and a daemon skeleton that logs each event and runs its hooks.
-   Its intake from the extension is only a protocol until phase 2, so `netshield daemon` checks its configuration and
-   exits with status 69. A LaunchAgent template is in `macos/LaunchAgent/`; nothing installs it.
+   Also without the extension: the JSONL event log, and a daemon that logs each event and runs its hooks. A
+   LaunchAgent template is in `macos/LaunchAgent/`; nothing installs it.
    Written and compiled, not run until phase 0: Netshield.app, built with SwiftPM and scripts, whose executable
    is the CLI, with the content filter as a system extension. `netshield start/stop/mode` activate and deactivate
    the extension and save the filter preference, each after Touch ID; the CLI saves netshield.toml's text, the mode
    and a generation number in the provider configuration, and the extension reads only that. The extension's
    decision is unit-tested. In every mode inbound connections pass and Apple's resolver may reach port 53, since
    rules name hosts. Without a host name from the system, the extension reads the TLS server name, but only for
-   an app that has a rule. It logs one line per decision to unified logging; the JSONL event log is not wired to
-   it yet.
+   an app that has a rule. It logs one line per decision to unified logging; the JSONL event log is the daemon's
+   and holds events, hooks and verdicts.
 2. **Ask mode.** Pausing, XPC, the pending list, deny on timeout, `netshield pending/approve/deny` with `--app`,
    `--host` and `--for`, the event token and Touch ID. A repeated connection (same app, host and port) raises one
    event. *Done when* a `curl` waits, `approve` releases it, and with no answer the timeout drops it.
+   *So far*, unit-tested without the extension: approvals in memory with an expiry (1 s to 24 h, at most 1024);
+   paused connections with one event per app, host and port and caps on events and flows; the event token, which is
+   single use, bound to its event, compared in constant time and dead once the deadline passes; the deadline
+   dropping what nobody answered; the host and address check, with a fake resolver; ad hoc code named by its
+   cdhash; and the XPC messages, each decoded and checked field by field on receipt. `netshield pending`,
+   `approve` and `deny` parse `--app/--team` or `--cdhash`, `--host`, `--for` and `--token`.
+   Written and compiled, not run until phase 0: the extension pausing flows while their host is looked up and
+   while their event waits, then resuming them on an answer or at the deadline; an XPC listener in the extension
+   that the CLI and the daemon reach, with each side's code signing requirement (same team, exact signing
+   identifier) set on the connection so it is checked on every message; Touch ID for `approve` and `deny` without
+   a token; and `netshield daemon` registering with the extension for events, then exiting with status 75 when
+   the connection ends so launchd starts it again.
 3. **Hooks.** `run = '…'` in `netshield.toml`, the event as JSON on stdin plus its token, and a limit on hooks
    running at once. *Done when* a sample hook approves one host and denies another.
    *So far*, tested without the extension: the hook runner. It runs `run` with `/bin/sh -c` and never puts event
@@ -65,6 +80,9 @@ done when its check passes on a real Mac, not when the code compiles.
 4. **The agent decides.** An fx skill that says what to look at, when to approve and how to call `approve`. A fixed
    allow rule for the deciding agent and its model provider, bound to their signatures. *Done when* fx decides ten
    test connections with nobody touching the keyboard.
+   *So far*, without the extension: the fx skill and an eval that runs fx on fixed events the way the hook would,
+   with `netshield` replaced by a stub. On 2 November 2026, fx 0.0.16 decided ten of ten in four runs, two of them
+   with rules that let it run only `netshield approve` and `netshield deny` (see `integrations/fx/README.md`).
 5. **Hardening and evidence.** Fault tests (daemon down, hook hung, bursts of connections, restart), evidence
    entries in the style of blackice, notarization and an installer.
 
@@ -75,6 +93,11 @@ done when its check passes on a real Mac, not when the code compiles.
   is turned on for real.
 - **Self-approval.** Any program of the user can run `netshield approve`. Requiring the event's token keeps a
   program from approving its own connection.
+- **Daemon impersonation.** Any program of the user can also run `netshield daemon` and register with the
+  extension in place of the LaunchAgent. A later registration replaces the earlier one, so that program would get
+  the events, tokens included, and could approve its own connection. Candidates: accept only a daemon started by
+  launchd, confirm a registration with Touch ID once per login, and have the daemon take its hooks from the
+  configuration the extension holds rather than from `--config`.
 - **Prompt injection.** Host names, app names and TLS server names are chosen by whoever opens the connection, and
   they reach the model's prompt. Events carry them as structured fields, and the only accepted answers are approve
   or deny.
@@ -82,19 +105,9 @@ done when its check passes on a real Mac, not when the code compiles.
   and one event per repeated connection keep the questions to new destinations.
 - **Paused flow lifetime.** How long macOS keeps a paused flow before dropping it is not measured yet. It sets the
   upper bound for the timeout.
-- **Host names are taken as given.** Rules match the host name macOS attaches to a flow, or the TLS server name
-  the app sends. Neither is checked against the address the app connects to, so an app with a rule for one host
-  could name that host and connect elsewhere. Checking them is phase 5 work.
-- **DNS in block-all.** Apple's resolver may reach port 53 in every mode, so in block-all any app can still make
-  name lookups through it, which can carry data out. Closing this needs DNS answers to be tied to rules.
-- **Unsigned code.** Connections from unsigned or ad hoc signed code have no signing identity, so an approval
-  cannot name them. What ask mode does with them is open.
-- **Event delivery to an agent.** Hooks get the event as JSON on stdin, but `fx ask` reads stdin as its prompt only
-  when no prompt arguments are given. The hook runner also writes the event to a file named in
-  `NETSHIELD_EVENT_FILE`, which is what the fx skill reads (see `integrations/fx/README.md`). Not yet tried with fx.
-- **Hooks that leave their process group.** A process started by a hook that calls `setsid` or `setpgid` escapes
-  the kill at the deadline and when the hook exits. Running hooks under a separate user or in a sandbox would close
-  this; neither is planned yet.
+- **Limits of the host check.** The system resolver may answer netshield's lookup differently than it answered
+  the app (round-robin, CDNs, split DNS), which shows as a mismatch: ask mode asks and block-all drops. And a match
+  proves only that the name resolves to that address now, not who controls the name.
 - **Hook limits.** The limit of 4 hooks at once, the 2 s grace period and the 4 KiB of stderr kept per hook are
   first guesses, set in code rather than in `netshield.toml`.
 - **Log rotation.** The event log only grows. Rotation, or leaving it to newsyslog, is not decided.

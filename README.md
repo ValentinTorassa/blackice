@@ -54,12 +54,17 @@ app identity from code signatures, and the TLS server name reader.
 - the `netshield.toml` reader, strict: an unknown key, a duplicate key or anything outside the
   small TOML subset the file uses is an error with its line number;
 - the event a hook receives and its one-time token;
-- the `netshield` command. `netshield validate PATH` checks a configuration file. `start`, `stop`,
-  `status` and `mode` need Netshield.app signed with the Developer ID; any other build says so and
-  exits with status 69. The ask-mode commands exit with status 69 until phase 2;
+- the `netshield` command. `netshield validate PATH` checks a configuration file. Every other
+  command (`start`, `stop`, `status`, `mode`, `pending`, `approve`, `deny` and `daemon`) needs
+  Netshield.app signed with the Developer ID; any other build says so and exits with status 69;
 - the network extension, a content filter: accept-all allows every connection, block-all allows only
-  what an `[[allow]]` rule names, and ask decides like block-all until phase 2. The decision is a
-  plain function with unit tests; the code around it compiles but has not run;
+  what an `[[allow]]` rule names, and ask also allows what a current approval names and pauses the
+  rest until a hook or a person answers. A rule or approval counts only when the address the app
+  connects to is among the host's answers from the system resolver. Ad hoc signed code is approved
+  by its cdhash;
+- ask mode's state (approvals, paused connections, one-time tokens, deadlines) and the XPC messages
+  between the extension, the daemon and the CLI. These and the extension's decision are plain code
+  with unit tests; the NetworkExtension and XPC code around them compiles but has not run;
 - scripts in `macos/scripts/` that build Netshield.app without Xcode, sign it, and run the phase 0
   check;
 - from blackice's macOS app filter: app identity from code signatures, host name rules, the TLS

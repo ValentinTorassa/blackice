@@ -13,8 +13,8 @@ The planned commands.
 | `netshield start` / `netshield stop` | Start or stop the daemon and the extension. |
 | `netshield status` | Mode, rules, approvals and paused connections. |
 | `netshield mode accept-all \| ask \| block-all` | Change the mode. |
-| `netshield pending` | Connections waiting for an answer. |
-| `netshield approve --app ID [--team TEAM] --host HOST [--for 1h] [--token TOKEN]` | Allow one app to reach one host until the approval expires. |
-| `netshield deny --app ID [--team TEAM] --host HOST [--token TOKEN]` | Drop the waiting connection and the ones like it. |
+| `netshield pending` | Connections waiting for an answer, and the approvals. |
+| `netshield approve (--app ID [--team TEAM] \| --cdhash HEX) --host HOST [--for 1h] [--token TOKEN]` | Allow one app to reach one host until the approval expires. |
+| `netshield deny (--app ID [--team TEAM] \| --cdhash HEX) --host HOST [--token TOKEN]` | Drop the waiting connections and remove the approval. |
 
-`approve` and `deny` need the event's token when a hook calls them. A person can run them by hand after confirming with Touch ID. Without `--team`, `--app` names Apple's own code, which is signed without a Team ID.
+`approve` and `deny` need the event's token when a hook calls them. A person can run them by hand after confirming with Touch ID. Without `--team`, `--app` names Apple's own code, which is signed without a Team ID. `--cdhash` names ad hoc signed code, which has no signing identity, by the CDHash that `codesign -dvvv` prints; a rebuild changes it and asks again.
