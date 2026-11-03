@@ -7,6 +7,11 @@
   that let it run only `blackice approve` and `blackice deny`; one test on a sample connection with a stand-in for
   `blackice`; then its rule and hook in `blackice.toml`, ask mode if you say so, one Touch ID and the daemon. Other
   agents are a profile each.
+- The first `blackice start` asks from lists picked with the arrow keys: the mode, who answers in ask mode (fx or
+  you), and the apps to trust, from the apps running now. Picking fx sets it up in the same command: accept-all
+  until fx is installed, signed in and tested, then ask mode.
+- `blackice agent connect` switches to accept-all while it sets an agent up if blackice is in ask or block-all, and
+  reports a failed download by fx's installer.
 - The install script takes `BLACKICE_ZIP`, the path of a `Blackice-<version>.zip` that is not published, to try a
   build with the same checks.
 

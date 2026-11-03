@@ -69,7 +69,13 @@ Use the folder on the `PATH`, or a script that runs the full path, rather than a
 
 ## 3. Write blackice.toml
 
-`blackice start` reads `~/.config/blackice/blackice.toml` unless you pass `--config PATH`. If the file is not there, `start` asks a few questions and writes it: the mode, how long ask mode waits, and apps to allow, by their path (such as `/Applications/Slack.app`) or their signing identifier. `blackice init` asks the same questions without starting anything. Or write it yourself, starting in accept-all, which lets everything through and only logs:
+`blackice start` reads `~/.config/blackice/blackice.toml` unless you pass `--config PATH`. If the file is not there, `start` asks a few questions and writes it. You pick the answers from lists with the arrow keys:
+
+- the mode;
+- in ask mode, who answers: fx, or you;
+- apps to trust, from the apps running now. Each may reach any host, and "Another app" takes a path such as `/Applications/Slack.app` or a signing identifier.
+
+If you pick fx, `start` also sets fx up, as `blackice agent connect fx` does (see "Let an agent answer"). It stays in accept-all until fx is installed, signed in and tested, and loads ask mode at the end, so nothing waits on an answer before fx can give it. `blackice init` asks the same questions without starting anything. Or write the file yourself, starting in accept-all, which lets everything through and only logs:
 
 ```toml
 mode = "accept-all"     # "accept-all", "ask" or "block-all"
@@ -123,7 +129,7 @@ $ blackice agent install
 4. Only then does it add to `blackice.toml` a rule that lets fx reach its model (Vercel's AI Gateway) in every mode, and the hook, and raise `timeout_seconds` to at least 60.
 5. It asks whether to switch to ask mode, loads the file (Touch ID) and starts the daemon.
 
-Run it in accept-all mode: in ask or block-all, fx's own connections wait until its rule is loaded. It knows fx only, so far. [integrations/fx/README.md](https://github.com/ValentinTorassa/blackice/blob/main/integrations/fx/README.md) has the same steps by hand.
+In ask or block-all it switches to accept-all while fx is set up (Touch ID), since fx's own connections would wait until its rule is loaded, and the last step loads your file again. It knows fx only, so far. [integrations/fx/README.md](https://github.com/ValentinTorassa/blackice/blob/main/integrations/fx/README.md) has the same steps by hand.
 
 ## 6. Use it
 
