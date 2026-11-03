@@ -1,7 +1,8 @@
 # Plan
 
-blackice is in planning. This file holds the phases, the decisions taken so far and the open problems. A phase is
-done when its check passes on a real Mac, not when the code compiles.
+blackice is early: 0.1.0 is its first release, and it has run on one Mac. This file holds the phases, the decisions
+taken so far and the open problems. A phase is done when its check passes on a real Mac, not when the code compiles,
+and each run on a Mac is recorded in [`evidence/`](../evidence/).
 
 ## Decisions
 
@@ -64,7 +65,8 @@ done when its check passes on a real Mac, not when the code compiles.
    the hook event and token, the CLI's argument parsing and `blackice validate`, plus the parts ported from
    blackice-poc (code identity, host names, TLS server name). Unit tests run in CI on macOS.
    Also without the extension: the JSONL event log, and a daemon that logs each event and runs its hooks. A
-   LaunchAgent template is in `macos/LaunchAgent/`; nothing installs it.
+   LaunchAgent template is in `macos/LaunchAgent/`; `blackice agent install` writes and loads it (run on a Mac in
+   P2-02 and P5-01).
    Written and compiled, and run on a Mac since phase 0: Blackice.app, built with SwiftPM and scripts, whose executable
    is the CLI, with the content filter as a system extension. `blackice start/stop/mode` activate and deactivate
    the extension and save the filter preference, each after Touch ID; the CLI saves blackice.toml's text, the mode
@@ -95,6 +97,15 @@ done when its check passes on a real Mac, not when the code compiles.
    waited until fx denied it, 16 s in; and `example.org`, which the demo's hook left alone, was dropped at the
    60 s deadline. A mode change cancels the events still waiting. The same run with `curl` failed even when
    approved: see "Connections named by their TLS server name" under the open problems.
+   *On a Mac* with build 4, the same day, after names from DNS answers and `hold_expired` were added
+   ([P2-02](../evidence/P2-02-curl-passes-on-retry-nscurl-waits-macos.md)): `curl https://api.github.com/zen` waited
+   with its TCP connection already ESTABLISHED, and its first try failed after 16 s; fx approved meanwhile, and the
+   retry got HTTP 200 at once. `nscurl https://registry.npmjs.org/` waited 28 s for fx and got HTTP 200. fx denied
+   `curl https://pastebin.com/` for each of its two addresses.
+   *Done* for apps that connect by name: a connection waits, an approval releases it (P2-01, P2-02) and with no
+   answer the deadline drops it (P2-01, and cases 1 and 2 of P5-01). For `curl`, and other tools that connect to an
+   address, only the retry after an approval gets through; the first try fails when the decision takes longer than
+   the server waits for the TLS hello.
 3. **Hooks.** `run = '…'` in `blackice.toml`, the event as JSON on stdin plus its token, and a limit on hooks
    running at once. *Done when* a sample hook approves one host and denies another.
    *So far*, tested without the extension: the hook runner. It runs `run` with `/bin/sh -c` and never puts event
@@ -105,7 +116,12 @@ done when its check passes on a real Mac, not when the code compiles.
    no free slot is not started, is logged as dropped, and the connection is denied when its timeout passes.
    *On a Mac*, the daemon registered with the extension, received each event and ran the hook. fx prints the
    commands it runs, token included, and the first run copied them into the event log with the hook's stderr;
-   the runner now replaces the token, and any piece of it of 8 characters or more, with `[token]`.
+   the runner now replaces the token, and any piece of it of 8 characters or more, with `[token]`. With build 4
+   (P2-02) the daemon took its hooks from the extension's configuration, and each hook record's stderr held
+   `[token]` where fx had printed the token. The fault tests (P5-01) showed a hung hook killed at the deadline and,
+   in a burst, at most 4 hooks at once with the rest logged as dropped.
+   *Done* on 3 November 2026: on a Mac the hook, running fx, approved api.github.com and denied pastebin.com
+   (P2-01, P2-02).
 4. **The agent decides.** An fx skill that says what to look at, when to approve and how to call `approve`. A fixed
    allow rule for the deciding agent and its model provider, bound to their signatures. *Done when* fx decides ten
    test connections with nobody touching the keyboard.
@@ -128,22 +144,31 @@ done when its check passes on a real Mac, not when the code compiles.
    `macos/scripts/package.sh` passes the script's checks (checksum, signature, stapled ticket, Gatekeeper) and
    installs, runs and uninstalls on a Mac by following [`install.md`](install.md).
    *So far*: [`evidence/`](../evidence/) records the runs so far, each from its logs: phase 0's check (P0-01), the
-   first ask-mode run with fx (P2-01) and the ten connections fx decided (P4-01). `macos/scripts/fault-test.sh`
-   covers the four faults with one test configuration and two Touch ID prompts: with no daemon registered, a
-   paused connection's event is not sent (`control event_not_sent no_daemon`) and the deadline drops it; a hook
-   that sleeps past the deadline is killed (`hook_killed`, reason `deadline`) and its connection dropped
-   (`timed_out`); a burst of 50 connections to distinct hosts and 70 to one host shows one event per app, host and
-   port, at most 64 connections per event (`flow drop ask_capacity` beyond), at most 4 hooks at once with the rest
-   logged as `hook_dropped` (`concurrency_limit`), and `curl` with a rule still working; and after the daemon is
-   killed, launchd starts it and it registers again (`control xpc daemon_registered`), then a configuration change
-   while connections wait drops them (`configuration_changed`) and cancels their events. The script has run only
-   with `DRY=1`, which validates its configuration and test hook and runs its checks on sample logs; it stops and
-   starts the daemon with `blackice agent install|uninstall`, which is not merged yet. Notarization has run in
-   `sign.sh` since phase 0. `macos/scripts/package.sh` zips the notarized, stapled app with a SHA-256 file and checks
-   both as a download; only its dry run, on an ad hoc signed app, has run. A `.pkg` would need a Developer ID
-   Installer certificate, which the account does not have, so the installer is the zip and `install.md`. In both fx
-   runs the installed build still copied the tokens fx printed into the event log (spent, and kept out of the
-   entries); the build installed for the fault tests should be one with the redaction.
+   ask-mode runs with fx (P2-01, P2-02), the ten connections fx decided (P4-01) and the fault tests (P5-01).
+   `macos/scripts/fault-test.sh` covers the four faults with one test configuration and two Touch ID prompts: with
+   no daemon registered, a paused connection's event is not sent (`control event_not_sent no_daemon`) and the
+   deadline drops it; a hook that sleeps past the deadline is killed (`hook_killed`, reason `deadline`) and its
+   connection dropped (`timed_out`); a burst of 50 connections to distinct hosts and 70 to one host shows one event
+   per app, host and port, at most 64 connections per event (`flow drop ask_capacity` beyond), at most 4 hooks at
+   once with the rest logged as `hook_dropped` (`concurrency_limit`), and `curl` with a rule still working; and after
+   the daemon is killed, launchd starts it and it registers again (`control xpc daemon_registered`), then a
+   configuration change while connections wait drops them (`configuration_changed`) and cancels their events.
+   *On a Mac*, 3 November 2026, with build 4 ([P5-01](../evidence/P5-01-faults-macos.md)): 24 checks passed and 4
+   failed. Daemon down, hook hung, the burst and the restart passed; after `launchctl kill`, the daemon was running
+   and registered again within 1 s. The last four checks, the configuration change, failed. The second Touch ID was
+   cancelled, so the change did not happen, and `blackice pending` rejected the extension's reply ("events has an
+   invalid entry"; see "Events with no connection left" under the open problems). The build 4 run just before
+   (P2-02) shows that change outside the script: at the switch to accept-all, 21 paused flows were dropped with
+   `configuration_changed` and their five events were cancelled.
+   Notarization has run in `sign.sh` since phase 0; builds 2, 3 and 4 were notarized and stapled.
+   `macos/scripts/package.sh` zips the notarized, stapled app with a SHA-256 file and checks both as a download; it
+   has been recorded only in its dry run, on an ad hoc signed app. A `.pkg` would need a Developer ID Installer
+   certificate, which the account does not have, so the installer is the zip and `install.md`. The same zip is
+   offered through a Homebrew cask (`valentintorassa/tap`), and `packaging/npm/` holds an npm package that downloads
+   and checks it, not published; neither has been run against a published release. Build 4 replaces the token in the
+   hooks' stderr (P2-02), which the builds of the earlier fx runs did not.
+   What remains for *done*: a fault test run with no FAIL, and an install, run and uninstall from the published
+   package by following `install.md`.
 
 ## Open problems
 
@@ -167,40 +192,58 @@ done when its check passes on a real Mac, not when the code compiles.
   command-line tools) gives the filter no host name. On 3 November 2026 blackice read it from the TLS hello,
   after the TCP connection was up, and held the hello while the event waited; servers close a connection that
   sends no hello (GitHub after 11 s, Cloudflare after 15 s), and fx took 13 to 22 s, so the `curl` it approved
-  had already lost its connection. Since then, compiled and unit-tested but not yet run on a Mac: such a
-  connection is named from the resolver's DNS answers when its address was given for one name (see "Names from
-  DNS answers" above), and in ask mode a paused connection that the server already sees as connected is dropped
-  after 8 s (`hold_expired`) while its event stays open until the deadline, so an approval covers the app's next
-  try. What remains:
-  - The first connection still fails when the decision takes longer than about 8 s, and only a retry gets
+  had already lost its connection. Since then, such a connection is named from the resolver's DNS answers when
+  its address was given for one name (see "Names from DNS answers" above), and in ask mode a paused connection
+  that the server already sees as connected is dropped after 8 s (`hold_expired`) while its event stays open until
+  the deadline, so an approval covers the app's next try. With build 4
+  ([P2-02](../evidence/P2-02-curl-passes-on-retry-nscurl-waits-macos.md)), `curl` to api.github.com raised an
+  event named api.github.com, fx approved it, and the retry got HTTP 200 at once. What remains:
+  - The first connection still fails when the decision takes longer than the server waits, and only a retry gets
     through (`curl` retries only with `--retry`). XNU's published source sends the SYN at `connect()` and only
     keeps the app from seeing the connection until the first verdict, so a pause at the new-flow stage leaves
-    the server waiting too. A run on the Mac should confirm it: during the pause, `netstat` shows the
-    connection ESTABLISHED rather than SYN_SENT.
+    the server waiting too. P2-02 confirms it: during the pause, `netstat` showed the connection ESTABLISHED.
+  - In P2-02 the first try was not dropped at 8 s as `hold_expired` intends. It failed at 16 s, when fx's approval
+    arrived and the filter let one paused flow through, which by the times was curl's. Why the 8 s hold did not
+    apply to it is not established.
   - A name the resolver answered from its own cache is never seen on the wire, so that connection takes the
     server name path. And when two names share an address but only one was seen, the event can name the other
     one; the server name check then drops the connection rather than let it through.
   - Apps that connect by name (URLSession, Network.framework) carry the host name and are asked about at once:
-    `nscurl` waited 18 s for fx's approval and got HTTP 200.
+    `nscurl` waited 18 s (P2-01) and 28 s (P2-02) for fx's approval and got HTTP 200.
 - **The Mac's own services in ask mode.** With only the demo's rules, iCloud, CalDAV, Software Update, Maps and
   AuthKit were paused and then dropped at the deadline, and the demo's three events were a few among dozens. The
-  Apple services table (see the decisions) now covers those and other well-known services; so far only unit tests
-  check it. What remains: an ask-mode run on a Mac with the table, to see what is still asked about. A service or
-  host missing from the table is still asked about, and so is an account the user adds for another provider
-  (dataaccessd syncing a Google calendar), which needs a rule. A service's UDP flow with no host name is still
-  dropped (`no_host`), and Apple's CDN answers can fail the address check. The mode also stays on until someone
+  Apple services table (see the decisions) now covers those and other well-known services. In the build 4 run
+  (P2-02) 13 flows passed as `apple_service`, and still asked about were nsurlsessiond (kept out of the table on
+  purpose), tipsd (added to the table since), a Google calendar synced by dataaccessd (which needs a rule), and
+  cloudd reaching gateway.icloud.com, which the table covers but whose address check failed. A service or host
+  missing from the table is still asked about. A service's UDP flow with no host name is still dropped
+  (`no_host`), and Apple's CDN answers can fail the address check. The mode also stays on until someone
   switches it with Touch ID: when the demo's window closed early, the Mac kept pausing every new connection.
 - **VPN and DNS proxies.** With Tailscale's DNS on, the system's lookups go to 100.100.100.100 through Tailscale's
   extension, which forwards them with its own sockets by address: flows with no host name, which blackice drops
   (`no_host`), so names stop resolving in ask and block-all. The demo ran with `tailscale set --accept-dns=false`.
   A rule with `hosts = ["*"]` for the extension now allows those flows; the docs use the standalone build's
   identity, read with `codesign -dv` on the test Mac (`io.tailscale.ipn.macsys.network-extension`, team
-  W5364U7YZB). It has not run on a Mac yet. What remains: blackice ships no such rule, so each VPN client or DNS
+  W5364U7YZB). It has not been seen at work on a Mac yet: in P2-02 the rule was loaded but allowed nothing. What
+  remains: blackice ships no such rule, so each VPN client or DNS
   proxy needs one from the user, and the rule allows everything that extension does.
 - **A denial is not remembered.** After a deny, the app's next try (`curl` moving on to another address) raises a
   new event, and the agent is asked again.
 - **Touch ID count.** `start`, `stop` and `mode` each ask for Touch ID, so a demo takes two. A short unlock
-  window, like sudo's, is a candidate.
+  window, like sudo's, is a candidate. A test that needs a person at the keyboard can also fail for that reason:
+  the fault test's second Touch ID was cancelled, and the check that depends on it failed (P5-01).
+- **Upgrades in place.** On 3 November 2026, on macOS 27.0.1, build 4 put in `/Applications` over build 3 and
+  activated with `blackice start` replaced the running extension, which kept filtering but had no Mach service:
+  `launchctl print` showed it with no endpoints, and lookups of its XPC service failed with "No such process". The
+  daemon, `pending`, `approve` and `deny` could not reach it, so ask mode dropped everything it paused at the
+  deadline. A restart fixed it; P2-02 is the same build after the restart. `blackice start` now checks, after macOS
+  replaces a running extension, that its XPC service answers, and if it does not, says to restart and exits with
+  status 75. [`install.md`](install.md)'s upgrade steps include the restart. Whether macOS does this on every
+  in-place upgrade, or only on some, is not known; for now an upgrade means a restart.
+- **Events with no connection left.** In P5-01, `blackice pending` failed with "the network extension sent an
+  invalid reply: events has an invalid entry". From the code: an event whose paused flows were all dropped with
+  `hold_expired` stays pending, by design, and is listed with 0 connections, while the CLI's check of the reply
+  requires at least 1. Not yet confirmed by a test or fixed.
 - **Limits of the host check.** The system resolver may answer blackice's lookup differently than it answered
   the app (round-robin, CDNs, split DNS), which shows as a mismatch: ask mode asks and block-all drops. And a match
   proves only that the name resolves to that address now, not who controls the name.
