@@ -4,7 +4,7 @@ export const metadata = getDocsMetadata('/docs/how-it-works')
 
 # How it works
 
-The planned parts of netshield, and what happens to one connection in ask mode.
+The planned parts of blackice, and what happens to one connection in ask mode.
 
 <Planned />
 
@@ -12,7 +12,7 @@ The planned parts of netshield, and what happens to one connection in ask mode.
 
 <FigArchitecture n={1} />
 
-- **Netshield.app** has no UI and lives in `/Applications`, because macOS activates system extensions only from there. It contains the network extension and the `netshield` binary.
+- **Blackice.app** has no UI and lives in `/Applications`, because macOS activates system extensions only from there. It contains the network extension and the `blackice` binary.
 - **The extension** is an `NEFilterDataProvider`. It allows or drops each new flow, and in ask mode it pauses the flow until an answer arrives.
 - **The daemon** runs as a LaunchAgent for the user, receives events over XPC and runs the hooks.
 
@@ -20,7 +20,7 @@ The planned parts of netshield, and what happens to one connection in ask mode.
 
 <FigAsk n={2} />
 
-Rules from `netshield.toml` and current approvals are checked first, so only new destinations wait for an answer. A repeated connection, with the same app, host and port, raises one event.
+Rules from `blackice.toml` and current approvals are checked first, so only new destinations wait for an answer. A repeated connection, with the same app, host and port, raises one event.
 
 ## Open problems
 

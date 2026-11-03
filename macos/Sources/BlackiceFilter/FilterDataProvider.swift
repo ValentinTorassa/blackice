@@ -1,0 +1,479 @@
+// The network extension: an NEFilterDataProvider that decides each new flow with
+// BlackiceCore.FilterPolicy. This file is NetworkExtension glue only; it compiles but cannot
+// run until Blackice.app is signed with the Developer ID (docs/phase-0.md).
+//
+// Adapted from blackice-poc macos/FilterExtension/FilterDataProvider.swift at commit 45a7870
+// (https://github.com/ValentinTorassa/blackice-poc/blob/45a7870/macos/FilterExtension/FilterDataProvider.swift).
+// Kept: filter settings that also capture loopback; configuration snapshots replaced only by a
+// higher generation and a bad update never replacing a working one; held flows for reading the
+// TLS ClientHello, at most 256 and for 10 s, dropped when the configuration changes; unified
+// logging, which is diagnostic and can drop records. Changed: decisions come from
+// FilterPolicy (modes and [[allow]] rules) instead of blackice-poc's per-app policies, the
+// configuration is ProviderConfiguration, and every decided flow gets one log line.
+//
+// Phase 2 (ask mode), also compiled only: flows wait paused while their host is looked up
+// (HostAddressCache) and while an event waits for an answer (AskState). Answers and the pending
+// list come in over XPC (BlackiceXPC.FilterServer); events and verdicts go out to the daemon on
+// its connection. The maintenance timer drops paused flows at their deadline. A configuration
+// change or a stop drops every paused flow.
+import Darwin
+import Foundation
+import Network
+import BlackiceCore
+import BlackiceXPC
+import NetworkExtension
+import os
+
+@objc(BlackiceFilterDataProvider)
+final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
+    static let maximumHeld = 256
+    static let serverNameDeadline: TimeInterval = 10
+
+    private let snapshots = ProviderSnapshotStore()
+    private let lifecycle = DispatchQueue(label: "com.valentorassa.blackice.filter.lifecycle")
+    private var runID: UUID?
+    private var observation: NSKeyValueObservation?
+    private var timer: DispatchSourceTimer?
+    private let heldLock = NSLock()
+    private var held: [UUID: Held] = [:]
+    private let flowLog = Logger(subsystem: BlackiceIdentifiers.logSubsystem, category: "flows")
+    private let controlLog = Logger(subsystem: BlackiceIdentifiers.logSubsystem, category: "control")
+
+    // Ask mode. askLock guards `ask` and `lookups`; it is never taken while holding heldLock.
+    private let askLock = NSLock()
+    private var ask = AskState<Paused>()
+    private var lookups = LookupWaiters<Paused>()
+    private let addresses = HostAddressCache(resolver: SystemHostResolver())
+    private let resolverQueue = DispatchQueue(label: "com.valentorassa.blackice.filter.resolver", attributes: .concurrent)
+    private var server: FilterServer?
+
+    private struct Held {
+        let flow: NEFilterSocketFlow
+        let facts: FlowFacts
+        let generation: UInt64
+        let deadline: TimeInterval
+        var reader: TLSServerNameReader
+    }
+
+    /// A flow paused by this provider: waiting for a lookup or for an answer.
+    private struct Paused {
+        enum Stage { case newFlow, data }
+        let flow: NEFilterFlow
+        let facts: FlowFacts
+        /// Set when the flow was paused after its TLS server name was read.
+        let serverName: String?
+        let stage: Stage
+        let generation: UInt64
+    }
+
+    /// What to tell NetworkExtension now.
+    private enum Step { case allow, drop, hold, pause }
+
+    /// What to do once askLock is released.
+    private enum After {
+        case nothing
+        case lookUp(String)
+        case send(HookEvent)
+    }
+
+    private static var now: TimeInterval { ProcessInfo.processInfo.systemUptime }
+
+    override func startFilter(completionHandler: @escaping (Error?) -> Void) {
+        let identifier = UUID()
+        let candidate: ProviderConfiguration
+        do {
+            candidate = try ProviderConfiguration(vendorConfiguration: filterConfiguration.vendorConfiguration)
+        } catch {
+            control("start_refused", "invalid_configuration")
+            completionHandler(error)
+            return
+        }
+        lifecycle.sync {
+            observation = nil
+            timer?.cancel(); timer = nil
+            snapshots.clear()
+            runID = identifier
+            _ = try? snapshots.install(candidate)
+        }
+        apply(Self.makeSettings()) { [weak self] error in
+            guard let lifecycle = self?.lifecycle else { completionHandler(error); return }
+            lifecycle.async { [weak self] in
+                guard let self, self.runID == identifier else { completionHandler(error); return }
+                if let error {
+                    self.runID = nil
+                    self.snapshots.clear()
+                    self.control("start_failed", "filter_settings_failed")
+                    completionHandler(error)
+                    return
+                }
+                self.observation = self.observe(\.filterConfiguration, options: [.new]) { [weak self] _, _ in
+                    guard let self else { return }
+                    self.lifecycle.async {
+                        guard self.runID == identifier else { return }
+                        self.reloadConfiguration()
+                    }
+                }
+                self.control("started", self.snapshots.read()?.summary ?? "no_configuration")
+                // Also catches a change saved while the settings were being applied.
+                self.reloadConfiguration()
+                self.startMaintenance()
+                self.startServer()
+                completionHandler(nil)
+            }
+        }
+    }
+
+    /// Every flow goes to the provider, including loopback, which the default rules leave out.
+    static func makeSettings() -> NEFilterSettings {
+        let loopback = [("127.0.0.1", 8), ("::1", 128), ("::ffff:127.0.0.1", 104)]
+        let rules = loopback.map { address, prefix in
+            NEFilterRule(networkRule: NENetworkRule(
+                destinationNetwork: NWHostEndpoint(hostname: address, port: "0"),
+                prefix: prefix, protocol: .any), action: .filterData)
+        }
+        return NEFilterSettings(rules: rules, defaultAction: .filterData)
+    }
+
+    /// The XPC listener on NEMachServiceName, accepting only the blackice binary of our team.
+    /// Without it ask mode still pauses flows, and their deadline drops them.
+    private func startServer() {
+        server?.stop()
+        server = nil
+        let info = Bundle.main.object(forInfoDictionaryKey: "NetworkExtension") as? [String: Any]
+        guard let service = info?["NEMachServiceName"] as? String,
+              let teamID = CodeIdentity.current()?.teamID,
+              Peers.machServiceName(teamID: teamID) == service,
+              let server = FilterServer(machServiceName: service, teamID: teamID, handler: self,
+                                        report: { [weak self] line in self?.control("xpc", line) }) else {
+            control("xpc_unavailable", "no_team_or_mach_service")
+            return
+        }
+        self.server = server
+        server.start()
+        control("xpc_listening", "ok")
+    }
+
+    private func reloadConfiguration() {
+        do {
+            let candidate = try ProviderConfiguration(vendorConfiguration: filterConfiguration.vendorConfiguration)
+            guard try snapshots.install(candidate) else { return }
+            dropHeld(reason: "configuration_changed") { _ in true }
+            dropPaused(reason: "configuration_changed")
+            control("configuration_installed", candidate.summary)
+        } catch {
+            // A bad or stale update never replaces the configuration that works.
+            control("configuration_rejected", "\(error)")
+        }
+    }
+
+    override func stopFilter(with reason: NEProviderStopReason, completionHandler: @escaping () -> Void) {
+        lifecycle.async {
+            self.runID = nil
+            self.observation = nil
+            self.timer?.cancel(); self.timer = nil
+            self.server?.stop(); self.server = nil
+            self.dropHeld(reason: "provider_stopped") { _ in true }
+            self.dropPaused(reason: "provider_stopped")
+            self.askLock.lock()
+            self.ask.approvals.removeAll()
+            self.askLock.unlock()
+            self.addresses.removeAll()
+            self.control("stopped", "reason_\(reason.rawValue)")
+            self.snapshots.clear()
+            completionHandler()
+        }
+    }
+
+    override func handleNewFlow(_ flow: NEFilterFlow) -> NEFilterNewFlowVerdict {
+        let snapshot = snapshots.read()
+        let socket = flow as? NEFilterSocketFlow
+        let endpoint = socket?.remoteEndpoint as? NWHostEndpoint
+        let tcp = socket?.socketType == SOCK_STREAM && socket?.socketProtocol == IPPROTO_TCP
+        let udp = socket?.socketType == SOCK_DGRAM && socket?.socketProtocol == IPPROTO_UDP
+        let internet = socket?.socketFamily == AF_INET || socket?.socketFamily == AF_INET6
+        let direction: FlowDirection = flow.direction == .outbound ? .outbound :
+            (flow.direction == .inbound ? .inbound : .unknown)
+        let facts = FlowFacts(direction: direction, identity: CodeIdentity.resolve(auditToken: flow.sourceAppAuditToken),
+                              internetSocket: internet && (tcp || udp), tcp: tcp,
+                              hostname: socket?.remoteHostname, port: endpoint.flatMap { UInt16($0.port) },
+                              remoteAddress: endpoint.flatMap { BlackiceCore.IPAddress($0.hostname) })
+        let paused = Paused(flow: flow, facts: facts, serverName: nil, stage: .newFlow, generation: snapshot?.generation ?? 0)
+        askLock.lock()
+        let verdict = FilterPolicy.decide(facts, snapshot: snapshot, context: context(now: Self.now))
+        let (step, after) = place(verdict, paused, snapshot, now: Self.now)
+        askLock.unlock()
+        perform(after)
+        switch step {
+        case .allow: return .allow()
+        case .drop: return .drop()
+        case .pause: return .pause()
+        case .hold:
+            guard let socket, let snapshot else {
+                log(facts, .drop(reason: "hold_failed"), snapshot)
+                return .drop()
+            }
+            heldLock.lock()
+            guard held.count < Self.maximumHeld, held[flow.identifier] == nil else {
+                heldLock.unlock()
+                log(facts, .drop(reason: "hold_capacity"), snapshot)
+                return .drop()
+            }
+            held[flow.identifier] = Held(flow: socket, facts: facts, generation: snapshot.generation,
+                                         deadline: Self.now + Self.serverNameDeadline,
+                                         reader: TLSServerNameReader())
+            heldLock.unlock()
+            // The 5-byte record header first; no byte is passed until a verdict.
+            return .filterDataVerdict(withFilterInbound: false, peekInboundBytes: 0,
+                                      filterOutbound: true, peekOutboundBytes: 5)
+        }
+    }
+
+    override func handleOutboundData(from flow: NEFilterFlow, readBytesStartOffset offset: Int,
+                                     readBytes: Data) -> NEFilterDataVerdict {
+        let snapshot = snapshots.read()
+        heldLock.lock()
+        guard var entry = held[flow.identifier] else {
+            heldLock.unlock()
+            return .drop()
+        }
+        let result: TLSHelloResult
+        if snapshot?.generation != entry.generation { result = .deny("configuration_changed") }
+        else if Self.now >= entry.deadline { result = .deny("server_name_timeout") }
+        else { result = entry.reader.receive(readBytes, offset: offset) }
+        if case .needMore(let total) = result {
+            held[flow.identifier] = entry
+            heldLock.unlock()
+            return NEFilterDataVerdict(passBytes: 0, peekBytes: total)
+        }
+        held.removeValue(forKey: flow.identifier)
+        heldLock.unlock()
+
+        var serverName: String?
+        if case .serverName(let name, _) = result { serverName = name }
+        let paused = Paused(flow: flow, facts: entry.facts, serverName: serverName, stage: .data,
+                            generation: entry.generation)
+        askLock.lock()
+        let verdict = FilterPolicy.decide(entry.facts, serverName: result, snapshot: snapshot, context: context(now: Self.now))
+        let (step, after) = place(verdict, paused, snapshot, now: Self.now)
+        askLock.unlock()
+        perform(after)
+        switch step {
+        case .allow: return .allow()
+        case .pause: return .pause()
+        case .drop, .hold: return .drop()
+        }
+    }
+
+    override func handleOutboundDataComplete(for flow: NEFilterFlow) -> NEFilterDataVerdict {
+        heldLock.lock()
+        let entry = held.removeValue(forKey: flow.identifier)
+        heldLock.unlock()
+        if let entry { log(entry.facts, .drop(reason: "tls_unparsed"), snapshots.read()) }
+        return .drop()
+    }
+
+    // MARK: - Ask mode
+
+    /// Under askLock. `resolved` stands in for the cache right after a lookup, so a flow is
+    /// decided on the answers it waited for even if they expire meanwhile.
+    private func context(now: TimeInterval,
+                         resolved: (host: String, answers: Set<BlackiceCore.IPAddress>)? = nil) -> PolicyContext {
+        PolicyContext(
+            approved: { [approvals = ask.approvals] identity, host in
+                approvals.covers(ApprovalKey(identity: identity, host: host), now: now)
+            },
+            address: { [addresses] host, address in
+                if let resolved, resolved.host == host { return HostAddressCache.check(address, against: resolved.answers) }
+                return addresses.check(host: host, address: address)
+            })
+    }
+
+    /// Under askLock: turns a verdict into what NetworkExtension hears now and what follows.
+    private func place(_ verdict: FlowVerdict, _ paused: Paused, _ snapshot: ProviderConfiguration?,
+                       now: TimeInterval) -> (Step, After) {
+        let facts = paused.facts
+        switch verdict {
+        case .allow:
+            log(facts, verdict, snapshot, serverName: paused.serverName)
+            return (.allow, .nothing)
+        case .drop:
+            log(facts, verdict, snapshot, serverName: paused.serverName)
+            return (.drop, .nothing)
+        case .readServerName:
+            guard paused.stage == .newFlow else {
+                log(facts, .drop(reason: "server_name_unusable"), snapshot, serverName: paused.serverName)
+                return (.drop, .nothing)
+            }
+            return (.hold, .nothing)
+        case .resolveHost(let host):
+            switch lookups.add(paused, host: host) {
+            case .startLookup: return (.pause, .lookUp(host))
+            case .waiting: return (.pause, .nothing)
+            case .full:
+                log(facts, .drop(reason: "lookup_capacity"), snapshot, serverName: paused.serverName)
+                return (.drop, .nothing)
+            }
+        case .ask(_, let addressMatches):
+            guard let snapshot, let identity = facts.identity.appIdentity,
+                  let host = (paused.serverName ?? facts.hostname).flatMap(normalizeHost),
+                  let port = facts.port, let address = facts.remoteAddress else {
+                log(facts, .drop(reason: "ask_incomplete"), snapshot, serverName: paused.serverName)
+                return (.drop, .nothing)
+            }
+            let key = PendingKey(identity: identity, host: host, port: port)
+            let added = ask.pending.add(paused, key: key, addressMatches: addressMatches, now: now,
+                                        timeout: TimeInterval(snapshot.config.timeoutSeconds)) { seconds in
+                try HookEvent.connection(app: HookEvent.App(identity, path: CodeIdentity.path(auditToken: paused.flow.sourceAppAuditToken)),
+                                         host: host, ip: address.description, port: port,
+                                         deadline: Date().addingTimeInterval(seconds))
+            }
+            switch added {
+            case .raised(let event):
+                log(facts, verdict, snapshot, serverName: paused.serverName)
+                return (.pause, .send(event))
+            case .joined:
+                log(facts, verdict, snapshot, serverName: paused.serverName)
+                return (.pause, .nothing)
+            case .full:
+                log(facts, .drop(reason: "ask_capacity"), snapshot, serverName: paused.serverName)
+                return (.drop, .nothing)
+            }
+        }
+    }
+
+    private func perform(_ after: After) {
+        switch after {
+        case .nothing:
+            break
+        case .lookUp(let host):
+            resolverQueue.async { [weak self] in self?.finishLookup(host) }
+        case .send(let event):
+            if server?.send(.event(event)) != true { control("event_not_sent", "no_daemon") }
+        }
+    }
+
+    /// On resolverQueue: resolves, then decides again every flow that waited for this host.
+    private func finishLookup(_ host: String) {
+        let answers = addresses.lookUp(host)
+        let snapshot = snapshots.read()
+        let now = Self.now
+        var outcomes: [(Paused, Step, After)] = []
+        askLock.lock()
+        for paused in lookups.finish(host) {
+            let verdict: FlowVerdict
+            if paused.generation != snapshot?.generation {
+                verdict = .drop(reason: "configuration_changed")
+            } else {
+                let context = context(now: now, resolved: (host, answers))
+                verdict = paused.serverName.map {
+                    FilterPolicy.decide(paused.facts, serverName: .serverName($0), snapshot: snapshot, context: context)
+                } ?? FilterPolicy.decide(paused.facts, snapshot: snapshot, context: context)
+            }
+            let (step, after) = place(verdict, paused, snapshot, now: now)
+            outcomes.append((paused, step, after))
+        }
+        askLock.unlock()
+        for (paused, step, after) in outcomes {
+            switch step {
+            case .allow: resume(paused, allow: true)
+            case .drop, .hold: resume(paused, allow: false)
+            case .pause: break // waiting for an answer, or for another lookup of the same host
+            }
+            perform(after)
+        }
+    }
+
+    /// Resumes a flow paused by this provider. Called outside flow callbacks.
+    private func resume(_ paused: Paused, allow: Bool) {
+        let verdict: NEFilterVerdict
+        switch paused.stage {
+        case .newFlow: verdict = allow ? NEFilterNewFlowVerdict.allow() : NEFilterNewFlowVerdict.drop()
+        case .data: verdict = allow ? NEFilterDataVerdict.allow() : NEFilterDataVerdict.drop()
+        }
+        resumeFlow(paused.flow, with: verdict)
+    }
+
+    private func release(_ releases: [Release<Paused>]) {
+        let snapshot = snapshots.read()
+        for release in releases {
+            resume(release.flow, allow: release.allow)
+            log(release.flow.facts, release.allow ? .allow(reason: release.reason) : .drop(reason: release.reason),
+                snapshot, serverName: release.flow.serverName)
+        }
+    }
+
+    /// Drops every paused flow, waiting for a lookup or for an answer, without an answer.
+    private func dropPaused(reason: String) {
+        askLock.lock()
+        let entries = ask.pending.removeAll()
+        let waiting = lookups.removeAll()
+        askLock.unlock()
+        let snapshot = snapshots.read()
+        for paused in waiting + entries.flatMap({ $0.flows.map(\.flow) }) {
+            resume(paused, allow: false)
+            log(paused.facts, .drop(reason: reason), snapshot, serverName: paused.serverName)
+        }
+        for entry in entries { server?.send(.verdict(.cancelled, eventID: entry.event.id)) }
+    }
+
+    // MARK: - FilterServiceHandler (called on XPC queues)
+
+    func pendingReply() -> PendingReply {
+        let now = Self.now
+        askLock.lock(); defer { askLock.unlock() }
+        return PendingReply(events: ask.pending.summaries(now: now), approvals: ask.approvals.summaries(now: now))
+    }
+
+    func answer(_ request: AnswerRequest) -> AnswerReply {
+        askLock.lock()
+        let outcome = ask.answer(request, now: Self.now)
+        askLock.unlock()
+        release(outcome.released)
+        for (eventID, verdict) in outcome.verdicts { server?.send(.verdict(verdict, eventID: eventID)) }
+        control("answer", "\(request.kind.rawValue) \(request.authorization.rawValue) \(outcome.reply.reason)")
+        return outcome.reply
+    }
+
+    // MARK: - Maintenance
+
+    private func startMaintenance() {
+        let timer = DispatchSource.makeTimerSource(queue: lifecycle)
+        timer.schedule(deadline: .now() + 1, repeating: 1)
+        timer.setEventHandler { [weak self] in
+            guard let self else { return }
+            let now = Self.now
+            self.dropHeld(reason: "server_name_timeout") { $0.deadline <= now }
+            self.askLock.lock()
+            let (released, timedOut) = self.ask.expire(now: now)
+            self.askLock.unlock()
+            self.release(released)
+            for eventID in timedOut { self.server?.send(.verdict(.timedOut, eventID: eventID)) }
+        }
+        self.timer = timer
+        timer.resume()
+    }
+
+    /// Called outside flow callbacks, where NetworkExtension allows update().
+    private func dropHeld(reason: String, matching predicate: (Held) -> Bool) {
+        heldLock.lock()
+        let removed = held.filter { predicate($0.value) }
+        for id in removed.keys { held.removeValue(forKey: id) }
+        heldLock.unlock()
+        let snapshot = snapshots.read()
+        for entry in removed.values {
+            update(entry.flow, using: .drop(), for: .outbound)
+            log(entry.facts, .drop(reason: reason), snapshot)
+        }
+    }
+
+    /// Verdict and reason are public so `log show` can count them; the app and host are private.
+    private func log(_ facts: FlowFacts, _ verdict: FlowVerdict, _ snapshot: ProviderConfiguration?,
+                     serverName: String? = nil) {
+        let line = FlowLogLine(flow: facts, verdict: verdict, snapshot: snapshot, serverName: serverName)
+        flowLog.notice("flow \(line.verdict, privacy: .public) \(line.reason, privacy: .public) \(line.json(), privacy: .private)")
+    }
+
+    private func control(_ event: String, _ detail: String) {
+        controlLog.notice("control \(event, privacy: .public) \(detail, privacy: .public)")
+    }
+}

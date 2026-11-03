@@ -23,7 +23,7 @@ export const seeAlso = [
 export const steps = [
   'An app, script, or command on your Mac opens a connection.',
   'The network extension allows it, denies it, or pauses it, depending on the mode and your rules.',
-  'A paused connection becomes a request. You inspect it with `netshield pending` and answer with `netshield approve` or `netshield deny`.',
+  'A paused connection becomes a request. You inspect it with `blackice pending` and answer with `blackice approve` or `blackice deny`.',
   'Optionally, a hook passes the request to an agent such as fx, which answers the same way.',
 ]
 
@@ -36,13 +36,13 @@ export const modes: Mode[] = [
 ]
 
 export const details = [
-  'An approval covers one app and one host, and it expires, for example after an hour. Rules you want to keep go in `netshield.toml`.',
-  'Hooks receive metadata about the connection, not its payload, and do not run as root. You can run netshield by hand without fx.',
-  "There is no window or menu bar icon. netshield is a network extension, a background service, and a CLI, written in Swift on Apple's Network Extension framework.",
+  'An approval covers one app and one host, and it expires, for example after an hour. Rules you want to keep go in `blackice.toml`.',
+  'Hooks receive metadata about the connection, not its payload, and do not run as root. You can run blackice by hand without fx.',
+  "There is no window or menu bar icon. blackice is a network extension, a background service, and a CLI, written in Swift on Apple's Network Extension framework.",
   'It runs on macOS. The project is in planning, so there is nothing to install yet.',
 ]
 
-export const configIntro = '`netshield.toml` holds the mode, your rules, and the optional hook.'
+export const configIntro = '`blackice.toml` holds the mode, your rules, and the optional hook.'
 
 export const configExample = `mode = "ask"
 timeout_seconds = 10
@@ -53,4 +53,4 @@ hosts = ["api.example.com"]
 
 [[hook]]
 on = "connection"
-run = 'fx ask "Use the netshield skill to decide whether to approve the pending connection"'`
+run = 'fx ask "Use the blackice skill to decide whether to approve the pending connection"'`

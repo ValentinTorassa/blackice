@@ -1,24 +1,24 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<!-- The content filter system extension. Adapted from blackice macos/Resources/Filter-Info.plist
+<!-- The content filter system extension. Adapted from blackice-poc macos/Resources/Filter-Info.plist
      at commit 45a7870. TEAM_ID in NEMachServiceName is a placeholder: scripts/sign.sh replaces it
      with the Team ID, so the name sits under the extension's app group. The executable is named
      after the bundle ID, as Xcode names system extensions. scripts/build-app.sh sets CFBundleVersion. -->
 <plist version="1.0"><dict>
-    <key>CFBundleIdentifier</key><string>com.valentorassa.netshield.filter</string>
-    <key>CFBundleExecutable</key><string>com.valentorassa.netshield.filter</string>
-    <key>CFBundleName</key><string>NetshieldFilter</string>
-    <key>CFBundleDisplayName</key><string>Netshield Filter</string>
+    <key>CFBundleIdentifier</key><string>com.valentorassa.blackice.filter</string>
+    <key>CFBundleExecutable</key><string>com.valentorassa.blackice.filter</string>
+    <key>CFBundleName</key><string>BlackiceFilter</string>
+    <key>CFBundleDisplayName</key><string>Blackice Filter</string>
     <key>CFBundlePackageType</key><string>SYSX</string>
     <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
     <key>CFBundleVersion</key><string>1</string>
     <key>CFBundleShortVersionString</key><string>0.1.0</string>
     <key>LSMinimumSystemVersion</key><string>14.0</string>
     <key>NetworkExtension</key><dict>
-        <key>NEMachServiceName</key><string>TEAM_ID.com.valentorassa.netshield.filter</string>
+        <key>NEMachServiceName</key><string>TEAM_ID.com.valentorassa.blackice.filter</string>
         <key>NEProviderClasses</key><dict>
             <key>com.apple.networkextension.filter-data</key>
-            <string>NetshieldFilterDataProvider</string>
+            <string>BlackiceFilterDataProvider</string>
         </dict>
     </dict>
 </dict></plist>

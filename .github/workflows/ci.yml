@@ -90,13 +90,13 @@ jobs:
       - name: Smoke test the binary
         run: macos/smoke.sh
 
-      # Assembles Netshield.app and signs it ad hoc with fake Team ID values: checks the
+      # Assembles Blackice.app and signs it ad hoc with fake Team ID values: checks the
       # bundle layout, the Team ID placeholders and the signing order. No Developer ID,
       # profiles or secrets; nothing is installed or activated.
       - name: Assemble and sign ad hoc (DRY)
         env:
           DRY: '1'
-          OUT: ${{ runner.temp }}/netshield-dry
+          OUT: ${{ runner.temp }}/blackice-dry
         run: |
           bash -n macos/scripts/phase0-test.sh
           macos/scripts/sign.sh ABCDE12345 - -

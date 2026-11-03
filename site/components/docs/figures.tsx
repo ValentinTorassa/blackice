@@ -125,7 +125,7 @@ export function FigAsk({ n }: { n?: number }) {
       {msg(146, 270, 450, 'event over XPC', 'warn')}
       {msg(186, 450, 630, 'run hook with the event')}
       {note(490, 202, 130, 'agent decides')}
-      {msg(256, 630, 270, 'netshield approve … --host example.com --for 1h', 'ok')}
+      {msg(256, 630, 270, 'blackice approve … --host example.com --for 1h', 'ok')}
       {note(280, 272, 150, 'resume: allow')}
       {msg(326, 270, 80, 'connection proceeds', 'ok')}
       <line x1="12" y1="352" x2="708" y2="352" className="f-life" />
@@ -150,20 +150,20 @@ export function FigArchitecture({ n }: { n?: number }) {
       <Box x={10} y={96} w={130} h={50} title="apps" sub="browsers, agents" />
       <rect x="196" y="30" width="270" height="262" rx="12" className="f-scope" />
       <T x={212} y={52} c="f-h">
-        Netshield.app
+        Blackice.app
       </T>
       <T x={212} y={70} c="f-s">
         no UI, in /Applications
       </T>
       <Box x={216} y={88} w={230} h={64} title="network extension" sub="rules, approvals, paused flows" tone="key" />
-      <Box x={216} y={212} w={230} h={56} title="netshield CLI" sub="start, mode, approve, pending" />
+      <Box x={216} y={212} w={230} h={56} title="blackice CLI" sub="start, mode, approve, pending" />
       <Line p={p} d="M140 121 L214 121" />
       <T x={168} y={113} anchor="middle">
         flows
       </T>
 
-      <Box x={520} y={60} w={190} h={52} title="netshield daemon" sub="LaunchAgent, runs hooks" />
-      <Box x={556} y={136} w={154} h={40} title="netshield.toml" sub="mode, hooks, rules" />
+      <Box x={520} y={60} w={190} h={52} title="blackice daemon" sub="LaunchAgent, runs hooks" />
+      <Box x={556} y={136} w={154} h={40} title="blackice.toml" sub="mode, hooks, rules" />
       <Box x={520} y={208} w={190} h={52} title="hook: fx" sub="the agent decides" tone="warn" />
 
       <Line p={p} tone="warn" d="M446 100 L518 100" />

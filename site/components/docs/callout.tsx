@@ -15,7 +15,7 @@ export function Callout({ children, className }: { children: ReactNode; classNam
   )
 }
 
-/* Every design page opens with this: netshield is in planning. */
+/* Every design page opens with this: blackice is in planning. */
 export function Planned() {
   return (
     <Callout>

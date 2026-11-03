@@ -1,8 +1,8 @@
 {
-  "name": "netshield-site",
+  "name": "blackice-site",
   "version": "0.1.0",
   "private": true,
-  "description": "Project page and documentation for netshield. Nothing here is part of the native product.",
+  "description": "Project page and documentation for blackice. Nothing here is part of the native product.",
   "scripts": {
     "dev": "next dev --hostname 127.0.0.1 --port 4319",
     "build": "next build",

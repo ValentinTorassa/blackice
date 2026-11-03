@@ -5,7 +5,7 @@
    box is dashed: the hook is optional. */
 
 const label =
-  'An app opens a connection and netshield checks your rules. If a rule matches, the connection is allowed. If not, it is paused and you or an agent such as fx decide: approve allows it, deny or no answer drops it.'
+  'An app opens a connection and blackice checks your rules. If a rule matches, the connection is allowed. If not, it is paused and you or an agent such as fx decide: approve allows it, deny or no answer drops it.'
 
 type Box = { x: number; y: number; w: number; title: string; sub?: string; tone?: 'key' | 'warn' }
 
@@ -53,7 +53,7 @@ function Label({ x, y, anchor, children }: { x: number; y: number; anchor?: 'mid
 function Row() {
   const m = 'flow-row'
   const app: Box = { x: 1, y: 30, w: 150, title: 'app', sub: 'opens a connection' }
-  const shield: Box = { x: 191, y: 30, w: 150, title: 'netshield', sub: 'checks your rules', tone: 'key' }
+  const shield: Box = { x: 191, y: 30, w: 150, title: 'blackice', sub: 'checks your rules', tone: 'key' }
   const allowed: Box = { x: 599, y: 30, w: 120, title: 'allowed' }
   const decide: Box = { x: 319, y: 140, w: 150, title: 'you or fx', sub: 'approve or deny', tone: 'warn' }
   const dropped: Box = { x: 599, y: 140, w: 120, title: 'dropped' }
@@ -88,7 +88,7 @@ function Row() {
 function Column() {
   const m = 'flow-column'
   const app: Box = { x: 1, y: 1, w: 170, title: 'app', sub: 'opens a connection' }
-  const shield: Box = { x: 1, y: 101, w: 170, title: 'netshield', sub: 'checks your rules', tone: 'key' }
+  const shield: Box = { x: 1, y: 101, w: 170, title: 'blackice', sub: 'checks your rules', tone: 'key' }
   const allowed: Box = { x: 239, y: 101, w: 100, title: 'allowed' }
   const decide: Box = { x: 1, y: 211, w: 170, title: 'you or fx', sub: 'approve or deny', tone: 'warn' }
   const dropped: Box = { x: 1, y: 321, w: 170, title: 'dropped' }

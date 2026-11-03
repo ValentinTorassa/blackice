@@ -9,11 +9,11 @@ export const canonicalSiteUrl =
   (vercelProductionHost ? `https://${vercelProductionHost}` : 'http://127.0.0.1:4319')
 
 export const site = {
-  name: 'netshield',
+  name: 'blackice',
   headline: 'A headless application firewall for macOS, operated through a CLI.',
   description:
-    'netshield is a headless application firewall for macOS, operated through a CLI. New connections can wait for you, or an optional hook such as fx, to approve or deny them.',
-  repo: 'https://github.com/ValentinTorassa/netshield',
+    'blackice is a headless application firewall for macOS, operated through a CLI. New connections can wait for you, or an optional hook such as fx, to approve or deny them.',
+  repo: 'https://github.com/ValentinTorassa/blackice',
   authors: [
     { name: 'Valen Torassa', url: 'https://valentorassa.com' },
     { name: 'Esteban Suárez', url: 'https://github.com/suarezesteban' },

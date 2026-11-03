@@ -4,14 +4,14 @@ export const metadata = getDocsMetadata('/docs/configuration')
 
 # Configuration
 
-netshield.toml and the event a hook receives. A proposal, not a stable format.
+blackice.toml and the event a hook receives. A proposal, not a stable format.
 
 <Planned />
 
-## netshield.toml
+## blackice.toml
 
 ```toml
-# netshield.toml
+# blackice.toml
 mode = "ask"            # "accept-all", "ask" or "block-all"
 timeout_seconds = 10    # no answer in time means deny
 
@@ -23,14 +23,14 @@ hosts = ["api.example.com"]
 
 [[hook]]
 on = "connection"
-run = 'fx ask "Use the netshield skill to decide whether to approve the pending connection"'
+run = 'fx ask "Use the blackice skill to decide whether to approve the pending connection"'
 ```
 
-The parser is strict: an unknown key or a value of the wrong type stops netshield from starting instead of being guessed at.
+The parser is strict: an unknown key or a value of the wrong type stops blackice from starting instead of being guessed at.
 
 ## The event a hook receives
 
-The hook gets the event as JSON on stdin. The daemon also writes it to a file named in `NETSHIELD_EVENT_FILE`, because `fx ask` does not read stdin when the prompt is on the command line. The token is good for one answer to that event.
+The hook gets the event as JSON on stdin. The daemon also writes it to a file named in `BLACKICE_EVENT_FILE`, because `fx ask` does not read stdin when the prompt is on the command line. The token is good for one answer to that event.
 
 ```json
 {

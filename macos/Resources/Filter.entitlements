@@ -3,11 +3,11 @@
 <!-- Template for the system extension. TEAM_ID in the app group is a placeholder that
      scripts/sign.sh replaces; NEMachServiceName in Filter-Info.plist sits under this group.
      scripts/sign.sh also adds com.apple.application-identifier and com.apple.developer.team-identifier
-     from the provisioning profile. Adapted from blackice macos/Resources/Filter.entitlements and
+     from the provisioning profile. Adapted from blackice-poc macos/Resources/Filter.entitlements and
      macos/signing-copies.sh at commit 45a7870. -->
 <plist version="1.0"><dict>
     <key>com.apple.developer.networking.networkextension</key>
     <array><string>content-filter-provider-systemextension</string></array>
     <key>com.apple.security.application-groups</key>
-    <array><string>TEAM_ID.com.valentorassa.netshield</string></array>
+    <array><string>TEAM_ID.com.valentorassa.blackice</string></array>
 </dict></plist>

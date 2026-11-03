@@ -1,5 +1,5 @@
 /* Network probe for the phase 0 check: resolve a host and open one TCP connection to port 443.
-   phase0-test.sh signs it with the Developer ID as com.valentorassa.netshield.probe, so the
+   phase0-test.sh signs it with the Developer ID as com.valentorassa.blackice.probe, so the
    filter sees code with our Team ID and no [[allow]] rule. Exit 0: connected; 1: the connection
    failed; 2: the name did not resolve. From the phase 0 draft ~/netshield-fase0/probe.c. */
 #include <errno.h>
