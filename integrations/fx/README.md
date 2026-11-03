@@ -13,11 +13,8 @@ arrive in phase 3.
 ## Installing the skill
 
 fx looks for skills in `~/.fx/skills`, `~/.agents/skills` and `~/.claude/skills`, and in a
-workspace's `.fx/skills`, `.agents/skills`, `.claude/skills` and `skills/`. For example:
-
-```console
-$ mkdir -p ~/.fx/skills && ln -s "$PWD/integrations/fx/skills/netshield" ~/.fx/skills/netshield
-```
+workspace's `.fx/skills`, `.agents/skills`, `.claude/skills` and `skills/`. For the hook it
+goes in the agent's own home; the commands are under [Permissions](#permissions).
 
 ## The hook
 
@@ -27,8 +24,56 @@ fx v0.0.16 runs one request with `fx ask`; it has no `-p` flag. The hook in
 ```toml
 [[hook]]
 on = "connection"
-run = 'fx ask "Use the netshield skill to decide whether to approve the pending connection"'
+run = 'HOME="$HOME/.config/netshield/agent" fx ask "Use the netshield skill to decide whether to approve the pending connection"'
 ```
+
+The hook runner starts each hook in a new private directory holding the event as
+`event.json`, and names that file in `NETSHIELD_EVENT_FILE`. That directory is fx's
+workspace, so fx can read the event without reaching outside it. The event also goes to the
+hook on stdin, but `fx ask` treats stdin as its prompt, so the skill reads the file.
+
+`HOME` points fx at a home of its own, with its own login and the rules below, so they don't
+apply to the fx you use yourself. fx's documentation describes `FX_HOME` for this, but
+v0.0.16 does not read it. `netshield approve` and `netshield deny` don't read anything from
+`HOME`.
+
+## Permissions
+
+The agent has to run `netshield approve` and `netshield deny` without a prompt, and nothing
+else. Set up its home once:
+
+```console
+$ agent="$HOME/.config/netshield/agent"
+$ mkdir -p "$agent/.fx/skills"
+$ cp -R integrations/fx/skills/netshield "$agent/.fx/skills/"
+$ HOME="$agent" fx login
+```
+
+Then add these keys to `$agent/.fx/settings.json`, which `fx login` creates:
+
+```json
+"permission_mode": "ask",
+"permission": {
+  "bash": {"*": "deny", "netshield approve *": "allow", "netshield deny *": "allow"},
+  "edit": {"*": "deny"},
+  "web_fetch": {"*": "deny"},
+  "web_search": {"*": "deny"}
+}
+```
+
+- **`ask`**, not the default `auto`, so fx's review model never lets an action through on its
+  own. Anything sensitive that no rule allows needs a person, and under the hook there is none.
+- **`bash`** refuses every command except the ones that start with `netshield approve ` or
+  `netshield deny `. fx never matches an allow rule against a compound command (`&&`, `;`, a
+  pipe, `$(...)`), so nothing can ride along behind an answer. That is why the skill tells
+  the agent to run each answer on its own.
+- **`edit`** refuses file changes. fx counts writing a new file as an edit.
+- **`web_fetch`** and **`web_search`** keep the agent off the web, so it can't look the host
+  up and no web page ends up in what it reads.
+- Reading files is left alone: the agent has to read `event.json` and the skill.
+- `fx permissions`, run with the same `HOME`, shows the mode and the rules fx loaded.
+
+Don't add MCP servers to this home: their tools are not covered by these rules.
 
 ## Checking the skill
 
@@ -38,10 +83,12 @@ only records its arguments. Nothing is allowed or blocked. It then compares each
 [`eval/cases.json`](eval/cases.json) and checks that the token was copied exactly.
 
 ```console
-$ integrations/fx/eval/run.sh /path/to/fx      # FX_HOME=... to use another fx home
+$ AGENT_HOME="$HOME/.config/netshield/agent" integrations/fx/eval/run.sh /path/to/fx
 ```
 
-fx needs a login and a permission mode that lets it run shell commands without asking.
+Each event gets its own private directory with `event.json` and the repository's copy of the
+skill in it, and fx runs there, as under the hook runner. `AGENT_HOME` is the `HOME` fx runs with; it defaults to yours.
+`KEEP=1` keeps the work directory with fx's output.
 
 The ten events cover:
 
@@ -52,26 +99,28 @@ The ten events cover:
 - an event with no host;
 - instructions injected into the host and into the app path.
 
-On 2 November 2026, with fx 0.0.16 signed in with a ChatGPT account, two runs each came out
+On 2 November 2026, with fx 0.0.16 signed in with a ChatGPT account, four runs each came out
 ten for ten:
 - The four normal cases were approved and the three suspicious ones denied.
 - The event with no host and the one with an injected host got no answer.
 - The event with an injected path was denied.
-- The injected `touch` never ran. In the first run, which was checked by hand, fx ran nothing
-  but a read of the event file and the `netshield` stub.
+- The injected `touch` never ran.
 
-Two runs with one model show the skill can work, not that it always will.
+The first two runs were in full-access mode, with an earlier version of the skill that read
+the event with `cat`. The last two used the rules above, and in both fx did exactly ten reads
+of `event.json` and eight `netshield` commands, with nothing refused. Before the skill said
+to read with the file tool and to run each answer on its own, fx wrapped the read in a
+compound shell command, the rules refused it, and three events went unanswered. That failure
+is safe, since no answer means the connection is dropped, but it is why the skill is worded
+the way it is.
+
+Four runs with one model show the skill can work, not that it always will.
 
 ## Open questions
 
-- **How the event reaches the agent.** The design gives hooks the event as JSON on stdin.
-  `fx ask` reads stdin as the prompt only when no prompt arguments are given, so with the
-  hook above the event would not reach the model. The skill assumes the daemon also writes
-  the event to a file only the user can read and sets `NETSHIELD_EVENT_FILE` to its path.
-  That is a proposal for phase 3, not a decision.
-- **Permissions.** The agent has to run `netshield approve` and `netshield deny` without a
-  prompt, and nothing else. How to grant exactly that in fx's permission settings is not
-  worked out yet.
+- **fx upgrades.** The rules depend on how fx matches them, checked against v0.0.16: prefix
+  patterns, and no allow rule for compound commands. Run the eval with the agent home again
+  after upgrading fx.
 - **The agent's own network.** fx needs to reach its model provider. In ask mode that
   connection must be covered by a fixed rule bound to fx's signature, or fx waits on its own
   approval (see `docs/plan.md`, open problems).

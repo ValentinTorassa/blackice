@@ -21,11 +21,19 @@ const nextConfig: NextConfig = {
   cacheComponents: true,
   partialPrefetching: true,
   poweredByHeader: false,
+  /* The Tailwind CSS is ~7.5 KiB, so ship it in a <style> tag with the HTML
+     instead of a render-blocking <link>. Production builds only. */
+  experimental: {
+    inlineCss: true,
+  },
   outputFileTracingIncludes: {
     '/docs.md': ['./app/(site)/(docs)/docs/**/*.mdx'],
-    '/docs/\\[\\.\\.\\.slug\\]': ['./app/(site)/(docs)/docs/**/*.mdx'],
+    '/markdown/docs/\\[\\.\\.\\.slug\\]': ['./app/(site)/(docs)/docs/**/*.mdx'],
     '/llms-full.txt': ['./app/(site)/(docs)/docs/**/*.mdx'],
   },
+  rewrites: async () => [
+    { source: '/docs/:slug(.+)\\.md', destination: '/markdown/docs/:slug' },
+  ],
   redirects: async () => [
     { source: '/source', destination: 'https://github.com/ValentinTorassa/netshield', permanent: false },
   ],
