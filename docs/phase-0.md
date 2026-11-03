@@ -117,8 +117,9 @@ repository at `~/Documents/Github/Personal/blackice` on `main`.
 
 ## Rebuilding
 
-`phase0-test.sh` refuses to install over an existing `/Applications/Blackice.app`, so roll back before installing
-a new build. macOS replaces an installed extension only with the same or a higher `CFBundleVersion`. To install a
+`phase0-test.sh` reuses an installed `/Applications/Blackice.app` of the same build (same CDHash), so a run that
+stopped while macOS waited for approval can be retried after allowing the extension. It refuses any other build, so
+roll back before installing a new one. macOS replaces an installed extension only with the same or a higher `CFBundleVersion`. To install a
 new build over a running one without stopping it, raise the number:
 `BUILD_NUMBER=2 macos/scripts/sign.sh …`.
 

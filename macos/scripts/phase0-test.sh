@@ -52,7 +52,14 @@ codesign --verify --strict --deep "$SRC_APP" || die "$SRC_APP does not verify; s
 # SIGPIPE fails the pipeline even though the line is there.
 details=$(codesign -dvv "$SRC_APP" 2>&1)
 grep -qx "TeamIdentifier=$TEAM_ID" <<<"$details" || die "$SRC_APP is not signed by team $TEAM_ID"
-if [[ -e "$DEST" ]]; then die "$DEST already exists; run $0 --rollback first"; fi
+# The same build already installed is reused: removing it would uninstall the extension and lose
+# a pending or given approval in System Settings. Any other build has to be rolled back first.
+cdhash() { codesign -dvvv "$1" 2>&1 | sed -n 's/^CDHash=//p'; }
+reuse=
+if [[ -e "$DEST" ]]; then
+    [[ "$(cdhash "$DEST")" == "$(cdhash "$SRC_APP")" ]] || die "$DEST is another build; run $0 --rollback first"
+    reuse=1
+fi
 IDENTITY=$(security find-identity -v -p codesigning | grep -F 'Developer ID Application:' | grep -F "($TEAM_ID)\"" \
     | awk 'NR == 1 {print $2}')
 [[ -n "$IDENTITY" ]] || die "no Developer ID Application identity of team $TEAM_ID in the keychain"
@@ -66,7 +73,11 @@ codesign -dvv "$W/probe" 2>&1 | grep -E '^(Identifier|TeamIdentifier)='
 "$W/probe" "$HOST" || die "the probe cannot reach $HOST even without blackice; check the network first"
 
 step "Install in /Applications"
-ditto "$SRC_APP" "$DEST"
+if [[ -n "$reuse" ]]; then
+    echo "$DEST is this build already; reusing it"
+else
+    ditto "$SRC_APP" "$DEST"
+fi
 codesign --verify --strict --deep "$DEST"
 echo "Installed $DEST"
 
