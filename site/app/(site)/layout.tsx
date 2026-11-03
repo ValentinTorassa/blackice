@@ -27,7 +27,7 @@ export const metadata: Metadata = {
   metadataBase: new URL(canonicalSiteUrl),
   title: site.name,
   description: site.description,
-  icons: { icon: '/logo.svg' },
+  /* Icons come from the file conventions: app/icon.svg and app/apple-icon.png. */
   openGraph: { type: 'website', ...ogShared },
   twitter: { ...twitterShared },
 }
