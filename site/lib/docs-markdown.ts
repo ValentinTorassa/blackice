@@ -3,6 +3,7 @@ import { join } from 'node:path'
 
 import { docsNav, docsPages, getDocsPage } from '@/lib/docs-nav'
 import { figureText } from '@/lib/figures'
+import { docsStatusMarkdown, release } from '@/lib/release'
 import { canonicalSiteUrl, site } from '@/lib/site-metadata'
 
 /* Markdown twins of the docs, generated from the MDX sources so the HTML and
@@ -16,14 +17,12 @@ function getSourcePath(href: string): string {
   return join(process.cwd(), 'app', '(site)', '(docs)', ...href.slice(1).split('/'), 'page.mdx')
 }
 
-const planned = '> **Planned.** Nothing on this page is implemented yet.'
-
 /* The MDX sources use a small, fixed set of components. Each one becomes its
    text equivalent; anything else is left in place so a new component shows
    up in the output instead of silently disappearing. */
 function convertComponents(source: string): string {
   return source
-    .replace(/<Planned\s*\/>/g, planned)
+    .replace(/<Status\s*\/>/g, docsStatusMarkdown())
     .replace(/<(FigArchitecture|FigAsk)\s+n=\{(\d+)\}\s*\/>/g, (_m, name: string, n: string) =>
       `> **Figure ${n}.** ${figureText[name as keyof typeof figureText]}`,
     )
@@ -79,7 +78,7 @@ export function createLlmsText(): string {
     '',
     `> ${site.description}`,
     '',
-    'blackice is in planning. The documentation describes the design; nothing runs yet.',
+    `blackice ${release.version} is early: it has run on one Mac, with macOS 27.0.1. What has run is recorded in the repository's evidence folder (${release.evidence}).`,
     '',
     `- [Home](${canonicalSiteUrl}/index.md): What blackice is, in one page.`,
     `- [All documentation](${canonicalSiteUrl}/llms-full.txt): Every page below in one file.`,

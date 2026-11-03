@@ -48,6 +48,7 @@ test('production documentation metadata, Markdown exports and HTML 404s', { time
 
   const pages = [
     ['/docs', 'Introduction', '/docs.md'],
+    ['/docs/install', 'Install', '/docs/install.md'],
     ['/docs/how-it-works', 'How it works', '/docs/how-it-works.md'],
     ['/docs/configuration', 'Configuration', '/docs/configuration.md'],
     ['/docs/cli', 'CLI', '/docs/cli.md'],
@@ -66,7 +67,7 @@ test('production documentation metadata, Markdown exports and HTML 404s', { time
     assert.equal(markdown.response.status, 200, markdownPath)
     assert.match(markdown.response.headers.get('content-type'), /text\/markdown/)
     assert.ok(markdown.body.startsWith(`# ${title}\n`), markdownPath)
-    assert.doesNotMatch(markdown.body, /getDocsMetadata|export const metadata|<Planned\s*\/>/)
+    assert.doesNotMatch(markdown.body, /getDocsMetadata|export const metadata|<Status\s*\/>/)
   }
 
   for (const path of ['/docs/missing', '/docs/missing/nested', '/missing']) {
@@ -88,7 +89,7 @@ test('production documentation metadata, Markdown exports and HTML 404s', { time
   assert.doesNotMatch(full.body, /getDocsMetadata|export const metadata/)
 
   const manifest = JSON.parse(await readFile('.next/prerender-manifest.json', 'utf8'))
-  for (const path of ['/docs.md', '/llms-full.txt', '/markdown/docs/cli', '/markdown/docs/configuration', '/markdown/docs/how-it-works']) {
+  for (const path of ['/docs.md', '/llms-full.txt', '/markdown/docs/cli', '/markdown/docs/configuration', '/markdown/docs/install', '/markdown/docs/how-it-works']) {
     assert.ok(manifest.routes[path], `Not prerendered: ${path}`)
   }
 })

@@ -6,11 +6,22 @@ export const metadata = getDocsMetadata('/docs')
 
 blackice is a headless application firewall for macOS, operated through a CLI. A connection that no rule covers can wait for you, or for an agent behind a hook, to approve or deny it.
 
-<Planned />
+<Status />
 
 blackice is a network extension, a small daemon and a CLI. The extension sees every new outbound connection on the Mac, from any app. There are three modes. Accept all lets everything through, block all drops everything that no rule allows, and ask pauses each new connection that no rule or approval covers until it gets an answer.
 
 Answers go through the command line, for example `blackice approve --app com.example.tool --host example.com --for 1h`. You can give them yourself, or a hook can pass the request to an agent such as fx, which answers the same way. There is no dialog to click.
+
+## Status
+
+0.1.0 is the first release. On one Mac, a MacBook Air with macOS 27.0.1:
+
+- In block-all, a binary signed with the project's Team ID and named by no rule was refused, and `curl` with a rule got through.
+- In ask mode, fx, run by the hook, approved and denied connections, and in one run decided ten in a row with nobody at the keyboard. Apps that connect by name, such as `nscurl`, wait for the answer. `curl` and other tools that connect to an address fail on the first try and get through on the retry after an approval.
+- The fault tests passed for the daemon being down, a hung hook, a burst of 120 connections and a daemon restart. The configuration change case failed: a Touch ID prompt was cancelled, and `blackice pending` rejected the extension's reply.
+- After an upgrade in place, the daemon and the CLI could not reach the new extension until the Mac restarted.
+
+[Install](/docs/install) has the steps. The phases and open problems are in the repository's [plan](https://github.com/ValentinTorassa/blackice/blob/main/docs/plan.md).
 
 ## Why
 

@@ -4,9 +4,9 @@ export const metadata = getDocsMetadata('/docs/how-it-works')
 
 # How it works
 
-The planned parts of blackice, and what happens to one connection in ask mode.
+The parts of blackice, and what happens to one connection in ask mode.
 
-<Planned />
+<Status />
 
 ## The parts
 
@@ -26,4 +26,5 @@ Rules from `blackice.toml`, the built-in list of macOS services and current appr
 
 - The deciding agent needs the network to reach its model. A fixed rule for it, bound to its signature, keeps it from waiting on its own approval.
 - Host names and app names come from whoever opens the connection and end up in the model's prompt. Events carry them as structured fields, and the only answers are approve and deny.
-- How long macOS keeps a paused flow is not measured yet. It sets the upper bound for the timeout.
+- A tool that connects to an address, such as `curl`, has its TCP connection open while it waits, and servers close a connection that sends nothing after 11 to 15 s. When the decision takes longer, its first try fails and only the retry after the approval gets through. Apps that connect by name, through URLSession, are paused before they connect and wait the whole timeout.
+- After an upgrade in place, macOS 27.0.1 left the new extension without its XPC service until the Mac restarted, so an upgrade needs a restart.

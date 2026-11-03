@@ -1,4 +1,6 @@
-import { configExample, configIntro, details, hero, modes, steps } from '@/lib/landing-content'
+import { demo } from '@/lib/demo'
+import { configExample, configIntro, details, hero, install, modes, status, steps } from '@/lib/landing-content'
+import { release } from '@/lib/release'
 import { canonicalSiteUrl, site } from '@/lib/site-metadata'
 
 /* The homepage as markdown (/index.md), built from the same content as the
@@ -9,6 +11,7 @@ export function createLandingMarkdown(): string {
     '',
     hero.headline,
     '',
+    ...(demo.src ? [`[Demo video](${demo.src})`, ''] : []),
     '## How it works',
     '',
     ...steps.map((step, index) => `${index + 1}. ${step}`),
@@ -27,6 +30,19 @@ export function createLandingMarkdown(): string {
     '```toml',
     configExample,
     '```',
+    '',
+    `## Install ${release.version}`,
+    '',
+    ...status.flatMap((paragraph) => [paragraph, '']),
+    `Each run is recorded in the repository's [evidence](${release.evidence}) folder.`,
+    '',
+    '```console',
+    `$ ${install.brew}`,
+    '```',
+    '',
+    `${install.zip} GitHub release: ${release.url}. Install docs: ${canonicalSiteUrl}/docs/install.md.`,
+    '',
+    install.next,
     '',
     '## More',
     '',

@@ -3,7 +3,7 @@ import type { ReactNode } from 'react'
 import { figureLabel, figureText } from '@/lib/figures'
 
 /* Diagrams for the docs. Static SVG drawn with the f-* classes in
-   globals.css; they show the planned design and nothing in them runs. */
+   globals.css; they show the design, not a recording of a run. */
 
 type Tone = 'ok' | 'no' | 'mute' | 'warn'
 const tones: Tone[] = ['ok', 'no', 'mute', 'warn']

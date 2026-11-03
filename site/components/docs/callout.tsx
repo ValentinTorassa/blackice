@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react'
 
+import { docsStatus, release } from '@/lib/release'
 import { cn } from '@/lib/utils'
 
 export function Callout({ children, className }: { children: ReactNode; className?: string }) {
@@ -15,12 +16,21 @@ export function Callout({ children, className }: { children: ReactNode; classNam
   )
 }
 
-/* Every design page opens with this: blackice is in planning. */
-export function Planned() {
+/* Every docs page opens with this: how far blackice has run. */
+export function Status() {
   return (
     <Callout>
       <p>
-        <strong>Planned.</strong> Nothing on this page is implemented yet.
+        <strong>{docsStatus.lead}</strong> {docsStatus.before}{' '}
+        <a
+          href={release.evidence}
+          target="_blank"
+          rel="noreferrer"
+          className="text-foreground underline decoration-border-strong underline-offset-4 hover:decoration-foreground"
+        >
+          {docsStatus.link}
+        </a>{' '}
+        {docsStatus.after}
       </p>
     </Callout>
   )
