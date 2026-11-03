@@ -15,6 +15,7 @@ done when its check passes on a real Mac, not when the code compiles.
 | Approval scope | One app (by signing identity) and one host, with an expiry: `blackice approve --app … --host … --for 1h`. |
 | Ad hoc signed code | Ask mode asks about it too, and the approval names its cdhash plus the host: `blackice approve --cdhash … --host …`. A rebuild changes the cdhash, so the next connection asks again. Rules in `blackice.toml` never name it, so block-all drops it. Code with no signature has no cdhash either and is dropped. |
 | Host and address | Before a rule or an approval counts, the host is resolved with the system resolver and the flow's remote address must be among the answers, which are kept for 30 s. A mismatch means no rule or approval matches: ask mode asks, block-all drops, and the log says `address_mismatch`. |
+| Names from DNS answers | In ask and block-all the extension reads the system resolver's DNS traffic (mDNSResponder's port-53 flows, UDP and TCP) and passes every byte unchanged; accept-all reads nothing. A response counts only when it answers a query sent on the same flow, with the same ID and question, the check the resolver applies itself. The question's name is recorded against the A and AAAA addresses at the end of its CNAME chain (never the CNAME targets), for the records' TTL held between 30 s and 5 minutes, at most 16 names per address and 4096 addresses. Anything malformed, truncated or not understood teaches nothing. A connection with no host name from the system whose address was given for exactly one name is decided on that name, which passes the host and address check since it came with the address: rules and approvals for it count, and ask mode asks about it. On port 443 the TLS server name is still read, and a server name other than that one must be covered itself, or the connection is dropped (`server_name_mismatch`), so an app cannot look up an allowed name and then reach another site on the same CDN address. Several names for one address, or none, leave the server name path as it was. |
 | DNS in block-all | Apple's resolver stays reachable on port 53 in every mode, so in block-all any app can still make name lookups through it, which can carry data out. Documented as a known gap; tying DNS answers to rules with an `NEDNSProxyProvider` is later work. |
 | Hooks that leave their process group | Best effort, and documented: a process started by a hook that calls `setsid` or `setpgid` escapes the kill at the deadline and when the hook exits. Running hooks under a separate user or in a sandbox would close this; neither is planned yet. |
 | Approval storage | In memory, inside the extension. Permanent rules live in `blackice.toml`. |
@@ -132,15 +133,25 @@ done when its check passes on a real Mac, not when the code compiles.
   or deny.
 - **Latency and volume.** A model takes seconds and a Mac opens hundreds of connections. Rules, expiring approvals
   and one event per repeated connection keep the questions to new destinations.
-- **Connections named by their TLS server name.** The SDK says macOS keeps a paused TCP flow until the provider
-  resumes it (a UDP flow, 10 s). But an app that connects to an address (`curl` and most command-line tools)
-  gives the filter no host name, so blackice reads it from the TLS hello, after the TCP connection is up, and
-  holds the hello while the event waits. Servers close a connection that sends no hello: GitHub after 11 s,
-  Cloudflare after 15 s (measured on 3 November 2026). fx took 13 to 22 s, so the `curl` it approved had already
-  lost its connection, and only a retry would have used the approval. Apps that connect by name (URLSession,
-  Network.framework) are paused before the TCP connection and can wait the whole timeout. Candidates: learn
-  names from the system resolver's answers, so the pause comes before the connection; or drop such a flow after
-  a few seconds while its event stays open, so the approval covers the retry.
+- **Connections named by their TLS server name.** An app that connects to an address (`curl` and most
+  command-line tools) gives the filter no host name. On 3 November 2026 blackice read it from the TLS hello,
+  after the TCP connection was up, and held the hello while the event waited; servers close a connection that
+  sends no hello (GitHub after 11 s, Cloudflare after 15 s), and fx took 13 to 22 s, so the `curl` it approved
+  had already lost its connection. Since then, compiled and unit-tested but not yet run on a Mac: such a
+  connection is named from the resolver's DNS answers when its address was given for one name (see "Names from
+  DNS answers" above), and in ask mode a paused connection that the server already sees as connected is dropped
+  after 8 s (`hold_expired`) while its event stays open until the deadline, so an approval covers the app's next
+  try. What remains:
+  - The first connection still fails when the decision takes longer than about 8 s, and only a retry gets
+    through (`curl` retries only with `--retry`). XNU's published source sends the SYN at `connect()` and only
+    keeps the app from seeing the connection until the first verdict, so a pause at the new-flow stage leaves
+    the server waiting too. A run on the Mac should confirm it: during the pause, `netstat` shows the
+    connection ESTABLISHED rather than SYN_SENT.
+  - A name the resolver answered from its own cache is never seen on the wire, so that connection takes the
+    server name path. And when two names share an address but only one was seen, the event can name the other
+    one; the server name check then drops the connection rather than let it through.
+  - Apps that connect by name (URLSession, Network.framework) carry the host name and are asked about at once:
+    `nscurl` waited 18 s for fx's approval and got HTTP 200.
 - **The Mac's own services in ask mode.** With only the demo's rules, iCloud, CalDAV, Software Update, Maps and
   AuthKit were paused and then dropped at the deadline, and the demo's three events were a few among dozens. Ask mode needs rules, or a default, for Apple's own services before it is used for real. The mode
   also stays on until someone switches it with Touch ID: when the demo's window closed early, the Mac kept
