@@ -10,6 +10,9 @@ whether to allow it, and the agent answers with `blackice approve`.
 denied another and dropped one nobody answered. Nothing is packaged or ready to use. The phases, the decisions
 and the open problems are in [`docs/plan.md`](docs/plan.md).
 
+What has run on a Mac is recorded in [`evidence/`](evidence/), one file per run. [`docs/install.md`](docs/install.md)
+describes installing a release package; none has been published yet.
+
 ## Who's building it and why
 
 We're [Valen Torassa](https://valentorassa.com) and [Esteban Suárez](https://github.com/suarezesteban).
@@ -101,8 +104,8 @@ its macOS app filter: the Network Extension, app identity from code signatures, 
 - ask mode's state (approvals, paused connections, one-time tokens, deadlines) and the XPC messages
   between the extension, the daemon and the CLI. These and the extension's decision are plain code
   with unit tests; the NetworkExtension and XPC code around them has run on one Mac, with no automated tests;
-- scripts in `macos/scripts/` that build Blackice.app without Xcode, sign it, and run the phase 0
-  check;
+- scripts in `macos/scripts/` that build Blackice.app without Xcode, sign it, package it as a
+  notarized zip, and run the phase 0 check and the fault tests;
 - from blackice-poc's macOS app filter: app identity from code signatures, host name rules, the TLS
   server name reader, and the filter provider and activation code the extension and CLI adapt.
 
@@ -111,6 +114,8 @@ $ macos/test.sh     # swift test
 $ macos/smoke.sh    # builds and runs the binary
 $ cd macos && swift run blackice validate Examples/blackice.toml
 $ DRY=1 macos/scripts/sign.sh ABCDE12345 - -   # assembles Blackice.app, signed ad hoc
+$ DRY=1 macos/scripts/package.sh ABCDE12345 macos/build/sign-<time>/Blackice.app   # zips it, checks the zip
+$ DRY=1 macos/scripts/fault-test.sh   # checks the fault tests' configuration, hook and result checks
 ```
 
 [`integrations/fx/`](integrations/fx/) holds a draft skill for fx to decide connections.

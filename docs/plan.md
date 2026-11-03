@@ -123,7 +123,27 @@ done when its check passes on a real Mac, not when the code compiles.
    approved npm and Homebrew for the same `nscurl`, so the skill's guidance on package registries needs a look.
    Decisions took 11 to 28 s.
 5. **Hardening and evidence.** Fault tests (daemon down, hook hung, bursts of connections, restart), evidence
-   entries in the style of blackice-poc, notarization and an installer.
+   entries in the style of blackice-poc, notarization and an installer. *Done when* `macos/scripts/fault-test.sh`
+   passes on a Mac and the run is recorded in [`evidence/`](../evidence/), and a `Blackice-<version>.zip` from
+   `macos/scripts/package.sh` passes the script's checks (checksum, signature, stapled ticket, Gatekeeper) and
+   installs, runs and uninstalls on a Mac by following [`install.md`](install.md).
+   *So far*: [`evidence/`](../evidence/) records the runs so far, each from its logs: phase 0's check (P0-01), the
+   first ask-mode run with fx (P2-01) and the ten connections fx decided (P4-01). `macos/scripts/fault-test.sh`
+   covers the four faults with one test configuration and two Touch ID prompts: with no daemon registered, a
+   paused connection's event is not sent (`control event_not_sent no_daemon`) and the deadline drops it; a hook
+   that sleeps past the deadline is killed (`hook_killed`, reason `deadline`) and its connection dropped
+   (`timed_out`); a burst of 50 connections to distinct hosts and 70 to one host shows one event per app, host and
+   port, at most 64 connections per event (`flow drop ask_capacity` beyond), at most 4 hooks at once with the rest
+   logged as `hook_dropped` (`concurrency_limit`), and `curl` with a rule still working; and after the daemon is
+   killed, launchd starts it and it registers again (`control xpc daemon_registered`), then a configuration change
+   while connections wait drops them (`configuration_changed`) and cancels their events. The script has run only
+   with `DRY=1`, which validates its configuration and test hook and runs its checks on sample logs; it stops and
+   starts the daemon with `blackice agent install|uninstall`, which is not merged yet. Notarization has run in
+   `sign.sh` since phase 0. `macos/scripts/package.sh` zips the notarized, stapled app with a SHA-256 file and checks
+   both as a download; only its dry run, on an ad hoc signed app, has run. A `.pkg` would need a Developer ID
+   Installer certificate, which the account does not have, so the installer is the zip and `install.md`. In both fx
+   runs the installed build still copied the tokens fx printed into the event log (spent, and kept out of the
+   entries); the build installed for the fault tests should be one with the redaction.
 
 ## Open problems
 

@@ -91,15 +91,19 @@ jobs:
         run: macos/smoke.sh
 
       # Assembles Blackice.app and signs it ad hoc with fake Team ID values: checks the
-      # bundle layout, the Team ID placeholders and the signing order. No Developer ID,
-      # profiles or secrets; nothing is installed or activated.
-      - name: Assemble and sign ad hoc (DRY)
+      # bundle layout, the Team ID placeholders and the signing order. Then zips it as a
+      # release would, and checks the fault tests' configuration, hook and result checks.
+      # No Developer ID, profiles, notarization or secrets; nothing is installed or activated,
+      # and the fault tests do not touch the filter.
+      - name: Assemble, sign ad hoc and package (DRY)
         env:
           DRY: '1'
           OUT: ${{ runner.temp }}/blackice-dry
         run: |
-          bash -n macos/scripts/phase0-test.sh
+          bash -n macos/scripts/phase0-test.sh macos/scripts/package.sh macos/scripts/fault-test.sh
           macos/scripts/sign.sh ABCDE12345 - -
+          OUT="$RUNNER_TEMP/package-dry" macos/scripts/package.sh ABCDE12345 "$RUNNER_TEMP/blackice-dry/Blackice.app"
+          OUT="$RUNNER_TEMP/fault-dry" macos/scripts/fault-test.sh
 
   site:
     name: site (Next.js)
