@@ -72,7 +72,7 @@ public struct Interaction {
         var buffer = [CChar](repeating: 0, count: 4096)
         for pid in pids.prefix(min(count, pids.count)) where pid > 0 {
             guard proc_pidpath(pid, &buffer, UInt32(buffer.count)) > 0 else { continue }
-            let path = String(cString: buffer)
+            let path = String(decoding: buffer.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }, as: UTF8.self)
             if let bundle = appBundle(path, home: home) { bundles.insert(bundle) }
         }
         return bundles.sorted { appName($0).localizedCaseInsensitiveCompare(appName($1)) == .orderedAscending }
