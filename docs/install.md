@@ -2,8 +2,10 @@
 
 How to install blackice from a release package or with Homebrew, check it, run it, remove it and roll it back. The
 package is `Blackice-<version>.zip` plus `Blackice-<version>.zip.sha256`, as `macos/scripts/package.sh` builds them,
-attached to each [GitHub release](https://github.com/ValentinTorassa/blackice/releases). Nothing on this page has
-been run from a published package yet: the runs in [`evidence/`](../evidence/) used builds installed by hand.
+attached to each [GitHub release](https://github.com/ValentinTorassa/blackice/releases). On 3 November 2026 the
+Homebrew section ran from the published 0.1.0 release, as an upgrade over a build installed by hand
+([P5-02](../evidence/P5-02-homebrew-upgrade-from-release-macos.md)); a first install from the zip and uninstalling
+have not been run from a published package yet.
 
 You need a Mac with Apple silicon (the build is arm64 only), macOS 14 or later, and an admin account. blackice has
 run on macOS 27.0.1 only. The commands below use 0.1.0 as the version.

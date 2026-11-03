@@ -42,7 +42,8 @@ the run, never before it.
 | [P2-02](P2-02-curl-passes-on-retry-nscurl-waits-macos.md) | 2, 3 | Build 4 in ask mode: the daemon takes its configuration from the extension; `curl`'s first try fails and its retry passes after fx approves; `nscurl` waits for fx and passes; no token in the event log. |
 | [P4-01](P4-01-fx-decides-ten-connections-macos.md) | 4 | fx decides ten connections in a row with nobody at the keyboard; nine match the expected answer. |
 | [P5-01](P5-01-faults-macos.md) | 5 | The fault tests: 24 checks pass; the last 4 of case 4 fail, three because the second Touch ID was cancelled and one because `blackice pending` rejected the extension's reply. |
+| [P5-02](P5-02-homebrew-upgrade-from-release-macos.md) | 5 | 0.1.0 installed with Homebrew from the published release over build 4: signed, notarized and accepted; `start` finds the upgraded extension unreachable and exits with 75; after a restart its XPC service answers. |
 
-Not recorded yet: a fault test run with no FAIL, and an install from the published package by following
-[`docs/install.md`](../docs/install.md). The in-place upgrade from build 3 to build 4 that left the extension without
-an XPC service until a restart has no entry yet; `docs/plan.md` describes it under "Upgrades in place".
+Not recorded yet: a fault test run with no FAIL, and a first install from the published zip and an uninstall by
+following [`docs/install.md`](../docs/install.md). The upgrade from build 3 to build 4, which first left the
+extension without an XPC service until a restart, has no entry; P5-02 records the same with build 5.
