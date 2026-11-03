@@ -2,6 +2,7 @@ import { CodeBlock } from '@/components/docs/code-block'
 import { FastLink } from '@/components/fast-link'
 import { DemoVideo } from '@/components/landing/demo-video'
 import { FlowDiagram } from '@/components/landing/flow-diagram'
+import { demo } from '@/lib/demo'
 import { configExample, configIntro, details, hero, install, modes, status, steps } from '@/lib/landing-content'
 import { release } from '@/lib/release'
 import { site } from '@/lib/site-metadata'
@@ -63,7 +64,6 @@ export default function Home() {
             </a>
           </div>
           <FlowDiagram />
-          <DemoVideo />
         </section>
 
         <Section id="how-it-works" label="how it works">
@@ -149,6 +149,12 @@ export default function Home() {
             </p>
           </div>
         </Section>
+
+        {demo.src ? (
+          <Section id="demo" label="demo">
+            <DemoVideo />
+          </Section>
+        ) : null}
       </main>
     </>
   )

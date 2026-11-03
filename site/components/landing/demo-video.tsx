@@ -1,13 +1,13 @@
 import { demo } from '@/lib/demo'
 
-/* The landing page's demo video, from lib/demo.ts. Renders nothing until a
-   URL is set there. preload="none" keeps the page from fetching the video
+/* The landing page's demo video, at the end of the page, from lib/demo.ts.
+   Renders nothing until a URL is set there. preload="none" keeps the page from fetching the video
    until someone presses play. */
 export function DemoVideo() {
   if (!demo.src) return null
 
   return (
-    <figure className="mx-auto mt-14 w-full max-w-[720px]">
+    <figure className="w-full max-w-[720px]">
       <video
         className="aspect-video w-full rounded-xl border border-border bg-card"
         controls
