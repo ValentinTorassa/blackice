@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.1 (3 November 2026)
 
 A first start that says what to do.
 
@@ -13,6 +13,10 @@ A first start that says what to do.
   Allow, it says how to try again.
 - On a terminal, step titles and things to click are bold, checks green and commands cyan. `NO_COLOR` turns this off;
   pipes and logs get plain text.
+
+Upgrading from 0.2.0: run the install script with `--force` (`curl -fsSL
+https://blackice-macos.vercel.app/install.sh | sh -s -- --force`) or `brew upgrade --cask blackice`, then `blackice
+start`, then restart the Mac. On macOS 27 an extension upgraded in place cannot be reached until the Mac restarts.
 
 ## 0.2.0 (3 November 2026)
 

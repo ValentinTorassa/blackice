@@ -11,7 +11,7 @@ installed it into a temporary folder instead of `/Applications`
 or with the script, and uninstalling, have not been run from a published package yet.
 
 You need a Mac with Apple silicon (the build is arm64 only), macOS 14 or later, and an admin account. blackice has
-run on macOS 27.0.1 only. The commands below use 0.2.0 as the version.
+run on macOS 27.0.1 only. The commands below use 0.2.1 as the version.
 
 ## With the install script
 
@@ -49,9 +49,9 @@ continue with step 3.
 Download both files into the same folder, then, in Terminal, in that folder:
 
 ```console
-$ shasum -a 256 -c Blackice-0.2.0.zip.sha256
-Blackice-0.2.0.zip: OK
-$ ditto -x -k Blackice-0.2.0.zip .
+$ shasum -a 256 -c Blackice-0.2.1.zip.sha256
+Blackice-0.2.1.zip: OK
+$ ditto -x -k Blackice-0.2.1.zip .
 $ codesign --verify --strict --deep --verbose=2 Blackice.app
 $ codesign -dvv Blackice.app 2>&1 | grep -E '^(Identifier|TeamIdentifier)='
 Identifier=com.valentorassa.blackice
