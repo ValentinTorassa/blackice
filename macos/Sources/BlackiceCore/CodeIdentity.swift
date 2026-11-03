@@ -141,6 +141,34 @@ public enum CodeIdentity {
         return (url as URL).path
     }
 
+    /// The identity a rule needs for the app or binary at `path`, for `blackice init`: its signing
+    /// identifier, and its Team ID unless it is Apple platform code. The signature on disk must
+    /// satisfy the same requirement the filter checks a running process against. nil for code that
+    /// is unsigned, ad hoc signed or invalid, which a rule cannot name.
+    public static func identity(atPath path: String) -> SigningIdentity? {
+        var staticCode: SecStaticCode?
+        guard SecStaticCodeCreateWithPath(URL(fileURLWithPath: path) as CFURL, [], &staticCode) == errSecSuccess,
+              let staticCode else { return nil }
+        var information: CFDictionary?
+        guard SecCodeCopySigningInformation(staticCode, SecCSFlags(rawValue: kSecCSSigningInformation), &information) == errSecSuccess,
+              let info = information as? [String: Any],
+              let signingID = info[kSecCodeInfoIdentifier as String] as? String, validSigningID(signingID) else { return nil }
+        if let flags = info[kSecCodeInfoFlags as String] as? NSNumber,
+           flags.uint32Value & SecCodeSignatureFlags.adhoc.rawValue != 0 { return nil }
+        let teamID = info[kSecCodeInfoTeamIdentifier as String] as? String
+        let expression: String
+        if let teamID {
+            guard validTeamID(teamID) else { return nil }
+            expression = "anchor apple generic and identifier \"\(signingID)\" and certificate leaf[subject.OU] = \"\(teamID)\""
+        } else {
+            expression = "anchor apple and identifier \"\(signingID)\""
+        }
+        guard let exact = requirement(expression),
+              SecStaticCodeCheckValidity(staticCode, SecCSFlags(rawValue: kSecCSStrictValidate), exact) == errSecSuccess
+        else { return nil }
+        return SigningIdentity(signingID: signingID, teamID: teamID)
+    }
+
     public static func currentResolution() -> IdentityResolution {
         var code: SecCode?
         guard SecCodeCopySelf([], &code) == errSecSuccess, let code else { return .unresolved }

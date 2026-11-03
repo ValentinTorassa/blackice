@@ -1,0 +1,30 @@
+import { getDocsMetadata } from '@/lib/docs-metadata'
+
+export const metadata = getDocsMetadata('/docs/changelog')
+
+# Changelog
+
+What changed in each release. The same list is in the repository's [CHANGELOG.md](https://github.com/ValentinTorassa/blackice/blob/main/CHANGELOG.md).
+
+## 0.2.0 (3 November 2026)
+
+Getting started, and what the command line says.
+
+- `blackice start` with no `blackice.toml` asks a few questions and writes one: the mode, how long ask mode waits for an answer, and apps to allow, named by their path (`/Applications/Slack.app`, `/usr/bin/curl`) or their signing identifier. `blackice init` asks the same questions on its own.
+- When macOS asks you to allow the network extension, `blackice start` opens System Settings at Login Items & Extensions and tells you what to turn on.
+- `blackice status` says whether blackice is on, in which mode and what that mode does, whether the daemon is there to run your hooks, and how many connections are waiting.
+- Plainer output everywhere. The Touch ID dialog reads "Blackice is trying to start filtering in block-all mode, 2 rules, no hooks", errors say what to do next, and nothing points at the repository's docs or shows internal numbers.
+- `blackice version`.
+- An install script: `curl -fsSL https://blackice-macos.vercel.app/install.sh | sh`. It checks the checksum, the signature and the notarization before it copies the app.
+- `blackice stop` succeeds when macOS finishes removing the extension at the next restart, instead of exiting with status 75.
+
+Upgrading from 0.1.0: run the install script with `--force` (`curl -fsSL https://blackice-macos.vercel.app/install.sh | sh -s -- --force`) or `brew upgrade --cask blackice`, then `blackice start`, then restart the Mac. On macOS 27 an extension upgraded in place cannot be reached until the Mac restarts.
+
+## 0.1.0 (3 November 2026)
+
+The first release.
+
+- An application firewall for macOS with three modes: `accept-all` logs every new outbound connection, `block-all` lets through only what `blackice.toml` allows, and `ask` holds the rest until someone answers with `blackice approve` or `blackice deny`.
+- Hooks: in ask mode a daemon runs a command for each held connection, so an agent such as fx can answer, with a one-time token per event.
+- Touch ID for every change to filtering: start, stop, mode, and answers given by hand.
+- Signed with a Developer ID and notarized; a zip on the GitHub release and a Homebrew cask (`valentintorassa/tap/blackice`).

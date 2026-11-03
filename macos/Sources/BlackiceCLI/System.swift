@@ -37,9 +37,12 @@ public protocol SystemControlling {
 public struct UnsignedSystem: SystemControlling {
     public init() {}
 
+    /// Also what a person sees who runs the command through a symbolic link, since then the
+    /// process is not the signed app.
     public static func refusal(_ command: String) -> String {
-        "blackice \(command): needs Blackice.app signed with the Developer ID; this build is not, " +
-            "so macOS will not load its network extension (see docs/phase-0.md)"
+        "blackice \(command) works only from Blackice.app in /Applications, signed with its Developer ID. " +
+            "Run /Applications/Blackice.app/Contents/MacOS/blackice, or the blackice command the installer added; " +
+            "a symbolic link to it does not work."
     }
 
     public func start(configText: String, output: SystemOutput) -> Int32 { refuse("start", output) }

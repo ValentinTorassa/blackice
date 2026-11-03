@@ -52,6 +52,7 @@ test('production documentation metadata, Markdown exports and HTML 404s', { time
     ['/docs/how-it-works', 'How it works', '/docs/how-it-works.md'],
     ['/docs/configuration', 'Configuration', '/docs/configuration.md'],
     ['/docs/cli', 'CLI', '/docs/cli.md'],
+    ['/docs/changelog', 'Changelog', '/docs/changelog.md'],
   ]
   for (const [path, title, markdownPath] of pages) {
     const { response, body } = await request(path)
