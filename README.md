@@ -5,9 +5,10 @@ and sees every new outbound connection on the machine, from any app. It has thre
 ask. In ask mode a new connection waits while a hook asks an agent, such as [fx](https://github.com/vercel-labs/fx),
 whether to allow it, and the agent answers with `blackice approve`.
 
-**Status: planning. The network extension is written but has never run:** it needs an Apple Developer ID
-signature, which is phase 0 and in progress ([`docs/phase-0.md`](docs/phase-0.md)). The phases and the decisions
-behind them are in [`docs/plan.md`](docs/plan.md).
+**Status: early. The signed extension first ran on 3 November 2026, on one Mac:** the phase 0 check passed
+([`docs/phase-0.md`](docs/phase-0.md)), and ask mode with fx deciding through a hook approved one connection,
+denied another and dropped one nobody answered. Nothing is packaged or ready to use. The phases, the decisions
+and the open problems are in [`docs/plan.md`](docs/plan.md).
 
 ## Who's building it and why
 
@@ -65,7 +66,7 @@ its macOS app filter: the Network Extension, app identity from code signatures, 
   by its cdhash;
 - ask mode's state (approvals, paused connections, one-time tokens, deadlines) and the XPC messages
   between the extension, the daemon and the CLI. These and the extension's decision are plain code
-  with unit tests; the NetworkExtension and XPC code around them compiles but has not run;
+  with unit tests; the NetworkExtension and XPC code around them has run on one Mac, with no automated tests;
 - scripts in `macos/scripts/` that build Blackice.app without Xcode, sign it, and run the phase 0
   check;
 - from blackice-poc's macOS app filter: app identity from code signatures, host name rules, the TLS
