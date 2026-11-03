@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+A first start that says what to do.
+
+- The first `blackice start` is three numbered steps: pick a mode, confirm with Touch ID, allow the network
+  extension. Each step has a title, and the lines fit an 80-column Terminal window.
+- Allowing the extension is a numbered list of what to click, for the Mac's macOS version: on macOS 26 and later,
+  General › Login Items, then ⓘ next to Blackice, then Network Extension. 0.2.0 named the macOS 15 place on every
+  version, and on macOS 27 the list opens scrolled past Blackice.
+- Before macOS asks whether Blackice may filter network content, `start` says to click Allow; if you click Don't
+  Allow, it says how to try again.
+- On a terminal, step titles and things to click are bold, checks green and commands cyan. `NO_COLOR` turns this off;
+  pipes and logs get plain text.
+
 ## 0.2.0 (3 November 2026)
 
 Getting started, and what the command line says.

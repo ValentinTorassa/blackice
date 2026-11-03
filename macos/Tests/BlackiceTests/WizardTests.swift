@@ -49,7 +49,8 @@ private struct Outcome {
 
 private final class Started: SystemControlling {
     var texts: [String] = []
-    func start(configText: String, output: SystemOutput) -> Int32 { texts.append(configText); return 0 }
+    var setups: [Bool] = []
+    func start(configText: String, output: SystemOutput) -> Int32 { texts.append(configText); setups.append(output.setup); return 0 }
     func stop(output: SystemOutput) -> Int32 { 0 }
     func status(output: SystemOutput) -> Int32 { 0 }
     func setMode(_ mode: Mode, output: SystemOutput) -> Int32 { 0 }
@@ -67,10 +68,11 @@ private func run(_ arguments: [String], _ terminal: FakeTerminal, system: System
     return Outcome(status: status, stdout: out.items, stderr: err.items)
 }
 
-private func answers(_ script: [String], paths: Set<String> = [], identities: [String: SigningIdentity] = [:]) -> ConfigWizard.Answers? {
-    let lines = Recorder<String>()
+private func answers(_ script: [String], paths: Set<String> = [], identities: [String: SigningIdentity] = [:],
+                     said: Recorder<String> = Recorder<String>()) -> ConfigWizard.Answers? {
     let terminal = FakeTerminal(script, paths: paths, identities: identities)
-    return ConfigWizard(ask: terminal.interaction.ask!, say: lines.append, identify: { identities[$0] },
+    return ConfigWizard(ask: { prompt in said.append(prompt); return terminal.interaction.ask!(prompt) },
+                        say: said.append, identify: { identities[$0] },
                         fileExists: { paths.contains($0) }, home: "/Users/test").run()
 }
 
@@ -113,6 +115,7 @@ struct WizardTests {
     }
 
     @Test func wrongAnswersAreAskedAgain() throws {
+        let said = Recorder<String>()
         let result = try #require(answers(
             ["9", "block-all",
              "/tmp/nothing",                       // no such file
@@ -123,9 +126,12 @@ struct WizardTests {
              "https://pypi.org", "* pypi.org", "pypi.org",
              "com.example.skip", "", "",            // no hosts: skipped
              ""],
-            paths: ["/tmp/adhoc"]))
+            paths: ["/tmp/adhoc"], said: said))
         #expect(result.mode == .blockAll)
         #expect(result.rules == [.init(identity: Self.curl, hosts: ["pypi.org"])])
+        // Every line fits an 80-column Terminal window, and sits under the step's title.
+        #expect(said.items.allSatisfy { $0.count <= 78 && ($0.isEmpty || $0.hasPrefix("  ")) })
+        #expect(said.items.contains("    Type 1, 2 or 3."))
 
         let seconds = try #require(answers(["2", "0", "121", "x", "", ""]))
         #expect(seconds.timeoutSeconds == 60)
@@ -144,11 +150,26 @@ struct WizardTests {
         #expect(result.status == 0)
         let written = try #require(terminal.files[CLI.defaultConfigPath])
         #expect(system.texts == [String(decoding: written, as: UTF8.self)])
-        #expect(result.stdout.first == "There is no configuration at ~/.config/blackice/blackice.toml yet, so a few questions first.")
-        #expect(result.stdout.contains("✓ Wrote ~/.config/blackice/blackice.toml: accept-all mode, no rules, no hooks."))
-        #expect(result.stdout.last == "✓ Wrote ~/.config/blackice/blackice.toml: accept-all mode, no rules, no hooks.")
+        #expect(system.setups == [true])
+        #expect(Array(result.stdout.prefix(5)) == [
+            "Setting up blackice: pick a mode, confirm with Touch ID, then allow its",
+            "network extension if macOS asks.",
+            "",
+            "1 · Pick a mode",
+            "",
+        ])
+        #expect(Array(result.stdout.suffix(2)) == [
+            "  ✓ Saved ~/.config/blackice/blackice.toml",
+            "    Accept-all mode, no rules, no hooks. Edit it any time.",
+        ])
         #expect(!result.stdout.contains { $0.hasPrefix("Using ") })
-        #expect(terminal.prompts == ["Mode [1]: "])
+        #expect(result.stdout.allSatisfy { $0.count <= 78 })
+        #expect(terminal.prompts == ["  Mode [1]: "])
+
+        // With a file already there: no steps.
+        let again = run(["start"], terminal, system: system)
+        #expect(again.status == 0 && system.setups == [true, false])
+        #expect(again.stdout == ["Using ~/.config/blackice/blackice.toml: accept-all mode, no rules, no hooks."])
 
         // Control-D: nothing written, nothing started.
         let quit = FakeTerminal([])
@@ -286,6 +307,46 @@ struct ReportTests {
         #expect(first.contains("  blackice mode ask        hold new connections until you, or a hook, answers"))
         #expect(CLI.firstStartLines(try snapshot(.ask, withHook), daemonRunning: false)
             .contains("  blackice agent install   run your hooks for those connections"))
+    }
+
+    @Test func startSaysWhatItDidOnTwoLines() throws {
+        #expect(CLI.onLines(try snapshot(.blockAll)) == [
+            "✓ blackice is on, in block-all mode.",
+            "  Only connections your rules allow go through.",
+        ])
+    }
+
+    @Test func approvalStepsFollowTheMacOSVersion() {
+        let tahoe = ExtensionApproval.lines(macOS: 27, opened: true, setup: true)
+        #expect(tahoe == [
+            "",
+            "3 · Allow the network extension",
+            "",
+            "  System Settings is open at General › Login Items. There:",
+            "",
+            "    1. Scroll to Blackice in the list and click ⓘ next to it.",
+            "    2. Turn on Network Extension, then click Done.",
+            "",
+            "  Waiting for you (up to 10 minutes)…",
+        ])
+        #expect(ExtensionApproval.lines(macOS: 26, opened: false, setup: false)[1...3] == [
+            "Allow the network extension", "", "  Open System Settings › General › Login Items. There:"])
+        #expect(ExtensionApproval.lines(macOS: 15, opened: true, setup: true)
+            .contains("    1. Under Extensions, click ⓘ next to Network Extensions."))
+        #expect(ExtensionApproval.lines(macOS: 14, opened: true, setup: true)
+            .contains("  System Settings is open at Privacy & Security. There:"))
+        for major in [14, 15, 26, 27] {
+            #expect(ExtensionApproval.lines(macOS: major, opened: true, setup: true).allSatisfy { $0.count <= 78 })
+        }
+        #expect(ExtensionApproval.settingsURL(macOS: 27) == "x-apple.systempreferences:com.apple.LoginItems-Settings.extension")
+        #expect(ExtensionApproval.settingsURL(macOS: 14) == "x-apple.systempreferences:com.apple.preference.security")
+        #expect(("  " + ExtensionApproval.filterPrompt).count <= 78)
+    }
+
+    @Test func styleIsPlainUnlessATerminalAsks() {
+        #expect(Style.wrap("Done", "1", enabled: false) == "Done")
+        #expect(Style.wrap("Done", "1", enabled: true) == "\u{1B}[1mDone\u{1B}[0m")
+        #expect(Style.done("Saved") == "✓ Saved")
     }
 
     @Test func describe() {

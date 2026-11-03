@@ -218,10 +218,10 @@ public enum CLI {
                 stderr("blackice init asks a few questions, so it needs a terminal.")
                 return ExitCode.usage
             }
-            let status = writeConfig(at: path, interaction: interaction, stdout: stdout, stderr: stderr)
+            let status = writeConfig(at: path, heading: "Pick a mode", interaction: interaction, stdout: stdout, stderr: stderr)
             if status == ExitCode.success {
                 stdout("")
-                stdout("Start filtering with it: blackice start" + (configPath == nil ? "" : " --config \(shown)"))
+                stdout("Start filtering with it: " + Style.command("blackice start" + (configPath == nil ? "" : " --config \(shown)")))
             }
             return status
         case .validate(let path):
@@ -247,9 +247,11 @@ public enum CLI {
                            (configPath == nil ? "" : " --config \(shown)"))
                     return ExitCode.unreadable
                 }
-                stdout("There is no configuration at \(shown) yet, so a few questions first.")
+                stdout("Setting up blackice: pick a mode, confirm with Touch ID, then allow its")
+                stdout("network extension if macOS asks.")
                 stdout("")
-                let written = writeConfig(at: path, interaction: interaction, stdout: stdout, stderr: stderr)
+                let written = writeConfig(at: path, heading: "1 · Pick a mode", interaction: interaction,
+                                          stdout: stdout, stderr: stderr)
                 guard written == ExitCode.success else { return written }
                 justWritten = true
             }
@@ -257,7 +259,8 @@ public enum CLI {
             case .failure(let status): return status.code
             case .success(let loaded):
                 if !justWritten { stdout("Using \(shown): \(loaded.config.overview).") }
-                return system.start(configText: loaded.text, output: SystemOutput(stdout: stdout, stderr: stderr))
+                return system.start(configText: loaded.text,
+                                    output: SystemOutput(stdout: stdout, stderr: stderr, setup: justWritten))
             }
         case .stop:
             return system.stop(output: SystemOutput(stdout: stdout, stderr: stderr))
@@ -328,14 +331,16 @@ public enum CLI {
         return false
     }
 
-    /// Asks the wizard's questions and creates the file. The text is parsed before it is written,
-    /// so the file always loads.
-    private static func writeConfig(at path: String, interaction: Interaction, stdout: @escaping (String) -> Void,
-                                    stderr: (String) -> Void) -> Int32 {
+    /// Asks the wizard's questions under a step title and creates the file. The text is parsed
+    /// before it is written, so the file always loads.
+    private static func writeConfig(at path: String, heading: String, interaction: Interaction,
+                                    stdout: @escaping (String) -> Void, stderr: (String) -> Void) -> Int32 {
         guard let ask = interaction.ask else { return ExitCode.usage }
         let wizard = ConfigWizard(ask: ask, say: stdout, identify: interaction.identify,
                                   fileExists: interaction.fileExists, home: interaction.home)
         let shown = Describe.path(path, home: interaction.home)
+        stdout(Style.heading(heading))
+        stdout("")
         guard let answers = wizard.run() else {
             stdout("")
             stderr("Nothing was written.")
@@ -356,7 +361,8 @@ public enum CLI {
             return ExitCode.cannotCreate
         }
         stdout("")
-        stdout("✓ Wrote \(shown): \(parsed.overview).")
+        stdout("  " + Style.done("Saved \(shown)"))
+        stdout("    \(parsed.overview.prefix(1).uppercased() + parsed.overview.dropFirst()). Edit it any time.")
         return ExitCode.success
     }
 

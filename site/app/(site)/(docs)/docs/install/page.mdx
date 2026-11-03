@@ -95,7 +95,13 @@ $ blackice start
 $ blackice status
 ```
 
-`start` asks for Touch ID (or your login password), activates the network extension and saves the configuration. The first time, and after any deactivation, macOS holds the extension until you allow it. `start` opens System Settings at General → Login Items & Extensions: under Network Extensions, turn Blackice on. macOS may also ask whether "Blackice" may filter network content: allow it. `start` waits up to 10 minutes for this. Labels vary between macOS versions. `blackice status` then says which mode blackice is in, whether the daemon runs your hooks, and how many connections are waiting.
+`start` asks for Touch ID (or your login password), activates the network extension and saves the configuration. The first time, and after any deactivation, macOS holds the extension until you allow it. `start` opens System Settings where macOS asks, and prints the steps for your macOS:
+
+- macOS 26 and later: General → Login Items. Scroll to Blackice, click ⓘ next to it, turn on Network Extension and click Done.
+- macOS 15: General → Login Items & Extensions. Under Extensions, click ⓘ next to Network Extensions, turn on Blackice and click Done.
+- macOS 14: Privacy & Security. Under Security, click Allow where it says Blackice was blocked from loading.
+
+Then macOS asks whether "Blackice" may filter network content: click Allow. `start` waits up to 10 minutes for all this. The macOS 27 steps are from 27.0.1; the others follow Apple's layout of those versions. `blackice status` then says which mode blackice is in, whether the daemon runs your hooks, and how many connections are waiting.
 
 ## 5. Start the daemon
 
@@ -145,7 +151,7 @@ In accept-all the filter lets every connection through. A restart alone does not
 **If `blackice` itself fails**, run it by its full path to see its message (`/Applications/Blackice.app/Contents/MacOS/blackice stop`). If `stop` still fails:
 
 1. System Settings → Network → Filters (near VPN): remove blackice's content filter.
-2. System Settings → General → Login Items & Extensions → Network Extensions: turn Blackice off.
+2. System Settings → General → Login Items: click ⓘ next to Blackice and turn off Network Extension (on macOS 15, Login Items & Extensions → Network Extensions).
 3. `launchctl bootout gui/$(id -u)/com.valentorassa.blackice.daemon`, if the daemon is still loaded.
 4. Move `/Applications/Blackice.app` to the Trash and restart. Then `systemextensionsctl list` should no longer show `com.valentorassa.blackice.filter` as `activated enabled`.
 

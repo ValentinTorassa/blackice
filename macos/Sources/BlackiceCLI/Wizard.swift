@@ -75,51 +75,57 @@ struct ConfigWizard {
     let fileExists: (String) -> Bool
     let home: String
 
-    /// nil when the input ended (Control-D) before the last answer.
+    /// nil when the input ended (Control-D) before the last answer. Everything is indented under
+    /// the step's title, which the caller prints.
     func run() -> Answers? {
         var answers = Answers()
-        say("How should blackice treat new connections?")
-        say("  1  accept-all  Let everything through and log it. A good place to start.")
-        say("  2  ask         Hold connections that no rule covers until you, or an agent, answers.")
-        say("  3  block-all   Let through only what your rules allow.")
+        say("  How should blackice treat new connections?")
+        say("")
+        say("    1  accept-all  Let everything through and log it. Start here.")
+        say("    2  ask         Hold what no rule allows until you or an agent answers.")
+        say("    3  block-all   Let through only what your rules allow.")
+        say("")
         guard let mode = chooseMode() else { return nil }
         answers.mode = mode
         if mode == .ask {
             say("")
-            say("A connection nobody answers in time is denied.")
+            say("  A connection nobody answers in time is denied.")
             guard let seconds = askSeconds() else { return nil }
             answers.timeoutSeconds = seconds
         }
         if mode != .acceptAll {
             say("")
-            say("Apps you trust can go through without asking, in every mode. Name one by its path, such as")
-            say("/Applications/Slack.app or /usr/bin/curl, or by its signing identifier. Enter on its own when done.")
+            say("  Apps you trust can connect in every mode. Name one by its path")
+            say("  (/Applications/Slack.app, /usr/bin/curl) or its signing identifier.")
+            say("  Press Enter on an empty line when you are done.")
+            say("")
             while answers.rules.count < Self.maximumRules {
-                guard let line = ask("App: ") else { return nil }
+                guard let line = ask("  App: ") else { return nil }
                 let input = line.trimmingCharacters(in: .whitespaces)
                 if input.isEmpty { break }
                 guard let identity = resolveApp(input) else { continue }
                 guard let hosts = askHosts(identity) else { return nil }
-                if hosts.isEmpty { say("  Skipped \(identity.signingID)."); continue }
+                if hosts.isEmpty { say("    Skipped \(identity.signingID)."); continue }
                 answers.rules.append(Rule(identity: identity, hosts: hosts))
-                say("  ✓ \(identity.signingID) may reach \(hosts == ["*"] ? "any host" : hosts.joined(separator: ", "))")
+                say("    " + Style.done("\(identity.signingID) may reach \(hosts == ["*"] ? "any host" : hosts.joined(separator: ", "))"))
             }
         }
         if mode == .ask {
             say("")
-            say("To have an agent such as fx answer for you, add a hook later: \(Self.docs)")
+            say("  To have an agent such as fx answer for you, add a hook later:")
+            say("  \(Self.docs)")
         }
         return answers
     }
 
     private func chooseMode() -> Mode? {
         while true {
-            guard let line = ask("Mode [1]: ") else { return nil }
+            guard let line = ask("  Mode [1]: ") else { return nil }
             switch line.trimmingCharacters(in: .whitespaces).lowercased() {
             case "", "1", "accept-all": return .acceptAll
             case "2", "ask": return .ask
             case "3", "block-all": return .blockAll
-            default: say("  Type 1, 2 or 3.")
+            default: say("    Type 1, 2 or 3.")
             }
         }
     }
@@ -127,11 +133,11 @@ struct ConfigWizard {
     private func askSeconds() -> Int? {
         let range = BlackiceConfig.timeoutRange
         while true {
-            guard let line = ask("Seconds to wait for an answer [60]: ") else { return nil }
+            guard let line = ask("  Seconds to wait for an answer [60]: ") else { return nil }
             let text = line.trimmingCharacters(in: .whitespaces)
             if text.isEmpty { return 60 }
             if let seconds = Int(text), range.contains(seconds) { return seconds }
-            say("  A whole number from \(range.lowerBound) to \(range.upperBound).")
+            say("    A whole number from \(range.lowerBound) to \(range.upperBound).")
         }
     }
 
@@ -144,32 +150,32 @@ struct ConfigWizard {
         } else if !input.contains(".") {
             // Signing identifiers are reverse DNS names; a bare word is an app's name.
             guard fileExists("/Applications/\(input).app") else {
-                say("  There is no /Applications/\(input).app. Give the app's path, or its signing identifier")
-                say("  (such as com.apple.curl).")
+                say("    There is no /Applications/\(input).app. Give the app's path, or its")
+                say("    signing identifier (such as com.apple.curl).")
                 return nil
             }
             path = "/Applications/\(input).app"
         }
         if let path {
-            guard fileExists(path) else { say("  There is nothing at \(path)."); return nil }
+            guard fileExists(path) else { say("    There is nothing at \(path)."); return nil }
             guard let identity = identify(path) else {
-                say("  \(path) is unsigned or ad hoc signed, so a rule cannot name it. In ask mode you can")
-                say("  approve it when it connects instead.")
+                say("    \(path) is unsigned or ad hoc signed, so a rule cannot name it.")
+                say("    In ask mode you can approve it when it connects instead.")
                 return nil
             }
-            say("  \(path) is \(Self.describe(identity))")
+            say("    \(path) is \(Self.describe(identity))")
             return identity
         }
         guard validSigningID(input) else {
-            say("  That is neither a path nor a signing identifier (such as com.apple.curl).")
+            say("    That is neither a path nor a signing identifier (such as com.apple.curl).")
             return nil
         }
         while true {
-            guard let line = ask("  Its Team ID (Enter if it is Apple's own): ") else { return nil }
+            guard let line = ask("    Its Team ID (Enter if it is Apple's own): ") else { return nil }
             let team = line.trimmingCharacters(in: .whitespaces)
             if team.isEmpty { return SigningIdentity(signingID: input, teamID: nil) }
             if validTeamID(team) { return SigningIdentity(signingID: input, teamID: team) }
-            say("  A Team ID is 10 capital letters or digits; codesign -dv shows it.")
+            say("    A Team ID is 10 capital letters or digits; codesign -dv shows it.")
         }
     }
 
@@ -182,11 +188,11 @@ struct ConfigWizard {
     /// input ended.
     private func askHosts(_ identity: SigningIdentity) -> [String]? {
         while true {
-            guard let line = ask("  Hosts it may reach, separated by spaces (* for any): ") else { return nil }
+            guard let line = ask("    Hosts it may reach, separated by spaces (* for any): ") else { return nil }
             let words = line.split(whereSeparator: { $0 == " " || $0 == "," }).map(String.init)
             if words.isEmpty { return [] }
             if words == ["*"] { return ["*"] }
-            if words.contains("*") { say("  * stands alone: it means any host."); continue }
+            if words.contains("*") { say("    * stands alone: it means any host."); continue }
             var hosts: [String] = []
             var bad: String?
             for word in words {
@@ -194,11 +200,12 @@ struct ConfigWizard {
                 if !hosts.contains(host) { hosts.append(host) }
             }
             if let bad {
-                say("  \(bad.prefix(64)) is not a host name. Use names such as api.example.com, without https://.")
+                say("    \(bad.prefix(64)) is not a host name. Use names such as api.example.com,")
+                say("    without https://.")
                 continue
             }
             guard hosts.count <= BlackiceConfig.maximumHostsPerRule else {
-                say("  At most \(BlackiceConfig.maximumHostsPerRule) hosts per app."); continue
+                say("    At most \(BlackiceConfig.maximumHostsPerRule) hosts per app."); continue
             }
             return hosts
         }

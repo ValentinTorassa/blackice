@@ -81,18 +81,70 @@ extension CLI {
         return lines
     }
 
+    /// After a successful start: the mode, and what it does on a line of its own.
+    public static func onLines(_ configuration: ProviderConfiguration) -> [String] {
+        let explanation = configuration.mode.explanation
+        return [Style.done("blackice is on, in \(configuration.mode.rawValue) mode."),
+                "  " + explanation.prefix(1).uppercased() + explanation.dropFirst() + "."]
+    }
+
     /// After the first start, once macOS has the extension: where to go next.
     public static func firstStartLines(_ configuration: ProviderConfiguration, daemonRunning: Bool) -> [String] {
-        var lines = ["", "Next:", "  blackice status          what blackice is doing"]
+        func row(_ command: String, _ what: String) -> String {
+            "  " + Style.command(command.padding(toLength: 24, withPad: " ", startingAt: 0)) + " " + what
+        }
+        var lines = ["", Style.heading("Next"), row("blackice status", "what blackice is doing")]
         if configuration.mode != .ask {
-            lines.append("  blackice mode ask        hold new connections until you, or a hook, answers")
+            lines.append(row("blackice mode ask", "hold new connections until you, or a hook, answers"))
         } else {
-            lines.append("  blackice pending         connections waiting for an answer")
+            lines.append(row("blackice pending", "connections waiting for an answer"))
         }
         if !configuration.config.hooks.isEmpty, !daemonRunning {
-            lines.append("  blackice agent install   run your hooks for those connections")
+            lines.append(row("blackice agent install", "run your hooks for those connections"))
         }
-        lines.append("Docs: https://blackice-macos.vercel.app/docs")
+        lines.append("  Docs: https://blackice-macos.vercel.app/docs")
         return lines
+    }
+}
+
+/// Where macOS asks the person to allow a system extension, and what to do there. The macOS 27
+/// steps were followed on 27.0.1 (3 November 2026): General › Login Items lists apps, and the
+/// pane opens scrolled to the end. 15 lists network extensions by category, and 14 asks in
+/// Privacy & Security, as Apple laid those versions out.
+public enum ExtensionApproval {
+    public static func settingsURL(macOS major: Int) -> String {
+        major >= 15 ? "x-apple.systempreferences:com.apple.LoginItems-Settings.extension"
+                    : "x-apple.systempreferences:com.apple.preference.security"
+    }
+
+    /// The step that waits for the person: where to go, what to click, numbered.
+    public static func lines(macOS major: Int, opened: Bool, setup: Bool) -> [String] {
+        let place: String
+        let steps: [String]
+        switch major {
+        case ..<15:
+            place = "Privacy & Security"
+            steps = ["Scroll down to Security.",
+                     "Where it says Blackice was blocked from loading, click \(Style.action("Allow")).",]
+        case 15:
+            place = "General › Login Items & Extensions"
+            steps = ["Under Extensions, click \(Style.action("ⓘ")) next to Network Extensions.",
+                     "Turn on \(Style.action("Blackice")), then click \(Style.action("Done")).",]
+        default:
+            place = "General › Login Items"
+            steps = ["Scroll to \(Style.action("Blackice")) in the list and click \(Style.action("ⓘ")) next to it.",
+                     "Turn on \(Style.action("Network Extension")), then click \(Style.action("Done")).",]
+        }
+        var lines = ["", Style.heading(setup ? "3 · Allow the network extension" : "Allow the network extension"), ""]
+        lines.append(opened ? "  System Settings is open at \(place). There:" : "  Open System Settings › \(place). There:")
+        lines.append("")
+        lines += steps.enumerated().map { "    \($0.offset + 1). \($0.element)" }
+        lines += ["", "  Waiting for you (up to 10 minutes)…"]
+        return lines
+    }
+
+    /// Said just before blackice saves a content filter for the first time, which macOS asks about.
+    public static var filterPrompt: String {
+        "macOS now asks whether Blackice may filter network content: click \(Style.action("Allow"))."
     }
 }

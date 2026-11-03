@@ -4,10 +4,14 @@ import BlackiceCore
 public struct SystemOutput {
     public let stdout: (String) -> Void
     public let stderr: (String) -> Void
+    /// The first start, right after the questions (step 1): start numbers Touch ID step 2 and
+    /// allowing the extension step 3.
+    public let setup: Bool
 
-    public init(stdout: @escaping (String) -> Void, stderr: @escaping (String) -> Void) {
+    public init(stdout: @escaping (String) -> Void, stderr: @escaping (String) -> Void, setup: Bool = false) {
         self.stdout = stdout
         self.stderr = stderr
+        self.setup = setup
     }
 }
 
