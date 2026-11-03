@@ -91,12 +91,15 @@ extension CLI {
     /// After the first start, once macOS has the extension: where to go next.
     public static func firstStartLines(_ configuration: ProviderConfiguration, daemonRunning: Bool) -> [String] {
         func row(_ command: String, _ what: String) -> String {
-            "  " + Style.command(command.padding(toLength: 24, withPad: " ", startingAt: 0)) + " " + what
+            "  " + Style.command(command.padding(toLength: max(26, command.count), withPad: " ", startingAt: 0)) + " " + what
         }
         var lines = ["", Style.heading("Next"), row("blackice status", "what blackice is doing")]
         if configuration.mode != .ask {
-            lines.append(row("blackice mode ask", "hold new connections until you, or a hook, answers"))
+            lines.append(row("blackice mode ask", "hold new connections until you or a hook answers"))
         } else {
+            if configuration.config.hooks.isEmpty {
+                lines.append(row("blackice agent connect fx", "let fx answer them"))
+            }
             lines.append(row("blackice pending", "connections waiting for an answer"))
         }
         if !configuration.config.hooks.isEmpty, !daemonRunning {

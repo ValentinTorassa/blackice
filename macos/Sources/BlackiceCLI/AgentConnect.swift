@@ -310,9 +310,12 @@ extension CLI {
 
     // MARK: - The command
 
+    /// `firstStep` numbers the steps on from where `blackice start` left off when it runs this
+    /// right after the first start.
     static func connectAgent(_ name: String, configPath: String?, readFile: (String) throws -> Data,
                              system: SystemControlling, interaction: Interaction, machine: AgentMachine,
-                             stdout: @escaping (String) -> Void, stderr: @escaping (String) -> Void) -> Int32 {
+                             stdout: @escaping (String) -> Void, stderr: @escaping (String) -> Void,
+                             firstStep: Int = 1) -> Int32 {
         guard let profile = AgentProfile.known.first(where: { $0.name == name }) else {
             stderr("blackice agent connect knows fx so far (Claude Code and Codex are planned): blackice agent connect fx")
             return ExitCode.usage
@@ -336,14 +339,30 @@ extension CLI {
             text = loaded.text
             config = loaded.config
         }
-        func step(_ title: String) { stdout(""); stdout(Style.heading(title)); stdout("") }
+        var number = firstStep
+        func step(_ title: String) {
+            stdout(""); stdout(Style.heading("\(number) · \(title)")); stdout("")
+            number += 1
+        }
         func fail(_ status: Int32, _ lines: String...) -> Int32 { lines.forEach { stderr("  " + $0) }; return status }
 
-        stdout("Connecting \(name) to blackice: it will answer the connections that wait in")
-        stdout("ask mode, with nobody at the keyboard.")
+        if firstStep == 1 {
+            stdout("Connecting \(name) to blackice: it will answer the connections that wait in")
+            stdout("ask mode, with nobody at the keyboard.")
+        }
+        // Filtering in ask or block-all, the agent's installer, sign-in and test would wait for an
+        // answer nobody gives yet: accept-all until the last step loads the file again.
+        if let running = system.runningMode(), running != .acceptAll {
+            stdout("")
+            stdout("blackice is in \(running.rawValue) mode, so \(name)'s installer, its sign-in and the test")
+            stdout("would wait for an answer nobody gives yet. It switches to accept-all while")
+            stdout("\(name) is set up; the last step loads \(shown) again.")
+            let switched = system.setMode(.acceptAll, output: SystemOutput(stdout: stdout, stderr: stderr))
+            guard switched == ExitCode.success else { return switched }
+        }
 
         // 1. Find it and read its signature.
-        step("1 · Find \(name)")
+        step("Find \(name)")
         var found = machine.findExecutable(profile.executable)
         if found == nil, let installer = profile.installer {
             stdout("  \(name) is not installed. Its installer, from \(profile.installHint):")
@@ -354,7 +373,8 @@ extension CLI {
                 if ["n", "no"].contains(answer) { break }
                 guard ["", "y", "yes"].contains(answer) else { stdout("    Type y or n."); continue }
                 stdout("")
-                let status = machine.runAttached("/bin/sh", ["-c", installer], [:])
+                // pipefail: in `curl … | bash` a failed download is curl's status, not bash's 0.
+                let status = machine.runAttached("/bin/bash", ["-o", "pipefail", "-c", installer], [:])
                 stdout("")
                 found = machine.findExecutable(profile.executable)
                 if found == nil {
@@ -378,7 +398,7 @@ extension CLI {
         stdout("  " + Style.done("\(shownExecutable) is \(ConfigWizard.describe(identity))"))
 
         // 2. Its own home: the skill, a sign-in, and the rules.
-        step("2 · Give \(name) a home of its own")
+        step("Give \(name) a home of its own")
         let paths = AgentPaths(userHome: interaction.home, profile: profile)
         let homeShown = Describe.path(paths.home, home: interaction.home)
         guard fitsHookLine(paths.home) else {
@@ -424,7 +444,7 @@ extension CLI {
         stdout("  " + Style.done("There, \(name) may run blackice approve and blackice deny, and nothing else"))
 
         // 3. One sample event through the hook runner, with a stand-in for blackice.
-        step("3 · Try it on a sample connection")
+        step("Try it on a sample connection")
         let event: HookEvent
         let standIn = paths.test + "/bin"
         do {
@@ -475,7 +495,7 @@ extension CLI {
         }
 
         // 4. The rule for its model, the hook, and time enough to answer.
-        step("4 · Add \(name) to \(shown)")
+        step("Add \(name) to \(shown)")
         let missing = profile.hosts.filter { config.allowRule(for: identity, host: $0) == nil }
         let existingHook = config.hooks.first { $0.run.contains(AgentProfile.prompt) }
         var updated = text
@@ -510,7 +530,7 @@ extension CLI {
         var loaded = saved
 
         // 5. Load it, in ask mode if the person wants, and make sure the daemon runs.
-        step("5 · Turn it on")
+        step("Turn it on")
         var mode = config.mode
         if mode != .ask {
             stdout("  In ask mode, a connection no rule covers waits until \(name) answers (\(seconds) s on")

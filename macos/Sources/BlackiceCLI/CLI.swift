@@ -232,10 +232,13 @@ public enum CLI {
                 stderr("blackice init asks a few questions, so it needs a terminal.")
                 return ExitCode.usage
             }
-            let status = writeConfig(at: path, heading: "Pick a mode", interaction: interaction, stdout: stdout, stderr: stderr)
+            let (status, agent) = writeConfig(at: path, heading: "Pick a mode", interaction: interaction,
+                                              stdout: stdout, stderr: stderr)
             if status == ExitCode.success {
+                let option = configPath == nil ? "" : " --config \(shown)"
                 stdout("")
-                stdout("Start filtering with it: " + Style.command("blackice start" + (configPath == nil ? "" : " --config \(shown)")))
+                stdout("Start filtering with it: " + Style.command("blackice start" + option))
+                if let agent { stdout("Then let \(agent) answer: " + Style.command("blackice agent connect \(agent)" + option)) }
             }
             return status
         case .validate(let path):
@@ -258,6 +261,7 @@ public enum CLI {
             let path = configPath ?? defaultConfigPath
             let shown = Describe.path(path, home: interaction.home)
             var justWritten = false
+            var agent: String?
             if isMissing(path, readFile: readFile) {
                 guard interaction.ask != nil else {
                     stderr("There is no configuration at \(shown) yet. Write one with: blackice init" +
@@ -269,15 +273,26 @@ public enum CLI {
                 stdout("")
                 let written = writeConfig(at: path, heading: "1 · Pick a mode", interaction: interaction,
                                           stdout: stdout, stderr: stderr)
-                guard written == ExitCode.success else { return written }
+                guard written.status == ExitCode.success else { return written.status }
                 justWritten = true
+                agent = written.agent
             }
             switch loadConfig(path, readFile: readFile, stderr: stderr, shown: shown, hint: true) {
             case .failure(let status): return status.code
             case .success(let loaded):
                 if !justWritten { stdout("Using \(shown): \(loaded.config.overview).") }
-                return system.start(configText: loaded.text,
-                                    output: SystemOutput(stdout: stdout, stderr: stderr, setup: justWritten))
+                guard let agent, loaded.config.mode != .acceptAll else {
+                    return system.start(configText: loaded.text,
+                                        output: SystemOutput(stdout: stdout, stderr: stderr, setup: justWritten))
+                }
+                // The agent's installer, sign-in and test need the network: start in accept-all, set
+                // the agent up, and let its last step load the file in the mode picked.
+                let started = system.start(configText: settingRootKey(loaded.text, "mode", to: "\"accept-all\""),
+                                           output: SystemOutput(stdout: stdout, stderr: stderr, setup: true, next: false))
+                guard started == ExitCode.success else { return started }
+                stdout("  It stays in accept-all while \(agent) is set up, then switches to \(loaded.config.mode.rawValue).")
+                return connectAgent(agent, configPath: configPath, readFile: readFile, system: system, interaction: interaction,
+                                    machine: agents, stdout: stdout, stderr: stderr, firstStep: 4)
             }
         case .stop:
             return system.stop(output: SystemOutput(stdout: stdout, stderr: stderr))
@@ -351,17 +366,18 @@ public enum CLI {
     /// Asks the wizard's questions under a step title and creates the file. The text is parsed
     /// before it is written, so the file always loads.
     private static func writeConfig(at path: String, heading: String, interaction: Interaction,
-                                    stdout: @escaping (String) -> Void, stderr: (String) -> Void) -> Int32 {
-        guard let ask = interaction.ask else { return ExitCode.usage }
+                                    stdout: @escaping (String) -> Void, stderr: (String) -> Void) -> (status: Int32, agent: String?) {
+        guard let ask = interaction.ask else { return (ExitCode.usage, nil) }
         let wizard = ConfigWizard(ask: ask, say: stdout, identify: interaction.identify,
-                                  fileExists: interaction.fileExists, home: interaction.home)
+                                  fileExists: interaction.fileExists, home: interaction.home,
+                                  choose: interaction.choose, runningApps: interaction.runningApps)
         let shown = Describe.path(path, home: interaction.home)
         stdout(Style.heading(heading))
         stdout("")
         guard let answers = wizard.run() else {
             stdout("")
             stderr("Nothing was written.")
-            return ExitCode.unreadable
+            return (ExitCode.unreadable, nil)
         }
         let text = ConfigWizard.render(answers)
         let parsed: BlackiceConfig
@@ -369,18 +385,18 @@ public enum CLI {
             parsed = try BlackiceConfig(data: Data(text.utf8))
         } catch {
             stderr("blackice init: the file it would write does not parse (\(error)); nothing was written")
-            return ExitCode.software
+            return (ExitCode.software, nil)
         }
         do {
             try interaction.createFile(path, Data(text.utf8))
         } catch {
             stderr("Cannot write \(shown): \(error.localizedDescription)")
-            return ExitCode.cannotCreate
+            return (ExitCode.cannotCreate, nil)
         }
         stdout("")
         stdout("  " + Style.done("Saved \(shown)"))
         stdout("    \(parsed.overview.prefix(1).uppercased() + parsed.overview.dropFirst()). Edit it any time.")
-        return ExitCode.success
+        return (ExitCode.success, answers.agent)
     }
 
     /// Creates `path` with mode 0644, and its folder with 0700 if it is missing. Fails if the file

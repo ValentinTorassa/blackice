@@ -74,7 +74,7 @@ public final class NESystemControl: SystemControlling {
             output.stderr("Until then hooks, pending, approve and deny cannot reach the filter, and ask mode drops what it holds.")
             return ExitCode.tempFail
         }
-        if neededApproval || output.setup {
+        if neededApproval || output.setup, output.next {
             CLI.firstStartLines(candidate, daemonRunning: Self.daemonRunning()).forEach(output.stdout)
         }
         return ExitCode.success
@@ -136,6 +136,12 @@ public final class NESystemControl: SystemControlling {
         CLI.statusLines(StatusReport(filter: filter, daemonRunning: Self.daemonRunning(), pending: pending))
             .forEach(output.stdout)
         return ExitCode.success
+    }
+
+    public func runningMode() -> Mode? {
+        guard Self.isSignedHost(), let (_, saved) = loadSaved(SystemOutput(stdout: { _ in }, stderr: { _ in })),
+              saved.foreignOwner == nil, saved.providerBundleID != nil, saved.enabled else { return nil }
+        return saved.configuration?.mode
     }
 
     /// Whether launchd has the daemon's LaunchAgent loaded for this user.

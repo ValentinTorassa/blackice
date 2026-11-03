@@ -13,16 +13,24 @@ public struct Interaction {
     public let home: String
     /// "0.2.0 (build 6)", from Blackice.app's Info.plist; nil for a build outside the app.
     public let version: String?
+    /// Shows a list to pick from with the arrow keys; nil when the terminal cannot, and then the
+    /// questions are typed. Returns the picked indices, or nil when the person cancelled.
+    public let choose: ((Choice) -> [Int]?)?
+    /// The apps running now, as paths to their .app bundles in /Applications or ~/Applications.
+    public let runningApps: () -> [String]
 
     public init(ask: ((String) -> String?)?, createFile: @escaping (String, Data) throws -> Void,
                 identify: @escaping (String) -> SigningIdentity?, fileExists: @escaping (String) -> Bool,
-                home: String, version: String?) {
+                home: String, version: String?, choose: ((Choice) -> [Int]?)? = nil,
+                runningApps: @escaping () -> [String] = { [] }) {
         self.ask = ask
         self.createFile = createFile
         self.identify = identify
         self.fileExists = fileExists
         self.home = home
         self.version = version
+        self.choose = choose
+        self.runningApps = runningApps
     }
 
     /// No terminal: nothing is asked and nothing is written.
@@ -39,16 +47,48 @@ public struct Interaction {
         if let short = info?["CFBundleShortVersionString"] as? String {
             version = (info?["CFBundleVersion"] as? String).map { "\(short) (build \($0))" } ?? short
         }
-        return Interaction(
-            ask: interactive ? { prompt in
+        var ask: ((String) -> String?)?
+        var choose: ((Choice) -> [Int]?)?
+        if interactive {
+            ask = { prompt in
                 FileHandle.standardOutput.write(Data(prompt.utf8))
                 return readLine(strippingNewline: true)
-            } : nil,
-            createFile: CLI.createFile,
-            identify: CodeIdentity.identity(atPath:),
-            fileExists: { FileManager.default.fileExists(atPath: $0) },
-            home: NSHomeDirectory(),
-            version: version)
+            }
+            if ProcessInfo.processInfo.environment["TERM"] != "dumb" { choose = { TerminalSelector.run($0) } }
+        }
+        let home = NSHomeDirectory()
+        return Interaction(ask: ask, createFile: CLI.createFile, identify: CodeIdentity.identity(atPath:),
+                           fileExists: { FileManager.default.fileExists(atPath: $0) }, home: home, version: version,
+                           choose: choose, runningApps: { runningAppBundles(home: home) })
+    }
+
+    /// The .app bundles in /Applications and ~/Applications that have a process running, by the
+    /// outermost bundle in each process's path (a helper counts for its app). Blackice is left out.
+    static func runningAppBundles(home: String) -> [String] {
+        var pids = [pid_t](repeating: 0, count: 4096)
+        let count = Int(proc_listallpids(&pids, Int32(pids.count * MemoryLayout<pid_t>.size)))
+        guard count > 0 else { return [] }
+        var bundles = Set<String>()
+        var buffer = [CChar](repeating: 0, count: 4096)
+        for pid in pids.prefix(min(count, pids.count)) where pid > 0 {
+            guard proc_pidpath(pid, &buffer, UInt32(buffer.count)) > 0 else { continue }
+            let path = String(cString: buffer)
+            if let bundle = appBundle(path, home: home) { bundles.insert(bundle) }
+        }
+        return bundles.sorted { appName($0).localizedCaseInsensitiveCompare(appName($1)) == .orderedAscending }
+    }
+
+    /// "/Applications/Slack.app" for any path inside it; nil outside the two Applications folders.
+    static func appBundle(_ path: String, home: String) -> String? {
+        let folders = ["/Applications/", home + "/Applications/"]
+        guard folders.contains(where: { path.hasPrefix($0) }), let end = path.range(of: ".app/") else { return nil }
+        let bundle = String(path[..<end.lowerBound]) + ".app"
+        return bundle == "/Applications/Blackice.app" ? nil : bundle
+    }
+
+    /// "Slack" for "/Applications/Slack.app".
+    static func appName(_ bundle: String) -> String {
+        ((bundle as NSString).lastPathComponent as NSString).deletingPathExtension
     }
 }
 
@@ -64,6 +104,8 @@ struct ConfigWizard {
         var mode: Mode = .acceptAll
         var timeoutSeconds = 60
         var rules: [Rule] = []
+        /// The agent to connect right after the first start (`blackice agent connect`), if any.
+        var agent: String?
     }
 
     static let docs = "https://blackice-macos.vercel.app/docs/configuration"
@@ -74,10 +116,14 @@ struct ConfigWizard {
     let identify: (String) -> SigningIdentity?
     let fileExists: (String) -> Bool
     let home: String
+    /// The arrow-key list; nil, and every answer is typed.
+    var choose: ((Choice) -> [Int]?)? = nil
+    var runningApps: () -> [String] = { [] }
 
     /// nil when the input ended (Control-D) before the last answer. Everything is indented under
     /// the step's title, which the caller prints.
     func run() -> Answers? {
+        if let choose { return picked(choose) }
         var answers = Answers()
         say("  How should blackice treat new connections?")
         say("")
@@ -112,10 +158,82 @@ struct ConfigWizard {
         }
         if mode == .ask {
             say("")
-            say("  To have an agent such as fx answer for you, add a hook later:")
-            say("  \(Self.docs)")
+            say("  To have fx answer for you: blackice agent connect fx")
         }
         return answers
+    }
+
+    static let modes: [(Mode, String)] = [
+        (.acceptAll, "accept-all   Let everything through and log it"),
+        (.ask, "ask          Hold what no rule allows until fx or you answer"),
+        (.blockAll, "block-all    Let through only what your rules allow"),
+    ]
+
+    /// The same questions as lists to pick from: the mode, who answers in ask mode, and the apps
+    /// to trust, from the ones running now. Nothing to type unless the person picks "another app".
+    private func picked(_ choose: (Choice) -> [Int]?) -> Answers? {
+        var answers = Answers()
+        say("  How should blackice treat new connections?")
+        say("")
+        guard let mode = choose(Choice(options: Self.modes.map(\.1), multiple: false))?.first else { return nil }
+        answers.mode = Self.modes[mode].0
+        if answers.mode == .ask {
+            say("")
+            say("  Who answers the connections that wait?")
+            say("")
+            let agents = ["fx, a coding agent: blackice installs it if needed and sets it up",
+                          "Me, with blackice pending, approve and deny"]
+            guard let who = choose(Choice(options: agents, multiple: false))?.first else { return nil }
+            answers.agent = who == 0 ? "fx" : nil
+        }
+        if answers.mode != .acceptAll {
+            guard let rules = pickApps(choose) else { return nil }
+            answers.rules = rules
+        }
+        return answers
+    }
+
+    /// Apps to trust, picked from the apps running now; each may reach any host. "Another app"
+    /// asks for a path or name and its hosts, as the typed questions do.
+    private func pickApps(_ choose: (Choice) -> [Int]?) -> [Rule]? {
+        var seen = Set<SigningIdentity>()
+        let running = runningApps().compactMap { path -> (name: String, identity: SigningIdentity)? in
+            guard let identity = identify(path), seen.insert(identity).inserted else { return nil }
+            return (Interaction.appName(path), identity)
+        }.prefix(Self.maximumRules)
+        say("")
+        say("  Apps you trust connect to any host, in every mode, without waiting.")
+        say(running.isEmpty ? "  Pick one, or press Enter for none." : "  Pick them from the apps running now, or press Enter for none.")
+        say("")
+        let other = "Another app: type its path or name"
+        guard let picks = choose(Choice(options: running.map(\.name) + [other], multiple: true)) else { return nil }
+        var rules: [Rule] = []
+        for index in picks where index < running.count {
+            let app = running[running.startIndex + index]
+            rules.append(Rule(identity: app.identity, hosts: ["*"]))
+        }
+        if !rules.isEmpty { say("") }
+        for (index, rule) in rules.enumerated() {
+            let name = running[running.startIndex + picks[index]].name
+            say("    " + Style.done("\(name) may reach any host") + " (\(rule.identity.signingID))")
+        }
+        if picks.contains(running.count) {
+            say("")
+            say("  Name the app by its path (/Applications/Slack.app, /usr/bin/curl) or its")
+            say("  signing identifier. Press Enter on an empty line when you are done.")
+            say("")
+            while rules.count < Self.maximumRules {
+                guard let line = ask("  App: ") else { return nil }
+                let input = line.trimmingCharacters(in: .whitespaces)
+                if input.isEmpty { break }
+                guard let identity = resolveApp(input) else { continue }
+                guard let hosts = askHosts(identity) else { return nil }
+                if hosts.isEmpty { say("    Skipped \(identity.signingID)."); continue }
+                rules.append(Rule(identity: identity, hosts: hosts))
+                say("    " + Style.done("\(identity.signingID) may reach \(hosts == ["*"] ? "any host" : hosts.joined(separator: ", "))"))
+            }
+        }
+        return rules
     }
 
     private func chooseMode() -> Mode? {

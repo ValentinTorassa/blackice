@@ -25,7 +25,7 @@ private final class FakeAgentMac: @unchecked Sendable {
             findExecutable: { $0 == "fx" && self.installed ? "/opt/fake/fx" : nil },
             runAttached: { path, arguments, environment in
                 if arguments == ["login", "vercel"] { self.logins.append(environment); self.signedIn = true }
-                if path == "/bin/sh" { self.installs.append(arguments); self.installed = arguments.last?.contains("fx.sh") == true }
+                if path == "/bin/bash" { self.installs.append(arguments); self.installed = arguments.last?.contains("fx.sh") == true }
                 return 0
             },
             runCaptured: { _, arguments, _ in
@@ -47,11 +47,17 @@ private final class FakeAgentMac: @unchecked Sendable {
 
 private final class Loading: SystemControlling {
     var texts: [String] = []
+    var nexts: [Bool] = []
     var agentInstalls = 0
-    func start(configText: String, output: SystemOutput) -> Int32 { texts.append(configText); output.stdout("(started)"); return 0 }
+    var running: Mode?
+    var modes: [Mode] = []
+    func start(configText: String, output: SystemOutput) -> Int32 {
+        texts.append(configText); nexts.append(output.next); output.stdout("(started)"); return 0
+    }
     func stop(output: SystemOutput) -> Int32 { 0 }
     func status(output: SystemOutput) -> Int32 { 0 }
-    func setMode(_ mode: Mode, output: SystemOutput) -> Int32 { 0 }
+    func setMode(_ mode: Mode, output: SystemOutput) -> Int32 { modes.append(mode); running = mode; return 0 }
+    func runningMode() -> Mode? { running }
     func pending(output: SystemOutput) -> Int32 { 0 }
     func answer(_ request: AnswerRequest, output: SystemOutput) -> Int32 { 0 }
     func runDaemon(output: SystemOutput) -> Int32 { 0 }
@@ -211,7 +217,7 @@ struct AgentConnectTests {
                                                                          createFile: CLI.createFile, identify: { _ in nil },
                                                                          fileExists: { _ in true }, home: home.path, version: nil),
                              agents: broken)
-        #expect(status == ExitCode.unavailable && failing.installs == [["-c", installer]])
+        #expect(status == ExitCode.unavailable && failing.installs == [["-o", "pipefail", "-c", installer]])
         #expect(err.items.first == "  fx's installer exited with status 0, and fx is still not")
 
         // Enter installs it, and the rest goes on: sign-in, test, rule and hook.
@@ -220,9 +226,58 @@ struct AgentConnectTests {
         let system = Loading()
         let result = connect(home, config: config, mac: mac, system: system, answers: ["", "y"])
         #expect(result.status == 0, "\(result.stderr)")
-        #expect(mac.installs == [["-c", installer]] && mac.logins.count == 1)
+        #expect(mac.installs == [["-o", "pipefail", "-c", installer]] && mac.logins.count == 1)
         #expect(result.stdout.contains("  ✓ /opt/fake/fx is com.vercel.fx, team JW6Y669B67"))
         #expect(try BlackiceConfig(data: Data(contentsOf: URL(fileURLWithPath: config))).mode == .ask)
+    }
+
+    @Test func startPicksFxAndSetsEverythingUp() throws {
+        let home = try makePrivateDirectory()
+        defer { removeTree(home) }
+        let skill = home.appendingPathComponent("app-resources/agents/fx/blackice")
+        try FileManager.default.createDirectory(at: skill, withIntermediateDirectories: true)
+        try Data("# skill\n".utf8).write(to: skill.appendingPathComponent("SKILL.md"))
+        let config = home.path + "/.config/blackice/blackice.toml"
+        let mac = FakeAgentMac(signedIn: false, resources: home.path + "/app-resources/agents", answer: Self.approve)
+        mac.installed = false
+        let system = Loading()
+        var picks: [[Int]] = [[1], [0], []]   // ask, fx answers, no apps
+        var typed = [""]                      // Enter installs fx
+        let interaction = Interaction(
+            ask: { _ in typed.isEmpty ? nil : typed.removeFirst() }, createFile: CLI.createFile,
+            identify: { $0 == "/opt/fake/fx" ? Self.fx : nil }, fileExists: { FileManager.default.fileExists(atPath: $0) },
+            home: home.path, version: nil, choose: { _ in picks.isEmpty ? nil : picks.removeFirst() })
+        let out = Recorder<String>(), err = Recorder<String>()
+        let status = CLI.run(["start", "--config", config], stdout: { out.append($0) }, stderr: { err.append($0) },
+                             system: system, interaction: interaction, agents: mac.machine)
+        #expect(status == 0, "\(err.items)")
+
+        // First in accept-all with no Next list, then the file as written: ask mode, fx's rule and hook.
+        #expect(system.texts.count == 2 && system.nexts == [false, true])
+        #expect(try BlackiceConfig(data: Data(system.texts[0].utf8)).mode == .acceptAll)
+        let final = try BlackiceConfig(data: Data(system.texts[1].utf8))
+        #expect(final.mode == .ask && final.hooks.count == 1 && final.allowRule(for: Self.fx, host: "ai-gateway.vercel.sh") != nil)
+        #expect(try String(contentsOfFile: config, encoding: .utf8) == system.texts[1])
+        #expect(mac.installs.count == 1 && mac.logins.count == 1 && system.agentInstalls == 1 && system.modes.isEmpty)
+        for heading in ["1 · Pick a mode", "4 · Find fx", "5 · Give fx a home of its own", "6 · Try it on a sample connection",
+                        "7 · Add fx to ~/.config/blackice/blackice.toml", "8 · Turn it on"] {
+            #expect(out.items.contains(heading), "\(heading)")
+        }
+        #expect(out.items.contains("  It stays in accept-all while fx is set up, then switches to ask."))
+        #expect(!out.items.contains { $0.hasPrefix("Connecting fx") || $0.contains("Switch to ask mode now?") })
+    }
+
+    @Test func connectingWhileAskingSwitchesToAcceptAllFirst() throws {
+        let (home, config, resources) = try setUp("mode = \"ask\"\ntimeout_seconds = 60\n")
+        defer { removeTree(home) }
+        let system = Loading()
+        system.running = .ask
+        let result = connect(home, config: config, mac: FakeAgentMac(signedIn: true, resources: resources, answer: Self.approve),
+                             system: system)
+        #expect(result.status == 0, "\(result.stderr)")
+        #expect(system.modes == [.acceptAll])
+        #expect(result.stdout.contains("blackice is in ask mode, so fx's installer, its sign-in and the test"))
+        #expect(try BlackiceConfig(data: Data(system.texts.last!.utf8)).mode == .ask)
     }
 
     @Test func aSymlinkedHomeIsRefused() throws {
