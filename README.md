@@ -5,13 +5,46 @@ and sees every new outbound connection on the machine, from any app. It has thre
 ask. In ask mode a new connection waits while a hook asks an agent, such as [fx](https://github.com/vercel-labs/fx),
 whether to allow it, and the agent answers with `blackice approve`.
 
-**Status: early. The signed extension first ran on 3 November 2026, on one Mac:** the phase 0 check passed
-([`docs/phase-0.md`](docs/phase-0.md)), and ask mode with fx deciding through a hook approved one connection,
-denied another and dropped one nobody answered. Nothing is packaged or ready to use. The phases, the decisions
-and the open problems are in [`docs/plan.md`](docs/plan.md).
+**Status: early.** 0.1.0 is the first release. It has run on one Mac, a MacBook Air with macOS 27.0.1, by the
+people building it. Each run there is recorded in [`evidence/`](evidence/), and that is what this README calls
+working:
 
-What has run on a Mac is recorded in [`evidence/`](evidence/), one file per run. [`docs/install.md`](docs/install.md)
-describes installing a release package; none has been published yet.
+- In block-all, a binary signed with our Team ID and named by no rule was refused, and `curl` with a rule got
+  through (P0-01).
+- In ask mode, fx, run by the hook, approved and denied connections (P2-01, P2-02). In one run it decided ten in a
+  row with nobody at the keyboard, nine as expected (P4-01). Apps that connect by name, such as `nscurl`, wait for
+  the answer. `curl` and other tools that connect to an address fail on the first try and get through on the retry
+  after the approval.
+- The fault tests passed for the daemon being down, a hung hook, a burst of 120 connections and a daemon restart.
+  The last case, a configuration change while connections wait, failed: a Touch ID prompt was cancelled, and
+  `blackice pending` rejected the extension's reply (P5-01).
+
+Upgrading in place needed a restart before the daemon and the CLI could reach the new extension. The phases, the
+decisions and the open problems are in [`docs/plan.md`](docs/plan.md).
+
+## Install
+
+Blackice.app needs a Mac with Apple silicon and macOS 14 or later; it has run only on macOS 27.0.1. With
+[Homebrew](https://brew.sh):
+
+```console
+$ brew install --cask valentintorassa/tap/blackice
+```
+
+Or download `Blackice-0.1.0.zip` and `Blackice-0.1.0.zip.sha256` from the
+[GitHub release](https://github.com/ValentinTorassa/blackice/releases/tag/v0.1.0), check them and move
+`Blackice.app` to `/Applications`. [`docs/install.md`](docs/install.md) has the checks, the first start, the daemon,
+upgrading and uninstalling. In short:
+
+- The first `blackice start` waits until you allow the extension in System Settings → General → Login Items &
+  Extensions → Network Extensions.
+- `blackice agent install` starts the daemon that runs the hooks.
+- Run `blackice stop` before removing the app. It removes the filter and deactivates the extension, which
+  `brew uninstall` cannot do.
+- Restart the Mac after upgrading.
+
+npm: `npx blackice install` will download the same zip, check its checksum, signature and notarization, and copy the
+app to `/Applications`. It is in [`packaging/npm/`](packaging/npm/) and not published yet.
 
 ## Who's building it and why
 
@@ -23,10 +56,10 @@ anyone clicking Allow in a dialog. The macOS firewalls we know are built around 
 The code that sees every connection on a machine is a sensitive place for a dependency. We'd rather own that code,
 keep it small and readable, than install a third-party firewall with that access.
 
-## How it will work
+## How it works
 
 ```toml
-# blackice.toml (proposal)
+# blackice.toml (the format can still change)
 mode = "ask"            # "accept-all", "ask" or "block-all"
 timeout_seconds = 10    # no answer in time means deny
 apple_services = true   # macOS's own services reach Apple's hosts without a rule (the default)
@@ -81,7 +114,7 @@ asks an agent about each new connection. The architecture was worked out in blac
 its macOS app filter: the Network Extension, app identity from code signatures, and the TLS server name reader. Until
 2 November 2026 this project was called netshield.
 
-## Code so far
+## Code
 
 [`macos/`](macos/) is a Swift package that builds with the Command Line Tools alone:
 
@@ -92,7 +125,7 @@ its macOS app filter: the Network Extension, app identity from code signatures, 
   install` loads the daemon's LaunchAgent and must run from inside Blackice.app; `agent uninstall`
   removes it. Every other command (`start`, `stop`, `status`, `mode`, `pending`, `approve`, `deny`
   and `daemon`) needs Blackice.app signed with the Developer ID; any other build says so and exits
-  with status 69;
+  with status 69, and so does the signed one when it is started through a symbolic link;
 - the network extension, a content filter: accept-all allows every connection, block-all allows only
   what an `[[allow]]` rule or the built-in list of macOS services names, and ask also allows what a
   current approval names and pauses the rest until a hook or a person answers. A rule, list entry or
@@ -118,7 +151,8 @@ $ DRY=1 macos/scripts/package.sh ABCDE12345 macos/build/sign-<time>/Blackice.app
 $ DRY=1 macos/scripts/fault-test.sh   # checks the fault tests' configuration, hook and result checks
 ```
 
-[`integrations/fx/`](integrations/fx/) holds a draft skill for fx to decide connections.
+[`integrations/fx/`](integrations/fx/) holds a draft skill for fx to decide connections, and
+[`packaging/npm/`](packaging/npm/) the npm package, not published yet.
 
 ## Site
 

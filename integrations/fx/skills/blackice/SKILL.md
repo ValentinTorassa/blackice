@@ -7,9 +7,9 @@ description: >-
 
 # Deciding a blackice connection
 
-> **Draft.** blackice is in planning. `blackice approve` and `blackice deny` are written
-> but have not run against a real network extension yet, and the way the event reaches you is
-> a proposal. See `integrations/fx/README.md` in the blackice repository.
+> **Draft.** blackice 0.1.0 is early. `blackice approve` and `blackice deny` have run against
+> the network extension on one Mac, and the way the event reaches you can still change. See
+> `integrations/fx/README.md` in the blackice repository.
 
 A program on this Mac opened a network connection that no rule covers. blackice paused it
 and ran you to decide. Nobody is at the keyboard: do not ask questions. Answer once, before

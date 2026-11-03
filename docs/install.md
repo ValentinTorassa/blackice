@@ -1,12 +1,24 @@
 # Installing blackice
 
-How to install blackice from a release package, check it, run it, remove it and roll it back. **No release has been
-published yet.** The package is `Blackice-<version>.zip` plus `Blackice-<version>.zip.sha256`, as
-`macos/scripts/package.sh` builds them; nothing on this page has been run from a published package. The steps for
-the daemon need `blackice agent install`, which is not merged yet.
+How to install blackice from a release package or with Homebrew, check it, run it, remove it and roll it back. The
+package is `Blackice-<version>.zip` plus `Blackice-<version>.zip.sha256`, as `macos/scripts/package.sh` builds them,
+attached to each [GitHub release](https://github.com/ValentinTorassa/blackice/releases). Nothing on this page has
+been run from a published package yet: the runs in [`evidence/`](../evidence/) used builds installed by hand.
 
-You need a Mac with Apple silicon (the build is arm64 only) and an admin account. blackice has run on macOS 27.0.1
-only. The commands below use 0.1.0 as the version.
+You need a Mac with Apple silicon (the build is arm64 only), macOS 14 or later, and an admin account. blackice has
+run on macOS 27.0.1 only. The commands below use 0.1.0 as the version.
+
+## With Homebrew
+
+```console
+$ brew install --cask valentintorassa/tap/blackice
+```
+
+The cask downloads the same zip from the GitHub release, checks it against the SHA-256 written in the cask, puts
+`Blackice.app` in `/Applications` and adds a `blackice` command to Homebrew's `bin` folder: a small script that runs
+`/Applications/Blackice.app/Contents/MacOS/blackice`, since a symbolic link does not work (see step 2). Homebrew does
+not run the signature checks of step 1; to run them, use the commands there on `/Applications/Blackice.app`. Then
+continue with step 3.
 
 ## 1. Download and check
 
@@ -46,8 +58,10 @@ example in `~/.zshrc`:
 export PATH="/Applications/Blackice.app/Contents/MacOS:$PATH"
 ```
 
-Prefer the folder on the `PATH` to a symbolic link: the command checks that it runs from inside the signed app, and a
-link has not been tried.
+Use the folder on the `PATH`, or a script that runs the full path, rather than a symbolic link. The command checks
+that it runs as the signed app, and started through a link it does not: on 3 November 2026, `blackice status` run
+through a symbolic link said it needs Blackice.app signed with the Developer ID and exited with status 69, while the
+full path, and a script that runs the full path, worked.
 
 ## 3. Write blackice.toml
 
@@ -122,6 +136,10 @@ $ blackice stop
 $ rm -rf /Applications/Blackice.app
 ```
 
+With Homebrew, run the first two commands, then `brew uninstall --cask blackice` instead of `rm`. Homebrew cannot
+deactivate the extension, so run `blackice stop` first. `brew uninstall --zap --cask blackice` also removes
+`~/Library/Logs/blackice`, but not your settings in `~/.config/blackice`.
+
 `stop` asks for Touch ID, removes blackice's filter configuration and deactivates the extension. It needs no
 network. Moving the app to the Trash in Finder works as well as `rm`; either needs App Management for Terminal. `systemextensionsctl list` may show the extension as waiting to uninstall until the next restart. To also
 remove your settings and logs: `rm -rf ~/.config/blackice ~/Library/Logs/blackice`.
@@ -154,9 +172,10 @@ runs.
 `systemextensionsctl list` shows the extension waiting to uninstall, then install the older package from step 1 and
 allow the extension again in System Settings.
 
-**To upgrade**, check the new package as in step 1, put its `Blackice.app` in `/Applications` over the old one and run
-`blackice start`: macOS replaces the running extension with the one with the higher build number. Then restart the
-Mac. On 3 November 2026, on macOS 27.0.1, an extension upgraded this way kept filtering but had no XPC service until
-the Mac restarted, so the daemon, `pending`, `approve` and `deny` could not reach it and ask mode dropped everything
-it paused. `blackice start` checks for this after an upgrade, says so and exits with status 75. After the restart,
-run `blackice agent uninstall` and `blackice agent install`, so that the daemon runs the new binary.
+**To upgrade**, check the new package as in step 1, put its `Blackice.app` in `/Applications` over the old one (with
+Homebrew, `brew upgrade --cask blackice`) and run `blackice start`: macOS replaces the running extension with the one
+with the higher build number. Then restart the Mac. On 3 November 2026, on macOS 27.0.1, an extension upgraded this
+way kept filtering but had no XPC service until the Mac restarted, so the daemon, `pending`, `approve` and `deny`
+could not reach it and ask mode dropped everything it paused. `blackice start` checks for this after an upgrade, says
+so and exits with status 75. After the restart, run `blackice agent uninstall` and `blackice agent install`, so that
+the daemon runs the new binary.
