@@ -60,8 +60,10 @@ repository at `~/Documents/Github/Personal/netshield` on `main`.
    `*.provisionprofile` in any case.) `sign.sh` checks each profile's team, App ID, content filter entitlement and
    expiry, and that it names your certificate.
 
-6. **Store notarization credentials (recommended).** Whether macOS needs a notarized app to activate a local build
-   that was never downloaded has not been tested. Notarizing avoids finding out the hard way.
+6. **Store notarization credentials.** macOS activates a Developer ID system extension only from a notarized app,
+   even a local build that was never downloaded. Without notarization, `netshield start` fails with
+   `OSSystemExtensionErrorDomain 8: code signature invalid`, and `sysextd` logs that the extension does not satisfy
+   its code requirement (2 November 2026, macOS 27.0.1).
    1. At [account.apple.com](https://account.apple.com), under Sign-In and Security > App-Specific Passwords,
       create one named `notarytool`.
    2. Run this and paste that password at the prompt:
@@ -78,10 +80,10 @@ repository at `~/Documents/Github/Personal/netshield` on `main`.
          ~/netshield-signing/<filter profile>.provisionprofile netshield-notary
    ```
 
-   Leave out `netshield-notary` to skip notarization. When macOS asks whether `codesign` may use the key, type
-   your login password and choose Always Allow. The script builds into `macos/build/sign-<time>/`, signs the
-   extension and then the app with the hardened runtime and a secure timestamp, and verifies both. It ends with
-   the path of `Netshield.app` and the next command.
+   Without `netshield-notary` the app is not notarized and the extension will not activate. When macOS asks whether
+   `codesign` may use the key, type your login password and choose Always Allow. The script builds into
+   `macos/build/sign-<time>/`, signs the extension and then the app with the hardened runtime and a secure timestamp,
+   verifies both, then notarizes and staples the app. It ends with the path of `Netshield.app` and the next command.
 
 8. **Run the phase 0 check.**
 
