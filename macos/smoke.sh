@@ -1,8 +1,9 @@
 #!/bin/bash
 # Runs the built blackice binary: validate works, a bad file fails with its line, the
-# commands that need the signed app or the extension refuse with status 69, and start and
-# daemon check their configuration before refusing. Also lints the LaunchAgent template and
-# the app's Info.plists and entitlements, and checks the app icon.
+# commands that need the signed app or the extension refuse with status 69, start checks its
+# configuration before refusing, daemon refuses --config, and agent install refuses a binary
+# outside Blackice.app. Also lints the LaunchAgent template and the app's Info.plists and
+# entitlements, and checks the app icon.
 set -euo pipefail
 cd -- "$(dirname -- "${BASH_SOURCE[0]}")"
 swift build -Xswiftc -warnings-as-errors
@@ -22,13 +23,17 @@ set +e
 "$BIN" mode block-all; mode=$?
 "$BIN" approve --app com.example.tool --team ABCDE12345 --host example.com --for 10m; approve=$?
 "$BIN" mode sometimes; usage=$?
-"$BIN" daemon --config Examples/blackice.toml; daemon=$?
-"$BIN" daemon --config "$bad"; daemon_bad=$?
+"$BIN" daemon; daemon=$?
+"$BIN" daemon --config Examples/blackice.toml; daemon_config=$?
+# This build is not inside Blackice.app, so install refuses before it writes anything or runs
+# launchctl. agent uninstall is not run here: it would boot out a real agent.
+"$BIN" agent install; agent=$?
 set -e
 [[ $status -eq 65 && $start -eq 69 && $start_bad -eq 65 && $stop -eq 69 && $status_cmd -eq 69 && $mode -eq 69 &&
-   $approve -eq 69 && $usage -eq 64 && $daemon -eq 69 && $daemon_bad -eq 65 ]] || {
+   $approve -eq 69 && $usage -eq 64 && $daemon -eq 69 && $daemon_config -eq 64 && $agent -eq 69 ]] || {
     echo "unexpected exit statuses: validate=$status start=$start start_bad=$start_bad stop=$stop" \
-        "status=$status_cmd mode=$mode approve=$approve usage=$usage daemon=$daemon daemon_bad=$daemon_bad" >&2
+        "status=$status_cmd mode=$mode approve=$approve usage=$usage daemon=$daemon daemon_config=$daemon_config" \
+        "agent=$agent" >&2
     exit 1
 }
 plutil -lint LaunchAgent/com.valentorassa.blackice.daemon.plist Resources/*.plist Resources/*.entitlements

@@ -70,27 +70,47 @@ struct HookRunnerTests {
         #expect(!(try read(environment)).contains("touch"))
     }
 
-    @Test func theEnvironmentIsExplicitAndHasNoToken() async throws {
+    @Test func theEnvironmentIsBuiltFromTheAccountAndHasNoToken() async throws {
         let dir = try makePrivateDirectory()
         defer { removeTree(dir) }
-        let parent = ["HOME": "/Users/test", "PATH": "/usr/bin:/bin", "AWS_SECRET_ACCESS_KEY": "do-not-pass",
-                      "BLACKICE_EVENT_FILE": "/tmp/forged", "DYLD_INSERT_LIBRARIES": "/tmp/evil.dylib"]
-        let passed = HookRunner.environment(from: parent)
-        #expect(passed == ["HOME": "/Users/test", "PATH": "/usr/bin:/bin"])
-        #expect(HookRunner.environment(from: [:]) == ["PATH": HookRunner.defaultPath])
+        let built = HookRunner.environment(for: try fakeAccount())
+        #expect(built == ["HOME": "/Users/test", "USER": "test", "LOGNAME": "test", "TMPDIR": "/var/folders/xy/abc/T/",
+                          "PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "LANG": "en_US.UTF-8"])
 
         // Even BLACKICE_ values handed in by the caller are replaced.
-        let runner = try testRunner(dir, environment: passed.merging(["BLACKICE_EVENT_ID": "forged"]) { a, _ in a })
+        let runner = try testRunner(dir, environment: built.merging(["BLACKICE_EVENT_ID": "forged"]) { a, _ in a })
         let output = dir.appendingPathComponent("env.txt")
         let results = await runner.run([hook("/usr/bin/env > \(quotedPath(output))")], for: testEvent(), timeoutSeconds: 10)
         #expect(results.map(\.outcome) == [.exited(status: 0)])
         let lines = Set(try read(output).split(separator: "\n").map(String.init))
-        #expect(lines.contains("HOME=/Users/test"))
+        for (key, value) in built { #expect(lines.contains("\(key)=\(value)"), "\(key)") }
         #expect(lines.contains("BLACKICE_EVENT_ID=ev-0a1b2c3d"))
-        #expect(lines.contains { $0.hasPrefix("BLACKICE_EVENT_FILE=") && !$0.hasSuffix("/tmp/forged") })
+        #expect(lines.contains { $0.hasPrefix("BLACKICE_EVENT_FILE=") && $0.hasSuffix("/event.json") })
+        // What sh itself adds (PWD, SHLVL, _) is all there is beyond those.
+        let names = Set(lines.compactMap { $0.split(separator: "=", maxSplits: 1).first.map(String.init) })
+        #expect(names.subtracting(built.keys).subtracting(["BLACKICE_EVENT_ID", "BLACKICE_EVENT_FILE", "PWD", "SHLVL", "_", "OLDPWD"])
+            .isEmpty, "\(names)")
         let text = try read(output)
-        for absent in [testToken, "do-not-pass", "forged", "DYLD_INSERT_LIBRARIES"] {
+        for absent in [testToken, "forged"] {
             #expect(!text.contains(absent), "\(absent) reached the hook's environment")
+        }
+    }
+
+    @Test func theDaemonsOwnEnvironmentIsNotPassedOn() async throws {
+        // The real account, the way the daemon builds it; this process's environment has more.
+        let dir = try makePrivateDirectory()
+        defer { removeTree(dir) }
+        let account = try UserAccount.current()
+        let output = dir.appendingPathComponent("env.txt")
+        let results = try await testRunner(dir).run([hook("/usr/bin/env > \(quotedPath(output))")], for: testEvent(),
+                                                    timeoutSeconds: 10)
+        #expect(results.map(\.outcome) == [.exited(status: 0)])
+        let lines = Set(try read(output).split(separator: "\n").map(String.init))
+        #expect(lines.contains("HOME=\(account.home)") && lines.contains("TMPDIR=\(account.temporaryDirectory)"))
+        #expect(lines.contains("PATH=\(HookRunner.defaultPath)"))
+        for key in ProcessInfo.processInfo.environment.keys
+        where !["HOME", "USER", "LOGNAME", "TMPDIR", "PATH", "LANG", "PWD", "SHLVL", "_", "OLDPWD"].contains(key) {
+            #expect(!lines.contains { $0.hasPrefix(key + "=") }, "\(key) reached the hook")
         }
     }
 

@@ -41,7 +41,8 @@ run = 'fx ask "Use the blackice skill to decide whether to approve the pending c
 
 1. A new connection that no rule covers is paused by the network extension.
 2. The blackice daemon receives the event and runs the hook, with the event as JSON on stdin and in a file named in
-   `BLACKICE_EVENT_FILE`.
+   `BLACKICE_EVENT_FILE`. The daemon runs as a LaunchAgent (`blackice agent install`) and takes its hooks from the
+   configuration that `blackice start` saved with Touch ID, never from a file.
 3. The agent answers, for example `blackice approve --app <signing id> --host example.com --for 1h`.
 4. The extension lets the paused connection through, or drops it when the timeout passes.
 
@@ -84,9 +85,11 @@ its macOS app filter: the Network Extension, app identity from code signatures, 
 - the `blackice.toml` reader, strict: an unknown key, a duplicate key or anything outside the
   small TOML subset the file uses is an error with its line number;
 - the event a hook receives and its one-time token;
-- the `blackice` command. `blackice validate PATH` checks a configuration file. Every other
-  command (`start`, `stop`, `status`, `mode`, `pending`, `approve`, `deny` and `daemon`) needs
-  Blackice.app signed with the Developer ID; any other build says so and exits with status 69;
+- the `blackice` command. `blackice validate PATH` checks a configuration file. `blackice agent
+  install` loads the daemon's LaunchAgent and must run from inside Blackice.app; `agent uninstall`
+  removes it. Every other command (`start`, `stop`, `status`, `mode`, `pending`, `approve`, `deny`
+  and `daemon`) needs Blackice.app signed with the Developer ID; any other build says so and exits
+  with status 69;
 - the network extension, a content filter: accept-all allows every connection, block-all allows only
   what an `[[allow]]` rule or the built-in list of macOS services names, and ask also allows what a
   current approval names and pauses the rest until a hook or a person answers. A rule, list entry or

@@ -10,11 +10,15 @@ The planned commands.
 
 | Command | What it does |
 | --- | --- |
-| `blackice start` / `blackice stop` | Start or stop the daemon and the extension. |
+| `blackice start` / `blackice stop` | Activate the extension and start filtering with `blackice.toml`, or stop filtering and deactivate it. |
 | `blackice status` | Mode, rules, approvals and paused connections. |
 | `blackice mode accept-all \| ask \| block-all` | Change the mode. |
 | `blackice pending` | Connections waiting for an answer, and the approvals. |
 | `blackice approve (--app ID [--team TEAM] \| --cdhash HEX) --host HOST [--for 1h] [--token TOKEN]` | Allow one app to reach one host until the approval expires. |
 | `blackice deny (--app ID [--team TEAM] \| --cdhash HEX) --host HOST [--token TOKEN]` | Drop the waiting connections and remove the approval. |
+| `blackice daemon` | Run the hooks for paused connections. The LaunchAgent runs it. |
+| `blackice agent install` / `blackice agent uninstall` | Load the daemon's LaunchAgent for the current user, or unload and remove it. |
 
 `approve` and `deny` need the event's token when a hook calls them. A person can run them by hand after confirming with Touch ID. Without `--team`, `--app` names Apple's own code, which is signed without a Team ID. `--cdhash` names ad hoc signed code, which has no signing identity, by the CDHash that `codesign -dvvv` prints; a rebuild changes it and asks again.
+
+`blackice daemon` takes no options and reads no file. It gets its hooks and `timeout_seconds` from the extension, which holds the configuration that `blackice start` and `blackice mode` saved after Touch ID, so another copy of the daemon started by some other program still runs your hooks and no others. `agent install` must run from inside Blackice.app, because the LaunchAgent names that binary. It writes `~/Library/LaunchAgents/com.valentorassa.blackice.daemon.plist`, creates `~/Library/Logs/blackice` for the daemon's output and the event log, and loads the agent with `launchctl`. Neither `agent install` nor `agent uninstall` asks for Touch ID.

@@ -62,7 +62,7 @@ public final class HookRunner: @unchecked Sendable {
         /// Private directory (0700) for the per-hook event directories. Created if missing.
         public var workDirectory: URL
         /// The whole environment a hook starts with, apart from the BLACKICE_ variables.
-        /// Build it with `HookRunner.environment(from:)`; nothing else is inherited.
+        /// Build it with `HookRunner.environment(for:)`; nothing is inherited from the daemon.
         public var environment: [String: String]
         public var maximumConcurrent: Int
         /// Time between SIGTERM and SIGKILL.
@@ -80,10 +80,9 @@ public final class HookRunner: @unchecked Sendable {
     }
 
     public static let shell = "/bin/sh"
-    /// The variables a hook gets from the daemon's environment. Everything else is left out.
-    public static let passedVariables = ["HOME", "USER", "LOGNAME", "TMPDIR", "LANG", "PATH"]
-    /// launchd's PATH for agents, used when the daemon has none. Hooks should use absolute paths.
+    /// launchd's PATH for agents. A hook that needs more sets PATH in its `run` line.
     public static let defaultPath = "/usr/bin:/bin:/usr/sbin:/sbin"
+    public static let language = "en_US.UTF-8"
 
     public let options: Options
     private let lock = NSLock()
@@ -95,12 +94,12 @@ public final class HookRunner: @unchecked Sendable {
         self.options = options
     }
 
-    /// The hook environment: the `passedVariables` that the parent has, and PATH.
-    public static func environment(from parent: [String: String]) -> [String: String] {
-        var environment: [String: String] = [:]
-        for key in passedVariables { if let value = parent[key] { environment[key] = value } }
-        if environment["PATH"] == nil { environment["PATH"] = defaultPath }
-        return environment
+    /// The hook environment, built by the daemon rather than inherited from whoever started it:
+    /// HOME, USER and LOGNAME from the user database, TMPDIR from confstr, a fixed PATH and LANG.
+    /// The runner adds BLACKICE_EVENT_FILE and BLACKICE_EVENT_ID.
+    public static func environment(for account: UserAccount) -> [String: String] {
+        ["HOME": account.home, "USER": account.name, "LOGNAME": account.name, "TMPDIR": account.temporaryDirectory,
+         "PATH": defaultPath, "LANG": language]
     }
 
     /// Hooks running right now.

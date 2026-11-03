@@ -26,9 +26,11 @@ public protocol CheckedMessage: Codable, Sendable {
 }
 
 public enum Messages {
-    /// Bumped on any change to a message; both ends must agree.
-    public static let version = 1
-    /// Enough for a full pending list; anything larger is refused before decoding.
+    /// Bumped on any change to a message; both ends must agree. 2: the register reply carries the
+    /// configuration, and events carry its generation.
+    public static let version = 2
+    /// Enough for a full pending list, or a register reply with the largest blackice.toml (64 KiB,
+    /// at most twice that once escaped as JSON); anything larger is refused before decoding.
     public static let maximumBytes = 262_144
 
     public static func encode(_ message: some Encodable) throws -> Data {
@@ -97,54 +99,106 @@ public struct AppReference: Codable, Equatable, Sendable {
 
 // MARK: - Daemon <-> extension
 
-/// The daemon asks to receive events on this connection.
+/// The daemon asks to receive events on this connection, and for the configuration to run hooks
+/// with. It asks again, on the same connection, when an event names a generation it does not hold.
 public struct RegisterRequest: CheckedMessage, Equatable {
     public let version: Int
     public init() { version = Messages.version }
     public func validate(now: Date) throws {}
 }
 
+/// The extension's answer to a registration. When accepted, it carries the configuration the
+/// extension holds now, the one `blackice start` and `blackice mode` saved after Touch ID: the
+/// blackice.toml text and its generation. The daemon takes its hooks and timeout from it and from
+/// nowhere else; the text is parsed with the same strict BlackiceConfig parser as the file.
 public struct RegisterReply: CheckedMessage, Equatable {
     public let version: Int
     public let accepted: Bool
-    public init(accepted: Bool) {
-        version = Messages.version
-        self.accepted = accepted
+    public let generation: UInt64?
+    public let config: String?
+
+    /// Accepted, with this configuration.
+    public init(generation: UInt64, configText: String) {
+        self.init(version: Messages.version, accepted: true, generation: generation, config: configText)
     }
-    public func validate(now: Date) throws {}
+
+    public static let refused = RegisterReply(version: Messages.version, accepted: false, generation: nil, config: nil)
+
+    private init(version: Int, accepted: Bool, generation: UInt64?, config: String?) {
+        self.version = version
+        self.accepted = accepted
+        self.generation = generation
+        self.config = config
+    }
+
+    public func validate(now: Date) throws {
+        guard accepted else {
+            guard generation == nil, config == nil else { throw MessageError("configuration", "must be absent when refused") }
+            return
+        }
+        guard let generation, generation > 0 else { throw MessageError("generation", "must be at least 1") }
+        guard let config, config.utf8.count <= BlackiceConfig.maximumBytes else {
+            throw MessageError("config", "is missing or larger than \(BlackiceConfig.maximumBytes / 1024) KiB")
+        }
+        do {
+            _ = try BlackiceConfig(text: config)
+        } catch {
+            throw MessageError("config", "is not a valid blackice.toml (\(error))")
+        }
+    }
+
+    /// The configuration of an accepted reply. nil when refused; a reply that `Messages.decode`
+    /// returned has already been checked to parse.
+    public var configuration: DaemonConfiguration? {
+        guard accepted, let generation, let config else { return nil }
+        return try? DaemonConfiguration(generation: generation, configText: config)
+    }
+
+    /// What the daemon makes of the extension's reply: the configuration, or an error when the
+    /// reply is invalid or the registration was refused.
+    public static func configuration(from data: Data, now: Date = Date()) throws -> DaemonConfiguration {
+        let reply = try Messages.decode(RegisterReply.self, from: data, now: now)
+        guard let configuration = reply.configuration else { throw MessageError("registration", "was refused") }
+        return configuration
+    }
 }
 
-/// From the extension to the daemon: a new paused connection, or how one ended.
+/// From the extension to the daemon: a new paused connection, or how one ended. An event carries
+/// the generation of the configuration the extension held when it sent the event.
 public struct DaemonMessage: CheckedMessage, Equatable {
     public enum Kind: String, Codable, Sendable { case event, verdict }
 
     public let version: Int
     public let kind: Kind
     public let event: HookEvent?
+    public let generation: UInt64?
     public let eventID: String?
     public let verdict: Verdict?
 
-    public static func event(_ event: HookEvent) -> DaemonMessage {
-        DaemonMessage(version: Messages.version, kind: .event, event: event, eventID: nil, verdict: nil)
+    public static func event(_ event: HookEvent, generation: UInt64) -> DaemonMessage {
+        DaemonMessage(version: Messages.version, kind: .event, event: event, generation: generation, eventID: nil, verdict: nil)
     }
 
     public static func verdict(_ verdict: Verdict, eventID: String) -> DaemonMessage {
-        DaemonMessage(version: Messages.version, kind: .verdict, event: nil, eventID: eventID, verdict: verdict)
+        DaemonMessage(version: Messages.version, kind: .verdict, event: nil, generation: nil, eventID: eventID, verdict: verdict)
     }
 
     public func validate(now: Date) throws {
         switch kind {
         case .event:
             guard let event, eventID == nil, verdict == nil else { throw MessageError("event", "must be the only payload") }
+            guard let generation, generation > 0 else { throw MessageError("generation", "must be at least 1") }
             try event.validate(now: now)
         case .verdict:
-            guard event == nil, let eventID, verdict != nil else { throw MessageError("verdict", "needs event_id and verdict only") }
+            guard event == nil, generation == nil, let eventID, verdict != nil else {
+                throw MessageError("verdict", "needs event_id and verdict only")
+            }
             guard validEventID(eventID) else { throw MessageError("event_id", "must be ev- and 8 hex digits") }
         }
     }
 
     enum CodingKeys: String, CodingKey {
-        case version, kind, event, verdict
+        case version, kind, event, generation, verdict
         case eventID = "event_id"
     }
 }

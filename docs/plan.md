@@ -21,6 +21,7 @@ done when its check passes on a real Mac, not when the code compiles.
 | Hooks that leave their process group | Best effort, and documented: a process started by a hook that calls `setsid` or `setpgid` escapes the kill at the deadline and when the hook exits. Running hooks under a separate user or in a sandbox would close this; neither is planned yet. |
 | Approval storage | In memory, inside the extension. Permanent rules live in `blackice.toml`. |
 | Who can approve | The hook, with the event's one-time token, or a person with Touch ID. |
+| Daemon | `blackice daemon` takes no options and reads no file (decided on 3 November 2026). The extension's reply to its registration carries the configuration the extension holds, the `blackice.toml` text that `start` or `mode` saved after Touch ID plus its generation, and the daemon takes its hooks and timeout from it, parsed with the same strict parser. Each event carries the generation the extension held when it sent it; a daemon holding another one registers again on the same connection to get the current configuration, and runs no hook for an event whose configuration is gone. Hooks get an environment the daemon builds: `HOME`, `USER` and `LOGNAME` from the user database, `TMPDIR` from confstr, a fixed `PATH` and `LANG`, and the event's file and ID. `blackice agent install` and `uninstall` write and load, or unload and remove, the LaunchAgent, without Touch ID. |
 | Configuration | `blackice.toml`, read by a small strict parser for the subset the file uses. No third-party dependency. |
 | Apple account | Individual Developer Program membership. |
 
@@ -130,11 +131,12 @@ done when its check passes on a real Mac, not when the code compiles.
   is turned on for real.
 - **Self-approval.** Any program of the user can run `blackice approve`. Requiring the event's token keeps a
   program from approving its own connection.
-- **Daemon impersonation.** Any program of the user can also run `blackice daemon` and register with the
-  extension in place of the LaunchAgent. A later registration replaces the earlier one, so that program would get
-  the events, tokens included, and could approve its own connection. Candidates: accept only a daemon started by
-  launchd, confirm a registration with Touch ID once per login, and have the daemon take its hooks from the
-  configuration the extension holds rather than from `--config`.
+- **Daemon impersonation.** Any program of the user can still run `blackice daemon` and register in place of the
+  LaunchAgent, but that copy runs the hooks of the configuration saved with Touch ID, in an environment it builds
+  itself (see Daemon under the decisions), so it cannot run hooks of its own. What remains: such a program can keep
+  the LaunchAgent's daemon from getting events, by registering again and again or by stopping it, and connections
+  then wait and are denied at their timeout. And the programs a hook runs read files that any program of the user
+  can change, such as fx's rules and skill in the agent's home.
 - **Prompt injection.** Host names, app names and TLS server names are chosen by whoever opens the connection, and
   they reach the model's prompt. Events carry them as structured fields, and the only accepted answers are approve
   or deny.

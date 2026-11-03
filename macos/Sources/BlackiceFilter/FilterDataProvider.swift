@@ -351,7 +351,9 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
         case .lookUp(let host):
             resolverQueue.async { [weak self] in self?.finishLookup(host) }
         case .send(let event):
-            if server?.send(.event(event)) != true { control("event_not_sent", "no_daemon") }
+            // With the generation installed now, so the daemon runs that configuration's hooks.
+            let sent = snapshots.read().map { server?.send(.event(event, generation: $0.generation)) == true } ?? false
+            if !sent { control("event_not_sent", "no_daemon") }
         }
     }
 
@@ -420,6 +422,11 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
     }
 
     // MARK: - FilterServiceHandler (called on XPC queues)
+
+    /// What the daemon runs hooks with: the configuration saved with Touch ID, as installed now.
+    func currentConfiguration() -> ProviderConfiguration? {
+        snapshots.read()
+    }
 
     func pendingReply() -> PendingReply {
         let now = Self.now
