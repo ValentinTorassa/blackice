@@ -241,9 +241,10 @@ and each run on a Mac is recorded in [`evidence/`](../evidence/).
   status 75. [`install.md`](install.md)'s upgrade steps include the restart. Whether macOS does this on every
   in-place upgrade, or only on some, is not known; for now an upgrade means a restart.
 - **Events with no connection left.** In P5-01, `blackice pending` failed with "the network extension sent an
-  invalid reply: events has an invalid entry". From the code: an event whose paused flows were all dropped with
-  `hold_expired` stays pending, by design, and is listed with 0 connections, while the CLI's check of the reply
-  requires at least 1. Not yet confirmed by a test or fixed.
+  invalid reply: events has an invalid entry": an event whose paused flows were all dropped with `hold_expired`
+  stays pending, by design, and is listed with 0 connections, while the CLI's check of the reply required at
+  least 1. Fixed after that run: the check takes 0, and `pending` shows "no connection left (an approval covers
+  the next try)" (`CLITests`). Not yet run on a Mac.
 - **Limits of the host check.** The system resolver may answer blackice's lookup differently than it answered
   the app (round-robin, CDNs, split DNS), which shows as a mismatch: ask mode asks and block-all drops. And a match
   proves only that the name resolves to that address now, not who controls the name.

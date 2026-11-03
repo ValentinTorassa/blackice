@@ -287,6 +287,22 @@ struct RunTests {
         #expect(CLI.pendingLines(PendingReply(events: [], approvals: [])) == ["No connection is waiting.", "No approvals."])
     }
 
+    @Test func anEventWithNoConnectionLeftIsValidAndSaysSo() throws {
+        // Its flows were dropped with hold_expired; the event stays until its deadline (Mac run, 3 November 2026).
+        let tool = AppReference(signingID: "com.apple.curl", teamID: nil, cdhash: nil)
+        let reply = PendingReply(
+            events: [PendingSummary(id: "ev-0000002c", app: tool, path: "/usr/bin/curl", host: "api.github.com",
+                                    ip: "203.0.113.7", port: 443, secondsLeft: 40, connections: 0)],
+            approvals: [])
+        try reply.validate(now: Date())
+        #expect(CLI.pendingLines(reply) == [
+            "Waiting:",
+            "  ev-0000002c  apple/com.apple.curl -> api.github.com:443 (203.0.113.7), no connection left (an approval covers the next try), 40 s left",
+            "      /usr/bin/curl",
+            "No approvals.",
+        ])
+    }
+
     @Test func answerExitStatus() {
         #expect(CLI.answerStatus(AnswerReply(status: .done, reason: "approved", message: "ok")) == 0)
         #expect(CLI.answerStatus(AnswerReply(status: .refused, reason: "invalid_request", message: "x")) == 64)

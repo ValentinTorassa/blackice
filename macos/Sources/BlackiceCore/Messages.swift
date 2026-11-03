@@ -277,7 +277,7 @@ public struct PendingReply: CheckedMessage, Equatable {
         }
         for event in events {
             guard validEventID(event.id), event.app.identity != nil, normalizeHost(event.host) == event.host,
-                  IPAddress(event.ip) != nil, event.secondsLeft >= 0, event.connections > 0,
+                  IPAddress(event.ip) != nil, event.secondsLeft >= 0, event.connections >= 0,
                   event.path.map(validPath) ?? true else { throw MessageError("events", "has an invalid entry") }
         }
         for approval in approvals {

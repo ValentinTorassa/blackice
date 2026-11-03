@@ -270,7 +270,10 @@ public enum CLI {
             lines.append("Waiting:")
             for event in reply.events {
                 let label = event.app.identity?.label ?? "unknown"
-                let count = event.connections == 1 ? "1 connection" : "\(event.connections) connections"
+                // An event outlives its connections when they were dropped with hold_expired: it stays
+                // open until its deadline, so an approval still covers the app's next try.
+                let count = event.connections == 0 ? "no connection left (an approval covers the next try)"
+                    : event.connections == 1 ? "1 connection" : "\(event.connections) connections"
                 lines.append("  \(event.id)  \(label) -> \(event.host):\(event.port) (\(event.ip)), \(count), " +
                              "\(event.secondsLeft) s left")
                 if let path = event.path { lines.append("      " + path) }
