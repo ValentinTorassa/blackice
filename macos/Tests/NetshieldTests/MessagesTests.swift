@@ -10,7 +10,9 @@ private let build = AppIdentity.cdhash(testCDHash)
 private func event(app: HookEvent.App = .init(tool, path: "/Applications/Tool.app"), id: String = "ev-0a1b2c3d",
                    token: String = testToken, host: String? = "example.com", ip: String = "203.0.113.7",
                    port: UInt16 = 443, deadlineIn seconds: TimeInterval = 10) -> HookEvent {
-    HookEvent(id: id, token: token, app: app, host: host, ip: ip, port: port, deadline: Date().addingTimeInterval(seconds))
+    // Whole seconds: messages carry ISO 8601 dates without fractions.
+    let now = Date(timeIntervalSince1970: Date().timeIntervalSince1970.rounded(.down))
+    return HookEvent(id: id, token: token, app: app, host: host, ip: ip, port: port, deadline: now.addingTimeInterval(seconds))
 }
 
 /// Encodes `message`, swaps in raw JSON fields, and decodes as `type`.

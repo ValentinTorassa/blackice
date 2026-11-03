@@ -42,7 +42,7 @@ private func flow(_ identity: IdentityResolution, _ host: String?, port: UInt16?
 }
 
 /// Every host resolves to the flow's address, and nothing is approved.
-private let matching = PolicyContext(approved: { _, _ in false }, address: { _, _ in .match })
+private var matching: PolicyContext { PolicyContext(approved: { _, _ in false }, address: { _, _ in .match }) }
 
 /// Approvals and resolver answers by host; a host without answers is not looked up yet.
 private func context(approved: Set<ApprovalKey> = [], answers: [String: [String]] = [:]) -> PolicyContext {

@@ -40,6 +40,19 @@ private final class FakeSystem: SystemControlling {
         output.stderr("mode refused")
         return answer
     }
+
+    func pending(output: SystemOutput) -> Int32 { calls.append("pending"); return answer }
+
+    func answer(_ request: AnswerRequest, output: SystemOutput) -> Int32 {
+        calls.append("\(request.kind.rawValue) \(request.app.identity?.label ?? "?") \(request.host) " +
+                     "\(request.seconds.map(String.init) ?? "-") \(request.authorization.rawValue)")
+        return answer
+    }
+
+    func runDaemon(config: NetshieldConfig, output: SystemOutput) -> Int32 {
+        calls.append("daemon " + config.summary)
+        return answer
+    }
 }
 
 private func usageError(_ arguments: [String]) -> String? {
@@ -67,12 +80,28 @@ struct ParseTests {
     @Test func approveDefaultsAndForms() throws {
         let approval = try CLI.parse(["approve", "--app", "com.example.tool", "--team=ABCDE12345",
                                       "--host", "Example.COM.", "--token", "q8Zr0d3XyB1mVt5LkS9wJpQa2NcEf7HgUi4Ko6Rl0Ys"])
-        #expect(approval == .approve(Approval(app: "com.example.tool", team: "ABCDE12345", host: "example.com",
+        let tool = AppIdentity.signed(SigningIdentity(signingID: "com.example.tool", teamID: "ABCDE12345"))
+        #expect(approval == .approve(Approval(identity: tool, host: "example.com",
                                               seconds: 3600, token: "q8Zr0d3XyB1mVt5LkS9wJpQa2NcEf7HgUi4Ko6Rl0Ys")))
         let apple = try CLI.parse(["approve", "--app", "com.apple.curl", "--host", "example.com", "--for", "10m"])
-        #expect(apple == .approve(Approval(app: "com.apple.curl", team: nil, host: "example.com", seconds: 600, token: nil)))
+        let curl = AppIdentity.signed(SigningIdentity(signingID: "com.apple.curl", teamID: nil))
+        #expect(apple == .approve(Approval(identity: curl, host: "example.com", seconds: 600, token: nil)))
         let denial = try CLI.parse(["deny", "--host", "example.com", "--app", "com.example.tool"])
-        #expect(denial == .deny(Denial(app: "com.example.tool", team: nil, host: "example.com", token: nil)))
+        let untrusted = AppIdentity.signed(SigningIdentity(signingID: "com.example.tool", teamID: nil))
+        #expect(denial == .deny(Denial(identity: untrusted, host: "example.com", token: nil)))
+    }
+
+    @Test func cdhashNamesAdHocCode() throws {
+        let upper = testCDHash.uppercased()
+        let approval = try CLI.parse(["approve", "--cdhash", upper, "--host", "example.com", "--for", "30s"])
+        #expect(approval == .approve(Approval(identity: .cdhash(testCDHash), host: "example.com", seconds: 30, token: nil)))
+        let denial = try CLI.parse(["deny", "--cdhash=\(testCDHash)", "--host", "example.com"])
+        #expect(denial == .deny(Denial(identity: .cdhash(testCDHash), host: "example.com", token: nil)))
+        if case .approve(let parsed) = approval {
+            #expect(parsed.request.app == AppReference(signingID: nil, teamID: nil, cdhash: testCDHash))
+            #expect(parsed.request.authorization == .touchID)
+            #expect(throws: Never.self) { try parsed.request.validate(now: Date()) }
+        }
     }
 
     @Test func durations() {
@@ -101,7 +130,12 @@ struct ParseTests {
             (["validate"], "one path"),
             (["validate", "a", "b"], "one path"),
             (["validate", "--help"], "one path"),
-            (["approve", "--host", "example.com"], "needs --app"),
+            (["approve", "--host", "example.com"], "needs --app or --cdhash"),
+            (["approve", "--cdhash", testCDHash, "--app", "com.a", "--host", "example.com"], "cannot be combined"),
+            (["deny", "--cdhash", testCDHash, "--team", "ABCDE12345", "--host", "example.com"], "cannot be combined"),
+            (["approve", "--cdhash", "abc", "--host", "example.com"], "40 hex digits"),
+            (["approve", "--cdhash", String(repeating: "g", count: 40), "--host", "example.com"], "40 hex digits"),
+            (["approve", "--app", "com.a", "--host", "example.com", "--token", "short"], "token from the event"),
             (["approve", "--app", "com.a"], "needs --host"),
             (["approve", "--app", "com.a\" or true", "--host", "example.com"], "signing identifier"),
             (["approve", "--app", "com.a", "--team", "abc", "--host", "example.com"], "Team ID"),
@@ -209,22 +243,61 @@ struct RunTests {
         #expect(system.calls == ["stop", "status", "mode block-all"])
         #expect(stop.status == 77 && status.status == 77 && mode.status == 77)
         #expect(status.stdout == "filter: enabled" && mode.stderr == "mode refused")
-        // Phase 2 commands never reach the system.
-        _ = run(["pending"], system: system)
+    }
+
+    @Test func askCommandsReachTheSystem() {
+        let token = "q8Zr0d3XyB1mVt5LkS9wJpQa2NcEf7HgUi4Ko6Rl0Ys"
+        let system = FakeSystem(status: ExitCode.noPermission)
+        #expect(run(["pending"], system: system).status == 77)
+        #expect(run(["approve", "--app", "com.a", "--host", "Example.com", "--for", "5m", "--token", token],
+                    system: system).status == 77)
+        #expect(run(["deny", "--cdhash", testCDHash, "--host", "example.com"], system: system).status == 77)
+        #expect(system.calls == ["pending", "approve apple/com.a example.com 300 token",
+                                 "deny cdhash/\(testCDHash) example.com - touch_id"])
+        // A usage error never reaches it.
+        #expect(run(["approve", "--app", "com.a", "--host", "example.com", "--for", "2d"], system: system).status == 64)
         #expect(system.calls.count == 3)
     }
 
-    @Test func phaseTwoCommandsSaySoAndFail() {
-        let phaseTwo: [[String]] = [["pending"], ["approve", "--app", "com.a", "--host", "example.com"],
-                                    ["deny", "--app", "com.a", "--host", "example.com"]]
-        for arguments in phaseTwo {
+    @Test func askCommandsNeedTheSignedApp() {
+        let commands: [[String]] = [["pending"], ["approve", "--app", "com.a", "--host", "example.com"],
+                                    ["deny", "--cdhash", testCDHash, "--host", "example.com"]]
+        for arguments in commands {
             let result = run(arguments)
             #expect(result.status == 69 && result.stdout.isEmpty)
-            #expect(result.stderr == "netshield \(arguments[0]): not implemented yet (needs the extension, phase 2)")
+            #expect(result.stderr == UnsignedSystem.refusal(arguments[0]))
         }
     }
 
-    @Test func daemonChecksItsConfigurationThenRefuses() throws {
+    @Test func pendingLinesNeverShowATokenAndStayPrintable() {
+        let tool = AppReference(signingID: "com.example.tool", teamID: "ABCDE12345", cdhash: nil)
+        let reply = PendingReply(
+            events: [PendingSummary(id: "ev-0000002a", app: tool, path: "/usr/local/bin/tool", host: "example.com",
+                                    ip: "203.0.113.7", port: 443, secondsLeft: 8, connections: 3),
+                     PendingSummary(id: "ev-0000002b", app: AppReference(signingID: nil, teamID: nil, cdhash: testCDHash),
+                                    path: nil, host: "pypi.org", ip: "2001:db8::1", port: 80, secondsLeft: 2, connections: 1)],
+            approvals: [ApprovalSummary(app: tool, host: "api.example.com", secondsLeft: 3599)])
+        #expect(CLI.pendingLines(reply) == [
+            "Waiting:",
+            "  ev-0000002a  ABCDE12345/com.example.tool -> example.com:443 (203.0.113.7), 3 connections, 8 s left",
+            "      /usr/local/bin/tool",
+            "  ev-0000002b  cdhash/\(testCDHash) -> pypi.org:80 (2001:db8::1), 1 connection, 2 s left",
+            "Approvals:",
+            "  ABCDE12345/com.example.tool -> api.example.com, 3599 s left",
+        ])
+        #expect(CLI.pendingLines(PendingReply(events: [], approvals: [])) == ["No connection is waiting.", "No approvals."])
+    }
+
+    @Test func answerExitStatus() {
+        #expect(CLI.answerStatus(AnswerReply(status: .done, reason: "approved", message: "ok")) == 0)
+        #expect(CLI.answerStatus(AnswerReply(status: .refused, reason: "invalid_request", message: "x")) == 64)
+        #expect(CLI.answerStatus(AnswerReply(status: .refused, reason: "unavailable", message: "x")) == 69)
+        for reason in ["token_unknown", "token_spent", "token_expired", "token_mismatch", "touch_id_failed"] {
+            #expect(CLI.answerStatus(AnswerReply(status: .refused, reason: reason, message: "x")) == 77)
+        }
+    }
+
+    @Test func daemonChecksItsConfigurationThenNeedsTheSignedApp() throws {
         #expect(usageError(["daemon"]) == "daemon needs --config PATH")
         #expect(usageError(["daemon", "--config"]) == "daemon: --config needs a value")
         #expect(usageError(["daemon", "--config", "a", "--log", "b"]) == "daemon: unknown option --log")
@@ -233,7 +306,11 @@ struct RunTests {
         let good = run(["daemon", "--config", "n.toml"], files: ["n.toml": Data("mode = \"ask\"\n".utf8)])
         #expect(good.status == 69)
         #expect(good.stdout == "n.toml: valid (mode ask, timeout 10 s, 0 allow rules, 0 hooks)")
-        #expect(good.stderr == "netshield daemon: not implemented yet (needs the extension, phase 2)")
+        #expect(good.stderr == UnsignedSystem.refusal("daemon"))
+
+        let system = FakeSystem()
+        let real = run(["daemon", "--config", "n.toml"], files: ["n.toml": Data("mode = \"ask\"\n".utf8)], system: system)
+        #expect(real.status == 0 && system.calls == ["daemon mode ask, timeout 10 s, 0 allow rules, 0 hooks"])
 
         let bad = run(["daemon", "--config", "n.toml"], files: ["n.toml": Data("mode = \"loud\"\n".utf8)])
         #expect(bad.status == 65 && bad.stderr.hasPrefix("n.toml:1: mode must be"))
