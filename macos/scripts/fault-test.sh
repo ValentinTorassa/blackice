@@ -261,8 +261,8 @@ if [[ -n "$DRY" ]]; then
     cat "$OUT/fault.toml"
     valid=$("$BIN" validate "$OUT/fault.toml")
     echo "$valid"
-    verdict "the configuration is valid (mode ask, timeout $TIMEOUT s, 1 rule, 1 hook)" \
-        "$(is grep -qF "valid (mode ask, timeout $TIMEOUT s, 1 allow rule, 1 hook)" <<<"$valid")"
+    verdict "the configuration is valid (ask mode, 1 rule, 1 hook, $TIMEOUT s to answer)" \
+        "$(is grep -qF "is valid: ask mode, 1 rule, 1 hook, $TIMEOUT s to answer" <<<"$valid")"
     hosts=("${BURST_HOSTS[@]}" "$DOWN_HOST" "$HUNG_HOST" "$SAME_HOST" "${RESTART_HOSTS[@]}" "$CONTROL_HOST")
     distinct=$(printf '%s\n' "${hosts[@]}" | sort -u | wc -l | tr -d ' ')
     verdict "the ${#hosts[@]} test hosts are distinct ($distinct)" "$(( distinct == ${#hosts[@]} ))"
