@@ -1,4 +1,4 @@
-import { site } from './site-metadata'
+import { canonicalSiteUrl, site } from './site-metadata'
 
 /* The current release, shared by the landing page, its markdown twin and
    the install docs' links. The zip and its checksum are attached to the
@@ -11,6 +11,8 @@ export const release = {
   url: `${site.repo}/releases/tag/v${version}`,
   zip: `Blackice-${version}.zip`,
   checksum: `Blackice-${version}.zip.sha256`,
+  /* app/install.sh serves lib/install.sh, which pins this same version. */
+  curl: `curl -fsSL ${canonicalSiteUrl}/install.sh | sh`,
   /* Two commands: Homebrew loads a cask from a tap other than its own only
      after `brew trust`. */
   brew: 'brew trust --cask valentintorassa/tap/blackice\nbrew install --cask valentintorassa/tap/blackice',

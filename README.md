@@ -32,6 +32,13 @@ Open problems are in [`docs/plan.md`](docs/plan.md).
 Apple silicon and macOS 14 or later.
 
 ```console
+$ curl -fsSL https://blackice-macos.vercel.app/install.sh | sh
+```
+
+The script ([`site/lib/install.sh`](site/lib/install.sh)) checks the release zip's checksum, signature and
+notarization, copies Blackice.app to /Applications and adds a `blackice` command to `~/.local/bin`. Or with Homebrew:
+
+```console
 $ brew trust --cask valentintorassa/tap/blackice
 $ brew install --cask valentintorassa/tap/blackice
 ```

@@ -52,6 +52,9 @@ export const status = [
 ]
 
 export const install = {
+  curl: release.curl,
+  script:
+    'The script checks the checksum, the signature and the notarization, copies Blackice.app to `/Applications` and adds a `blackice` command to `~/.local/bin`. Or with Homebrew:',
   brew: release.brew,
   /* The page links "GitHub release" and "install docs"; the markdown twin
      appends the URLs. */

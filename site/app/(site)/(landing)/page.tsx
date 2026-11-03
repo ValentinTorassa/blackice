@@ -129,6 +129,12 @@ export default function Home() {
             </p>
           </div>
           <div className="mt-6">
+            <CodeBlock code={install.curl}>{install.curl}</CodeBlock>
+          </div>
+          <p className="mt-4 max-w-[600px] text-muted-foreground">
+            <Inline text={install.script} />
+          </p>
+          <div className="mt-4">
             <CodeBlock code={install.brew}>{install.brew}</CodeBlock>
           </div>
           <div className="mt-4 max-w-[600px] text-muted-foreground [&_p+p]:mt-4">
