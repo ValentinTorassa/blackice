@@ -21,8 +21,13 @@ public enum Verdict: String, Codable, Sendable {
 }
 
 public enum LogRecord: Sendable {
+    /// The daemon took a configuration from the extension: the hooks of later events come from it.
+    case configurationLoaded(DaemonConfiguration)
     case eventReceived(HookEvent)
     case noHooks(eventID: String)
+    /// No hook ran for the event: "configuration_unavailable" when the extension could not be asked
+    /// for its configuration, "configuration_changed" when it holds a newer one than the event's.
+    case hooksSkipped(eventID: String, reason: String)
     case hookStarted(eventID: String, hookLine: Int, pid: Int32)
     case hookFinished(eventID: String, HookResult)
     /// Written when the extension reports how a paused connection ended.
@@ -98,6 +103,15 @@ public final class EventLog: @unchecked Sendable {
     static func encode(_ record: LogRecord, at date: Date) throws -> Data {
         var fields: [String: Field] = ["ts": .string(date.formatted(Date.ISO8601FormatStyle(includingFractionalSeconds: true)))]
         switch record {
+        case .configurationLoaded(let configuration):
+            fields["type"] = .string("configuration_loaded")
+            fields["generation"] = .int(Int(clamping: configuration.generation))
+            fields["hooks"] = .int(configuration.hooks.count)
+            fields["timeout_seconds"] = .int(configuration.timeoutSeconds)
+        case .hooksSkipped(let eventID, let reason):
+            fields["type"] = .string("hooks_skipped")
+            fields["event"] = .string(eventID)
+            fields["reason"] = .string(reason)
         case .eventReceived(let event):
             fields["type"] = .string("event_received")
             fields["event"] = .string(event.id)

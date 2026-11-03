@@ -30,8 +30,13 @@ func testRunner(_ directory: URL, limit: Int = 4, grace: TimeInterval = 0.3,
                 environment: [String: String]? = nil) throws -> HookRunner {
     try HookRunner(options: .init(
         workDirectory: directory.appendingPathComponent("work", isDirectory: true),
-        environment: environment ?? HookRunner.environment(from: ProcessInfo.processInfo.environment),
+        environment: environment ?? HookRunner.environment(for: try UserAccount.current()),
         maximumConcurrent: limit, gracePeriod: grace))
+}
+
+/// A made-up account for tests that must not depend on the real user.
+func fakeAccount(home: String = "/Users/test", temporary: String = "/var/folders/xy/abc/T/") throws -> UserAccount {
+    try UserAccount(uid: 501, name: "test", home: home, temporaryDirectory: temporary)
 }
 
 /// A path inside single quotes for a hook command line. Test paths never contain a quote.

@@ -1,13 +1,17 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!--
-  Template for the blackice daemon's LaunchAgent. Nothing installs it yet: `blackice daemon`
-  still exits with status 69 until the extension can send it events (phase 2).
+  The blackice daemon's LaunchAgent, with placeholders. `blackice agent install`, run from
+  inside Blackice.app, writes this file to ~/Library/LaunchAgents with BLACKICE_BIN replaced
+  by the absolute path of that blackice binary and BLACKICE_LOGS by ~/Library/Logs/blackice
+  (created with mode 0700), then loads it with launchctl bootstrap gui/<uid>.
+  `blackice agent uninstall` boots it out and removes it. LaunchAgent.plist in BlackiceCore
+  generates the file, and a unit test checks that it has the same keys and values as this one.
 
-  Replace BLACKICE_BIN with the absolute path of the blackice binary inside Blackice.app,
-  BLACKICE_CONFIG with the absolute path of blackice.toml, and BLACKICE_LOGS with an
-  absolute directory for launchd's copy of stderr (the event log is separate). The label
-  is provisional, like the bundle identifiers.
+  The daemon takes no --config: its hooks and timeout come from the configuration that
+  `blackice start` saved, which it gets from the network extension. launchd's copies of
+  stdout and stderr go to BLACKICE_LOGS; the event log is events.jsonl in the same directory.
+  The label is provisional, like the bundle identifiers.
 -->
 <plist version="1.0">
 <dict>
@@ -17,8 +21,6 @@
     <array>
         <string>BLACKICE_BIN</string>
         <string>daemon</string>
-        <string>--config</string>
-        <string>BLACKICE_CONFIG</string>
     </array>
     <key>RunAtLoad</key>
     <true/>

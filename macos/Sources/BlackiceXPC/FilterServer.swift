@@ -6,6 +6,9 @@ import BlackiceCore
 public protocol FilterServiceHandler: AnyObject {
     func pendingReply() -> PendingReply
     func answer(_ request: AnswerRequest) -> AnswerReply
+    /// The configuration the extension decides with now, which `blackice start` and `mode` saved.
+    /// The daemon gets it with each registration and runs its hooks; nil refuses the registration.
+    func currentConfiguration() -> ProviderConfiguration?
 }
 
 /// Listens on the extension's Mach service, accepts only the blackice binary of the same team,
@@ -81,13 +84,26 @@ public final class FilterServer: NSObject, NSXPCListenerDelegate {
         return true
     }
 
-    fileprivate func register(_ connection: NSXPCConnection) {
+    /// Makes `connection` the daemon's and returns the configuration to run hooks with. A daemon
+    /// that registers again on its own connection only gets the configuration once more; another
+    /// connection replaces it. Whichever copy of the daemon registers, it runs the hooks of the
+    /// configuration saved with Touch ID, not hooks of its own.
+    fileprivate func register(_ connection: NSXPCConnection) -> RegisterReply {
+        guard let configuration = handler?.currentConfiguration() else {
+            report("daemon_refused no_configuration")
+            return .refused
+        }
         lock.lock()
         let previous = daemon
         daemon = connection
         lock.unlock()
-        if let previous, previous !== connection { previous.invalidate() }
-        report("daemon_registered")
+        if previous === connection {
+            report("daemon_configuration_sent \(configuration.generation)")
+        } else {
+            previous?.invalidate()
+            report("daemon_registered \(configuration.generation)")
+        }
+        return RegisterReply(generation: configuration.generation, configText: configuration.configText)
     }
 
     fileprivate func pendingReply() -> PendingReply {
@@ -117,11 +133,10 @@ private final class ClientEndpoint: NSObject, FilterServiceXPC {
         do {
             _ = try Messages.decode(RegisterRequest.self, from: request)
             guard let server, let connection else { throw MessageError("connection", "is gone") }
-            server.register(connection)
-            reply(Self.encoded(RegisterReply(accepted: true)))
+            reply(Self.encoded(server.register(connection)))
         } catch {
             server?.refused("register", error)
-            reply(Self.encoded(RegisterReply(accepted: false)))
+            reply(Self.encoded(RegisterReply.refused))
         }
     }
 

@@ -21,7 +21,8 @@ public enum Command: Equatable, Sendable {
     case approve(Approval)
     case deny(Denial)
     case validate(path: String)
-    case daemon(configPath: String)
+    case daemon
+    case agent(AgentAction)
 
     public var name: String {
         switch self {
@@ -35,8 +36,14 @@ public enum Command: Equatable, Sendable {
         case .deny: return "deny"
         case .validate: return "validate"
         case .daemon: return "daemon"
+        case .agent: return "agent"
         }
     }
+}
+
+/// `blackice agent install` or `uninstall`: the daemon's LaunchAgent.
+public enum AgentAction: String, Equatable, Sendable {
+    case install, uninstall
 }
 
 public struct Approval: Equatable, Sendable {
@@ -87,15 +94,22 @@ public enum CLI {
                                          Let one app reach one host until the approval expires
       deny (--app ID [--team TEAM] | --cdhash HEX) --host HOST [--token TOKEN]
                                          Drop the waiting connections and remove the approval
-      daemon --config PATH               Run the hooks for paused connections (the LaunchAgent)
+      daemon                             Run the hooks for paused connections (the LaunchAgent)
+      agent install | uninstall          Load or remove the daemon's LaunchAgent for this user
       help                               Show this help
 
-    validate works anywhere. Every other command needs Blackice.app signed with the
+    validate works anywhere, and so does agent uninstall. agent install must run from
+    inside Blackice.app. Every other command needs Blackice.app signed with the
     Developer ID; any other build says so and exits with status 69. start, stop and mode
     ask for Touch ID before changing filtering, and so do approve and deny without the
-    event's --token. A token is good for one answer to its own event.
+    event's --token. A token is good for one answer to its own event. agent install and
+    uninstall do not ask for Touch ID.
     Without --team, --app names Apple platform code, which has no Team ID. --cdhash names
     ad hoc signed code by its CDHash (codesign -dvvv); a rebuild changes it.
+    The daemon reads no file: it runs the hooks, with their timeout, of the configuration that
+    start and mode saved, which it gets from the extension. Hooks get HOME, USER, LOGNAME, TMPDIR,
+    PATH=\(HookRunner.defaultPath) and LANG=\(HookRunner.language), plus
+    BLACKICE_EVENT_FILE and BLACKICE_EVENT_ID; a hook that needs more sets it in its run line.
     """
 
     public static func parse(_ arguments: [String]) throws -> Command {
@@ -123,9 +137,17 @@ public enum CLI {
             }
             return .validate(path: rest[0])
         case "daemon":
-            let options = try parseOptions(rest, allowed: ["config"], command: first)
-            guard let path = options["config"], !path.hasPrefix("-") else { throw UsageError("daemon needs --config PATH") }
-            return .daemon(configPath: path)
+            if rest.contains(where: { $0 == "--config" || $0.hasPrefix("--config=") }) {
+                throw UsageError("daemon no longer takes --config: it runs the hooks of the configuration that " +
+                                 "blackice start saved, which it gets from the network extension")
+            }
+            try noArguments(first, rest)
+            return .daemon
+        case "agent":
+            guard rest.count == 1, let action = AgentAction(rawValue: rest[0]) else {
+                throw UsageError("agent takes install or uninstall")
+            }
+            return .agent(action)
         case "approve":
             let options = try parseOptions(rest, allowed: ["app", "team", "cdhash", "host", "for", "token"], command: first)
             let target = try target(options, command: first)
@@ -179,13 +201,12 @@ public enum CLI {
                 stdout("\(path): valid (\(loaded.config.summary))")
                 return ExitCode.success
             }
-        case .daemon(let path):
-            switch loadConfig(path, readFile: readFile, stderr: stderr) {
-            case .failure(let status): return status.code
-            case .success(let loaded):
-                stdout("\(path): valid (\(loaded.config.summary))")
-                return system.runDaemon(config: loaded.config, output: SystemOutput(stdout: stdout, stderr: stderr))
-            }
+        case .daemon:
+            return system.runDaemon(output: SystemOutput(stdout: stdout, stderr: stderr))
+        case .agent(.install):
+            return system.installAgent(output: SystemOutput(stdout: stdout, stderr: stderr))
+        case .agent(.uninstall):
+            return system.uninstallAgent(output: SystemOutput(stdout: stdout, stderr: stderr))
         case .start(let configPath):
             let path = configPath ?? defaultConfigPath
             switch loadConfig(path, readFile: readFile, stderr: stderr) {

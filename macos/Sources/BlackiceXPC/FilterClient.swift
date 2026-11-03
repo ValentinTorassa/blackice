@@ -92,7 +92,11 @@ private final class ReplyBox: @unchecked Sendable {
     }
 }
 
-/// The daemon's intake: registers with the extension and turns its messages into events.
+/// The daemon's intake: registers with the extension, takes the configuration it sends back and
+/// turns its messages into events. Each event names the generation of the configuration the
+/// extension held when it sent it; when the daemon holds another, it calls `configuration()`,
+/// which registers again on the same connection and returns what the extension holds now. The
+/// daemon never reads a configuration from anywhere else.
 /// When the connection ends (the extension stopped or restarted), the stream finishes and the
 /// daemon exits with an error, so launchd starts it again and it registers anew.
 public final class XPCEventIntake: NSObject, EventIntake, EventReceiverXPC, @unchecked Sendable {
@@ -100,7 +104,7 @@ public final class XPCEventIntake: NSObject, EventIntake, EventReceiverXPC, @unc
     private let onVerdict: @Sendable (String, Verdict) -> Void
     private let report: @Sendable (String) -> Void
     private let lock = NSLock()
-    private var continuation: AsyncStream<HookEvent>.Continuation?
+    private var continuation: AsyncStream<IntakeMessage>.Continuation?
     private var connection: NSXPCConnection?
 
     public init(teamID: String, onVerdict: @escaping @Sendable (String, Verdict) -> Void,
@@ -110,7 +114,7 @@ public final class XPCEventIntake: NSObject, EventIntake, EventReceiverXPC, @unc
         self.report = report
     }
 
-    public func events() -> AsyncStream<HookEvent> {
+    public func messages() -> AsyncStream<IntakeMessage> {
         AsyncStream { continuation in
             guard let service = Peers.machServiceName(teamID: teamID),
                   let requirement = Peers.filterRequirement(teamID: teamID) else {
@@ -137,23 +141,50 @@ public final class XPCEventIntake: NSObject, EventIntake, EventReceiverXPC, @unc
             lock.unlock()
             continuation.onTermination = { [weak self] _ in self?.close() }
             connection.resume()
-            let proxy = connection.remoteObjectProxyWithErrorHandler { [report] error in
-                report("cannot reach the network extension (\((error as NSError).code))")
-                continuation.finish()
-            } as? FilterServiceXPC
-            guard let proxy, let request = try? Messages.encode(RegisterRequest()) else {
-                continuation.finish()
-                return
-            }
-            proxy.register(request) { [report] data in
-                guard let reply = try? Messages.decode(RegisterReply.self, from: data), reply.accepted else {
-                    report("the network extension refused the registration")
+            Task { [report] in
+                do {
+                    let configuration = try await self.configuration()
+                    report("registered with the network extension; configuration \(configuration.summary)")
+                    continuation.yield(.registered(configuration))
+                } catch {
+                    report("registration failed: \(error)")
                     continuation.finish()
-                    return
                 }
-                report("registered with the network extension")
             }
         }
+    }
+
+    /// Registers on the open connection and returns the configuration in the extension's reply.
+    /// Registering again on the same connection only asks for the configuration once more.
+    public func configuration() async throws -> DaemonConfiguration {
+        guard let connection = currentConnection() else { throw FilterClientError("not connected to the network extension") }
+        let request = try Messages.encode(RegisterRequest())
+        return try await withCheckedThrowingContinuation { continuation in
+            let once = ResumeOnce(continuation)
+            guard let proxy = connection.remoteObjectProxyWithErrorHandler({ error in
+                let error = error as NSError
+                once.resume(throwing: FilterClientError("cannot reach the network extension (\(error.domain) \(error.code))"))
+            }) as? FilterServiceXPC else {
+                once.resume(throwing: FilterClientError("cannot make the XPC proxy"))
+                return
+            }
+            proxy.register(request) { data in
+                do {
+                    once.resume(returning: try RegisterReply.configuration(from: data))
+                } catch {
+                    once.resume(throwing: FilterClientError("the network extension did not accept the registration: \(error)"))
+                }
+            }
+            DispatchQueue.global().asyncAfter(deadline: .now() + FilterClient.replyTimeout) {
+                once.resume(throwing: FilterClientError("the network extension did not answer the registration in time"))
+            }
+        }
+    }
+
+    private func currentConnection() -> NSXPCConnection? {
+        lock.lock()
+        defer { lock.unlock() }
+        return connection
     }
 
     private func close() {
@@ -179,10 +210,32 @@ public final class XPCEventIntake: NSObject, EventIntake, EventReceiverXPC, @unc
             lock.lock()
             let continuation = self.continuation
             lock.unlock()
-            if let event = decoded.event { continuation?.yield(event) }
+            if let event = decoded.event, let generation = decoded.generation {
+                continuation?.yield(.event(event, generation: generation))
+            }
         case .verdict:
             if let id = decoded.eventID, let verdict = decoded.verdict { onVerdict(id, verdict) }
         }
         reply(true)
+    }
+}
+
+/// Resumes a continuation once, from whichever of the reply, the error handler and the timeout
+/// comes first.
+private final class ResumeOnce<Value>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<Value, Error>?
+
+    init(_ continuation: CheckedContinuation<Value, Error>) { self.continuation = continuation }
+
+    func resume(returning value: Value) { take()?.resume(returning: value) }
+    func resume(throwing error: Error) { take()?.resume(throwing: error) }
+
+    private func take() -> CheckedContinuation<Value, Error>? {
+        lock.lock()
+        defer { lock.unlock() }
+        let current = continuation
+        continuation = nil
+        return current
     }
 }

@@ -5,11 +5,14 @@
 //
 //   CLI     --pending(PendingRequest)-->    extension  --> PendingReply
 //   CLI     --answer(AnswerRequest)-->      extension  --> AnswerReply
-//   daemon  --register(RegisterRequest)-->  extension  --> RegisterReply
+//   daemon  --register(RegisterRequest)-->  extension  --> RegisterReply (with the configuration)
 //   daemon  <--receive(DaemonMessage)--     extension      (events and verdicts, same connection)
 //
 // The extension cannot reach a LaunchAgent's Mach service, so the daemon opens the connection and
 // exports EventReceiverXPC on it; the extension sends events back through that connection.
+// The daemon's hooks and timeout come from the register reply: the configuration saved with
+// Touch ID, as the extension holds it. Each event carries that configuration's generation, and a
+// daemon holding another generation registers again on the same connection to get the new one.
 // Every argument is the JSON of a BlackiceCore message (Messages.swift), decoded and checked on
 // receipt. Both ends set the other's code signing requirement (BlackiceCore.Peers) on the
 // connection, which NSXPCConnection checks on every message.
@@ -17,8 +20,10 @@ import Foundation
 
 /// Exported by the extension on its Mach service.
 @objc public protocol FilterServiceXPC {
-    /// RegisterRequest -> RegisterReply. The daemon calls it once per connection; from then on
-    /// events go to this connection. A later registration replaces it.
+    /// RegisterRequest -> RegisterReply. From the first call on, events go to this connection, and
+    /// a registration from another connection replaces it. Each reply carries the configuration
+    /// the extension holds; the daemon calls it again on the same connection when an event names a
+    /// generation it does not hold.
     func register(_ request: Data, reply: @escaping (Data) -> Void)
     /// PendingRequest -> PendingReply.
     func pending(_ request: Data, reply: @escaping (Data) -> Void)

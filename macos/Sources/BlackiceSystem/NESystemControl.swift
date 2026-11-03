@@ -183,23 +183,26 @@ public final class NESystemControl: SystemControlling {
     }
 
     /// Runs until the connection to the extension ends, then exits with 75 so launchd starts the
-    /// daemon again (KeepAlive with SuccessfulExit false) and it registers anew.
-    public func runDaemon(config: BlackiceConfig, output: SystemOutput) -> Int32 {
+    /// daemon again (KeepAlive with SuccessfulExit false) and it registers anew. The hooks and
+    /// their timeout come from the extension; the home, the temporary directory and the hooks'
+    /// environment come from the user database and confstr, not from this process's environment.
+    public func runDaemon(output: SystemOutput) -> Int32 {
         guard Self.isSignedHost(), let teamID = CodeIdentity.current()?.teamID else {
-            return UnsignedSystem().runDaemon(config: config, output: output)
+            return UnsignedSystem().runDaemon(output: output)
         }
         let log: EventLog
         let runner: HookRunner
         do {
-            log = try EventLog(url: DaemonPaths.eventLog(home: URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)))
+            let account = try UserAccount.current()
+            log = try EventLog(url: DaemonPaths.eventLog(home: account.homeURL))
             runner = try HookRunner(options: .init(
-                workDirectory: DaemonPaths.hookDirectory(temporary: FileManager.default.temporaryDirectory),
-                environment: HookRunner.environment(from: ProcessInfo.processInfo.environment)))
+                workDirectory: DaemonPaths.hookDirectory(temporary: account.temporaryURL),
+                environment: HookRunner.environment(for: account)))
         } catch {
             output.stderr("blackice daemon: \(error)")
             return ExitCode.software
         }
-        let daemon = Daemon(config: config, log: log, runner: runner)
+        let daemon = Daemon(log: log, runner: runner)
         let intake = XPCEventIntake(teamID: teamID,
                                     onVerdict: { eventID, verdict in daemon.recordVerdict(eventID: eventID, verdict) },
                                     report: { line in FileHandle.standardError.write(Data("blackice daemon: \(line)\n".utf8)) })
@@ -213,6 +216,11 @@ public final class NESystemControl: SystemControlling {
         output.stderr("blackice daemon: the connection to the network extension ended; exiting so launchd restarts it")
         return ExitCode.tempFail
     }
+
+    // MARK: - The daemon's LaunchAgent (no Touch ID, no signature check beyond the bundle path)
+
+    public func installAgent(output: SystemOutput) -> Int32 { AgentCommands.live.install(output: output) }
+    public func uninstallAgent(output: SystemOutput) -> Int32 { AgentCommands.live.uninstall(output: output) }
 
     // MARK: - Pieces
 

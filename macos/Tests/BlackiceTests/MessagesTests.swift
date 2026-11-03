@@ -111,7 +111,7 @@ struct MessagesTests {
         let person = AnswerRequest(kind: .deny, app: tool, host: "example.com", seconds: nil, token: nil)
         #expect(person.authorization == .touchID)
         #expect(try Messages.decode(AnswerRequest.self, from: Messages.encode(person)) == person)
-        let message = DaemonMessage.event(event())
+        let message = DaemonMessage.event(event(), generation: 3)
         #expect(try Messages.decode(DaemonMessage.self, from: Messages.encode(message)) == message)
         let verdict = DaemonMessage.verdict(.timedOut, eventID: "ev-0a1b2c3d")
         #expect(try Messages.decode(DaemonMessage.self, from: Messages.encode(verdict)) == verdict)
@@ -127,7 +127,8 @@ struct MessagesTests {
     @Test func answersOutsideTheirFormAreRefused() {
         let approve = AnswerRequest(kind: .approve, app: tool, host: "example.com", seconds: 600, token: testToken)
         let edits: [(inout [String: Any]) -> Void] = [
-            { $0["version"] = 2 },
+            { $0["version"] = Messages.version + 1 },
+            { $0["version"] = Messages.version - 1 },
             { $0["kind"] = "allow" },
             { $0["host"] = "Example.com" },
             { $0["host"] = "*.example.com" },
@@ -151,14 +152,30 @@ struct MessagesTests {
     }
 
     @Test func daemonMessagesCarryOnePayload() {
-        let message = DaemonMessage.event(event())
+        let message = DaemonMessage.event(event(), generation: 3)
         #expect(refused { try decodeEdited(DaemonMessage.self, message) { $0["verdict"] = "approved" } })
         #expect(refused { try decodeEdited(DaemonMessage.self, message) { $0["event"] = nil } })
         #expect(refused { try decodeEdited(DaemonMessage.self, DaemonMessage.verdict(.denied, eventID: "ev-0a1b2c3d")) {
             $0["event_id"] = "ev-1"
         } })
         // An event the extension would never send is refused with the message.
-        #expect(refused { try Messages.decode(DaemonMessage.self, from: Messages.encode(DaemonMessage.event(event(host: nil)))) })
+        #expect(refused { try Messages.decode(DaemonMessage.self, from: Messages.encode(DaemonMessage.event(event(host: nil), generation: 3))) })
+    }
+
+    @Test func eventsNameTheirGeneration() throws {
+        let message = DaemonMessage.event(event(), generation: 7)
+        let decoded = try Messages.decode(DaemonMessage.self, from: Messages.encode(message))
+        #expect(decoded.generation == 7)
+        let edits: [(inout [String: Any]) -> Void] = [
+            { $0["generation"] = nil }, { $0["generation"] = 0 }, { $0["generation"] = -1 }, { $0["generation"] = "7" },
+        ]
+        for edit in edits {
+            #expect(refused { try decodeEdited(DaemonMessage.self, message, edit) })
+        }
+        // A verdict never carries one.
+        #expect(refused { try decodeEdited(DaemonMessage.self, DaemonMessage.verdict(.approved, eventID: "ev-0a1b2c3d")) {
+            $0["generation"] = 7
+        } })
     }
 
     @Test func repliesAreCheckedToo() {
@@ -187,5 +204,75 @@ struct MessagesTests {
             == #"anchor apple generic and identifier "com.valentorassa.blackice.filter" and certificate leaf[subject.OU] = "ABCDE12345""#)
         #expect(Peers.machServiceName(teamID: "abc") == nil)
         #expect(Peers.clientRequirement(teamID: "ABCDE1234\"") == nil)
+    }
+}
+
+struct RegisterReplyTests {
+    private static let text = """
+    mode = "ask"
+    timeout_seconds = 20
+
+    [[allow]]
+    app = "com.example.agent"
+    team = "ABCDE12345"
+    hosts = ["api.example.com"]
+
+    [[hook]]
+    on = "connection"
+    run = 'fx ask "Use the blackice skill"'
+    """
+
+    @Test func anAcceptedReplyCarriesTheConfiguration() throws {
+        let reply = RegisterReply(generation: 12, configText: Self.text)
+        let decoded = try Messages.decode(RegisterReply.self, from: Messages.encode(reply))
+        #expect(decoded == reply && decoded.accepted)
+        let configuration = try RegisterReply.configuration(from: Messages.encode(reply))
+        #expect(configuration.generation == 12 && configuration.timeoutSeconds == 20)
+        #expect(configuration.hooks == [Hook(on: "connection", run: #"fx ask "Use the blackice skill""#, line: 9)])
+        #expect(configuration == (try DaemonConfiguration(generation: 12, configText: Self.text)))
+        #expect(configuration.summary == "generation 12, 1 hook, timeout 20 s")
+    }
+
+    @Test func aRefusedReplyCarriesNothing() throws {
+        let data = try Messages.encode(RegisterReply.refused)
+        let decoded = try Messages.decode(RegisterReply.self, from: data)
+        #expect(!decoded.accepted && decoded.generation == nil && decoded.config == nil && decoded.configuration == nil)
+        #expect(throws: MessageError("registration", "was refused")) { try RegisterReply.configuration(from: data) }
+    }
+
+    @Test func everyFieldIsChecked() {
+        let accepted = RegisterReply(generation: 12, configText: Self.text)
+        let edits: [(inout [String: Any]) -> Void] = [
+            { $0["version"] = Messages.version - 1 },
+            { $0["generation"] = nil },
+            { $0["generation"] = 0 },
+            { $0["generation"] = -3 },
+            { $0["config"] = nil },
+            { $0["config"] = 42 },
+            { $0["config"] = "" },
+            { $0["config"] = "mode = \"loud\"\n" },
+            { $0["config"] = "mode = \"ask\"\n[[hook]]\non = \"connection\"\n" },
+            { $0["config"] = "mode = \"ask\"\n" + String(repeating: "#", count: BlackiceConfig.maximumBytes) },
+            { $0["accepted"] = "yes" },
+            { $0["accepted"] = nil },
+        ]
+        for edit in edits {
+            #expect(refused { try decodeEdited(RegisterReply.self, accepted, edit) })
+        }
+        // Refused, but with a configuration attached: not a form the extension sends.
+        #expect(refused { try decodeEdited(RegisterReply.self, RegisterReply.refused) { $0["generation"] = 3 } })
+        #expect(refused { try decodeEdited(RegisterReply.self, RegisterReply.refused) { $0["config"] = Self.text } })
+        #expect(refused { try decodeEdited(RegisterReply.self, accepted) { $0["accepted"] = false } })
+    }
+
+    @Test func theLargestConfigurationFitsInOneMessage() throws {
+        // Quotes and backslashes double in JSON; control characters other than tab never reach here,
+        // since the parser refuses them.
+        let header = "mode = \"ask\"\n#"
+        let text = header + String(repeating: "\"\\", count: (BlackiceConfig.maximumBytes - header.utf8.count) / 2)
+        #expect(text.utf8.count <= BlackiceConfig.maximumBytes)
+        let data = try Messages.encode(RegisterReply(generation: UInt64.max, configText: text))
+        #expect(data.count <= Messages.maximumBytes)
+        #expect(try RegisterReply.configuration(from: data).generation == UInt64.max)
     }
 }

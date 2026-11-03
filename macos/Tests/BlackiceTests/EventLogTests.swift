@@ -118,6 +118,27 @@ struct EventLogTests {
         }
     }
 
+    @Test func configurationAndSkippedHooksHaveTheirRecords() throws {
+        let configuration = try DaemonConfiguration(generation: 7, configText: """
+        mode = "ask"
+        timeout_seconds = 15
+        [[hook]]
+        on = "connection"
+        run = 'SECRET=hunter2 /usr/local/bin/agent'
+        """)
+        let loaded = try #require(try JSONSerialization.jsonObject(with: EventLog.encode(.configurationLoaded(configuration), at: Date()))
+            as? [String: Any])
+        #expect(loaded["type"] as? String == "configuration_loaded")
+        #expect(loaded["generation"] as? Int == 7 && loaded["hooks"] as? Int == 1 && loaded["timeout_seconds"] as? Int == 15)
+        // The run lines stay out of the log.
+        #expect(!String(decoding: try EventLog.encode(.configurationLoaded(configuration), at: Date()), as: UTF8.self).contains("hunter2"))
+
+        let skipped = try #require(try JSONSerialization.jsonObject(
+            with: EventLog.encode(.hooksSkipped(eventID: "ev-1", reason: "configuration_changed"), at: Date())) as? [String: Any])
+        #expect(skipped["type"] as? String == "hooks_skipped")
+        #expect(skipped["event"] as? String == "ev-1" && skipped["reason"] as? String == "configuration_changed")
+    }
+
     @Test func longStderrIsCut() throws {
         let data = try EventLog.encode(.hookFinished(eventID: "ev-1", result(.exited(status: 0), stderr: String(repeating: "y", count: 5000))),
                                        at: Date())

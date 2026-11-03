@@ -49,10 +49,9 @@ private final class FakeSystem: SystemControlling {
         return answer
     }
 
-    func runDaemon(config: BlackiceConfig, output: SystemOutput) -> Int32 {
-        calls.append("daemon " + config.summary)
-        return answer
-    }
+    func runDaemon(output: SystemOutput) -> Int32 { calls.append("daemon"); return answer }
+    func installAgent(output: SystemOutput) -> Int32 { calls.append("agent install"); return answer }
+    func uninstallAgent(output: SystemOutput) -> Int32 { calls.append("agent uninstall"); return answer }
 }
 
 private func usageError(_ arguments: [String]) -> String? {
@@ -297,24 +296,40 @@ struct RunTests {
         }
     }
 
-    @Test func daemonChecksItsConfigurationThenNeedsTheSignedApp() throws {
-        #expect(usageError(["daemon"]) == "daemon needs --config PATH")
-        #expect(usageError(["daemon", "--config"]) == "daemon: --config needs a value")
-        #expect(usageError(["daemon", "--config", "a", "--log", "b"]) == "daemon: unknown option --log")
-        #expect(try CLI.parse(["daemon", "--config=/etc/blackice.toml"]) == .daemon(configPath: "/etc/blackice.toml"))
+    @Test func theDaemonTakesNoConfigFile() throws {
+        #expect(try CLI.parse(["daemon"]) == .daemon)
+        let removed = "daemon no longer takes --config: it runs the hooks of the configuration that blackice start saved, " +
+            "which it gets from the network extension"
+        for arguments in [["daemon", "--config", "attacker.toml"], ["daemon", "--config=attacker.toml"], ["daemon", "--config"],
+                          ["daemon", "--log", "x", "--config", "attacker.toml"]] {
+            #expect(usageError(arguments) == removed, "\(arguments)")
+        }
+        #expect(usageError(["daemon", "--log", "x"]) == "daemon takes no arguments")
+        #expect(usageError(["daemon", "now"]) == "daemon takes no arguments")
 
-        let good = run(["daemon", "--config", "n.toml"], files: ["n.toml": Data("mode = \"ask\"\n".utf8)])
-        #expect(good.status == 69)
-        #expect(good.stdout == "n.toml: valid (mode ask, timeout 10 s, 0 allow rules, 0 hooks)")
-        #expect(good.stderr == UnsignedSystem.refusal("daemon"))
-
+        // The file is never read, even when it exists, and nothing reaches the system.
         let system = FakeSystem()
-        let real = run(["daemon", "--config", "n.toml"], files: ["n.toml": Data("mode = \"ask\"\n".utf8)], system: system)
-        #expect(real.status == 0 && system.calls == ["daemon mode ask, timeout 10 s, 0 allow rules, 0 hooks"])
+        let refused = run(["daemon", "--config", "n.toml"], files: ["n.toml": Data("mode = \"ask\"\n".utf8)], system: system)
+        #expect(refused.status == 64 && refused.stdout.isEmpty && refused.stderr.contains(removed))
+        #expect(system.calls.isEmpty)
 
-        let bad = run(["daemon", "--config", "n.toml"], files: ["n.toml": Data("mode = \"loud\"\n".utf8)])
-        #expect(bad.status == 65 && bad.stderr.hasPrefix("n.toml:1: mode must be"))
-        #expect(run(["daemon", "--config", "missing.toml"]).status == 66)
+        #expect(run(["daemon"], system: system).status == 0 && system.calls == ["daemon"])
+        let unsigned = run(["daemon"])
+        #expect(unsigned.status == 69 && unsigned.stdout.isEmpty && unsigned.stderr == UnsignedSystem.refusal("daemon"))
+    }
+
+    @Test func agentInstallAndUninstall() throws {
+        #expect(try CLI.parse(["agent", "install"]) == .agent(.install))
+        #expect(try CLI.parse(["agent", "uninstall"]) == .agent(.uninstall))
+        for arguments in [["agent"], ["agent", "load"], ["agent", "install", "--force"], ["agent", "--install"]] {
+            #expect(usageError(arguments) == "agent takes install or uninstall", "\(arguments)")
+        }
+        let system = FakeSystem(status: ExitCode.software)
+        #expect(run(["agent", "install"], system: system).status == 70)
+        #expect(run(["agent", "uninstall"], system: system).status == 70)
+        #expect(system.calls == ["agent install", "agent uninstall"])
+        #expect(CLI.usage.contains("agent install | uninstall"))
+        #expect(!CLI.usage.contains("daemon --config"))
     }
 
     @Test func realFilesThroughReadConfigFile() throws {
