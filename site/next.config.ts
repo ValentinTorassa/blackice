@@ -30,6 +30,7 @@ const nextConfig: NextConfig = {
     '/docs.md': ['./app/(site)/(docs)/docs/**/*.mdx'],
     '/markdown/docs/\\[\\.\\.\\.slug\\]': ['./app/(site)/(docs)/docs/**/*.mdx'],
     '/llms-full.txt': ['./app/(site)/(docs)/docs/**/*.mdx'],
+    '/install.sh': ['./lib/install.sh'],
   },
   rewrites: async () => [
     { source: '/docs/:slug(.+)\\.md', destination: '/markdown/docs/:slug' },
