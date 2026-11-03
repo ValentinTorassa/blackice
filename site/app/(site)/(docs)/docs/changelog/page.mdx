@@ -8,7 +8,8 @@ What changed in each release. The same list is in the repository's [CHANGELOG.md
 
 ## Unreleased
 
-- `blackice agent connect fx` sets fx up to answer the connections that wait in ask mode: a home of its own with the blackice skill (now inside Blackice.app), a sign-in, and rules that let it run only `blackice approve` and `blackice deny`; one test on a sample connection with a stand-in for `blackice`; then its rule and hook in `blackice.toml`, ask mode if you say so, one Touch ID and the daemon. Other agents are a profile each.
+- `blackice agent connect fx` sets fx up to answer the connections that wait in ask mode: fx's installer if fx is missing (it asks first), a home of its own with the blackice skill (now inside Blackice.app), a sign-in, and rules that let it run only `blackice approve` and `blackice deny`; one test on a sample connection with a stand-in for `blackice`; then its rule and hook in `blackice.toml`, ask mode if you say so, one Touch ID and the daemon. Other agents are a profile each.
+- The install script takes `BLACKICE_ZIP`, the path of a `Blackice-<version>.zip` that is not published, to try a build with the same checks.
 
 ## 0.2.1 (3 November 2026)
 

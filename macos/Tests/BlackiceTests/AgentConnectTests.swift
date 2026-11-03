@@ -7,6 +7,8 @@ import Testing
 /// by writing what fx would run into the stand-in's answers file.
 private final class FakeAgentMac: @unchecked Sendable {
     var signedIn: Bool
+    var installed = true
+    var installs: [[String]] = []
     var answer: ((HookEvent) -> String)?
     var logins: [[String: String]] = []
     var hookRuns: [String] = []
@@ -20,9 +22,10 @@ private final class FakeAgentMac: @unchecked Sendable {
 
     var machine: AgentMachine {
         AgentMachine(
-            findExecutable: { $0 == "fx" ? "/opt/fake/fx" : nil },
-            runAttached: { _, arguments, environment in
+            findExecutable: { $0 == "fx" && self.installed ? "/opt/fake/fx" : nil },
+            runAttached: { path, arguments, environment in
                 if arguments == ["login", "vercel"] { self.logins.append(environment); self.signedIn = true }
+                if path == "/bin/sh" { self.installs.append(arguments); self.installed = arguments.last?.contains("fx.sh") == true }
                 return 0
             },
             runCaptured: { _, arguments, _ in
@@ -178,6 +181,48 @@ struct AgentConnectTests {
         #expect(declined.status == 0)
         #expect(try BlackiceConfig(data: Data(contentsOf: URL(fileURLWithPath: config))).mode == .acceptAll)
         #expect(declined.stdout.last == "✓ fx is ready. When you want it answering: blackice mode ask")
+    }
+
+    @Test func offersToInstallFx() throws {
+        let text = "mode = \"accept-all\"\ntimeout_seconds = 60\n"
+        let (home, config, resources) = try setUp(text)
+        defer { removeTree(home) }
+        let installer = "curl -fsSL https://fx.sh/setup.sh | bash"
+
+        // No: nothing runs and nothing changes.
+        let declining = FakeAgentMac(signedIn: false, resources: resources, answer: Self.approve)
+        declining.installed = false
+        let declined = connect(home, config: config, mac: declining, system: Loading(), answers: ["n"])
+        #expect(declined.status == ExitCode.unavailable && declining.installs.isEmpty)
+        #expect(declined.stdout.contains("  fx is not installed. Its installer, from https://github.com/vercel-labs/fx:"))
+        #expect(declined.stdout.contains("    " + installer))
+        #expect(declined.stderr.first == "  fx is not installed. Install it (https://github.com/vercel-labs/fx), then run")
+        #expect(try String(contentsOfFile: config, encoding: .utf8) == text)
+
+        // An installer that leaves no fx behind.
+        let failing = FakeAgentMac(signedIn: false, resources: resources, answer: Self.approve)
+        let broken = AgentMachine(findExecutable: { _ in nil }, runAttached: failing.machine.runAttached,
+                                  runCaptured: failing.machine.runCaptured, runHook: failing.machine.runHook,
+                                  agentResources: resources)
+        let out = Recorder<String>(), err = Recorder<String>()
+        var script = ["y"]
+        let status = CLI.run(["agent", "connect", "fx", "--config", config], stdout: { out.append($0) }, stderr: { err.append($0) },
+                             system: Loading(), interaction: Interaction(ask: { _ in script.isEmpty ? nil : script.removeFirst() },
+                                                                         createFile: CLI.createFile, identify: { _ in nil },
+                                                                         fileExists: { _ in true }, home: home.path, version: nil),
+                             agents: broken)
+        #expect(status == ExitCode.unavailable && failing.installs == [["-c", installer]])
+        #expect(err.items.first == "  fx's installer exited with status 0, and fx is still not")
+
+        // Enter installs it, and the rest goes on: sign-in, test, rule and hook.
+        let mac = FakeAgentMac(signedIn: false, resources: resources, answer: Self.approve)
+        mac.installed = false
+        let system = Loading()
+        let result = connect(home, config: config, mac: mac, system: system, answers: ["", "y"])
+        #expect(result.status == 0, "\(result.stderr)")
+        #expect(mac.installs == [["-c", installer]] && mac.logins.count == 1)
+        #expect(result.stdout.contains("  ✓ /opt/fake/fx is com.vercel.fx, team JW6Y669B67"))
+        #expect(try BlackiceConfig(data: Data(contentsOf: URL(fileURLWithPath: config))).mode == .ask)
     }
 
     @Test func aSymlinkedHomeIsRefused() throws {

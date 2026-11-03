@@ -10,7 +10,9 @@
 #
 #   --force   replace an installed Blackice.app of another version
 #
-# BLACKICE_BIN_DIR picks another folder for the command. The site serves this file at
+# BLACKICE_BIN_DIR picks another folder for the command. BLACKICE_ZIP=/path/to/Blackice-<version>.zip
+# installs a build that is not published yet, from that zip and the .sha256 file next to it, with
+# the same checks. The site serves this file at
 # /install.sh, and its build fails when VERSION differs from site/lib/release.ts.
 
 set -eu
@@ -37,6 +39,7 @@ usage() {
   say "  curl -fsSL $SCRIPT_URL | sh -s -- --force    # replace an installed copy"
   say ""
   say "BLACKICE_BIN_DIR sets the folder for the blackice command (default ~/.local/bin)."
+  say "BLACKICE_ZIP installs an unpublished Blackice-$VERSION.zip, with its .sha256 beside it."
   say "Guide: $GUIDE"
 }
 
@@ -67,8 +70,14 @@ download_and_check() {
   zip=Blackice-$VERSION.zip
   base=https://github.com/$REPOSITORY/releases/download/v$VERSION
 
-  say "Downloading $base/$zip.sha256"
-  fetch "$base/$zip.sha256" "$work/$zip.sha256"
+  if [ -n "${BLACKICE_ZIP:-}" ]; then
+    [ "${BLACKICE_ZIP##*/}" = "$zip" ] || fail "BLACKICE_ZIP should name $zip, the zip of blackice $VERSION"
+    say "Using $BLACKICE_ZIP.sha256, a build that is not published"
+    /bin/cp "$BLACKICE_ZIP.sha256" "$work/$zip.sha256" || fail "could not read $BLACKICE_ZIP.sha256"
+  else
+    say "Downloading $base/$zip.sha256"
+    fetch "$base/$zip.sha256" "$work/$zip.sha256"
+  fi
   expected='' name=''
   read -r expected name < "$work/$zip.sha256" || true
   lines=$(wc -l < "$work/$zip.sha256" | tr -d ' ')
@@ -77,8 +86,13 @@ download_and_check() {
     fail "$zip.sha256 should be one line with the SHA-256 of $zip"
   fi
 
-  say "Downloading $base/$zip"
-  fetch "$base/$zip" "$work/$zip"
+  if [ -n "${BLACKICE_ZIP:-}" ]; then
+    say "Using $BLACKICE_ZIP"
+    /bin/cp "$BLACKICE_ZIP" "$work/$zip" || fail "could not read $BLACKICE_ZIP"
+  else
+    say "Downloading $base/$zip"
+    fetch "$base/$zip" "$work/$zip"
+  fi
   actual=$(/usr/bin/shasum -a 256 "$work/$zip")
   actual=${actual%% *}
   [ "$actual" = "$expected" ] || fail "$zip has SHA-256 $actual, but $zip.sha256 says $expected"

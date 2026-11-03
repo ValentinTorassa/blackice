@@ -25,6 +25,8 @@ public struct AgentProfile: Sendable {
     let resource: String
     /// Where to get it, when it is not installed.
     let installHint: String
+    /// Its own installer, as a shell command line, offered when it is not installed.
+    let installer: String?
     /// What signing in looks like, said before its login runs.
     let loginHint: [String]
     /// What it runs with in its home, on top of the hook's environment.
@@ -42,6 +44,8 @@ public struct AgentProfile: Sendable {
         name: "fx", executable: "fx", hosts: ["ai-gateway.vercel.sh", "vercel.com", "api.vercel.com"],
         skillsFolder: ".fx/skills", settingsFile: ".fx/settings.json", resource: "fx/blackice",
         installHint: "https://github.com/vercel-labs/fx",
+        // fx's README; it puts fx in ~/.local/bin.
+        installer: "curl -fsSL https://fx.sh/setup.sh | bash",
         loginHint: ["fx prints a link: open it, allow access, and come back here."],
         // fx v0.0.16 reads HOME, not FX_HOME; with its keychain off its sign-in is a file in that home.
         environment: { ["HOME": $0, "FX_DISABLE_KEYCHAIN": "1"] },
@@ -340,7 +344,26 @@ extension CLI {
 
         // 1. Find it and read its signature.
         step("1 · Find \(name)")
-        guard let executable = machine.findExecutable(profile.executable) else {
+        var found = machine.findExecutable(profile.executable)
+        if found == nil, let installer = profile.installer {
+            stdout("  \(name) is not installed. Its installer, from \(profile.installHint):")
+            stdout("    " + Style.command(installer))
+            while found == nil {
+                guard let line = ask("  Install \(name) now? [Y/n]: ") else { break }
+                let answer = line.trimmingCharacters(in: .whitespaces).lowercased()
+                if ["n", "no"].contains(answer) { break }
+                guard ["", "y", "yes"].contains(answer) else { stdout("    Type y or n."); continue }
+                stdout("")
+                let status = machine.runAttached("/bin/sh", ["-c", installer], [:])
+                stdout("")
+                found = machine.findExecutable(profile.executable)
+                if found == nil {
+                    return fail(ExitCode.unavailable, "\(name)'s installer exited with status \(status), and \(name) is still not",
+                                "on PATH or in ~/.local/bin. Install it (\(profile.installHint)), then run this again.")
+                }
+            }
+        }
+        guard let executable = found else {
             return fail(ExitCode.unavailable, "\(name) is not installed. Install it (\(profile.installHint)), then run",
                         "this again.")
         }
