@@ -1,9 +1,9 @@
 # fx integration (draft)
 
 A skill that lets [fx](https://github.com/vercel-labs/fx) decide netshield's ask-mode
-connections. Nothing here works end to end yet: `netshield approve` and `netshield deny`
-exist only as argument parsing until the network extension is built (phase 2), and hooks
-arrive in phase 3.
+connections. Nothing here has run end to end yet: `netshield approve` and `netshield deny`
+talk to the network extension, which has not run, since it needs the Developer ID signature
+of phase 0.
 
 - [`skills/netshield/SKILL.md`](skills/netshield/SKILL.md): what the agent reads, what it
   weighs and how it answers.
@@ -90,9 +90,11 @@ Each event gets its own private directory with `event.json` and the repository's
 skill in it, and fx runs there, as under the hook runner. `AGENT_HOME` is the `HOME` fx runs with; it defaults to yours.
 `KEEP=1` keeps the work directory with fx's output.
 
-The ten events cover:
+The twelve events cover:
 
 - apps reaching their own servers: VS Code, Chrome, Docker and GitHub Desktop;
+- two programs signed ad hoc, named by their cdhash: a Homebrew `gh` reaching the GitHub API,
+  and a binary in a hidden cache directory reaching a dynamic DNS name on port 8443;
 - an unknown binary in `~/Downloads` reaching a paste site;
 - a lookalike domain;
 - SSH to a dynamic DNS name;
@@ -114,7 +116,12 @@ compound shell command, the rules refused it, and three events went unanswered. 
 is safe, since no answer means the connection is dropped, but it is why the skill is worded
 the way it is.
 
-Four runs with one model show the skill can work, not that it always will.
+The two cdhash events came later the same day. One run with all twelve came out twelve for
+twelve, in full-access mode, since no agent home with the rules was at hand. fx named both
+programs with `--cdhash`, approved `gh` for 10 minutes and denied the binary in the cache
+directory. That run checks the skill's decisions, not the rules.
+
+Five runs with one model show the skill can work, not that it always will.
 
 ## Open questions
 
