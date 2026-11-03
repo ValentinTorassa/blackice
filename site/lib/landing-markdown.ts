@@ -37,7 +37,7 @@ export function createLandingMarkdown(): string {
     `Each run is recorded in the repository's [evidence](${release.evidence}) folder.`,
     '',
     '```console',
-    `$ ${install.brew}`,
+    ...install.brew.split('\n').map((command) => `$ ${command}`),
     '```',
     '',
     `${install.zip} GitHub release: ${release.url}. Install docs: ${canonicalSiteUrl}/docs/install.md.`,

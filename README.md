@@ -28,10 +28,12 @@ Blackice.app needs a Mac with Apple silicon and macOS 14 or later; it has run on
 [Homebrew](https://brew.sh):
 
 ```console
+$ brew trust --cask valentintorassa/tap/blackice
 $ brew install --cask valentintorassa/tap/blackice
 ```
 
-Or download `Blackice-0.1.0.zip` and `Blackice-0.1.0.zip.sha256` from the
+The first command tells Homebrew to trust this cask: Homebrew loads casks from taps other than its own only
+after `brew trust`. Or download `Blackice-0.1.0.zip` and `Blackice-0.1.0.zip.sha256` from the
 [GitHub release](https://github.com/ValentinTorassa/blackice/releases/tag/v0.1.0), check them and move
 `Blackice.app` to `/Applications`. [`docs/install.md`](docs/install.md) has the checks, the first start, the daemon,
 upgrading and uninstalling. In short:

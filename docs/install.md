@@ -11,10 +11,12 @@ run on macOS 27.0.1 only. The commands below use 0.1.0 as the version.
 ## With Homebrew
 
 ```console
+$ brew trust --cask valentintorassa/tap/blackice
 $ brew install --cask valentintorassa/tap/blackice
 ```
 
-The cask downloads the same zip from the GitHub release, checks it against the SHA-256 written in the cask, puts
+The first command tells Homebrew to trust this cask: Homebrew loads casks from taps other than its own only
+after `brew trust`. The cask downloads the same zip from the GitHub release, checks it against the SHA-256 written in the cask, puts
 `Blackice.app` in `/Applications` and adds a `blackice` command to Homebrew's `bin` folder: a small script that runs
 `/Applications/Blackice.app/Contents/MacOS/blackice`, since a symbolic link does not work (see step 2). Homebrew does
 not run the signature checks of step 1; to run them, use the commands there on `/Applications/Blackice.app`. Then

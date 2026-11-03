@@ -11,7 +11,9 @@ export const release = {
   url: `${site.repo}/releases/tag/v${version}`,
   zip: `Blackice-${version}.zip`,
   checksum: `Blackice-${version}.zip.sha256`,
-  brew: 'brew install --cask valentintorassa/tap/blackice',
+  /* Two commands: Homebrew loads a cask from a tap other than its own only
+     after `brew trust`. */
+  brew: 'brew trust --cask valentintorassa/tap/blackice\nbrew install --cask valentintorassa/tap/blackice',
   evidence: `${site.repo}/tree/main/evidence`,
 } as const
 
