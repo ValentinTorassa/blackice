@@ -18,7 +18,8 @@ Answers go through the command line, for example `blackice approve --app com.exa
 
 - In block-all, a binary signed with the project's Team ID and named by no rule was refused, and `curl` with a rule got through.
 - In ask mode, fx, run by the hook, approved and denied connections, and in one run decided ten in a row with nobody at the keyboard. Apps that connect by name, such as `nscurl`, wait for the answer. `curl` and other tools that connect to an address fail on the first try and get through on the retry after an approval.
-- The fault tests passed for the daemon being down, a hung hook, a burst of 120 connections and a daemon restart. The configuration change case failed: a Touch ID prompt was cancelled, and `blackice pending` rejected the extension's reply.
+- The fault tests passed for the daemon being down, a hung hook, a burst of 120 connections, a daemon restart and a configuration change while connections wait. The configuration change first failed with an earlier build, and passed with 0.2.1.
+- From the published 0.2.1, the uninstall steps of [Install](/docs/install) removed the previous install, and the install script checked the release and installed it into `/Applications`.
 - After an upgrade in place, the daemon and the CLI could not reach the new extension until the Mac restarted.
 
 [Install](/docs/install) has the steps. The phases and open problems are in the repository's [plan](https://github.com/ValentinTorassa/blackice/blob/main/docs/plan.md).

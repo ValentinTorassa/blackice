@@ -148,7 +148,8 @@ public struct LaunchAgentInstaller {
             throw LaunchAgentError("launchctl bootstrap \(domain) failed with status \(loaded.status)" +
                                    (loaded.output.isEmpty ? "" : ": \(loaded.output)"))
         }
-        say("✓ The daemon is running, and starts again at each login. It runs your hooks for connections that wait.")
+        say("✓ The daemon is running, and starts again at each login.")
+        say("  It runs your hooks for connections that wait.")
         say("  Its logs are in \(Describe.path(logDirectory.path, home: account.homeURL.path)).")
     }
 

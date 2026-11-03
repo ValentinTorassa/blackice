@@ -370,11 +370,11 @@ extension CLI {
             if !files.fileExists(atPath: parent) {
                 try files.createDirectory(atPath: parent, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
             }
-            for folder in paths.folders { try PrivateDirectory.ensure(URL(fileURLWithPath: folder)) }
+            for folder in paths.folders { try privateFolder(folder) }
             if files.fileExists(atPath: paths.skill) { try files.removeItem(atPath: paths.skill) }
             try files.copyItem(atPath: resources + "/" + profile.resource, toPath: paths.skill)
         } catch {
-            return fail(ExitCode.cannotCreate, "Cannot set up \(homeShown): \(error.localizedDescription)")
+            return fail(ExitCode.cannotCreate, "Cannot set up \(homeShown): \(describe(error))")
         }
         stdout("  " + Style.done("The blackice skill is in \(homeShown)"))
         let environment = profile.environment(paths.home)
@@ -396,7 +396,7 @@ extension CLI {
             let settings = try profile.settings(files.contents(atPath: paths.settings))
             try writeAtomically(settings, to: paths.settings, mode: 0o600)
         } catch {
-            return fail(ExitCode.cannotCreate, "Cannot write \(Describe.path(paths.settings, home: interaction.home)): \(error)")
+            return fail(ExitCode.cannotCreate, "Cannot write \(Describe.path(paths.settings, home: interaction.home)): \(describe(error))")
         }
         stdout("  " + Style.done("There, \(name) may run blackice approve and blackice deny, and nothing else"))
 
@@ -412,7 +412,7 @@ extension CLI {
             try writeAtomically(Data(script.utf8), to: standIn + "/blackice", mode: 0o700)
             event = try sampleAgentEvent()
         } catch {
-            return fail(ExitCode.cannotCreate, "Cannot set up the test in \(homeShown): \(error)")
+            return fail(ExitCode.cannotCreate, "Cannot set up the test in \(homeShown): \(describe(error))")
         }
         defer { try? files.removeItem(atPath: paths.test) }
         stdout("  \(name) is deciding whether Visual Studio Code may reach")
@@ -459,7 +459,8 @@ extension CLI {
         if !updated.isEmpty, !updated.hasSuffix("\n") { updated += "\n" }
         updated += agentAddition(name, identity: identity, hosts: missing,
                                  run: existingHook == nil ? profile.hookRun(executable, paths.home, appBinDirectory) : nil)
-        let neededSeconds = max(60, seconds * 3)
+        // Three times what the test took, in whole tens: 21 s on the test Mac asks for 70.
+        let neededSeconds = max(60, (seconds * 3 + 9) / 10 * 10)
         var raisedTimeout = false
         if config.timeoutSeconds < neededSeconds, config.timeoutSeconds < BlackiceConfig.timeoutRange.upperBound {
             updated = settingRootKey(updated, "timeout_seconds", to: "\(min(neededSeconds, BlackiceConfig.timeoutRange.upperBound))")
@@ -468,7 +469,8 @@ extension CLI {
         if missing.isEmpty {
             stdout("  \(name) could already reach its model's hosts.")
         } else {
-            stdout("  " + Style.done("\(name) may reach " + listed(missing) + " in every mode"))
+            stdout("  " + Style.done("A rule lets \(name) reach its model in every mode:"))
+            stdout("    " + listed(missing))
         }
         if let existingHook {
             stdout("  A hook already runs the blackice skill (line \(existingHook.line)); it stays as it is.")
@@ -517,6 +519,22 @@ extension CLI {
             stdout(Style.done("\(name) is ready. When you want it answering: ") + Style.command("blackice mode ask"))
         }
         return ExitCode.success
+    }
+
+    /// A folder of the agent home, made private: created with mode 0700, or, when it is already
+    /// this user's own directory (not a symlink) with group or other bits, set to 0700. Anything
+    /// else (a symlink, another owner) is refused by `PrivateDirectory.ensure`.
+    static func privateFolder(_ path: String) throws {
+        var info = stat()
+        if lstat(path, &info) == 0, (info.st_mode & S_IFMT) == S_IFDIR, info.st_uid == geteuid(), (info.st_mode & 0o077) != 0 {
+            guard chmod(path, 0o700) == 0 else { throw FileSafetyError(path, "cannot set mode 0700") }
+        }
+        try PrivateDirectory.ensure(URL(fileURLWithPath: path))
+    }
+
+    /// blackice's own errors say what is wrong in their description; Foundation's, in localizedDescription.
+    static func describe(_ error: Error) -> String {
+        (error as? FileSafetyError)?.description ?? error.localizedDescription
     }
 
     /// "a", "a and b", "a, b and c".

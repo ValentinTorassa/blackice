@@ -7,8 +7,8 @@ and roll it back. The package is `Blackice-<version>.zip` plus `Blackice-<versio
 from the published 0.1.0 release, as an upgrade over a build installed by hand
 ([P5-02](../evidence/P5-02-homebrew-upgrade-from-release-macos.md)), and the install script checked the release and
 installed it into a temporary folder instead of `/Applications`
-([P5-03](../evidence/P5-03-curl-install-script-sandbox-macos.md)); a first install into `/Applications` from the zip
-or with the script, and uninstalling, have not been run from a published package yet.
+([P5-03](../evidence/P5-03-curl-install-script-sandbox-macos.md)). With 0.2.1, the uninstall steps and the script
+installing into `/Applications` ran from the published release ([P5-04](../evidence/P5-04-install-start-faults-from-release-macos.md)).
 
 You need a Mac with Apple silicon (the build is arm64 only), macOS 14 or later, and an admin account. blackice has
 run on macOS 27.0.1 only. The commands below use 0.2.1 as the version.
@@ -146,6 +146,23 @@ $ blackice agent install
 
 `blackice agent uninstall` removes it. Without a daemon, ask mode still pauses connections, and they are dropped
 when their timeout passes.
+
+### Let an agent answer
+
+`blackice agent connect fx` sets fx up to answer the connections that wait in ask mode:
+
+1. It finds fx and reads its signature.
+2. It gives fx a home of its own, `~/.config/blackice/agent`, with the blackice skill from Blackice.app. If fx has
+   no sign-in there, it runs `fx login vercel` (fx prints a link to open). It sets fx's rules there so that fx can run
+   `blackice approve` and `blackice deny` and nothing else.
+3. It runs the hook once on a sample connection, with `blackice` replaced by a stand-in so nothing is let through,
+   and checks that fx answered with the event's token.
+4. Only then does it add to `blackice.toml` a rule that lets fx reach its model (Vercel's AI Gateway) in every mode,
+   and the hook, and raise `timeout_seconds` to at least 60.
+5. It asks whether to switch to ask mode, loads the file (Touch ID) and starts the daemon.
+
+Run it in accept-all mode: in ask or block-all, fx's own connections wait until its rule is loaded. It knows fx
+only, so far. [`integrations/fx/README.md`](../integrations/fx/README.md) has the same steps by hand.
 
 ## 6. Use it
 

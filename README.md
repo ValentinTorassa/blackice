@@ -23,10 +23,12 @@ macOS 27.0.1. Each run is recorded in
   nobody at the keyboard, nine as expected (P4-01). `curl` and other tools that connect to an address fail on the
   first try and get through on the retry after the approval.
 - The fault tests passed for a stopped daemon, a hung hook, a burst of 120 connections and a daemon restart. A
-  configuration change while connections wait failed (P5-01).
+  configuration change while connections wait failed with build 4 (P5-01) and passed with 0.2.1 (P5-04).
 - After an upgrade in place, the Mac needed a restart (P5-02).
-- The curl install script checked the published release (checksum, signature, notarization) and installed it into a
-  temporary folder; it has not installed into `/Applications` yet (P5-03).
+- From the published 0.2.1: uninstalling by following the install guide, the curl install script into `/Applications`
+  (checksum, signature and notarization checked), the first `start`, and the fault tests with all 28 checks passing
+  (P5-04).
+- `blackice agent connect fx`, not released yet, set fx up to answer ask mode in one command on a trial build (P5-05).
 
 Open problems are in [`docs/plan.md`](docs/plan.md).
 

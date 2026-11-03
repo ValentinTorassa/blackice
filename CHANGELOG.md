@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- `blackice agent connect fx` sets fx up to answer the connections that wait in ask mode: a home of its own with the
+  blackice skill (now inside Blackice.app), a sign-in, and rules that let it run only `blackice approve` and
+  `blackice deny`; one test on a sample connection with a stand-in for `blackice`; then its rule and hook in
+  `blackice.toml`, ask mode if you say so, one Touch ID and the daemon. Other agents are a profile each.
+
 ## 0.2.1 (3 November 2026)
 
 A first start that says what to do.

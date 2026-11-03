@@ -1,5 +1,9 @@
 # fx integration (draft)
 
+**The short way:** `blackice agent connect fx` does everything on this page in one command, and tries fx on a sample
+connection before it changes `blackice.toml` (see "Let an agent answer" in [`docs/install.md`](../../docs/install.md)).
+The rest of this page is what it does, by hand.
+
 A skill that lets [fx](https://github.com/vercel-labs/fx) decide blackice's ask-mode
 connections. Nothing here has run end to end yet: `blackice approve` and `blackice deny`
 talk to the network extension, which has not run, since it needs the Developer ID signature

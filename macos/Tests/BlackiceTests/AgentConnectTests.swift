@@ -104,6 +104,12 @@ struct AgentConnectTests {
             hosts = ["pypi.org"]
             """)
         defer { removeTree(home) }
+        // A skills folder made by hand earlier, readable by others (3 November 2026, on the test Mac).
+        let handMade = home.appendingPathComponent(".config/blackice/agent/.fx/skills")
+        try FileManager.default.createDirectory(at: handMade, withIntermediateDirectories: true)
+        for folder in [".config/blackice/agent", ".config/blackice/agent/.fx", ".config/blackice/agent/.fx/skills"] {
+            chmod(home.appendingPathComponent(folder).path, 0o755)
+        }
         let mac = FakeAgentMac(signedIn: false, resources: resources, answer: Self.approve)
         let system = Loading()
         let result = connect(home, config: config, mac: mac, system: system, answers: ["y"])
@@ -117,7 +123,7 @@ struct AgentConnectTests {
         #expect(settings["permission_mode"] as? String == "ask")
         let bash = try #require((settings["permission"] as? [String: Any])?["bash"] as? [String: String])
         #expect(bash == ["*": "deny", "blackice approve *": "allow", "blackice deny *": "allow"])
-        #expect(try permissions(URL(fileURLWithPath: agent)) == 0o700)
+        for folder in [agent, agent + "/.fx", agent + "/.fx/skills"] { #expect(try permissions(URL(fileURLWithPath: folder)) == 0o700) }
         #expect(!FileManager.default.fileExists(atPath: agent + "/test"))
 
         // The test ran the hook line with the stand-in first on PATH; the real hook has the app's.
@@ -135,7 +141,8 @@ struct AgentConnectTests {
         #expect(result.stdout.contains("1 · Find fx"))
         #expect(result.stdout.contains("  ✓ /opt/fake/fx is com.vercel.fx, team JW6Y669B67"))
         #expect(result.stdout.contains("  ✓ fx approved it in 14 s"))
-        #expect(result.stdout.contains("  ✓ fx may reach ai-gateway.vercel.sh, vercel.com and api.vercel.com in every mode"))
+        #expect(result.stdout.contains("  ✓ A rule lets fx reach its model in every mode:"))
+        #expect(result.stdout.contains("    ai-gateway.vercel.sh, vercel.com and api.vercel.com"))
         #expect(result.stdout.contains("  ✓ timeout_seconds is now 60, so fx has time to answer"))
         #expect(result.stdout.last == "✓ fx answers what no rule covers. See what waits with: blackice pending")
 
@@ -171,6 +178,18 @@ struct AgentConnectTests {
         #expect(declined.status == 0)
         #expect(try BlackiceConfig(data: Data(contentsOf: URL(fileURLWithPath: config))).mode == .acceptAll)
         #expect(declined.stdout.last == "✓ fx is ready. When you want it answering: blackice mode ask")
+    }
+
+    @Test func aSymlinkedHomeIsRefused() throws {
+        let (home, config, resources) = try setUp("mode = \"accept-all\"\n")
+        defer { removeTree(home) }
+        let elsewhere = try makePrivateDirectory()
+        defer { removeTree(elsewhere) }
+        try FileManager.default.createSymbolicLink(atPath: home.path + "/.config/blackice/agent", withDestinationPath: elsewhere.path)
+        let result = connect(home, config: config, mac: FakeAgentMac(signedIn: true, resources: resources, answer: Self.approve),
+                             system: Loading())
+        #expect(result.status == ExitCode.cannotCreate)
+        #expect(result.stderr.first?.contains("is not a directory (a symlink is not accepted either)") == true)
     }
 
     @Test func refusals() throws {

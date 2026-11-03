@@ -138,6 +138,9 @@ and each run on a Mac is recorded in [`evidence/`](../evidence/).
    denied pypi.org, which it was expected to approve. It printed only the command it ran, not its reasons, and it
    approved npm and Homebrew for the same `nscurl`, so the skill's guidance on package registries needs a look.
    Decisions took 11 to 28 s.
+   Next, not released yet: `blackice agent connect fx` sets this up in one command (the skill and rules in fx's own
+   home, a test on a sample event, the rule, the hook and the timeout). A trial build did it on the Mac, and fx then
+   answered real connections in ask mode ([P5-05](../evidence/P5-05-agent-connect-fx-macos.md)).
 5. **Hardening and evidence.** Fault tests (daemon down, hook hung, bursts of connections, restart), evidence
    entries in the style of blackice-poc, notarization and an installer. *Done when* `macos/scripts/fault-test.sh`
    passes on a Mac and the run is recorded in [`evidence/`](../evidence/), and a `Blackice-<version>.zip` from
@@ -170,8 +173,10 @@ and each run on a Mac is recorded in [`evidence/`](../evidence/).
    accepted, `blackice start` found the upgraded extension unreachable and exited with 75, and after a restart it
    answered. Build 4 replaces the token in the hooks' stderr (P2-02), which the builds of the earlier fx runs did
    not.
-   What remains for *done*: a fault test run with no FAIL, and a first install and an uninstall from the published
-   package by following `install.md`.
+   *Done* on 3 November 2026, with the published 0.2.1 ([P5-04](../evidence/P5-04-install-start-faults-from-release-macos.md)): the uninstall steps of
+   `install.md` removed the previous install, the curl one-liner checked the release and installed it into
+   `/Applications`, the first `blackice start` turned blackice on, and the fault tests passed all 28 checks, the
+   configuration change included. The System Settings steps that 0.2.1 prints for macOS 14 and 15 have not run.
 
 ## Open problems
 

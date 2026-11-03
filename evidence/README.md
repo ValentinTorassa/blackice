@@ -44,7 +44,9 @@ the run, never before it.
 | [P5-01](P5-01-faults-macos.md) | 5 | The fault tests: 24 checks pass; the last 4 of case 4 fail, three because the second Touch ID was cancelled and one because `blackice pending` rejected the extension's reply. |
 | [P5-02](P5-02-homebrew-upgrade-from-release-macos.md) | 5 | 0.1.0 installed with Homebrew from the published release over build 4: signed, notarized and accepted; `start` finds the upgraded extension unreachable and exits with 75; after a restart its XPC service answers. |
 | [P5-03](P5-03-curl-install-script-sandbox-macos.md) | 5 | The curl install script: the one-liner stops on a Homebrew install; a copy aimed at a temporary folder downloads 0.1.0, checks checksum, signature and notarization, installs it and writes the command; `--force` replaces another version. |
+| [P5-04](P5-04-install-start-faults-from-release-macos.md) | 5 | From the published 0.2.1: uninstalling by following `docs/install.md`, the curl one-liner into `/Applications` (checksum, signature and notarization checked), the first `start`'s three numbered steps, and the fault tests with all 28 checks passing. |
+| [P5-05](P5-05-agent-connect-fx-macos.md) | 4, 5 | A trial build: `blackice agent connect fx` finds fx, gives it its own home, tests it on a sample event (approved in 21 s), adds its rule and hook, and turns ask mode on with one Touch ID; fx then denies two `nscurl` requests and decides seven connections of other apps. The first try stopped on a folder others could read, since fixed. |
 
-Not recorded yet: a fault test run with no FAIL, a first install from the published zip and an uninstall by
-following [`docs/install.md`](../docs/install.md), and the install script copying into the real `/Applications`. The upgrade from build 3 to build 4, which first left the
+Not recorded yet: the System Settings steps that 0.2.1 prints for macOS 14 and 15, `agent connect` signing fx in,
+and `agent connect` from a released build. The upgrade from build 3 to build 4, which first left the
 extension without an XPC service until a restart, has no entry; P5-02 records the same with build 5.
