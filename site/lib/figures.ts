@@ -9,7 +9,7 @@ export const figureText = {
 
 export const figureLabel = {
   FigArchitecture:
-    "Architecture: apps' connections go through the network extension inside Blackice.app. The extension sends events to the blackice daemon, which reads blackice.toml and runs the hook. The agent in the hook answers through the blackice CLI, which talks to the extension.",
+    "Architecture: apps' connections go through the network extension inside Blackice.app. The extension sends events to the blackice daemon, which runs the hook from blackice.toml as blackice start saved it. The agent in the hook answers through the blackice CLI, which talks to the extension.",
   FigAsk:
     'Ask mode: an app opens a connection, the extension pauses it and sends an event to the daemon, the daemon runs the hook, the agent runs blackice approve with the event token, and the extension resumes the flow. With no answer in time, the flow is dropped.',
 } as const
