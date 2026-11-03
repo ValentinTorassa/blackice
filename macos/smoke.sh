@@ -32,4 +32,9 @@ set -e
     exit 1
 }
 plutil -lint LaunchAgent/com.valentorassa.blackice.daemon.plist Resources/*.plist Resources/*.entitlements
+# macOS refuses to activate a network extension without this key (OSSystemExtensionErrorDomain 9).
+plutil -extract NSSystemExtensionUsageDescription raw -o /dev/null Resources/Filter-Info.plist || {
+    echo "Resources/Filter-Info.plist lacks NSSystemExtensionUsageDescription" >&2
+    exit 1
+}
 echo "smoke: ok"
