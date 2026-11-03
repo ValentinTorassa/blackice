@@ -16,7 +16,7 @@ const BLOB = 'https://wvrrnw987csns1in.public.blob.vercel-storage.com/blackice'
 /* One minute: fx asks blackice about three connections on macOS. The
    captions are burned into the picture, so there is no separate track. */
 export const demo: DemoVideo = {
-  src: `${BLOB}/blackice-demo-en.mp4`,
+  src: `${BLOB}/blackice-demo-en-v2.mp4`,
   poster: `${BLOB}/blackice-demo-en-poster.jpg`,
   captions: null,
   captionsLang: 'en',
