@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  The blackice daemon's LaunchAgent, with placeholders. `blackice agent install`, run from
+  inside Blackice.app, writes this file to ~/Library/LaunchAgents with BLACKICE_BIN replaced
+  by the absolute path of that blackice binary and BLACKICE_LOGS by ~/Library/Logs/blackice
+  (created with mode 0700), then loads it with launchctl bootstrap gui/<uid>.
+  `blackice agent uninstall` boots it out and removes it. LaunchAgent.plist in BlackiceCore
+  generates the file, and a unit test checks that it has the same keys and values as this one.
+
+  The daemon takes no --config: its hooks and timeout come from the configuration that
+  `blackice start` saved, which it gets from the network extension. launchd's copies of
+  stdout and stderr go to BLACKICE_LOGS; the event log is events.jsonl in the same directory.
+  The label is provisional, like the bundle identifiers.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.valentorassa.blackice.daemon</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>BLACKICE_BIN</string>
+        <string>daemon</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+    <key>ProcessType</key>
+    <string>Standard</string>
+    <key>LimitLoadToSessionType</key>
+    <string>Aqua</string>
+    <key>StandardOutPath</key>
+    <string>BLACKICE_LOGS/daemon.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>BLACKICE_LOGS/daemon.err.log</string>
+</dict>
+</plist>

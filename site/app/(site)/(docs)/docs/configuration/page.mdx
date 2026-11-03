@@ -4,16 +4,17 @@ export const metadata = getDocsMetadata('/docs/configuration')
 
 # Configuration
 
-netshield.toml and the event a hook receives. A proposal, not a stable format.
+blackice.toml and the event a hook receives. The format can still change.
 
-<Planned />
+<Status />
 
-## netshield.toml
+## blackice.toml
 
 ```toml
-# netshield.toml
+# blackice.toml
 mode = "ask"            # "accept-all", "ask" or "block-all"
 timeout_seconds = 10    # no answer in time means deny
+apple_services = true   # macOS's own services reach Apple's hosts without a rule (the default)
 
 # Permanent rules. Checked before anything is asked.
 [[allow]]
@@ -23,14 +24,88 @@ hosts = ["api.example.com"]
 
 [[hook]]
 on = "connection"
-run = 'fx ask "Use the netshield skill to decide whether to approve the pending connection"'
+run = 'fx ask "Use the blackice skill to decide whether to approve the pending connection"'
 ```
 
-The parser is strict: an unknown key or a value of the wrong type stops netshield from starting instead of being guessed at.
+The parser is strict: an unknown key or a value of the wrong type stops blackice from starting instead of being guessed at.
+
+`blackice start` reads the file once and, after Touch ID, saves its text in the extension's configuration. The daemon reads no file: it takes the hooks and `timeout_seconds` from the extension when it registers, and asks again when the extension's configuration changes. Editing `blackice.toml` changes nothing until the next `blackice start`.
+
+## Rules
+
+Each `[[allow]]` rule names one app and the hosts it may reach, in every mode.
+
+- `app` is the signing identifier and `team` the Team ID, both checked against the signature of the running code. Leave `team` out only for Apple's own programs, which macOS signs without one; such a rule matches only code Apple signed.
+- `hosts` lists exact host names (`api.example.com`) and `*.domain` patterns. `*.example.com` covers every subdomain of `example.com` but not `example.com` itself.
+- A host counts only when the address the app connects to is among the host's answers from the system resolver. Otherwise ask mode asks and block-all drops, and the log says `address_mismatch`.
+- Rules say nothing about ports.
+
+`codesign -dv` shows an app's identity. Apple's own programs show `TeamIdentifier=not set`.
+
+```console
+$ codesign -dv /Applications/Tailscale.app/Contents/Library/SystemExtensions/*.systemextension 2>&1 | grep -E '^(Identifier|TeamIdentifier)='
+Identifier=io.tailscale.ipn.macsys.network-extension
+TeamIdentifier=W5364U7YZB
+```
+
+## Any destination
+
+`hosts = ["*"]` lets the app reach any destination: any host, any address and any port, including connections made to an address with no host name. blackice skips the host and address checks for such a rule and logs `rule_line_N`, the line of its `[[allow]]`. The `*` must be alone in the list; next to other hosts it is an error.
+
+It is meant for two kinds of app.
+
+**VPN clients and DNS proxies.** They connect by address. With Tailscale's DNS on, macOS sends its lookups to 100.100.100.100, and Tailscale's network extension forwards them with its own sockets. Without a rule, blackice drops those connections because they have no host name, so in ask and block-all names stop resolving and Tailscale goes offline. This rule is for the standalone Tailscale build, downloaded from tailscale.com; other builds may use another identifier, so check yours with `codesign -dv`.
+
+```toml
+[[allow]]
+app = "io.tailscale.ipn.macsys.network-extension"
+team = "W5364U7YZB"
+hosts = ["*"]
+```
+
+**A browser you would let go anywhere.** A browser's traffic comes from its network process, not from the app. Brave's comes from `com.brave.Browser.helper` (team `KL8N8XSYF4`). Safari's comes from `com.apple.WebKit.Networking`, with no team, which also carries the web views of every other app that shows web pages.
+
+<Callout>
+
+**The risk.** Everything that app does is allowed, with no host or address check. An agent that can drive the app, by opening a URL in the browser for example, can use it to reach anything and to send data anywhere. Give `*` only to an app you would allow in accept-all anyway.
+
+</Callout>
+
+## macOS's own services
+
+With `apple_services = true`, the default, a built-in list lets macOS's own services through in ask and block-all without a rule. Flows it allows are logged as `apple_service`. It covers iCloud (including iCloud calendars and contacts), Apple Account sign-in, push notifications, iMessage and FaceTime identities, Software Update and system downloads, the App Store, Maps and location, network time, Gatekeeper's notarization check, captive portal detection, iCloud Private Relay's configuration, and certificate checks.
+
+- Each entry is one Apple program, by its signing identifier, and the Apple domains it uses, such as `*.icloud.com` for `com.apple.cloudd`. It matches only code Apple signed as part of macOS. The same identifier with a Team ID is someone else's code and gets nothing.
+- The address check applies as for a rule.
+- Tools that run commands or fetch whatever they are given are never on the list: curl, nscurl, python3, perl, ruby, the shells, ssh, scp, nc, git, osascript, Safari, WebKit's networking process, and nsurlsessiond, which downloads for any app. An agent that uses them still needs a rule or an approval.
+- trustd and ocspd check certificates, fetching revocation data and missing intermediate certificates from URLs written in the certificate itself. They may reach Apple's hosts and those of the authorities behind most public certificates (DigiCert, Entrust, Let's Encrypt, Sectigo, GlobalSign, GoDaddy, Google, Amazon and Microsoft), not any host: since a certificate names its own URLs, any app could otherwise send data to a host of its choosing through trustd. A lookup for another authority is asked about in ask mode and dropped in block-all.
+- The list comes from the first ask-mode run on a Mac and from well-known macOS services. A service that is not on it is asked about, or dropped in block-all. So is an account added for another provider, such as a Google calendar synced by `com.apple.dataaccess.dataaccessd`, which needs its own rule.
+
+`apple_services = false` turns the list off, and those services then need rules like any other app. In block-all that stops iCloud, updates and push notifications until rules for them are added.
+
+## The hook's environment
+
+The daemon builds the environment a hook starts with instead of passing on its own:
+
+| Variable | Value |
+| --- | --- |
+| `HOME`, `USER`, `LOGNAME` | From the user database, for the user the daemon runs as. |
+| `TMPDIR` | That user's temporary directory. |
+| `PATH` | `/usr/bin:/bin:/usr/sbin:/sbin` |
+| `LANG` | `en_US.UTF-8` |
+| `BLACKICE_EVENT_FILE`, `BLACKICE_EVENT_ID` | The event's file and ID. |
+
+A hook that needs anything else sets it in its `run` line. Here `PATH` finds `fx` and the `blackice` it calls to answer, and `HOME` gives fx a home of its own:
+
+```toml
+[[hook]]
+on = "connection"
+run = 'PATH="/Applications/Blackice.app/Contents/MacOS:/opt/homebrew/bin:$PATH" HOME="$HOME/.config/blackice/agent" fx ask "Use the blackice skill to decide whether to approve the pending connection"'
+```
 
 ## The event a hook receives
 
-The hook gets the event as JSON on stdin. The daemon also writes it to a file named in `NETSHIELD_EVENT_FILE`, because `fx ask` does not read stdin when the prompt is on the command line. The token is good for one answer to that event.
+The hook gets the event as JSON on stdin. The daemon also writes it to a file named in `BLACKICE_EVENT_FILE`, because `fx ask` does not read stdin when the prompt is on the command line. The token is good for one answer to that event.
 
 ```json
 {

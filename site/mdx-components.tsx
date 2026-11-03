@@ -1,7 +1,7 @@
 import type { MDXComponents } from 'mdx/types'
 import type { ComponentPropsWithoutRef } from 'react'
 
-import { Callout, Planned } from '@/components/docs/callout'
+import { Callout, Status } from '@/components/docs/callout'
 import { CodeBlock } from '@/components/docs/code-block'
 import { FigArchitecture, FigAsk } from '@/components/docs/figures'
 import { FastLink } from '@/components/fast-link'
@@ -68,7 +68,7 @@ export function useMDXComponents(components: MDXComponents): MDXComponents {
     th: DocsTh,
     td: DocsTd,
     Callout,
-    Planned,
+    Status,
     FigArchitecture,
     FigAsk,
     ...components,

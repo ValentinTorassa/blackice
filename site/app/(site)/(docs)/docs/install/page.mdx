@@ -1,0 +1,146 @@
+import { getDocsMetadata } from '@/lib/docs-metadata'
+
+export const metadata = getDocsMetadata('/docs/install')
+
+# Install
+
+Install blackice 0.1.0 with Homebrew or from the release zip, check it, start it, remove it and roll it back.
+
+<Status />
+
+The release package is `Blackice-0.1.0.zip` plus `Blackice-0.1.0.zip.sha256`, attached to the [GitHub release](https://github.com/ValentinTorassa/blackice/releases/tag/v0.1.0). Nothing on this page has been run from the published package yet: the runs recorded so far used builds installed by hand.
+
+You need a Mac with Apple silicon (the build is arm64 only), macOS 14 or later, and an admin account. blackice has run on macOS 27.0.1 only.
+
+## With Homebrew
+
+```console
+$ brew trust --cask valentintorassa/tap/blackice
+$ brew install --cask valentintorassa/tap/blackice
+```
+
+The first command tells Homebrew to trust this cask: Homebrew loads casks from taps other than its own only after `brew trust`. The cask downloads the same zip from the GitHub release, checks it against the SHA-256 written in the cask, puts `Blackice.app` in `/Applications` and adds a `blackice` command to Homebrew's `bin` folder: a small script that runs `/Applications/Blackice.app/Contents/MacOS/blackice`, since a symbolic link does not work (see step 2). Homebrew does not run the signature checks of step 1; to run them, use the commands there on `/Applications/Blackice.app`. Then continue with step 3.
+
+## 1. Download and check
+
+Download both files into the same folder, then, in Terminal, in that folder:
+
+```console
+$ shasum -a 256 -c Blackice-0.1.0.zip.sha256
+Blackice-0.1.0.zip: OK
+$ ditto -x -k Blackice-0.1.0.zip .
+$ codesign --verify --strict --deep --verbose=2 Blackice.app
+$ codesign -dvv Blackice.app 2>&1 | grep -E '^(Identifier|TeamIdentifier)='
+Identifier=com.valentorassa.blackice
+TeamIdentifier=M294LK997M
+$ xcrun stapler validate Blackice.app
+$ spctl --assess --type execute -vv Blackice.app
+```
+
+`codesign --verify` should say `valid on disk` and `satisfies its Designated Requirement`, `stapler validate` should say the validate action worked, and `spctl` should say `accepted` with `source=Notarized Developer ID`. If any of them fails, or the Team ID is not M294LK997M, stop: do not install that copy.
+
+Double-clicking the zip in Finder unpacks it as well. `ditto` is the command-line way that keeps the signature intact.
+
+## 2. Move it to /Applications
+
+```console
+$ ditto Blackice.app /Applications/Blackice.app
+```
+
+Or drag it there in Finder. macOS activates system extensions only from an app in `/Applications`. To replace an installed copy, Terminal needs App Management (System Settings → Privacy & Security → App Management).
+
+The `blackice` command is the app's own executable. Call it by its full path, or put its folder on your `PATH`, for example in `~/.zshrc`:
+
+```sh
+export PATH="/Applications/Blackice.app/Contents/MacOS:$PATH"
+```
+
+Use the folder on the `PATH`, or a script that runs the full path, rather than a symbolic link. The command checks that it runs as the signed app, and started through a link it does not: `blackice status` run through a symbolic link said it needs Blackice.app signed with the Developer ID and exited with status 69, while the full path, and a script that runs the full path, worked.
+
+## 3. Write blackice.toml
+
+`blackice start` reads `~/.config/blackice/blackice.toml` unless you pass `--config PATH`. Start in accept-all, which lets everything through and only logs:
+
+```toml
+mode = "accept-all"     # "accept-all", "ask" or "block-all"
+timeout_seconds = 60    # in ask mode, no answer in time means deny
+
+# Permanent rules: one app, by signing identifier (and Team ID unless it is Apple's), and its hosts.
+[[allow]]
+app = "com.apple.curl"
+hosts = ["pypi.org"]
+```
+
+```console
+$ mkdir -p ~/.config/blackice
+$ blackice validate ~/.config/blackice/blackice.toml
+```
+
+For ask mode, add a `[[hook]]` that asks an agent and a rule that lets the agent reach its model provider, bound to its signature; the repository's [fx integration](https://github.com/ValentinTorassa/blackice/blob/main/integrations/fx/README.md) has the one for fx. [Configuration](/docs/configuration) covers every key. Before turning ask mode on, read the open problems in the [plan](https://github.com/ValentinTorassa/blackice/blob/main/docs/plan.md): a service missing from the built-in list of macOS services waits and is dropped, and Tailscale's DNS stops name lookups in ask and block-all unless a rule allows Tailscale's extension.
+
+## 4. Start the filter
+
+```console
+$ blackice start
+$ blackice status
+```
+
+`start` asks for Touch ID (or your login password), activates the network extension and saves the configuration. The first time, and after any deactivation, macOS holds the extension until you allow it: open System Settings → General → Login Items & Extensions → Network Extensions and turn Blackice on. macOS may also ask whether "Blackice" may filter network content: allow it. `start` waits up to 10 minutes for this. Labels vary between macOS versions.
+
+## 5. Start the daemon
+
+The daemon runs the hooks for connections that wait in ask mode. It runs as a LaunchAgent for your user and takes its hooks from the configuration that `start` saved:
+
+```console
+$ blackice agent install
+```
+
+`blackice agent uninstall` removes it. Without a daemon, ask mode still pauses connections, and they are dropped when their timeout passes.
+
+## 6. Use it
+
+- `blackice mode ask`, `blackice mode block-all`, `blackice mode accept-all`: change the mode (Touch ID each time).
+- `blackice pending`: the connections waiting for an answer, and the current approvals.
+- `blackice approve --app ID --host HOST --for 1h` and `blackice deny …`: answer as a person (Touch ID).
+- The daemon's event log is `~/Library/Logs/blackice/events.jsonl`. The filter logs one line per decision to unified logging, where the app and host of each line show as `<private>` and the verdict and reason are public:
+
+```console
+$ /usr/bin/log show --last 10m --style compact --predicate 'subsystem == "com.valentorassa.blackice.filter"'
+```
+
+After changing `blackice.toml`, run `blackice start` again to load it (Touch ID).
+
+## Uninstall
+
+```console
+$ blackice agent uninstall
+$ blackice stop
+$ rm -rf /Applications/Blackice.app
+```
+
+With Homebrew, run the first two commands, then `brew uninstall --cask blackice` instead of `rm`. Homebrew cannot deactivate the extension, so run `blackice stop` first. `brew uninstall --zap --cask blackice` also removes `~/Library/Logs/blackice`, but not your settings in `~/.config/blackice`.
+
+`stop` asks for Touch ID, removes blackice's filter configuration and deactivates the extension. It needs no network. Moving the app to the Trash in Finder works as well as `rm`; either needs App Management for Terminal. `systemextensionsctl list` may show the extension as waiting to uninstall until the next restart. To also remove your settings and logs: `rm -rf ~/.config/blackice ~/Library/Logs/blackice`.
+
+## Rollback
+
+**If the network misbehaves** in ask or block-all, switch back first, then look:
+
+```console
+$ blackice mode accept-all
+```
+
+In accept-all the filter lets every connection through. A restart alone does not turn the filter off: macOS keeps a saved content filter across restarts.
+
+**If `blackice` itself fails**, run it by its full path to see its message (`/Applications/Blackice.app/Contents/MacOS/blackice stop`). If `stop` still fails:
+
+1. System Settings → Network → Filters (near VPN): remove blackice's content filter.
+2. System Settings → General → Login Items & Extensions → Network Extensions: turn Blackice off.
+3. `launchctl bootout gui/$(id -u)/com.valentorassa.blackice.daemon`, if the daemon is still loaded.
+4. Move `/Applications/Blackice.app` to the Trash and restart. Then `systemextensionsctl list` should no longer show `com.valentorassa.blackice.filter` as `activated enabled`.
+
+These labels are from macOS 27.0.1 and from memory.
+
+**To go back to an earlier version**: macOS replaces an installed extension only with the same or a higher `CFBundleVersion`, so an older package does not install over a newer one. Uninstall (above), restart if `systemextensionsctl list` shows the extension waiting to uninstall, then install the older package from step 1 and allow the extension again in System Settings.
+
+**To upgrade**, check the new package as in step 1, put its `Blackice.app` in `/Applications` over the old one (with Homebrew, `brew upgrade --cask blackice`) and run `blackice start`: macOS replaces the running extension with the one with the higher build number. Then restart the Mac. On macOS 27.0.1, an extension upgraded this way kept filtering but had no XPC service until the Mac restarted, so the daemon, `pending`, `approve` and `deny` could not reach it and ask mode dropped everything it paused. `blackice start` checks for this after an upgrade, says so and exits with status 75. After the restart, run `blackice agent uninstall` and `blackice agent install`, so that the daemon runs the new binary.

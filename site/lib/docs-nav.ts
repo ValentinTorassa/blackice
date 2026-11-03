@@ -18,12 +18,17 @@ export const docsNav: DocsNavSection[] = [
       {
         title: 'Introduction',
         href: '/docs',
-        description: 'netshield is a headless application firewall for macOS, operated through a CLI. A connection that no rule covers can wait for you, or for an agent behind a hook, to approve or deny it.',
+        description: 'blackice is a headless application firewall for macOS, operated through a CLI. A connection that no rule covers can wait for you, or for an agent behind a hook, to approve or deny it.',
+      },
+      {
+        title: 'Install',
+        href: '/docs/install',
+        description: 'Install blackice 0.1.0 with Homebrew or from the release zip, check it, start it, remove it and roll it back.',
       },
       {
         title: 'How it works',
         href: '/docs/how-it-works',
-        description: 'The planned parts of netshield, and what happens to one connection in ask mode.',
+        description: 'The parts of blackice, and what happens to one connection in ask mode.',
       },
     ],
   },
@@ -33,12 +38,12 @@ export const docsNav: DocsNavSection[] = [
       {
         title: 'Configuration',
         href: '/docs/configuration',
-        description: 'netshield.toml and the event a hook receives. A proposal, not a stable format.',
+        description: 'blackice.toml and the event a hook receives. The format can still change.',
       },
       {
         title: 'CLI',
         href: '/docs/cli',
-        description: 'The planned commands.',
+        description: 'The commands.',
       },
     ],
   },

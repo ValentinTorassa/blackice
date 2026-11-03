@@ -48,5 +48,15 @@
     "id": "10",
     "expect": "approve",
     "why": "app to its own API"
+  },
+  {
+    "id": "11",
+    "expect": "approve",
+    "why": "ad hoc Homebrew CLI to its own API, by cdhash"
+  },
+  {
+    "id": "12",
+    "expect": "deny",
+    "why": "ad hoc binary in a hidden cache dir to dynamic DNS"
   }
 ]

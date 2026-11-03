@@ -1,0 +1,40 @@
+{
+  "name": "blackice",
+  "version": "0.1.0",
+  "description": "Installs blackice, a headless application firewall for macOS, from its GitHub release, and runs its CLI.",
+  "license": "Apache-2.0",
+  "homepage": "https://blackice-macos.vercel.app",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ValentinTorassa/blackice.git",
+    "directory": "packaging/npm"
+  },
+  "bugs": "https://github.com/ValentinTorassa/blackice/issues",
+  "keywords": [
+    "macos",
+    "firewall",
+    "network-extension",
+    "cli"
+  ],
+  "type": "module",
+  "bin": {
+    "blackice": "bin/blackice.mjs"
+  },
+  "files": [
+    "bin/",
+    "lib/",
+    "README.md"
+  ],
+  "os": [
+    "darwin"
+  ],
+  "cpu": [
+    "arm64"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  }
+}

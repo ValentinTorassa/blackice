@@ -1,7 +1,9 @@
 import { CodeBlock } from '@/components/docs/code-block'
 import { FastLink } from '@/components/fast-link'
+import { DemoVideo } from '@/components/landing/demo-video'
 import { FlowDiagram } from '@/components/landing/flow-diagram'
-import { configExample, configIntro, details, hero, modes, steps } from '@/lib/landing-content'
+import { configExample, configIntro, details, hero, install, modes, status, steps } from '@/lib/landing-content'
+import { release } from '@/lib/release'
 import { site } from '@/lib/site-metadata'
 import { homepageStructuredData } from '@/lib/structured-data'
 
@@ -53,11 +55,15 @@ export default function Home() {
             <FastLink href="/docs" className={textLink}>
               read the docs
             </FastLink>
+            <a href="#install" className="text-muted-foreground transition-colors hover:text-foreground">
+              install
+            </a>
             <a href={site.repo} className="text-muted-foreground transition-colors hover:text-foreground" target="_blank" rel="noreferrer">
               view on github
             </a>
           </div>
           <FlowDiagram />
+          <DemoVideo />
         </section>
 
         <Section id="how-it-works" label="how it works">
@@ -105,6 +111,43 @@ export default function Home() {
             cover every key.
           </p>
           <CodeBlock code={configExample}>{configExample}</CodeBlock>
+        </Section>
+
+        <Section id="install" label={`install ${release.version}`}>
+          <div className="max-w-[600px] text-muted-foreground [&_p+p]:mt-4">
+            {status.map((paragraph) => (
+              <p key={paragraph}>
+                <Inline text={paragraph} />
+              </p>
+            ))}
+            <p>
+              Each run is recorded in the repository&apos;s{' '}
+              <a href={release.evidence} className={textLink} target="_blank" rel="noreferrer">
+                evidence
+              </a>{' '}
+              folder.
+            </p>
+          </div>
+          <div className="mt-6">
+            <CodeBlock code={install.brew}>{install.brew}</CodeBlock>
+          </div>
+          <div className="mt-4 max-w-[600px] text-muted-foreground [&_p+p]:mt-4">
+            <p>
+              Or download <code className="text-foreground">{release.zip}</code> and{' '}
+              <code className="text-foreground">{release.checksum}</code> from the{' '}
+              <a href={release.url} className={textLink} target="_blank" rel="noreferrer">
+                GitHub release
+              </a>
+              , check them and move Blackice.app to <code className="text-foreground">/Applications</code>, as the{' '}
+              <FastLink href="/docs/install" className={textLink}>
+                install docs
+              </FastLink>{' '}
+              describe.
+            </p>
+            <p>
+              <Inline text={install.next} />
+            </p>
+          </div>
         </Section>
       </main>
     </>

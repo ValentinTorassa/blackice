@@ -35,7 +35,7 @@ const nextConfig: NextConfig = {
     { source: '/docs/:slug(.+)\\.md', destination: '/markdown/docs/:slug' },
   ],
   redirects: async () => [
-    { source: '/source', destination: 'https://github.com/ValentinTorassa/netshield', permanent: false },
+    { source: '/source', destination: 'https://github.com/ValentinTorassa/blackice', permanent: false },
   ],
 }
 

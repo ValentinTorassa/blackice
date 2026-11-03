@@ -4,26 +4,27 @@ export const metadata = getDocsMetadata('/docs/how-it-works')
 
 # How it works
 
-The planned parts of netshield, and what happens to one connection in ask mode.
+The parts of blackice, and what happens to one connection in ask mode.
 
-<Planned />
+<Status />
 
 ## The parts
 
 <FigArchitecture n={1} />
 
-- **Netshield.app** has no UI and lives in `/Applications`, because macOS activates system extensions only from there. It contains the network extension and the `netshield` binary.
+- **Blackice.app** has no UI and lives in `/Applications`, because macOS activates system extensions only from there. It contains the network extension and the `blackice` binary.
 - **The extension** is an `NEFilterDataProvider`. It allows or drops each new flow, and in ask mode it pauses the flow until an answer arrives.
-- **The daemon** runs as a LaunchAgent for the user, receives events over XPC and runs the hooks.
+- **The daemon** runs as a LaunchAgent for the user (`blackice agent install`), receives events over XPC and runs the hooks. It takes them from the extension, which holds the configuration saved with Touch ID, never from a file.
 
 ## One connection in ask mode
 
 <FigAsk n={2} />
 
-Rules from `netshield.toml` and current approvals are checked first, so only new destinations wait for an answer. A repeated connection, with the same app, host and port, raises one event.
+Rules from `blackice.toml`, the built-in list of macOS services and current approvals are checked first, so only new destinations wait for an answer. See [Configuration](/docs/configuration). A repeated connection, with the same app, host and port, raises one event.
 
 ## Open problems
 
 - The deciding agent needs the network to reach its model. A fixed rule for it, bound to its signature, keeps it from waiting on its own approval.
 - Host names and app names come from whoever opens the connection and end up in the model's prompt. Events carry them as structured fields, and the only answers are approve and deny.
-- How long macOS keeps a paused flow is not measured yet. It sets the upper bound for the timeout.
+- A tool that connects to an address, such as `curl`, has its TCP connection open while it waits, and servers close a connection that sends nothing after 11 to 15 s. When the decision takes longer, its first try fails and only the retry after the approval gets through. Apps that connect by name, through URLSession, are paused before they connect and wait the whole timeout.
+- After an upgrade in place, macOS 27.0.1 left the new extension without its XPC service until the Mac restarted, so an upgrade needs a restart.

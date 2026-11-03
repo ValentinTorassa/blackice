@@ -3,7 +3,7 @@ import type { Metadata } from 'next'
 import { ogShared, site, twitterShared } from '@/lib/site-metadata'
 
 const title = `${site.name} docs`
-const description = `Documentation for ${site.name}: the planned design of a headless network extension and CLI for macOS.`
+const description = `Documentation for ${site.name}, a headless network extension and CLI for macOS: install, design, configuration and commands.`
 
 /* metadataBase is inherited from the (site) root layout; openGraph/twitter
    are NOT (Next replaces them wholesale), hence the shared spreads. */
