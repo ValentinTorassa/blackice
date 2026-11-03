@@ -179,8 +179,10 @@ struct FilterPolicyTests {
 
     @Test func acceptAllAllowsEveryOutboundFlow() throws {
         let snapshot = try policySnapshot(.acceptAll)
-        for (facts, _) in blockAllCases where facts.identity != resolver {
-            #expect(FilterPolicy.decide(facts, snapshot: snapshot, context: context()) == .allow(reason: "accept_all"), "\(facts)")
+        for (facts, verdict) in blockAllCases {
+            // The resolver's DNS passes before the mode is looked at, in every mode.
+            let expected: FlowVerdict = verdict == .allow(reason: "system_resolver") ? verdict : .allow(reason: "accept_all")
+            #expect(FilterPolicy.decide(facts, snapshot: snapshot, context: context()) == expected, "\(facts)")
         }
     }
 
