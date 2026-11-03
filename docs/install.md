@@ -156,4 +156,7 @@ allow the extension again in System Settings.
 
 **To upgrade**, check the new package as in step 1, put its `Blackice.app` in `/Applications` over the old one and run
 `blackice start`: macOS replaces the running extension with the one with the higher build number. Then restart the
-daemon, `blackice agent uninstall` and `blackice agent install`, so that it runs the new binary.
+Mac. On 3 November 2026, on macOS 27.0.1, an extension upgraded this way kept filtering but had no XPC service until
+the Mac restarted, so the daemon, `pending`, `approve` and `deny` could not reach it and ask mode dropped everything
+it paused. `blackice start` checks for this after an upgrade, says so and exits with status 75. After the restart,
+run `blackice agent uninstall` and `blackice agent install`, so that the daemon runs the new binary.

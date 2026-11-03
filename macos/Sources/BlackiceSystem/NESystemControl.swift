@@ -41,7 +41,7 @@ public final class NESystemControl: SystemControlling {
         guard confirm(.start(candidate), output) else { return ExitCode.noPermission }
 
         output.stdout("Activating the network extension. The first time, macOS asks you to allow it in System Settings.")
-        let activation = runExtensionRequest(
+        let (activation, replaced) = runExtensionRequest(
             OSSystemExtensionRequest.activationRequest(forExtensionWithIdentifier: BlackiceIdentifiers.filter, queue: .main),
             output)
         guard activation == ExitCode.success else { return activation }
@@ -65,7 +65,25 @@ public final class NESystemControl: SystemControlling {
         guard save(manager, output) else { return ExitCode.software }
         output.stdout("Filter saved and enabled: \(candidate.summary).")
         output.stdout("This command does not verify enforcement; docs/phase-0.md has the check.")
+        if replaced, !Self.extensionAnswers() {
+            output.stderr("blackice start: the network extension was upgraded in place and its XPC service does not answer. " +
+                          "On macOS 27 an upgraded extension can stay unreachable until the Mac restarts: restart it, " +
+                          "or the daemon, pending, approve and deny cannot reach the extension and ask mode drops what it pauses.")
+            return ExitCode.tempFail
+        }
         return ExitCode.success
+    }
+
+    /// Whether the extension's XPC service answers `pending`, trying for a few seconds while a newly
+    /// launched extension starts listening. On 3 November 2026 an extension that replaced an older
+    /// version in place had no Mach service until the Mac restarted (docs/install.md, "Upgrading").
+    static func extensionAnswers(attempts: Int = 10, interval: TimeInterval = 0.5) -> Bool {
+        guard let teamID = CodeIdentity.current()?.teamID else { return false }
+        for attempt in 1...attempts {
+            if (try? FilterClient(teamID: teamID).pending()) != nil { return true }
+            if attempt < attempts { Thread.sleep(forTimeInterval: interval) }
+        }
+        return false
     }
 
     public func stop(output: SystemOutput) -> Int32 {
@@ -84,7 +102,7 @@ public final class NESystemControl: SystemControlling {
         }
         return runExtensionRequest(
             OSSystemExtensionRequest.deactivationRequest(forExtensionWithIdentifier: BlackiceIdentifiers.filter, queue: .main),
-            output, deactivating: true)
+            output, deactivating: true).status
     }
 
     public func status(output: SystemOutput) -> Int32 {
@@ -294,8 +312,9 @@ public final class NESystemControl: SystemControlling {
         return removed
     }
 
+    /// The request's exit status, and whether macOS replaced a running extension of another version.
     private func runExtensionRequest(_ request: OSSystemExtensionRequest, _ output: SystemOutput,
-                                     deactivating: Bool = false) -> Int32 {
+                                     deactivating: Bool = false) -> (status: Int32, replaced: Bool) {
         let result = Completion()
         let delegate = ExtensionRequestDelegate(result: result, output: output, deactivating: deactivating)
         request.delegate = delegate
@@ -303,9 +322,9 @@ public final class NESystemControl: SystemControlling {
         let status = withExtendedLifetime(delegate) { MainLoop.wait(for: result, timeout: Self.extensionRequestTimeout) }
         guard let status else {
             output.stderr("blackice: the system extension request did not finish in time; check System Settings before retrying")
-            return ExitCode.software
+            return (ExitCode.software, delegate.replaced)
         }
-        return status
+        return (status, delegate.replaced)
     }
 }
 
@@ -343,6 +362,8 @@ final class ExtensionRequestDelegate: NSObject, OSSystemExtensionRequestDelegate
     private let result: Completion
     private let output: SystemOutput
     private let deactivating: Bool
+    /// Set when macOS asked to replace a running extension of another version and we said yes.
+    private(set) var replaced = false
 
     init(result: Completion, output: SystemOutput, deactivating: Bool) {
         self.result = result
@@ -363,6 +384,7 @@ final class ExtensionRequestDelegate: NSObject, OSSystemExtensionRequestDelegate
                           "\(candidate.bundleVersion); to roll back on purpose run blackice stop, then start")
             return .cancel
         }
+        if existing.bundleVersion != candidate.bundleVersion { replaced = true }
         return .replace
     }
 
