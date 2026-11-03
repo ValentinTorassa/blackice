@@ -124,8 +124,10 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
     }
 
     /// Every flow goes to the provider, including loopback, which the default rules leave out.
+    /// No rule for IPv4-mapped loopback (::ffff:127.0.0.1/104): NetworkExtension reads that address
+    /// as IPv4, refuses a prefix over 32 and fails the whole start (macOS 27.0.1).
     static func makeSettings() -> NEFilterSettings {
-        let loopback = [("127.0.0.1", 8), ("::1", 128), ("::ffff:127.0.0.1", 104)]
+        let loopback = [("127.0.0.1", 8), ("::1", 128)]
         let rules = loopback.map { address, prefix in
             NEFilterRule(networkRule: NENetworkRule(
                 destinationNetwork: NWHostEndpoint(hostname: address, port: "0"),
