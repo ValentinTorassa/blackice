@@ -43,7 +43,8 @@ the run, never before it.
 | [P4-01](P4-01-fx-decides-ten-connections-macos.md) | 4 | fx decides ten connections in a row with nobody at the keyboard; nine match the expected answer. |
 | [P5-01](P5-01-faults-macos.md) | 5 | The fault tests: 24 checks pass; the last 4 of case 4 fail, three because the second Touch ID was cancelled and one because `blackice pending` rejected the extension's reply. |
 | [P5-02](P5-02-homebrew-upgrade-from-release-macos.md) | 5 | 0.1.0 installed with Homebrew from the published release over build 4: signed, notarized and accepted; `start` finds the upgraded extension unreachable and exits with 75; after a restart its XPC service answers. |
+| [P5-03](P5-03-curl-install-script-sandbox-macos.md) | 5 | The curl install script: the one-liner stops on a Homebrew install; a copy aimed at a temporary folder downloads 0.1.0, checks checksum, signature and notarization, installs it and writes the command; `--force` replaces another version. |
 
-Not recorded yet: a fault test run with no FAIL, and a first install from the published zip and an uninstall by
-following [`docs/install.md`](../docs/install.md). The upgrade from build 3 to build 4, which first left the
+Not recorded yet: a fault test run with no FAIL, a first install from the published zip and an uninstall by
+following [`docs/install.md`](../docs/install.md), and the install script copying into the real `/Applications`. The upgrade from build 3 to build 4, which first left the
 extension without an XPC service until a restart, has no entry; P5-02 records the same with build 5.

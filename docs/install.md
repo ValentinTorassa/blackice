@@ -5,8 +5,10 @@ and roll it back. The package is `Blackice-<version>.zip` plus `Blackice-<versio
 `macos/scripts/package.sh` builds them, attached to each
 [GitHub release](https://github.com/ValentinTorassa/blackice/releases). On 3 November 2026 the Homebrew section ran
 from the published 0.1.0 release, as an upgrade over a build installed by hand
-([P5-02](../evidence/P5-02-homebrew-upgrade-from-release-macos.md)); a first install from the zip, the install script
-and uninstalling have not been run from a published package yet.
+([P5-02](../evidence/P5-02-homebrew-upgrade-from-release-macos.md)), and the install script checked the release and
+installed it into a temporary folder instead of `/Applications`
+([P5-03](../evidence/P5-03-curl-install-script-sandbox-macos.md)); a first install into `/Applications` from the zip
+or with the script, and uninstalling, have not been run from a published package yet.
 
 You need a Mac with Apple silicon (the build is arm64 only), macOS 14 or later, and an admin account. blackice has
 run on macOS 27.0.1 only. The commands below use 0.1.0 as the version.

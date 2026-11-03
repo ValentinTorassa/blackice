@@ -24,6 +24,8 @@ Early. 0.1.0 is the first release, and it has run on one Mac, a MacBook Air with
 - The fault tests passed for a stopped daemon, a hung hook, a burst of 120 connections and a daemon restart. A
   configuration change while connections wait failed (P5-01).
 - After an upgrade in place, the Mac needed a restart (P5-02).
+- The curl install script checked the published release (checksum, signature, notarization) and installed it into a
+  temporary folder; it has not installed into `/Applications` yet (P5-03).
 
 Open problems are in [`docs/plan.md`](docs/plan.md).
 

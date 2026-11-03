@@ -48,7 +48,7 @@ export const details = [
 export const status = [
   `Early. ${release.version} is the first release, and it has run on one Mac, a MacBook Air with macOS 27.0.1, by the people building it.`,
   'On that Mac, block-all refused a binary that no rule named, and in ask mode fx, run by the hook, approved and denied connections. Apps that connect by name wait for the answer. Tools that connect to an address, such as `curl`, fail on the first try and get through on the retry after an approval.',
-  'The fault tests passed for the daemon being down, a hung hook, a burst of connections and a daemon restart. The configuration change case failed. After an upgrade in place the Mac needed a restart.',
+  'The fault tests passed for the daemon being down, a hung hook, a burst of connections and a daemon restart. The configuration change case failed. After an upgrade in place the Mac needed a restart. The install script checked the published release and installed it into a temporary folder, not yet into `/Applications`.',
 ]
 
 export const install = {
