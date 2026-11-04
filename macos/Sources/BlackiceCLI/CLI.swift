@@ -12,6 +12,7 @@ public enum ExitCode {
     public static let software: Int32 = 70    // EX_SOFTWARE: a system request failed
     public static let tempFail: Int32 = 75    // EX_TEMPFAIL: the saved configuration changed meanwhile; retry
     public static let noPermission: Int32 = 77 // EX_NOPERM: Touch ID cancelled or failed
+    public static let interrupted: Int32 = 130 // 128 + SIGINT, as shells report it: a setup stopped by Control-C
 }
 
 public enum Command: Equatable, Sendable {

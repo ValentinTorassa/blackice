@@ -177,8 +177,9 @@ when their timeout passes.
    daemon.
 
 In ask or block-all it switches to accept-all while fx is set up (Touch ID), since fx's own connections would wait
-until its rule is loaded, and the last step loads your file again. If the setup stops before that step, it switches
-back to the mode it was in (Touch ID). It knows fx only, so far.
+until its rule is loaded, and the last step loads your file again. If the setup stops before that step, because a
+step failed or you pressed Control-C, it switches back to the mode it was in (Touch ID). Control-C while fx signs in
+goes to fx, and the setup stops once fx has quit. It knows fx only, so far.
 [`integrations/fx/README.md`](../integrations/fx/README.md) has the same steps by hand.
 
 ## 6. Use it

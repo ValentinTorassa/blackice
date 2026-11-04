@@ -51,9 +51,10 @@ public struct Interaction {
         var ask: ((String) -> String?)?
         var choose: ((Choice) -> [Int]?)?
         if interactive {
+            // Ends the line early, as nil, once a signal is caught (`Interrupts`).
             ask = { prompt in
-                FileHandle.standardOutput.write(Data(prompt.utf8))
-                return readLine(strippingNewline: true)
+                try? FileHandle.standardOutput.write(contentsOf: Data(prompt.utf8))
+                return Interrupts.readLine()
             }
             if ProcessInfo.processInfo.environment["TERM"] != "dumb" { choose = { TerminalSelector.run($0) } }
         }

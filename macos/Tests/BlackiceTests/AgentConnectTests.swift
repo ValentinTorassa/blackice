@@ -16,6 +16,13 @@ private final class FakeAgentMac: @unchecked Sendable {
     var hookRuns: [String] = []
     /// Runs while fx decides the sample event, as a person editing blackice.toml meanwhile would.
     var duringTest: (() -> Void)?
+    /// Control-C pressed while fx signs in or decides the sample event; fx dies of it.
+    enum Wait { case signIn, test }
+    var controlC: Wait?
+    /// Whether Control-C was caught, and how often the signals were caught and released.
+    var interrupted = false
+    var catches = 0
+    var releases = 0
     let resources: String
 
     init(signedIn: Bool, resources: String, answer: ((HookEvent) -> String)?) {
@@ -30,6 +37,7 @@ private final class FakeAgentMac: @unchecked Sendable {
             runAttached: { path, arguments, environment in
                 if arguments == ["login", "vercel"] {
                     self.logins.append(environment)
+                    if self.controlC == .signIn { self.interrupted = true; return 128 + SIGINT }
                     if self.loginFailures > 0 { self.loginFailures -= 1; return 1 }
                     self.signedIn = true
                 }
@@ -42,6 +50,11 @@ private final class FakeAgentMac: @unchecked Sendable {
             runHook: { run, event, _, _ in
                 self.hookRuns.append(run)
                 self.duringTest?()
+                if self.controlC == .test {
+                    self.interrupted = true
+                    return HookResult(hookLine: 0, outcome: .signaled(signal: SIGTERM), stderr: "", stderrTruncated: false,
+                                      duration: 3)
+                }
                 if let answer = self.answer,
                    let start = run.range(of: "PATH=\""), let end = run[start.upperBound...].firstIndex(of: ":") {
                     let standIn = String(run[start.upperBound..<end])
@@ -50,7 +63,9 @@ private final class FakeAgentMac: @unchecked Sendable {
                 return HookResult(hookLine: 0, outcome: .exited(status: 0), stderr: self.hookStderr, stderrTruncated: false,
                                   duration: 14)
             },
-            agentResources: resources)
+            agentResources: resources,
+            catchInterrupts: { self.catches += 1; return { self.releases += 1 } },
+            interrupted: { self.interrupted })
     }
 }
 
@@ -113,11 +128,19 @@ struct AgentConnectTests {
         return (home, path, home.appendingPathComponent("app-resources/agents").path)
     }
 
+    /// An answer that stands for Control-C at the question: no line, and the signal caught.
+    static let controlC = "^C"
+
     private func connect(_ home: URL, config: String, mac: FakeAgentMac, system: Loading, answers: [String] = [],
                          arguments: [String]? = nil) -> Connected {
         var script = answers
         let interaction = Interaction(
-            ask: { _ in script.isEmpty ? nil : script.removeFirst() }, createFile: CLI.createFile,
+            ask: { _ in
+                guard !script.isEmpty else { return nil }
+                let answer = script.removeFirst()
+                if answer == Self.controlC { mac.interrupted = true; return nil }
+                return answer
+            }, createFile: CLI.createFile,
             identify: { $0 == "/opt/fake/fx" ? Self.fx : nil }, fileExists: { FileManager.default.fileExists(atPath: $0) },
             home: home.path, version: nil)
         let out = Recorder<String>(), err = Recorder<String>()
@@ -219,6 +242,12 @@ struct AgentConnectTests {
         #expect(declined.status == 0)
         #expect(try BlackiceConfig(data: Data(contentsOf: URL(fileURLWithPath: config))).mode == .acceptAll)
         #expect(declined.stdout.last == "✓ fx is ready. When you want it answering: blackice mode ask")
+
+        // The end of input at that question is no, the default: it loads as it is too.
+        let ended = connect(home, config: config, mac: FakeAgentMac(signedIn: true, resources: resources, answer: Self.approve),
+                            system: system)
+        #expect(ended.status == 0 && system.texts.count == 2)
+        #expect(ended.stdout.last == "✓ fx is ready. When you want it answering: blackice mode ask")
     }
 
     @Test func offersToInstallFx() throws {
@@ -374,6 +403,55 @@ struct AgentConnectTests {
                               system: declined)
         #expect(refused.status == ExitCode.noPermission && declined.modes == [.acceptAll] && declined.running == .ask)
         #expect(!refused.stdout.contains(back))
+    }
+
+    /// Control-C while fx signs in, while it decides the sample event, or at a question stops the
+    /// setup there, and it goes back to the mode it put off, as any other stop does.
+    @Test func controlCStopsTheSetupAndGoesBack() throws {
+        let (home, config, resources) = try setUp("mode = \"ask\"\ntimeout_seconds = 60\n")
+        defer { removeTree(home) }
+        let before = try String(contentsOfFile: config, encoding: .utf8)
+        let back = "The setup did not finish, so blackice leaves accept-all for ask mode."
+        func asking() -> Loading { let system = Loading(); system.running = .ask; return system }
+
+        // fx gets Control-C from the terminal and dies of it; blackice stays to go back.
+        let signingIn = FakeAgentMac(signedIn: false, resources: resources, answer: Self.approve)
+        signingIn.controlC = .signIn
+        let firstSystem = asking()
+        let signIn = connect(home, config: config, mac: signingIn, system: firstSystem)
+        #expect(signIn.status == ExitCode.interrupted)
+        #expect(signIn.stderr == ["  Interrupted, so the setup stops here."])
+        #expect(firstSystem.modes == [.acceptAll, .ask] && firstSystem.running == .ask && firstSystem.texts.isEmpty)
+        #expect(signIn.stdout.contains(back) && signingIn.hookRuns.isEmpty)
+        #expect(signingIn.catches == 1 && signingIn.releases == 1)
+
+        let testing = FakeAgentMac(signedIn: true, resources: resources, answer: Self.approve)
+        testing.controlC = .test
+        let secondSystem = asking()
+        let test = connect(home, config: config, mac: testing, system: secondSystem)
+        #expect(test.status == ExitCode.interrupted && test.stderr == ["  Interrupted, so the setup stops here."])
+        #expect(secondSystem.modes == [.acceptAll, .ask] && secondSystem.texts.isEmpty)
+        #expect(try String(contentsOfFile: config, encoding: .utf8) == before)
+
+        // At "Install fx now?": nothing is installed.
+        let missing = FakeAgentMac(signedIn: false, resources: resources, answer: Self.approve)
+        missing.installed = false
+        let thirdSystem = asking()
+        let question = connect(home, config: config, mac: missing, system: thirdSystem, answers: [Self.controlC])
+        #expect(question.status == ExitCode.interrupted && missing.installs.isEmpty)
+        #expect(thirdSystem.modes == [.acceptAll, .ask] && question.stdout.contains(back))
+
+        // At the last question, once fx's rule and hook are saved: the file is not loaded.
+        let (blockHome, blockConfig, blockResources) = try setUp("mode = \"block-all\"\ntimeout_seconds = 60\n")
+        defer { removeTree(blockHome) }
+        let blocking = Loading()
+        blocking.running = .blockAll
+        let last = connect(blockHome, config: blockConfig, mac: FakeAgentMac(signedIn: true, resources: blockResources,
+                                                                            answer: Self.approve),
+                           system: blocking, answers: [Self.controlC])
+        #expect(last.status == ExitCode.interrupted && blocking.texts.isEmpty && blocking.agentInstalls == 0)
+        #expect(blocking.modes == [.acceptAll, .blockAll] && blocking.running == .blockAll)
+        #expect(try BlackiceConfig(data: Data(contentsOf: URL(fileURLWithPath: blockConfig))).hooks.count == 1)
     }
 
     /// The first start picked ask mode with fx answering, and fx could not be set up: it switches

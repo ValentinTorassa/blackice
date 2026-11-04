@@ -108,17 +108,26 @@ public struct AgentMachine {
     public let runHook: (_ run: String, _ event: HookEvent, _ workDirectory: String, _ timeoutSeconds: Int) -> HookResult
     /// The folder inside Blackice.app with each agent's skill (agents/fx/blackice); nil outside the app.
     public let agentResources: String?
+    /// From now on Control-C and the other stop signals are caught instead of ending blackice
+    /// (`Interrupts`); the function returned puts back what was there.
+    public let catchInterrupts: () -> () -> Void
+    /// Whether one of them came since.
+    public let interrupted: () -> Bool
 
     public init(findExecutable: @escaping (String) -> String?,
                 runAttached: @escaping (String, [String], [String: String]) -> Int32,
                 runCaptured: @escaping (String, [String], [String: String]) -> (status: Int32, output: String),
                 runHook: @escaping (String, HookEvent, String, Int) -> HookResult,
-                agentResources: String?) {
+                agentResources: String?,
+                catchInterrupts: @escaping () -> () -> Void = { {} },
+                interrupted: @escaping () -> Bool = { false }) {
         self.findExecutable = findExecutable
         self.runAttached = runAttached
         self.runCaptured = runCaptured
         self.runHook = runHook
         self.agentResources = agentResources
+        self.catchInterrupts = catchInterrupts
+        self.interrupted = interrupted
     }
 
     /// Nothing found, nothing run.
@@ -147,22 +156,7 @@ public struct AgentMachine {
                 }
                 return nil
             },
-            runAttached: { path, arguments, environment in
-                // Not Process: it starts the child in a process group of its own, which the terminal
-                // treats as background, so the child stops (SIGTTIN) at its first read. fx's sign-in
-                // waits for Enter and froze that way on 3 November 2026. posix_spawn without
-                // POSIX_SPAWN_SETPGROUP keeps it in blackice's group, in the foreground.
-                let variables = ProcessInfo.processInfo.environment.merging(environment) { $1 }.map { "\($0)=\($1)" }
-                let argv = ([path] + arguments).map { strdup($0) } + [nil]
-                let envp = variables.map { strdup($0) } + [nil]
-                defer { argv.forEach { free($0) }; envp.forEach { free($0) } }
-                var pid: pid_t = 0
-                guard posix_spawn(&pid, path, nil, nil, argv, envp) == 0 else { return 127 }
-                var status: Int32 = 0
-                while waitpid(pid, &status, 0) == -1, errno == EINTR {}
-                let signal = status & 0x7f
-                return signal == 0 ? (status >> 8) & 0xff : 128 + signal
-            },
+            runAttached: Self.runAttached,
             runCaptured: { path, arguments, environment in
                 let process = Process()
                 process.executableURL = URL(fileURLWithPath: path)
@@ -187,22 +181,91 @@ public struct AgentMachine {
                     let box = ResultBox()
                     let done = DispatchSemaphore(value: 0)
                     Task {
-                        box.results = await runner.run([Hook(run: run, line: 0)], for: event, timeoutSeconds: timeoutSeconds)
+                        box.results = await runner.run([Hook(run: run, line: 0)], for: event, timeoutSeconds: timeoutSeconds) {
+                            if case .started(_, let pid, _) = $0 { box.started(pid) }
+                        }
                         done.signal()
                     }
-                    done.wait()
+                    // The hook runs in a process group of its own, which Control-C from the terminal
+                    // does not reach: once blackice catches it, the hook's group gets SIGTERM.
+                    var stopped = false
+                    while done.wait(timeout: .now() + 0.2) == .timedOut {
+                        if !stopped, Interrupts.interrupted, let pid = box.pid {
+                            killpg(pid, SIGTERM)
+                            stopped = true
+                        }
+                    }
                     return box.results.first ?? failed("the hook runner returned nothing")
                 } catch {
                     return failed("\(error)")
                 }
             },
             agentResources: Bundle.main.resourceURL.map { $0.appendingPathComponent("agents").path }
-                .flatMap { FileManager.default.fileExists(atPath: $0) ? $0 : nil })
+                .flatMap { FileManager.default.fileExists(atPath: $0) ? $0 : nil },
+            catchInterrupts: Interrupts.catchAll, interrupted: { Interrupts.interrupted })
+    }
+
+    /// Runs a program with this terminal attached and returns its exit status, or 128 plus the
+    /// signal that ended it. Not Process: it starts the child in a process group of its own, which
+    /// the terminal treats as background, so the child stops (SIGTTIN) at its first read. fx's
+    /// sign-in waits for Enter and froze that way on 3 November 2026. posix_spawn without
+    /// POSIX_SPAWN_SETPGROUP keeps it in blackice's group, in the foreground.
+    ///
+    /// As system(3) does, blackice does not die of Control-C or Control-\ while the program runs:
+    /// it catches them (`Interrupts`), and the program gets them from the terminal. A SIGTERM or
+    /// SIGHUP sent to blackice is passed on to the program. When it ends, the terminal's settings
+    /// are put back as they were, in case it died in raw mode.
+    static func runAttached(_ path: String, _ arguments: [String], _ environment: [String: String]) -> Int32 {
+        let variables = ProcessInfo.processInfo.environment.merging(environment) { $1 }.map { "\($0)=\($1)" }
+        let argv = ([path] + arguments).map { strdup($0) } + [nil]
+        let envp = variables.map { strdup($0) } + [nil]
+        defer { argv.forEach { free($0) }; envp.forEach { free($0) } }
+        var terminal = termios()
+        let isTerminal = tcgetattr(STDIN_FILENO, &terminal) == 0
+        let release = Interrupts.catchAll()
+        defer { release() }
+        // No signal blocked in the program, whatever the calling thread blocks.
+        var attributes: posix_spawnattr_t?
+        posix_spawnattr_init(&attributes)
+        defer { posix_spawnattr_destroy(&attributes) }
+        var none = sigset_t()
+        sigemptyset(&none)
+        posix_spawnattr_setsigmask(&attributes, &none)
+        posix_spawnattr_setflags(&attributes, Int16(POSIX_SPAWN_SETSIGMASK))
+        var pid: pid_t = 0
+        guard posix_spawn(&pid, path, nil, &attributes, argv, envp) == 0 else { return 127 }
+        var status: Int32 = 0
+        var passedOn = false
+        while true {
+            let result = waitpid(pid, &status, WNOHANG)
+            if result == pid { break }
+            if result == -1, errno != EINTR { return 127 }
+            if !passedOn, [SIGTERM, SIGHUP].contains(Interrupts.caught) {
+                kill(pid, SIGTERM)
+                passedOn = true
+            }
+            usleep(50_000)
+        }
+        if isTerminal { tcsetattr(STDIN_FILENO, TCSANOW, &terminal) }
+        let signal = status & 0x7f
+        return signal == 0 ? (status >> 8) & 0xff : 128 + signal
     }
 }
 
 private final class ResultBox: @unchecked Sendable {
+    private let lock = NSLock()
     var results: [HookResult] = []
+    private var startedPID: Int32?
+
+    func started(_ pid: Int32) {
+        lock.lock(); defer { lock.unlock() }
+        startedPID = pid
+    }
+
+    var pid: Int32? {
+        lock.lock(); defer { lock.unlock() }
+        return startedPID
+    }
 }
 
 /// What the stand-in for blackice recorded during the test.
@@ -335,6 +398,10 @@ extension CLI {
                              system: SystemControlling, interaction: Interaction, machine: AgentMachine,
                              stdout: @escaping (String) -> Void, stderr: @escaping (String) -> Void,
                              firstStep: Int = 1, heldMode: Mode? = nil) -> Int32 {
+        // Control-C and the other stop signals end the setup at its next check instead of ending
+        // blackice, so that what follows can put things back. Released last: defers run last first.
+        let releaseInterrupts = machine.catchInterrupts()
+        defer { releaseInterrupts() }
         // Accept-all lets everything through, so a setup that switched to it and then stops before
         // the last step loads the file, whatever the reason, switches to the mode it put off.
         var putOff = heldMode
@@ -374,6 +441,12 @@ extension CLI {
             number += 1
         }
         func fail(_ status: Int32, _ lines: String...) -> Int32 { lines.forEach { stderr("  " + $0) }; return status }
+        // Checked after each wait: a prompt, a program, Touch ID.
+        func interruption() -> Int32? {
+            guard machine.interrupted() else { return nil }
+            stderr("  Interrupted, so the setup stops here.")
+            return ExitCode.interrupted
+        }
 
         if firstStep == 1 {
             stdout("Connecting \(name) to blackice: it will answer the connections that wait in")
@@ -390,6 +463,7 @@ extension CLI {
             putOff = running
             let switched = system.setMode(.acceptAll, output: SystemOutput(stdout: stdout, stderr: stderr))
             guard switched == ExitCode.success else { return switched }
+            if let stop = interruption() { return stop }
         }
 
         // 1. Find it and read its signature.
@@ -407,6 +481,7 @@ extension CLI {
                 // pipefail: in `curl … | bash` a failed download is curl's status, not bash's 0.
                 let status = machine.runAttached("/bin/bash", ["-o", "pipefail", "-c", installer], [:])
                 stdout("")
+                if let stop = interruption() { return stop }
                 found = machine.findExecutable(profile.executable)
                 if found == nil {
                     return fail(ExitCode.unavailable, "\(name)'s installer exited with status \(status), and \(name) is still not",
@@ -414,6 +489,7 @@ extension CLI {
                 }
             }
         }
+        if let stop = interruption() { return stop }
         guard let executable = found else {
             return fail(ExitCode.unavailable, "\(name) is not installed. Install it (\(profile.installHint)),",
                         "then: \(retry)")
@@ -465,10 +541,12 @@ extension CLI {
                 stdout("")
                 _ = machine.runAttached(executable, profile.loginArguments, environment)
                 stdout("")
+                if let stop = interruption() { return stop }
                 signed = signedIn()
                 if signed { break }
                 guard let line = ask("  \(name) is not signed in yet. Try again? [Y/n]: "),
                       !["n", "no"].contains(line.trimmingCharacters(in: .whitespaces).lowercased()) else {
+                    if let stop = interruption() { return stop }
                     return fail(ExitCode.software, "\(name) is still not signed in, so nothing else changed. To retry: \(retry)")
                 }
             }
@@ -502,6 +580,7 @@ extension CLI {
         stdout("  nothing is let through…")
         let result = machine.runHook(profile.hookRun(executable, paths.home, standIn), event,
                                      paths.test + "/work", agentTestSeconds)
+        if let stop = interruption() { return stop }
         let recorded = files.contents(atPath: standIn + "/answers").map { String(decoding: $0, as: UTF8.self) } ?? ""
         let seconds = Int(result.duration.rounded())
         switch testAnswer(recorded, token: event.token) {
@@ -588,7 +667,10 @@ extension CLI {
             stdout("  In ask mode, a connection no rule covers waits until \(name) answers (\(seconds) s on")
             stdout("  the test); with no answer in time it is denied.")
             while true {
-                guard let line = ask("  Switch to ask mode now? [y/N]: ") else { return ExitCode.success }
+                guard let line = ask("  Switch to ask mode now? [y/N]: ") else {
+                    if let stop = interruption() { return stop }
+                    break // The end of input: no, the default.
+                }
                 let answer = line.trimmingCharacters(in: .whitespaces).lowercased()
                 if ["y", "yes"].contains(answer) {
                     let switched = save(settingRootKey(loaded, "mode", to: "\"ask\""), over: loaded, at: path,
@@ -603,6 +685,7 @@ extension CLI {
             }
         }
         stdout("")
+        if let stop = interruption() { return stop }
         let started = system.start(configText: loaded, output: SystemOutput(stdout: stdout, stderr: stderr))
         guard started == ExitCode.success else { return started }
         loadedFile = true
