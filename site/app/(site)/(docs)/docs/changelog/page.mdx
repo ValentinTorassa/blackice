@@ -6,6 +6,16 @@ export const metadata = getDocsMetadata('/docs/changelog')
 
 What changed in each release. The same list is in the repository's [CHANGELOG.md](https://github.com/ValentinTorassa/blackice/blob/main/CHANGELOG.md).
 
+## 0.3.2 (4 November 2026)
+
+Fewer connections waiting in ask mode.
+
+- The first `blackice start`'s list of apps to trust shows the system extensions running now, such as a VPN client's network extension. They run from `/Library/SystemExtensions`, so the list left them out, and on the Mac Tailscale's sent 316 of the 905 events of the 0.3.0 runs and 227 of the 351 that got no hook.
+- Four more macOS services pass without a rule, each seen waiting in those runs: codesign's timestamp service, to timestamp.apple.com only (in ask mode a signature could end up with no timestamp), iCloud contacts, Apple Media Services and the app categories Screen Time uses.
+- A connection that arrives while 4 hooks run waits for a free one instead of getting no hook, and the waiting connections take turns between apps, so one app's burst no longer crowds out the rest. One is given up when less than 10 s of its time is left, when it ends while it waits, or when 256 already wait. The event log says so: `hook_queued`, `waited_ms`, and `hook_dropped` with `deadline_near`, `event_ended` or `queue_full` in place of `concurrency_limit`.
+
+Upgrading from 0.3.1: run the install script with `--force` (`curl -fsSL https://blackice-macos.vercel.app/install.sh | sh -s -- --force`) or `brew upgrade --cask blackice`, then `blackice start`, then restart the Mac. On macOS 27 an extension upgraded in place cannot be reached until the Mac restarts. Then run `blackice agent uninstall` and `blackice agent install`, so that the daemon runs the new binary: the queue is in the daemon. If you already have a configuration, the first start's list does not run again; to trust a VPN client, add a rule with `hosts = ["*"]` for its network extension (`systemextensionsctl list` names it).
+
 ## 0.3.1 (4 November 2026)
 
 Pick several apps to trust with Enter.

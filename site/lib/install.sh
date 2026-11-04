@@ -17,7 +17,7 @@
 
 set -eu
 
-VERSION=0.3.1
+VERSION=0.3.2
 REPOSITORY=ValentinTorassa/blackice
 TEAM_ID=M294LK997M
 IDENTIFIER=com.valentorassa.blackice
