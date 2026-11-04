@@ -124,6 +124,19 @@ struct WizardTests {
         #expect(pickedAnswers([[1], [0], nil]) == nil)
     }
 
+    /// An app named with escape sequences could clear its row and draw another app's name over it,
+    /// so the one picked to reach any host is not the one the person saw. Its name is escaped.
+    @Test func appNamesCannotRedrawTheList() {
+        let bundle = "/Users/test/Applications/Evil\u{1B}[2K\rSlack.app"
+        let evil = SigningIdentity(signingID: "com.example.evil", teamID: "ABCDE12345")
+        let choices = Recorder<Choice>(), said = Recorder<String>()
+        let picked = pickedAnswers([[2], [0]], running: [bundle], identities: [bundle: evil], choices: choices, said: said)
+        #expect(picked?.rules == [.init(identity: evil, hosts: ["*"])])
+        #expect(choices.items[1].options.first == "Evil\\u{1b}[2K\\u{d}Slack")
+        #expect(said.items.contains("    ✓ Evil\\u{1b}[2K\\u{d}Slack may reach any host (com.example.evil)"))
+        #expect(!said.items.joined().unicodeScalars.contains("\u{1B}"))
+    }
+
     @Test func runningAppsAreTheirBundles() {
         let home = "/Users/test"
         #expect(Interaction.appBundle("/Applications/Slack.app/Contents/Frameworks/Slack Helper.app/Contents/MacOS/Slack Helper",
@@ -454,6 +467,20 @@ struct ReportTests {
         #expect(Style.wrap("Done", "1", enabled: false) == "Done")
         #expect(Style.wrap("Done", "1", enabled: true) == "\u{1B}[1mDone\u{1B}[0m")
         #expect(Style.done("Saved") == "✓ Saved")
+    }
+
+    @Test func textAppsChoseIsEscapedForTheTerminal() {
+        #expect(Describe.terminalSafe("Slack") == "Slack")
+        #expect(Describe.terminalSafe("Café · 日本語 · 👩‍💻") == "Café · 日本語 · 👩‍💻")
+        #expect(Describe.terminalSafe("a\u{1B}[31mb") == "a\\u{1b}[31mb")
+        #expect(Describe.terminalSafe("a\u{9B}2Kb\u{7F}\u{0}\t\n") == "a\\u{9b}2Kb\\u{7f}\\u{0}\\u{9}\\u{a}")
+        // Bidirectional controls reorder what follows; separators break the line.
+        #expect(Describe.terminalSafe("tool\u{202E}gpj.exe") == "tool\\u{202e}gpj.exe")
+        #expect(Describe.terminalSafe("\u{2066}x\u{2069}\u{200F}\u{061C}\u{2028}\u{2029}")
+            == "\\u{2066}x\\u{2069}\\u{200f}\\u{61c}\\u{2028}\\u{2029}")
+        // Escaping twice changes nothing more.
+        let once = Describe.terminalSafe("a\u{1B}b")
+        #expect(Describe.terminalSafe(once) == once)
     }
 
     @Test func describe() {

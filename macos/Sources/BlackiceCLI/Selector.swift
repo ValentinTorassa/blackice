@@ -1,4 +1,5 @@
 import Foundation
+import BlackiceCore
 
 /// A list the person picks from: one option, or several.
 public struct Choice: Equatable, Sendable {
@@ -98,9 +99,11 @@ enum TerminalSelector {
         var state = SelectorState(choice)
         let hint = choice.multiple ? "↑↓ move · Enter picks · Continue when done" : "↑↓ move · Enter picks"
         var drawn = 0
+        // An app chose its own name: escape what could redraw the list.
+        let options = choice.options.map(Describe.terminalSafe)
         func draw() {
             var text = drawn > 0 ? "\u{1B}[\(drawn)A" : ""
-            for (index, option) in choice.options.enumerated() {
+            for (index, option) in options.enumerated() {
                 let here = index == state.cursor
                 let pointer = here ? Style.command("❯") : " "
                 let box = choice.multiple ? (state.ticked.contains(index) ? Style.wrap("◉", "32") + " " : "○ ") : ""

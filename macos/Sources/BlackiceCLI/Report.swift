@@ -48,7 +48,7 @@ extension CLI {
         let configuration: ProviderConfiguration
         switch report.filter {
         case .foreign(let owner):
-            return ["blackice is off: another product (\(owner)) has this Mac's content filter, and blackice leaves it alone."]
+            return ["blackice is off: another product (\(Describe.terminalSafe(owner))) has this Mac's content filter, and blackice leaves it alone."]
         case .notConfigured:
             return ["blackice is off. Start it with: blackice start"]
         case .disabled:

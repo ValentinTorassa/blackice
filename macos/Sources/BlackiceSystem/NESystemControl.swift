@@ -302,7 +302,7 @@ public final class NESystemControl: SystemControlling {
     }
 
     private func refuseForeign(_ owner: String, _ output: SystemOutput) -> Int32 {
-        output.stderr("Another product (\(owner)) has this Mac's content filter, so blackice will not change it.")
+        output.stderr("Another product (\(Describe.terminalSafe(owner))) has this Mac's content filter, so blackice will not change it.")
         return ExitCode.unavailable
     }
 

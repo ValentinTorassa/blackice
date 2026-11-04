@@ -215,9 +215,10 @@ struct ConfigWizard {
     /// asks for a path or name and its hosts, as the typed questions do.
     private func pickApps(_ choose: (Choice) -> [Int]?) -> [Rule]? {
         var seen = Set<SigningIdentity>()
+        // Each app named its own bundle, so the name is escaped, in the list and in what follows.
         let running = runningApps().compactMap { path -> (name: String, identity: SigningIdentity)? in
             guard let identity = identify(path), seen.insert(identity).inserted else { return nil }
-            return (Interaction.appName(path), identity)
+            return (Describe.terminalSafe(Interaction.appName(path)), identity)
         }.prefix(Self.maximumRules)
         say("")
         say("  Apps you trust connect to any host, in every mode, without waiting.")

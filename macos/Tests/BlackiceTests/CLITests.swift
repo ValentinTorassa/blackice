@@ -290,6 +290,12 @@ struct RunTests {
             "  ABCDE12345/com.example.tool -> api.example.com, 3599 s left",
         ])
         #expect(CLI.pendingLines(PendingReply(events: [], approvals: [])) == ["No connection is waiting.", "No approvals."])
+
+        // The path is wherever the app runs from, and may hold an escape sequence.
+        let odd = PendingReply(events: [PendingSummary(id: "ev-0000002a", app: tool, path: "/tmp/x\u{9B}2J\u{202E}y",
+                                                       host: "example.com", ip: "203.0.113.7", port: 443, secondsLeft: 8,
+                                                       connections: 1)], approvals: [])
+        #expect(CLI.pendingLines(odd)[2] == "      /tmp/x\\u{9b}2J\\u{202e}y")
     }
 
     @Test func anEventWithNoConnectionLeftIsValidAndSaysSo() throws {

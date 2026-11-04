@@ -418,7 +418,7 @@ extension CLI {
             return fail(ExitCode.unavailable, "\(name) is not installed. Install it (\(profile.installHint)),",
                         "then: \(retry)")
         }
-        let shownExecutable = Describe.path(executable, home: interaction.home)
+        let shownExecutable = Describe.terminalSafe(Describe.path(executable, home: interaction.home))
         guard fitsHookLine(executable) else {
             return fail(ExitCode.unavailable,
                         "\(shownExecutable) has a quote, $ or backslash in its path, which a hook line cannot hold.")
@@ -526,7 +526,7 @@ extension CLI {
             let tail = result.stderr.split(whereSeparator: \.isNewline).suffix(8)
             if !tail.isEmpty {
                 stderr("  \(name)'s last lines:")
-                tail.forEach { stderr("    " + $0.prefix(200)) }
+                tail.forEach { stderr("    " + Describe.terminalSafe(String($0.prefix(200)))) }
             }
             let advice = profile.advice(result.stderr)
             if advice.isEmpty {

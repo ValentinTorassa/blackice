@@ -416,7 +416,7 @@ public enum CLI {
     }
 
     /// What `blackice pending` prints. The fields came from the extension, already checked;
-    /// none of them is a token.
+    /// none of them is a token. The path is wherever the app runs from, so it is escaped.
     public static func pendingLines(_ reply: PendingReply) -> [String] {
         var lines: [String] = []
         if reply.events.isEmpty {
@@ -431,7 +431,7 @@ public enum CLI {
                     : event.connections == 1 ? "1 connection" : "\(event.connections) connections"
                 lines.append("  \(event.id)  \(label) -> \(event.host):\(event.port) (\(event.ip)), \(count), " +
                              "\(event.secondsLeft) s left")
-                if let path = event.path { lines.append("      " + path) }
+                if let path = event.path { lines.append("      " + Describe.terminalSafe(path)) }
             }
         }
         if reply.approvals.isEmpty {
