@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.3.0 (3 November 2026)
+
+An agent that answers, set up from the first start.
 
 - `blackice agent connect fx` sets fx up to answer the connections that wait in ask mode: fx's installer if fx is
   missing (it asks first), a home of its own with the blackice skill (now inside Blackice.app), a sign-in, and rules
@@ -12,8 +14,16 @@
   until fx is installed, signed in and tested, then ask mode.
 - `blackice agent connect` switches to accept-all while it sets an agent up if blackice is in ask or block-all, and
   reports a failed download by fx's installer.
+- After saving the configuration, `start` waits for the network extension to answer before it goes on, so fx's
+  sign-in is not cut when the filter comes up.
+- fx's sign-in can read the terminal, so pressing Enter opens the page, and a failed sign-in is offered again. When
+  AI Gateway refuses fx's test because the Vercel team has no card on file, `agent connect` says so.
 - The install script takes `BLACKICE_ZIP`, the path of a `Blackice-<version>.zip` that is not published, to try a
   build with the same checks.
+
+Upgrading from 0.2.1: run the install script with `--force` (`curl -fsSL
+https://blackice-macos.vercel.app/install.sh | sh -s -- --force`) or `brew upgrade --cask blackice`, then `blackice
+start`, then restart the Mac. On macOS 27 an extension upgraded in place cannot be reached until the Mac restarts.
 
 ## 0.2.1 (3 November 2026)
 
