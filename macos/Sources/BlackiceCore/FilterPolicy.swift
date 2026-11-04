@@ -259,6 +259,25 @@ public enum FilterPolicy {
         return nil
     }
 
+    /// Whether a flow decided with the configuration of `generation` may still start to wait, for
+    /// a lookup or an event, or be let through by an answer. Installing a configuration drops
+    /// every paused flow (`configuration_changed`), but a flow callback that read the snapshot
+    /// before the change can reach the pending list after that drop, and an answer taken just
+    /// before the change can be applied after it. Such a flow is dropped the same way.
+    public static func isCurrent(_ generation: UInt64, installed: ProviderConfiguration?) -> Bool {
+        installed.map { $0.generation == generation } ?? false
+    }
+
+    /// The releases of an answer or a deadline as they apply now: an allow for a flow decided
+    /// with another configuration than the installed one becomes a drop (`configuration_changed`).
+    public static func current<Flow>(_ releases: [Release<Flow>], installed: ProviderConfiguration?,
+                                     generation: (Flow) -> UInt64) -> [Release<Flow>] {
+        releases.map { release in
+            guard release.allow, !isCurrent(generation(release.flow), installed: installed) else { return release }
+            return Release(flow: release.flow, allow: false, reason: "configuration_changed", eventID: release.eventID)
+        }
+    }
+
     /// A TCP flow on the TLS port: a host rule, the Apple services table or an approval allows it
     /// only once its ClientHello has been read, also after an approval, with or without a host
     /// name from the system.
