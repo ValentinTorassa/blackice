@@ -75,6 +75,20 @@ struct ProviderConfigurationTests {
         #expect(throws: ConfigError.self) { try ProviderConfiguration(data: json(document(config: "mode = \"ask\"\nmode = \"ask\"\n"))) }
     }
 
+    /// A valid blackice.toml at the size limit, all of it characters that JSON escapes, goes in
+    /// and comes back out. Before, the extension refused it and kept the configuration it had.
+    @Test func theLargestConfigurationRoundTrips() throws {
+        let header = "mode = \"block-all\"\n#"
+        let text = header + String(repeating: "\"\\/", count: (BlackiceConfig.maximumBytes - header.utf8.count) / 3)
+        #expect(text.utf8.count <= BlackiceConfig.maximumBytes && text.utf8.count > BlackiceConfig.maximumBytes - 3)
+        let largest = try ProviderConfiguration(generation: .max, mode: .acceptAll, configText: text)
+        let data = try largest.encoded()
+        #expect(data.count > BlackiceConfig.maximumBytes + 4096, "the old limit refused this configuration")
+        #expect(data.count <= ProviderConfiguration.maximumBytes)
+        #expect(try ProviderConfiguration(data: data) == largest)
+        #expect(try ProviderConfiguration(vendorConfiguration: largest.vendorConfiguration()) == largest)
+    }
+
     @Test func vendorConfigurationHoldsOneKey() throws {
         let data = try ProviderConfiguration.starting(configText: policyRules, after: nil).encoded()
         let bad: [[String: Any]?] = [

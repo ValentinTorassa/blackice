@@ -163,7 +163,7 @@ private final class ClientEndpoint: NSObject, FilterServiceXPC {
         reply(Self.encoded(answer))
     }
 
-    private static func encoded(_ message: some Encodable) -> Data {
+    private static func encoded(_ message: some CheckedMessage) -> Data {
         (try? Messages.encode(message)) ?? Data()
     }
 }

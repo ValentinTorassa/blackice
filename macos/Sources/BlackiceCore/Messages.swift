@@ -21,27 +21,42 @@ public struct MessageError: Error, Equatable, CustomStringConvertible, Sendable 
 }
 
 public protocol CheckedMessage: Codable, Sendable {
+    /// The most bytes the message takes once encoded. `Messages.encode` refuses to make a larger
+    /// one and `Messages.decode` refuses to read one, so both ends hold to the same limit.
+    static var maximumBytes: Int { get }
     var version: Int { get }
     func validate(now: Date) throws
+}
+
+extension CheckedMessage {
+    public static var maximumBytes: Int { Messages.maximumBytes }
 }
 
 public enum Messages {
     /// Bumped on any change to a message; both ends must agree. 2: the register reply carries the
     /// configuration, and events carry its generation.
     public static let version = 2
-    /// Enough for a full pending list, or a register reply with the largest blackice.toml (64 KiB,
-    /// at most twice that once escaped as JSON); anything larger is refused before decoding.
+    /// The limit of a message that sets none of its own. The pending reply and the register reply
+    /// set theirs from the largest content their checks accept.
     public static let maximumBytes = 262_144
 
-    public static func encode(_ message: some Encodable) throws -> Data {
+    /// An upper bound on a JSON string of `bytes` UTF-8 bytes, quotes included. JSONEncoder writes
+    /// `"`, `\`, `/`, tab, line feed and carriage return as two bytes and copies the rest. The
+    /// other C0 controls, which take six, never get this far: the blackice.toml parser and
+    /// `validPath` refuse them.
+    public static func jsonStringBytes(_ bytes: Int) -> Int { 2 * bytes + 2 }
+
+    public static func encode<Message: CheckedMessage>(_ message: Message) throws -> Data {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
         encoder.dateEncodingStrategy = .iso8601
-        return try encoder.encode(message)
+        let data = try encoder.encode(message)
+        guard data.count <= Message.maximumBytes else { throw MessageError("message", "is larger than \(Message.maximumBytes) bytes") }
+        return data
     }
 
     public static func decode<Message: CheckedMessage>(_ type: Message.Type, from data: Data, now: Date = Date()) throws -> Message {
-        guard !data.isEmpty, data.count <= maximumBytes else { throw MessageError("message", "is empty or too large") }
+        guard !data.isEmpty, data.count <= Message.maximumBytes else { throw MessageError("message", "is empty or too large") }
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         let message: Message
@@ -112,6 +127,9 @@ public struct RegisterRequest: CheckedMessage, Equatable {
 /// blackice.toml text and its generation. The daemon takes its hooks and timeout from it and from
 /// nowhere else; the text is parsed with the same strict BlackiceConfig parser as the file.
 public struct RegisterReply: CheckedMessage, Equatable {
+    /// The largest blackice.toml once escaped, as in the provider configuration, and its JSON.
+    public static let maximumBytes = ProviderConfiguration.maximumBytes
+
     public let version: Int
     public let accepted: Bool
     public let generation: UInt64?
@@ -260,6 +278,12 @@ public struct ApprovalSummary: Codable, Equatable, Sendable {
 
 public struct PendingReply: CheckedMessage, Equatable {
     public static let maximumEntries = 1024
+    /// The largest reply `validate` accepts, encoded: each event at most 1 KiB plus its escaped
+    /// path, each approval at most 1 KiB, and 1 KiB for the rest. A signing identifier takes at
+    /// most 255 bytes, a host name 253 and an address 45, and none of them needs escaping.
+    public static let maximumBytes = 1024
+        + AskLimits.events * (1024 + Messages.jsonStringBytes(HookEvent.maximumPathBytes))
+        + ApprovalTable.maximumEntries * 1024
 
     public let version: Int
     public let events: [PendingSummary]
@@ -271,13 +295,14 @@ public struct PendingReply: CheckedMessage, Equatable {
         self.approvals = approvals
     }
 
+    /// At most as many events and approvals as the extension holds, each in the form it writes.
     public func validate(now: Date) throws {
-        guard events.count <= Self.maximumEntries, approvals.count <= Self.maximumEntries else {
+        guard events.count <= AskLimits.events, approvals.count <= ApprovalTable.maximumEntries else {
             throw MessageError("pending", "has too many entries")
         }
         for event in events {
             guard validEventID(event.id), event.app.identity != nil, normalizeHost(event.host) == event.host,
-                  IPAddress(event.ip) != nil, event.secondsLeft >= 0, event.connections >= 0,
+                  IPAddress(event.ip)?.description == event.ip, event.secondsLeft >= 0, event.connections >= 0,
                   event.path.map(validPath) ?? true else { throw MessageError("events", "has an invalid entry") }
         }
         for approval in approvals {
