@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.3.1 (3 November 2026)
+## 0.3.1 (4 November 2026)
 
 Pick several apps to trust with Enter.
 
