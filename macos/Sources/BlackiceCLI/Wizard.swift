@@ -16,7 +16,8 @@ public struct Interaction {
     /// Shows a list to pick from with the arrow keys; nil when the terminal cannot, and then the
     /// questions are typed. Returns the picked indices, or nil when the person cancelled.
     public let choose: ((Choice) -> [Int]?)?
-    /// The apps running now, as paths to their .app bundles in /Applications or ~/Applications.
+    /// The apps running now, as paths to their .app bundles in /Applications or ~/Applications,
+    /// and the system extensions running now, as their bundles in /Library/SystemExtensions.
     public let runningApps: () -> [String]
 
     public init(ask: ((String) -> String?)?, createFile: @escaping (String, Data) throws -> Void,
@@ -63,7 +64,8 @@ public struct Interaction {
     }
 
     /// The .app bundles in /Applications and ~/Applications that have a process running, by the
-    /// outermost bundle in each process's path (a helper counts for its app). Blackice is left out.
+    /// outermost bundle in each process's path (a helper counts for its app), and the running
+    /// system extensions' bundles. Blackice and its filter are left out.
     static func runningAppBundles(home: String) -> [String] {
         var pids = [pid_t](repeating: 0, count: 4096)
         let count = Int(proc_listallpids(&pids, Int32(pids.count * MemoryLayout<pid_t>.size)))
@@ -79,16 +81,32 @@ public struct Interaction {
     }
 
     /// "/Applications/Slack.app" for any path inside it; nil outside the two Applications folders.
+    /// A system extension that is running, such as a VPN client's network extension, counts by its
+    /// .systemextension bundle in /Library/SystemExtensions: on 3 November 2026 Tailscale's sent
+    /// most of the events in ask mode, and it runs from there, not from its app.
     static func appBundle(_ path: String, home: String) -> String? {
+        if path.hasPrefix(systemExtensions), let end = path.range(of: ".systemextension/") {
+            let bundle = String(path[..<end.lowerBound]) + ".systemextension"
+            return bundle.hasSuffix("/com.valentorassa.blackice.filter.systemextension") ? nil : bundle
+        }
         let folders = ["/Applications/", home + "/Applications/"]
         guard folders.contains(where: { path.hasPrefix($0) }), let end = path.range(of: ".app/") else { return nil }
         let bundle = String(path[..<end.lowerBound]) + ".app"
         return bundle == "/Applications/Blackice.app" ? nil : bundle
     }
 
-    /// "Slack" for "/Applications/Slack.app".
+    static let systemExtensions = "/Library/SystemExtensions/"
+
+    /// "Slack" for "/Applications/Slack.app". A system extension's bundle is named by its
+    /// identifier, so its name is the one its Info.plist gives ("Tailscale Network Extension").
     static func appName(_ bundle: String) -> String {
-        ((bundle as NSString).lastPathComponent as NSString).deletingPathExtension
+        let file = ((bundle as NSString).lastPathComponent as NSString).deletingPathExtension
+        guard bundle.hasSuffix(".systemextension"),
+              let info = NSDictionary(contentsOfFile: bundle + "/Contents/Info.plist") else { return file }
+        for key in ["CFBundleDisplayName", "CFBundleName"] {
+            if let name = info[key] as? String, !name.isEmpty, name != file { return name }
+        }
+        return file
     }
 }
 

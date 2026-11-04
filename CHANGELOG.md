@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+Fewer connections waiting in ask mode.
+
+- The first `blackice start`'s list of apps to trust shows the system extensions running now, such as a VPN
+  client's network extension. They run from `/Library/SystemExtensions`, so the list left them out, and on the Mac
+  Tailscale's sent 316 of the 905 events of the 0.3.0 runs and 227 of the 351 that got no hook.
+- Four more macOS services pass without a rule, each seen waiting in those runs: codesign's timestamp service, to
+  timestamp.apple.com only (in ask mode a signature could end up with no timestamp), iCloud contacts, Apple Media
+  Services and the app categories Screen Time uses.
+
 ## 0.3.1 (4 November 2026)
 
 Pick several apps to trust with Enter.

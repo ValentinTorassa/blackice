@@ -134,6 +134,17 @@ struct WizardTests {
         #expect(Interaction.appBundle("/usr/bin/curl", home: home) == nil)
         #expect(Interaction.appBundle("/Applications/Blackice.app/Contents/MacOS/blackice", home: home) == nil)
         #expect(Interaction.appName("/Applications/Brave Browser.app") == "Brave Browser")
+        // A VPN client's network extension runs from /Library/SystemExtensions; blackice's own does not count.
+        let tailscale = "/Library/SystemExtensions/00000000-0000-4000-8000-000000000000/" +
+            "io.tailscale.ipn.macsys.network-extension.systemextension"
+        #expect(Interaction.appBundle(tailscale + "/Contents/MacOS/io.tailscale.ipn.macsys.network-extension",
+                                      home: home) == tailscale)
+        #expect(Interaction.appBundle("/Library/SystemExtensions/AF7EA933-B838-44A4-8349-AA0D21DB7949/" +
+                                      "com.valentorassa.blackice.filter.systemextension/Contents/MacOS/" +
+                                      "com.valentorassa.blackice.filter", home: home) == nil)
+        #expect(Interaction.appBundle("/Library/SystemExtensions/db.plist", home: home) == nil)
+        // With no Info.plist to read, a system extension is named by its file.
+        #expect(Interaction.appName(tailscale) == "io.tailscale.ipn.macsys.network-extension")
     }
 
     @Test func enterTakesTheDefaults() throws {
