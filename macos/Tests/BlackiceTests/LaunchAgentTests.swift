@@ -95,7 +95,8 @@ struct LaunchAgentInstallerTests {
         #expect(try permissions(plist) == 0o644)
         #expect(try permissions(logs) == 0o700)
         #expect(calls.items == [["bootout", service], ["bootstrap", "gui/501", plist.path]])
-        #expect(lines.items.first == "✓ The daemon is running, and starts again at each login. It runs your hooks for connections that wait.")
+        #expect(lines.items.prefix(2) == ["✓ The daemon is running, and starts again at each login.",
+                                          "  It runs your hooks for connections that wait."])
 
         // Again, as after moving the app: the loaded copy is booted out first, the file replaced.
         let moved = "/Users/test/Apps/Blackice.app/Contents/MacOS/blackice"
@@ -198,7 +199,7 @@ struct AgentCommandTests {
         let commands = AgentCommands(account: { try fakeAccount(home: home.path) }, binary: { bundled },
                                      launchctl: fakeLaunchctl(calls))
         let installed = run(commands, install: true)
-        #expect(installed.status == 0 && installed.stderr.isEmpty && installed.stdout.count == 2)
+        #expect(installed.status == 0 && installed.stderr.isEmpty && installed.stdout.count == 3)
         let removed = run(commands, install: false)
         #expect(removed.status == 0 && removed.stderr.isEmpty)
 

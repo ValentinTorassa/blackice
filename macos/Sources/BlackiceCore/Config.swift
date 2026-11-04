@@ -46,6 +46,12 @@ public struct Hook: Equatable, Sendable {
     public let run: String
     /// Line of the hook's [[hook]] header.
     public let line: Int
+
+    public init(on: String = "connection", run: String, line: Int) {
+        self.on = on
+        self.run = run
+        self.line = line
+    }
 }
 
 public struct ConfigError: Error, Equatable, CustomStringConvertible, Sendable {

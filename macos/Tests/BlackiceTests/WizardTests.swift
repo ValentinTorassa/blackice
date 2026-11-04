@@ -76,9 +76,65 @@ private func answers(_ script: [String], paths: Set<String> = [], identities: [S
                         fileExists: { paths.contains($0) }, home: "/Users/test").run()
 }
 
+/// The wizard with lists: `picks` answers each list in turn, `script` each typed question.
+private func pickedAnswers(_ picks: [[Int]?], script: [String] = [], running: [String] = [],
+                           paths: Set<String> = [], identities: [String: SigningIdentity] = [:],
+                           choices: Recorder<Choice> = Recorder<Choice>(), said: Recorder<String> = Recorder<String>())
+    -> ConfigWizard.Answers? {
+    var picks = picks
+    let terminal = FakeTerminal(script, paths: paths, identities: identities)
+    return ConfigWizard(ask: { prompt in said.append(prompt); return terminal.interaction.ask!(prompt) },
+                        say: said.append, identify: { identities[$0] }, fileExists: { paths.contains($0) },
+                        home: "/Users/test",
+                        choose: { choice in choices.append(choice); return picks.isEmpty ? nil : picks.removeFirst() },
+                        runningApps: { running }).run()
+}
+
 struct WizardTests {
     static let curl = SigningIdentity(signingID: "com.apple.curl", teamID: nil)
     static let slack = SigningIdentity(signingID: "com.tinyspeck.slackmacgap", teamID: "BQR82RBBHL")
+
+    @Test func listsPickTheModeTheAgentAndTheApps() {
+        // accept-all: one list, nothing else.
+        let choices = Recorder<Choice>()
+        #expect(pickedAnswers([[0]], choices: choices) == ConfigWizard.Answers())
+        #expect(choices.items.count == 1 && choices.items[0].options.count == 3 && !choices.items[0].multiple)
+
+        // ask, fx answers, Slack trusted; an unsigned app is not offered.
+        let asked = Recorder<Choice>(), said = Recorder<String>()
+        let ask = pickedAnswers([[1], [0], [0]], running: ["/Applications/Slack.app", "/Applications/Unsigned.app"],
+                                identities: ["/Applications/Slack.app": Self.slack], choices: asked, said: said)
+        #expect(ask == ConfigWizard.Answers(mode: .ask, rules: [.init(identity: Self.slack, hosts: ["*"])], agent: "fx"))
+        #expect(asked.items.map(\.multiple) == [false, false, true])
+        #expect(asked.items[2].options == ["Slack", "Another app: type its path or name"])
+        #expect(said.items.contains("    ✓ Slack may reach any host (com.tinyspeck.slackmacgap)"))
+        #expect(said.items.allSatisfy { $0.count <= 78 })
+
+        // ask, answered by the person, no apps.
+        #expect(pickedAnswers([[1], [1], []]) == ConfigWizard.Answers(mode: .ask))
+
+        // block-all with another app, typed.
+        let other = pickedAnswers([[2], [0]], script: ["/usr/bin/curl", "pypi.org", ""], paths: ["/usr/bin/curl"],
+                                  identities: ["/usr/bin/curl": Self.curl])
+        #expect(other == ConfigWizard.Answers(mode: .blockAll, rules: [.init(identity: Self.curl, hosts: ["pypi.org"])]))
+
+        // Cancelling any list writes nothing.
+        #expect(pickedAnswers([nil]) == nil)
+        #expect(pickedAnswers([[1], nil]) == nil)
+        #expect(pickedAnswers([[1], [0], nil]) == nil)
+    }
+
+    @Test func runningAppsAreTheirBundles() {
+        let home = "/Users/test"
+        #expect(Interaction.appBundle("/Applications/Slack.app/Contents/Frameworks/Slack Helper.app/Contents/MacOS/Slack Helper",
+                                      home: home) == "/Applications/Slack.app")
+        #expect(Interaction.appBundle("/Users/test/Applications/Tool.app/Contents/MacOS/Tool", home: home)
+            == "/Users/test/Applications/Tool.app")
+        #expect(Interaction.appBundle("/System/Applications/Mail.app/Contents/MacOS/Mail", home: home) == nil)
+        #expect(Interaction.appBundle("/usr/bin/curl", home: home) == nil)
+        #expect(Interaction.appBundle("/Applications/Blackice.app/Contents/MacOS/blackice", home: home) == nil)
+        #expect(Interaction.appName("/Applications/Brave Browser.app") == "Brave Browser")
+    }
 
     @Test func enterTakesTheDefaults() throws {
         let result = try #require(answers([""]))
@@ -86,7 +142,7 @@ struct WizardTests {
         let text = ConfigWizard.render(result)
         let config = try BlackiceConfig(data: Data(text.utf8))
         #expect(config.mode == .acceptAll && config.timeoutSeconds == 60 && config.allow.isEmpty)
-        #expect(text.hasPrefix("# blackice configuration, written by blackice init.\n"))
+        #expect(text.hasPrefix("# blackice configuration, written by blackice.\n"))
         #expect(text.contains("mode = \"accept-all\"     # accept-all, ask or block-all\n"))
         #expect(text.contains("timeout_seconds = 60    # in ask mode, no answer in time means deny\n"))
         #expect(text.contains("# [[allow]]\n"))
@@ -304,9 +360,12 @@ struct ReportTests {
         #expect(CLI.modeChangedLines(try snapshot(.ask, withHook), daemonRunning: true).count == 1)
 
         let first = CLI.firstStartLines(try snapshot(.acceptAll), daemonRunning: false)
-        #expect(first.contains("  blackice mode ask        hold new connections until you, or a hook, answers"))
+        #expect(first.contains("  blackice mode ask          hold new connections until you or a hook answers"))
         #expect(CLI.firstStartLines(try snapshot(.ask, withHook), daemonRunning: false)
-            .contains("  blackice agent install   run your hooks for those connections"))
+            .contains("  blackice agent install     run your hooks for those connections"))
+        let ask = CLI.firstStartLines(try snapshot(.ask), daemonRunning: false)
+        #expect(ask.contains("  blackice agent connect fx  let fx answer them"))
+        #expect(!CLI.firstStartLines(try snapshot(.ask, withHook), daemonRunning: false).contains { $0.contains("agent connect") })
     }
 
     @Test func startSaysWhatItDidOnTwoLines() throws {

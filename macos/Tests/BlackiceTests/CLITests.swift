@@ -343,7 +343,7 @@ struct RunTests {
         #expect(try CLI.parse(["agent", "install"]) == .agent(.install))
         #expect(try CLI.parse(["agent", "uninstall"]) == .agent(.uninstall))
         for arguments in [["agent"], ["agent", "load"], ["agent", "install", "--force"], ["agent", "--install"]] {
-            #expect(usageError(arguments) == "agent takes install or uninstall", "\(arguments)")
+            #expect(usageError(arguments) == "agent takes install, uninstall or connect", "\(arguments)")
         }
         let system = FakeSystem(status: ExitCode.software)
         #expect(run(["agent", "install"], system: system).status == 70)

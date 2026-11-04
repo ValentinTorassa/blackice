@@ -19,6 +19,7 @@ The commands.
 | `blackice deny (--app ID [--team TEAM] \| --cdhash HEX) --host HOST [--token TOKEN]` | Drop the waiting connections and remove the approval. |
 | `blackice daemon` | Run the hooks for paused connections. The LaunchAgent runs it. |
 | `blackice agent install` / `blackice agent uninstall` | Load the daemon's LaunchAgent for the current user, or unload and remove it. |
+| `blackice agent connect fx [--config PATH]` | Set fx up to answer what waits in ask mode: its own home with the blackice skill and rules, one test on a sample connection, then its rule and hook in `blackice.toml`, ask mode if you say so, and the daemon. Touch ID once, to load it. |
 | `blackice validate PATH` | Check a `blackice.toml` without loading it. |
 | `blackice version` | The installed version and build. |
 

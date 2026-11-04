@@ -18,11 +18,11 @@ public struct FileSafetyError: Error, Equatable, CustomStringConvertible, Sendab
 /// Text for an errno value.
 func errnoText(_ code: Int32) -> String { String(cString: strerror(code)) }
 
-enum PrivateDirectory {
+public enum PrivateDirectory {
     /// Makes sure `url` is a directory that only the current user can enter: created with mode 0700
     /// when missing; when it exists it must be a real directory (not a symlink), owned by the
     /// current user, with no group or other permission bits. The parent must already exist.
-    static func ensure(_ url: URL) throws {
+    public static func ensure(_ url: URL) throws {
         let path = url.path
         if mkdir(path, 0o700) == 0 {
             // The umask may have taken bits away, never added them; set the mode exactly anyway.

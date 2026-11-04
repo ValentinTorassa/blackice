@@ -7,11 +7,13 @@ and roll it back. The package is `Blackice-<version>.zip` plus `Blackice-<versio
 from the published 0.1.0 release, as an upgrade over a build installed by hand
 ([P5-02](../evidence/P5-02-homebrew-upgrade-from-release-macos.md)), and the install script checked the release and
 installed it into a temporary folder instead of `/Applications`
-([P5-03](../evidence/P5-03-curl-install-script-sandbox-macos.md)); a first install into `/Applications` from the zip
-or with the script, and uninstalling, have not been run from a published package yet.
+([P5-03](../evidence/P5-03-curl-install-script-sandbox-macos.md)). With 0.2.1, the uninstall steps and the script
+installing into `/Applications` ran from the published release ([P5-04](../evidence/P5-04-install-start-faults-from-release-macos.md)).
+With a 0.3.0 candidate, the same steps, the first `start` with its lists and fx set up by `start` ran from no
+configuration and no fx ([P5-06](../evidence/P5-06-onboarding-from-zero-macos.md)).
 
 You need a Mac with Apple silicon (the build is arm64 only), macOS 14 or later, and an admin account. blackice has
-run on macOS 27.0.1 only. The commands below use 0.2.1 as the version.
+run on macOS 27.0.1 only. The commands below use 0.3.0 as the version.
 
 ## With the install script
 
@@ -49,9 +51,9 @@ continue with step 3.
 Download both files into the same folder, then, in Terminal, in that folder:
 
 ```console
-$ shasum -a 256 -c Blackice-0.2.1.zip.sha256
-Blackice-0.2.1.zip: OK
-$ ditto -x -k Blackice-0.2.1.zip .
+$ shasum -a 256 -c Blackice-0.3.0.zip.sha256
+Blackice-0.3.0.zip: OK
+$ ditto -x -k Blackice-0.3.0.zip .
 $ codesign --verify --strict --deep --verbose=2 Blackice.app
 $ codesign -dvv Blackice.app 2>&1 | grep -E '^(Identifier|TeamIdentifier)='
 Identifier=com.valentorassa.blackice
@@ -90,9 +92,16 @@ full path, and a script that runs the full path, worked.
 ## 3. Write blackice.toml
 
 `blackice start` reads `~/.config/blackice/blackice.toml` unless you pass `--config PATH`. If the file is not there,
-`start` asks a few questions and writes it: the mode, how long ask mode waits, and apps to allow, by their path (such
-as `/Applications/Slack.app`) or their signing identifier. `blackice init` asks the same questions without starting
-anything. Or write it yourself, starting in accept-all, which lets everything through and only logs:
+`start` asks a few questions and writes it. You pick the answers from lists with the arrow keys:
+- the mode;
+- in ask mode, who answers: fx, or you;
+- apps to trust, from the apps running now. Each may reach any host, and "Another app" takes a path such as
+  `/Applications/Slack.app` or a signing identifier.
+
+If you pick fx, `start` also sets fx up, as `blackice agent connect fx` does (see "Let an agent answer"). It stays in
+accept-all until fx is installed, signed in and tested, and loads ask mode at the end, so nothing waits on an answer
+before fx can give it. `blackice init` asks the same questions without starting anything. Or write the file
+yourself, starting in accept-all, which lets everything through and only logs:
 
 ```toml
 mode = "accept-all"     # "accept-all", "ask" or "block-all"
@@ -146,6 +155,28 @@ $ blackice agent install
 
 `blackice agent uninstall` removes it. Without a daemon, ask mode still pauses connections, and they are dropped
 when their timeout passes.
+
+### Let an agent answer
+
+`blackice agent connect fx` sets fx up to answer the connections that wait in ask mode:
+
+1. It finds fx and reads its signature. If fx is not installed, it shows fx's installer
+   (`curl -fsSL https://fx.sh/setup.sh | bash`) and runs it if you say yes.
+2. It gives fx a home of its own, `~/.config/blackice/agent`, with the blackice skill from Blackice.app. If fx has
+   no sign-in there, it runs `fx login vercel`: press Enter to open the page fx names, and allow access. If the
+   sign-in fails, it offers it again. It sets fx's rules there so that fx can run `blackice approve` and
+   `blackice deny` and nothing else.
+3. It runs the hook once on a sample connection, with `blackice` replaced by a stand-in so nothing is let through,
+   and checks that fx answered with the event's token. AI Gateway needs a card on file for the Vercel team fx
+   signed in with; without one, the test fails with HTTP 403 `customer_verification_required`.
+4. Only then does it add to `blackice.toml` a rule that lets fx reach its model (Vercel's AI Gateway) in every mode,
+   and the hook, and raise `timeout_seconds` to at least 60.
+5. Unless the file is in ask mode already, it asks whether to switch. It loads the file (Touch ID) and starts the
+   daemon.
+
+In ask or block-all it switches to accept-all while fx is set up (Touch ID), since fx's own connections would wait
+until its rule is loaded, and the last step loads your file again. It knows fx only, so far.
+[`integrations/fx/README.md`](../integrations/fx/README.md) has the same steps by hand.
 
 ## 6. Use it
 

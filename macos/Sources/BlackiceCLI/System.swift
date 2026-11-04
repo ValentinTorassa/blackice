@@ -7,11 +7,15 @@ public struct SystemOutput {
     /// The first start, right after the questions (step 1): start numbers Touch ID step 2 and
     /// allowing the extension step 3.
     public let setup: Bool
+    /// Whether the first start ends with the "Next" commands; not when more setup follows.
+    public let next: Bool
 
-    public init(stdout: @escaping (String) -> Void, stderr: @escaping (String) -> Void, setup: Bool = false) {
+    public init(stdout: @escaping (String) -> Void, stderr: @escaping (String) -> Void, setup: Bool = false,
+                next: Bool = true) {
         self.stdout = stdout
         self.stderr = stderr
         self.setup = setup
+        self.next = next
     }
 }
 
@@ -35,6 +39,12 @@ public protocol SystemControlling {
     func installAgent(output: SystemOutput) -> Int32
     /// `blackice agent uninstall`: unloads the LaunchAgent and removes it. No Touch ID.
     func uninstallAgent(output: SystemOutput) -> Int32
+    /// The mode blackice filters in now; nil when it is not filtering (or that cannot be read).
+    func runningMode() -> Mode?
+}
+
+extension SystemControlling {
+    public func runningMode() -> Mode? { nil }
 }
 
 /// What every build says that is not Blackice.app signed with the Developer ID.
