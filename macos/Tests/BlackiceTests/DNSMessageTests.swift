@@ -575,6 +575,16 @@ struct DNSNameTableTests {
         #expect(table.names(for: ip("203.0.113.7")).isEmpty)
     }
 
+    @Test func linkLocalAnswersTeachNothing() {
+        // A DNS answer carries no interface, and a link-local address names a host only on one link.
+        let clock = Clock()
+        let table = DNSNameTable(clock: { clock.now })
+        table.record([learned("printer.example.com", "fe80::1", 60), learned("printer.example.com", "2001:db8::9", 60)])
+        #expect(table.addressCount == 1)
+        #expect(table.names(for: ip("fe80::1")).isEmpty && table.names(for: ip("fe80::1%1")).isEmpty)
+        #expect(table.names(for: ip("2001:db8::9")) == ["printer.example.com"])
+    }
+
     @Test func staysBounded() {
         let clock = Clock()
         let names = DNSNameTable(maximumNamesPerAddress: 2, clock: { clock.now })

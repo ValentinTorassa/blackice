@@ -123,6 +123,12 @@ struct FilterPolicyTests {
         // A failed lookup leaves no answers, which nothing matches.
         let failed = context(answers: ["api.example.com": []])
         #expect(FilterPolicy.decide(facts, snapshot: snapshot, context: failed) == .drop(reason: "address_mismatch"))
+        // A link-local answer counts only on its own interface.
+        let link = context(answers: ["api.example.com": ["fe80::7%1"]])
+        let linkFlow = { (address: String) in flow(agent, "api.example.com", port: 8443, address: address) }
+        #expect(FilterPolicy.decide(linkFlow("fe80::7%1"), snapshot: snapshot, context: link) == .allow(reason: "rule_line_3"))
+        #expect(FilterPolicy.decide(linkFlow("fe80::7%2"), snapshot: snapshot, context: link) == .drop(reason: "address_mismatch"))
+        #expect(FilterPolicy.decide(linkFlow("fe80::7"), snapshot: snapshot, context: link) == .drop(reason: "address_mismatch"))
         // No rule by name: dropped without a lookup.
         #expect(FilterPolicy.decide(flow(agent, "other.example.com"), snapshot: snapshot, context: context())
             == .drop(reason: "no_rule"))
