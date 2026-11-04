@@ -353,8 +353,8 @@ extension CLI {
         }
         let path = configPath ?? defaultConfigPath
         let shown = Describe.path(path, home: interaction.home)
-        let text: String
-        let config: BlackiceConfig
+        var text: String
+        var config: BlackiceConfig
         switch loadConfig(path, readFile: readFile, stderr: stderr, shown: shown, hint: false) {
         case .failure(let status):
             if status.code == ExitCode.unreadable, isMissing(path, readFile: readFile) {
@@ -539,8 +539,17 @@ extension CLI {
             return ExitCode.software
         }
 
-        // 4. The rule for its model, the hook, and time enough to answer.
+        // 4. The rule for its model, the hook, and time enough to answer. The file is read again:
+        // edits made during the sign-in and the test are kept, and the additions go on top of them.
         step("Add \(name) to \(shown)")
+        switch loadConfig(path, readFile: readFile, stderr: stderr, shown: shown, hint: true) {
+        case .failure(let status):
+            return status.code
+        case .success(let current):
+            if current.text != text { stdout("  \(shown) changed while \(name) was set up; the additions go on top of that.") }
+            text = current.text
+            config = current.config
+        }
         let missing = profile.hosts.filter { config.allowRule(for: identity, host: $0) == nil }
         let existingHook = config.hooks.first { $0.run.contains(AgentProfile.prompt) }
         var updated = text
@@ -569,10 +578,8 @@ extension CLI {
             stdout("  " + Style.done("timeout_seconds is now \(min(neededSeconds, BlackiceConfig.timeoutRange.upperBound)), " +
                                      "so \(name) has time to answer"))
         }
-        guard let saved = save(updated, over: text, at: path, shown: shown, stdout: stdout, stderr: stderr) else {
-            return ExitCode.cannotCreate
-        }
-        var loaded = saved
+        let saved = save(updated, over: text, at: path, shown: shown, stdout: stdout, stderr: stderr)
+        guard var loaded = saved.text else { return saved.status }
 
         // 5. Load it, in ask mode if the person wants, and make sure the daemon runs.
         step("Turn it on")
@@ -584,9 +591,10 @@ extension CLI {
                 guard let line = ask("  Switch to ask mode now? [y/N]: ") else { return ExitCode.success }
                 let answer = line.trimmingCharacters(in: .whitespaces).lowercased()
                 if ["y", "yes"].contains(answer) {
-                    guard let switched = save(settingRootKey(loaded, "mode", to: "\"ask\""), over: loaded, at: path,
-                                              shown: shown, stdout: stdout, stderr: stderr) else { return ExitCode.cannotCreate }
-                    loaded = switched
+                    let switched = save(settingRootKey(loaded, "mode", to: "\"ask\""), over: loaded, at: path,
+                                        shown: shown, stdout: stdout, stderr: stderr)
+                    guard let written = switched.text else { return switched.status }
+                    loaded = written
                     mode = .ask
                     break
                 }
@@ -644,31 +652,44 @@ extension CLI {
         items.count <= 1 ? items.joined() : items.dropLast().joined(separator: ", ") + " and " + items.last!
     }
 
-    /// Writes the new text if it parses, keeping the file's mode; the text written, or nil.
+    /// Writes the new text if it parses and the file still holds `previous`, keeping the file's
+    /// mode. The text written (or `previous`, when there is nothing to change), or nil and the exit
+    /// status. Whatever else wrote the file meanwhile, an editor or another agent connect, stays.
     private static func save(_ text: String, over previous: String, at path: String, shown: String,
-                             stdout: (String) -> Void, stderr: (String) -> Void) -> String? {
-        guard text != previous else { return text }
+                             stdout: (String) -> Void, stderr: (String) -> Void) -> (text: String?, status: Int32) {
+        func changed() -> (text: String?, status: Int32) {
+            stderr("  Something else changed \(shown) meanwhile, so blackice agent connect left it as it is. Run it again.")
+            return (nil, ExitCode.tempFail)
+        }
+        guard text != previous else {
+            return FileManager.default.contents(atPath: path) == Data(previous.utf8) ? (text, ExitCode.success) : changed()
+        }
         do {
             _ = try BlackiceConfig(data: Data(text.utf8))
         } catch {
             stderr("  blackice agent connect: the file it would write does not parse (\(error)); nothing was written")
-            return nil
+            return (nil, ExitCode.cannotCreate)
         }
         let mode = (try? FileManager.default.attributesOfItem(atPath: path)[.posixPermissions] as? NSNumber)?.uint16Value ?? 0o644
         do {
-            try writeAtomically(Data(text.utf8), to: path, mode: mode_t(mode))
+            try writeAtomically(Data(text.utf8), to: path, mode: mode_t(mode), replacing: Data(previous.utf8))
+        } catch is ChangedMeanwhile {
+            return changed()
         } catch {
             stderr("  Cannot write \(shown): \(error.localizedDescription)")
-            return nil
+            return (nil, ExitCode.cannotCreate)
         }
         stdout("    Saved \(shown)")
-        return text
+        return (text, ExitCode.success)
     }
 
-    /// Replaces a file through a temporary file in the same folder.
-    static func writeAtomically(_ data: Data, to path: String, mode: mode_t) throws {
-        let folder = (path as NSString).deletingLastPathComponent
-        let temporary = folder + "/.\((path as NSString).lastPathComponent).\(getpid()).tmp"
+    /// The file did not hold what `writeAtomically` was told to replace.
+    struct ChangedMeanwhile: Error {}
+
+    /// Replaces a file through a temporary file in the same folder. With `expected`, only while the
+    /// file holds exactly that, checked just before the rename.
+    static func writeAtomically(_ data: Data, to path: String, mode: mode_t, replacing expected: Data? = nil) throws {
+        let temporary = temporaryPath(for: path)
         unlink(temporary)
         let descriptor = open(temporary, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, mode)
         guard descriptor >= 0 else { throw CocoaError(.fileWriteUnknown, userInfo: [NSFilePathErrorKey: temporary]) }
@@ -677,12 +698,22 @@ extension CLI {
             try handle.write(contentsOf: data)
             try handle.synchronize()
             try handle.close()
-            guard fchmodat(AT_FDCWD, temporary, mode, 0) == 0, rename(temporary, path) == 0 else {
+            guard fchmodat(AT_FDCWD, temporary, mode, 0) == 0 else {
                 throw CocoaError(.fileWriteUnknown, userInfo: [NSFilePathErrorKey: path])
             }
+            if let expected, FileManager.default.contents(atPath: path) != expected { throw ChangedMeanwhile() }
+            guard rename(temporary, path) == 0 else { throw CocoaError(.fileWriteUnknown, userInfo: [NSFilePathErrorKey: path]) }
         } catch {
             unlink(temporary)
             throw error
         }
+    }
+
+    /// The temporary file beside `path`: in its folder, or in the current one for a bare file
+    /// name such as `--config blackice.toml`, which has no folder to put in front.
+    static func temporaryPath(for path: String) -> String {
+        let folder = (path as NSString).deletingLastPathComponent
+        let name = ".\((path as NSString).lastPathComponent).\(getpid()).tmp"
+        return folder.isEmpty ? name : (folder as NSString).appendingPathComponent(name)
     }
 }

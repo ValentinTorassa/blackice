@@ -14,6 +14,8 @@ private final class FakeAgentMac: @unchecked Sendable {
     var answer: ((HookEvent) -> String)?
     var logins: [[String: String]] = []
     var hookRuns: [String] = []
+    /// Runs while fx decides the sample event, as a person editing blackice.toml meanwhile would.
+    var duringTest: (() -> Void)?
     let resources: String
 
     init(signedIn: Bool, resources: String, answer: ((HookEvent) -> String)?) {
@@ -39,6 +41,7 @@ private final class FakeAgentMac: @unchecked Sendable {
             },
             runHook: { run, event, _, _ in
                 self.hookRuns.append(run)
+                self.duringTest?()
                 if let answer = self.answer,
                    let start = run.range(of: "PATH=\""), let end = run[start.upperBound...].firstIndex(of: ":") {
                     let standIn = String(run[start.upperBound..<end])
@@ -396,6 +399,61 @@ struct AgentConnectTests {
         #expect(status == ExitCode.unavailable)
         #expect(system.texts.count == 1 && system.modes == [.ask] && system.running == .ask)
         #expect(out.items.contains("The setup did not finish, so blackice leaves accept-all for ask mode."))
+    }
+
+    /// An edit to blackice.toml while fx is set up is kept: the file is read again before fx's rule
+    /// and hook go in. An edit while the file is being saved makes the save stop instead.
+    @Test func editsMadeDuringTheSetupAreKept() throws {
+        let (home, config, resources) = try setUp("mode = \"accept-all\"\ntimeout_seconds = 60\n")
+        defer { removeTree(home) }
+        let rule = "\n[[allow]]\napp = \"com.apple.curl\"\nhosts = [\"pypi.org\"]\n"
+        let editing = FakeAgentMac(signedIn: true, resources: resources, answer: Self.approve)
+        editing.duringTest = {
+            let handle = FileHandle(forWritingAtPath: config)
+            handle?.seekToEndOfFile()
+            handle?.write(Data(rule.utf8))
+            try? handle?.close()
+        }
+        let system = Loading()
+        let merged = connect(home, config: config, mac: editing, system: system, answers: ["n"])
+        #expect(merged.status == 0, "\(merged.stderr)")
+        #expect(merged.stdout.contains("  ~/.config/blackice/blackice.toml changed while fx was set up; the additions go on top of that."))
+        let written = try String(contentsOfFile: config, encoding: .utf8)
+        let loaded = try BlackiceConfig(text: written)
+        #expect(loaded.allowRule(for: SigningIdentity(signingID: "com.apple.curl", teamID: nil), host: "pypi.org") != nil)
+        #expect(loaded.allowRule(for: Self.fx, host: "vercel.com") != nil && loaded.hooks.count == 1)
+        #expect(system.texts == [written])
+
+        // Another writer between the first save and the switch to ask mode: nothing is overwritten.
+        let (otherHome, otherConfig, otherResources) = try setUp("mode = \"accept-all\"\ntimeout_seconds = 60\n")
+        defer { removeTree(otherHome) }
+        let edited = "mode = \"block-all\"\ntimeout_seconds = 60\n"
+        var script = ["y"]
+        let interaction = Interaction(
+            ask: { prompt in
+                if prompt.contains("Switch to ask mode") { try? Data(edited.utf8).write(to: URL(fileURLWithPath: otherConfig)) }
+                return script.isEmpty ? nil : script.removeFirst()
+            }, createFile: CLI.createFile,
+            identify: { $0 == "/opt/fake/fx" ? Self.fx : nil }, fileExists: { FileManager.default.fileExists(atPath: $0) },
+            home: otherHome.path, version: nil)
+        let err = Recorder<String>()
+        let refusing = Loading()
+        let status = CLI.run(["agent", "connect", "fx", "--config", otherConfig], stdout: { _ in }, stderr: { err.append($0) },
+                             system: refusing, interaction: interaction,
+                             agents: FakeAgentMac(signedIn: true, resources: otherResources, answer: Self.approve).machine)
+        #expect(status == ExitCode.tempFail)
+        #expect(err.items.last == "  Something else changed ~/.config/blackice/blackice.toml meanwhile, so blackice agent connect left it as it is. Run it again.")
+        #expect(try String(contentsOfFile: otherConfig, encoding: .utf8) == edited && refusing.texts.isEmpty)
+        #expect(!FileManager.default.fileExists(atPath: CLI.temporaryPath(for: otherConfig)))
+    }
+
+    /// `--config blackice.toml` has no folder: the temporary file goes in the current one.
+    @Test func aBareFileNameKeepsTheTemporaryFileBesideIt() {
+        let pid = getpid()
+        #expect(CLI.temporaryPath(for: "blackice.toml") == ".blackice.toml.\(pid).tmp")
+        #expect(CLI.temporaryPath(for: "conf/blackice.toml") == "conf/.blackice.toml.\(pid).tmp")
+        #expect(CLI.temporaryPath(for: "/Users/a/blackice.toml") == "/Users/a/.blackice.toml.\(pid).tmp")
+        #expect(CLI.temporaryPath(for: "/blackice.toml") == "/.blackice.toml.\(pid).tmp")
     }
 
     @Test func aSymlinkedHomeIsRefused() throws {
