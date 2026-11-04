@@ -203,7 +203,8 @@ struct ConfigWizard {
         }.prefix(Self.maximumRules)
         say("")
         say("  Apps you trust connect to any host, in every mode, without waiting.")
-        say(running.isEmpty ? "  Pick one, or press Enter for none." : "  Pick them from the apps running now, or press Enter for none.")
+        say(running.isEmpty ? "  Pick \"Another app\" to name one, or go to Continue for none."
+                            : "  Pick any of the apps running now with Enter, then go to Continue.")
         say("")
         let other = "Another app: type its path or name"
         guard let picks = choose(Choice(options: running.map(\.name) + [other], multiple: true)) else { return nil }

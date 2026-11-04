@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- In the first `blackice start`'s list of apps to trust, Enter ticks or unticks the highlighted app, as space
+  does, and a last row, Continue, confirms. In 0.3.0 Enter confirmed the list, so pressing it on an app closed the
+  list with nothing picked.
+
 ## 0.3.0 (3 November 2026)
 
 An agent that answers, set up from the first start.
