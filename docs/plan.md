@@ -197,8 +197,15 @@ and each run on a Mac is recorded in [`evidence/`](../evidence/).
   Twenty minutes later, building 0.3.1 in ask mode failed the same way: `codesign`'s request to Apple's timestamp
   service (`com.apple.security.XPCTimeStampingService` to timestamp.apple.com) arrived while 4 hooks ran, got no
   hook, and the signature had no timestamp.
-  To weigh: a queue per app and host, one hook for several events of the same app, and offering VPN extensions in
-  the first start's list (they run from `/Library/SystemExtensions`, so the list does not show them).
+  The Mac's event log from 3 November 04:23 to 4 November 08:48 UTC holds 905 events and 351 `hook_dropped`. The VPN
+  client was Tailscale's network extension (`io.tailscale.ipn.macsys.network-extension`, its DERP relays): 316 of
+  the events and 227 of the drops. 94 drops were the fault test's burst, on purpose, and 30 came from other apps.
+  Replaying the log with 4 hooks of 16 s each, the events other than Tailscale's, the Apple services above and the
+  tests lose 35 without a queue and none with one.
+  Done since: the first start's list shows the running system extensions, so a VPN client's can be trusted there,
+  and the timestamp service and three other services seen in the log are in the Apple services table. Next: a
+  queue in the daemon, so an event that finds 4 hooks running waits for a slot until its deadline, taking turns
+  between apps. One hook for several events of the same app stays a candidate for bursts a queue cannot absorb.
 - **Deadlock.** The deciding agent needs the network to reach its model. If that connection also goes to ask mode,
   it waits for its own approval. Phase 4's fixed rule for the decider handles this; it has to exist before ask mode
   is turned on for real.

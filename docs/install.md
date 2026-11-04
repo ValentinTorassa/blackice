@@ -95,7 +95,8 @@ full path, and a script that runs the full path, worked.
 `start` asks a few questions and writes it. You pick the answers from lists with the arrow keys:
 - the mode;
 - in ask mode, who answers: fx, or you;
-- apps to trust, from the apps running now. Each may reach any host, and "Another app" takes a path such as
+- apps to trust, from the apps and system extensions running now (a VPN client's network extension, such as
+  Tailscale's, is one). Each may reach any host, and "Another app" takes a path such as
   `/Applications/Slack.app` or a signing identifier.
 
 If you pick fx, `start` also sets fx up, as `blackice agent connect fx` does (see "Let an agent answer"). It stays in

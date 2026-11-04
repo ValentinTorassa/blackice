@@ -58,8 +58,14 @@ public enum AppleServices {
 
     /// Signing identifier (Apple platform code only) and host patterns, sorted by identifier.
     static let entries: [(signingID: String, hosts: [String])] = [
+        // Mac (0.3.0 runs): p404-contacts.icloud.com. iCloud contacts only: like dataaccessd, it also
+        // syncs any other account the user adds, which needs a rule.
+        ("com.apple.AddressBookSourceSync", ["*.icloud.com", "*.apple-dns.net"]),
         // Mac: gsas.apple.com. AuthKit, Apple Account sign-in.
         ("com.apple.akd", ["*.apple.com", "*.icloud.com"]),
+        // Mac (0.3.0 runs): amp-api.media.apple.com, bag.itunes.apple.com, xp.apple.com,
+        // apps.mzstatic.com. Apple Media Services, behind the App Store, Music and TV.
+        ("com.apple.amsengagementd", ["*.apple.com", "*.mzstatic.com"]),
         // known: App Store downloads and updates. Apple: App Store hosts.
         ("com.apple.appstoreagent", ["*.apple.com", "*.mzstatic.com", "*.cdn-apple.com"]),
         ("com.apple.appstored", ["*.apple.com", "*.mzstatic.com", "*.cdn-apple.com"]),
@@ -73,6 +79,9 @@ public enum AppleServices {
         ("com.apple.commerce", ["*.apple.com", "*.mzstatic.com"]),
         // Mac: www.apple.com. Only that host.
         ("com.apple.controlcenter", ["www.apple.com"]),
+        // Mac (0.3.0 runs): amp-api.apps.apple.com, bag.itunes.apple.com. App categories, which
+        // Screen Time uses.
+        ("com.apple.ctcategories.service", ["*.apple.com"]),
         // Mac: p404-caldav.icloud.com. iCloud calendars and contacts only: dataaccessd also syncs any
         // other account the user adds (the Mac showed calendar.google.com), which needs a rule.
         ("com.apple.dataaccess.dataaccessd", ["*.icloud.com", "*.apple-dns.net"]),
@@ -89,6 +98,9 @@ public enum AppleServices {
         ("com.apple.networkserviceproxy", ["mask-api.icloud.com"]),
         // known (codesign: /usr/sbin/ocspd): legacy revocation checks. Same hosts as trustd.
         ("com.apple.ocspd", certificateHosts),
+        // Mac (building 0.3.1 in ask mode): timestamp.apple.com on port 80, the timestamp codesign
+        // asks for. Without an answer in time the signature has no timestamp. Only that host.
+        ("com.apple.security.XPCTimeStampingService", ["timestamp.apple.com"]),
         // Mac: swscan.apple.com, xp.apple.com. Apple: software update hosts.
         ("com.apple.softwareupdated", ["*.apple.com", "*.cdn-apple.com", "*.aaplimg.com"]),
         // Mac: api.apple-cloudkit.com, Gatekeeper's notarization ticket lookup.
