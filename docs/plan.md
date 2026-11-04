@@ -138,9 +138,13 @@ and each run on a Mac is recorded in [`evidence/`](../evidence/).
    denied pypi.org, which it was expected to approve. It printed only the command it ran, not its reasons, and it
    approved npm and Homebrew for the same `nscurl`, so the skill's guidance on package registries needs a look.
    Decisions took 11 to 28 s.
-   Next, not released yet: `blackice agent connect fx` sets this up in one command (the skill and rules in fx's own
-   home, a test on a sample event, the rule, the hook and the timeout). A trial build did it on the Mac, and fx then
-   answered real connections in ask mode ([P5-05](../evidence/P5-05-agent-connect-fx-macos.md)).
+   In 0.3.0, `blackice agent connect fx` sets this up in one command (the skill and rules in fx's own home, a test on
+   a sample event, the rule, the hook and the timeout), and the first `blackice start` does it when the person picks
+   fx. A trial build did it on the Mac, and fx then answered real connections in ask mode
+   ([P5-05](../evidence/P5-05-agent-connect-fx-macos.md)). From no blackice and no fx, 0.3.0 candidates installed fx
+   and signed it in from `start`; the run went on with an earlier sign-in, because the new one's Vercel team had no
+   card for AI Gateway, and fx approved two connections in about 5 s
+   ([P5-06](../evidence/P5-06-onboarding-from-zero-macos.md)).
 5. **Hardening and evidence.** Fault tests (daemon down, hook hung, bursts of connections, restart), evidence
    entries in the style of blackice-poc, notarization and an installer. *Done when* `macos/scripts/fault-test.sh`
    passes on a Mac and the run is recorded in [`evidence/`](../evidence/), and a `Blackice-<version>.zip` from
@@ -177,6 +181,9 @@ and each run on a Mac is recorded in [`evidence/`](../evidence/).
    `install.md` removed the previous install, the curl one-liner checked the release and installed it into
    `/Applications`, the first `blackice start` turned blackice on, and the fault tests passed all 28 checks, the
    configuration change included. The System Settings steps that 0.2.1 prints for macOS 14 and 15 have not run.
+   With 0.3.0 candidates the uninstall steps, the one-liner and the first `start` ran again, from no configuration
+   and no fx, and three failures on the way were fixed before build 11
+   ([P5-06](../evidence/P5-06-onboarding-from-zero-macos.md)).
 
 ## Open problems
 

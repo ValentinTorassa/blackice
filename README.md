@@ -28,7 +28,10 @@ macOS 27.0.1. Each run is recorded in
 - From the published 0.2.1: uninstalling by following the install guide, the curl install script into `/Applications`
   (checksum, signature and notarization checked), the first `start`, and the fault tests with all 28 checks passing
   (P5-04).
-- `blackice agent connect fx`, not released yet, set fx up to answer ask mode in one command on a trial build (P5-05).
+- `blackice agent connect fx` set fx up to answer ask mode in one command on a trial build (P5-05).
+- With 0.3.0 candidates and no blackice or fx on the Mac: the first `start` asked with lists, then installed fx and
+  signed it in. fx's test failed with HTTP 403 for a Vercel team with no card on file. With an earlier sign-in,
+  `agent connect fx` loaded ask mode, and fx approved two `nscurl` requests in about 5 s (P5-06).
 
 Open problems are in [`docs/plan.md`](docs/plan.md).
 

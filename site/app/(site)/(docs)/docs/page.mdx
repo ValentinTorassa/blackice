@@ -21,6 +21,7 @@ Answers go through the command line, for example `blackice approve --app com.exa
 - The fault tests passed for the daemon being down, a hung hook, a burst of 120 connections, a daemon restart and a configuration change while connections wait. The configuration change first failed with an earlier build, and passed with 0.2.1.
 - From the published 0.2.1, the uninstall steps of [Install](/docs/install) removed the previous install, and the install script checked the release and installed it into `/Applications`.
 - After an upgrade in place, the daemon and the CLI could not reach the new extension until the Mac restarted.
+- With 0.3.0 candidates and no blackice or fx on the Mac, the first `start` asked its questions as lists, installed fx and signed it in. fx's test failed with HTTP 403 for a Vercel team with no card on file. With an earlier sign-in, `blackice agent connect fx` turned ask mode on, and fx approved two connections about 5 s after they started.
 
 [Install](/docs/install) has the steps. The phases and open problems are in the repository's [plan](https://github.com/ValentinTorassa/blackice/blob/main/docs/plan.md).
 
