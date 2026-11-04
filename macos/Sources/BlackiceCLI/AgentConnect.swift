@@ -46,7 +46,9 @@ public struct AgentProfile: Sendable {
         installHint: "https://github.com/vercel-labs/fx",
         // fx's README; it puts fx in ~/.local/bin.
         installer: "curl -fsSL https://fx.sh/setup.sh | bash",
-        loginHint: ["fx prints a link: open it, allow access, and come back here."],
+        // fx 0.0.16 waits for Enter before it opens the page and starts checking for the answer.
+        loginHint: ["fx prints a code. Press Enter to open the page in your browser, allow",
+                    "access there, then come back here."],
         // fx v0.0.16 reads HOME, not FX_HOME; with its keychain off its sign-in is a file in that home.
         environment: { ["HOME": $0, "FX_DISABLE_KEYCHAIN": "1"] },
         statusArguments: ["status"], loginArguments: ["login", "vercel"],
@@ -339,6 +341,9 @@ extension CLI {
             text = loaded.text
             config = loaded.config
         }
+        // What to run to try again: from blackice start, the file is written and start would
+        // only load it, so the retry is agent connect itself.
+        let retry = "blackice agent connect \(name)" + (configPath.map { " --config \(Describe.path($0, home: interaction.home))" } ?? "")
         var number = firstStep
         func step(_ title: String) {
             stdout(""); stdout(Style.heading("\(number) · \(title)")); stdout("")
@@ -379,13 +384,13 @@ extension CLI {
                 found = machine.findExecutable(profile.executable)
                 if found == nil {
                     return fail(ExitCode.unavailable, "\(name)'s installer exited with status \(status), and \(name) is still not",
-                                "on PATH or in ~/.local/bin. Install it (\(profile.installHint)), then run this again.")
+                                "on PATH or in ~/.local/bin. Install it (\(profile.installHint)), then: \(retry)")
                 }
             }
         }
         guard let executable = found else {
-            return fail(ExitCode.unavailable, "\(name) is not installed. Install it (\(profile.installHint)), then run",
-                        "this again.")
+            return fail(ExitCode.unavailable, "\(name) is not installed. Install it (\(profile.installHint)),",
+                        "then: \(retry)")
         }
         let shownExecutable = Describe.path(executable, home: interaction.home)
         guard fitsHookLine(executable) else {
@@ -427,11 +432,19 @@ extension CLI {
         } else {
             stdout("  Sign \(name) in for blackice.")
             profile.loginHint.forEach { stdout("  " + $0) }
-            stdout("")
-            _ = machine.runAttached(executable, profile.loginArguments, environment)
-            stdout("")
-            guard signedIn() else {
-                return fail(ExitCode.software, "\(name) is still not signed in, so nothing else changed. Run this again to retry.")
+            // A sign-in can fail on its own (a closed page, a connection cut as the filter came up):
+            // offer it again instead of making the person start over.
+            var signed = false
+            while !signed {
+                stdout("")
+                _ = machine.runAttached(executable, profile.loginArguments, environment)
+                stdout("")
+                signed = signedIn()
+                if signed { break }
+                guard let line = ask("  \(name) is not signed in yet. Try again? [Y/n]: "),
+                      !["n", "no"].contains(line.trimmingCharacters(in: .whitespaces).lowercased()) else {
+                    return fail(ExitCode.software, "\(name) is still not signed in, so nothing else changed. To retry: \(retry)")
+                }
             }
             stdout("  " + Style.done("\(name) is signed in"))
         }
@@ -490,7 +503,7 @@ extension CLI {
                 tail.forEach { stderr("    " + $0.prefix(200)) }
             }
             stderr("  If blackice is in ask or block-all mode, \(name)'s own connections wait too: switch to")
-            stderr("  accept-all (blackice mode accept-all) and run this again.")
+            stderr("  accept-all (blackice mode accept-all), then: \(retry)")
             return ExitCode.software
         }
 

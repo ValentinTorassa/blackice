@@ -7,6 +7,7 @@ import Testing
 /// by writing what fx would run into the stand-in's answers file.
 private final class FakeAgentMac: @unchecked Sendable {
     var signedIn: Bool
+    var loginFailures = 0
     var installed = true
     var installs: [[String]] = []
     var answer: ((HookEvent) -> String)?
@@ -24,7 +25,11 @@ private final class FakeAgentMac: @unchecked Sendable {
         AgentMachine(
             findExecutable: { $0 == "fx" && self.installed ? "/opt/fake/fx" : nil },
             runAttached: { path, arguments, environment in
-                if arguments == ["login", "vercel"] { self.logins.append(environment); self.signedIn = true }
+                if arguments == ["login", "vercel"] {
+                    self.logins.append(environment)
+                    if self.loginFailures > 0 { self.loginFailures -= 1; return 1 }
+                    self.signedIn = true
+                }
                 if path == "/bin/bash" { self.installs.append(arguments); self.installed = arguments.last?.contains("fx.sh") == true }
                 return 0
             },
@@ -202,7 +207,8 @@ struct AgentConnectTests {
         #expect(declined.status == ExitCode.unavailable && declining.installs.isEmpty)
         #expect(declined.stdout.contains("  fx is not installed. Its installer, from https://github.com/vercel-labs/fx:"))
         #expect(declined.stdout.contains("    " + installer))
-        #expect(declined.stderr.first == "  fx is not installed. Install it (https://github.com/vercel-labs/fx), then run")
+        #expect(declined.stderr == ["  fx is not installed. Install it (https://github.com/vercel-labs/fx),",
+                                    "  then: blackice agent connect fx --config ~/.config/blackice/blackice.toml"])
         #expect(try String(contentsOfFile: config, encoding: .utf8) == text)
 
         // An installer that leaves no fx behind.
@@ -265,6 +271,26 @@ struct AgentConnectTests {
         }
         #expect(out.items.contains("  It stays in accept-all while fx is set up, then switches to ask."))
         #expect(!out.items.contains { $0.hasPrefix("Connecting fx") || $0.contains("Switch to ask mode now?") })
+    }
+
+    @Test func aFailedSignInIsOfferedAgain() throws {
+        let text = "mode = \"accept-all\"\ntimeout_seconds = 60\n"
+        let (home, config, resources) = try setUp(text)
+        defer { removeTree(home) }
+        let retried = FakeAgentMac(signedIn: false, resources: resources, answer: Self.approve)
+        retried.loginFailures = 1
+        let result = connect(home, config: config, mac: retried, system: Loading(), answers: ["", "n"])
+        #expect(result.status == 0, "\(result.stderr)")
+        #expect(retried.logins.count == 2 && result.stdout.contains("  ✓ fx is signed in"))
+
+        let before = try String(contentsOfFile: config, encoding: .utf8)
+        let given = FakeAgentMac(signedIn: false, resources: resources, answer: Self.approve)
+        given.loginFailures = 1
+        let quit = connect(home, config: config, mac: given, system: Loading(), answers: ["n"])
+        #expect(quit.status == ExitCode.software && given.logins.count == 1)
+        #expect(quit.stderr == ["  fx is still not signed in, so nothing else changed. To retry: blackice agent connect fx" +
+                                " --config ~/.config/blackice/blackice.toml"])
+        #expect(try String(contentsOfFile: config, encoding: .utf8) == before && before != text)
     }
 
     @Test func connectingWhileAskingSwitchesToAcceptAllFirst() throws {

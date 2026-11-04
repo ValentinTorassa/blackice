@@ -161,7 +161,7 @@ when their timeout passes.
 1. It finds fx and reads its signature. If fx is not installed, it shows fx's installer
    (`curl -fsSL https://fx.sh/setup.sh | bash`) and runs it if you say yes.
 2. It gives fx a home of its own, `~/.config/blackice/agent`, with the blackice skill from Blackice.app. If fx has
-   no sign-in there, it runs `fx login vercel` (fx prints a link to open). It sets fx's rules there so that fx can run
+   no sign-in there, it runs `fx login vercel`: press Enter to open the page fx names, and allow access. It sets fx's rules there so that fx can run
    `blackice approve` and `blackice deny` and nothing else.
 3. It runs the hook once on a sample connection, with `blackice` replaced by a stand-in so nothing is let through,
    and checks that fx answered with the event's token.

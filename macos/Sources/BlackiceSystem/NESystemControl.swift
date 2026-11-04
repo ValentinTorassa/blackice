@@ -67,9 +67,13 @@ public final class NESystemControl: SystemControlling {
         let firstSave = current.providerBundleID == nil
         if firstSave { output.stdout((output.setup || neededApproval ? "  " : "") + ExtensionApproval.filterPrompt) }
         guard save(manager, output, firstSave: firstSave) else { return ExitCode.software }
+        // The filter's process can come up seconds after the save, and macOS cuts the connections
+        // open at that moment (on 3 November 2026 it cut fx's sign-in, started right after the
+        // first start). Wait until it answers, so that what runs next does not lose its connection.
+        let answering = Self.extensionAnswers(attempts: 40, interval: 0.5)
         output.stdout("")
         CLI.onLines(candidate).forEach(output.stdout)
-        if replaced, !Self.extensionAnswers() {
+        if replaced, !answering {
             output.stderr("blackice was upgraded, and macOS needs a restart to finish. Restart the Mac, then run blackice start again.")
             output.stderr("Until then hooks, pending, approve and deny cannot reach the filter, and ask mode drops what it holds.")
             return ExitCode.tempFail
