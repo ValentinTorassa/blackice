@@ -211,7 +211,10 @@ and each run on a Mac is recorded in [`evidence/`](../evidence/).
   `hook_started` with `waited_ms`). Waiting hooks take turns between apps (by signing identity, or cdhash), oldest
   first within an app, so one app's burst no longer crowds out the rest. A waiting hook is dropped once less than
   10 s of its time is left (`deadline_near`), when the extension reports its event's end while it waits
-  (`event_ended`), and when 256 hooks already wait (`queue_full`). Not run on a Mac yet. One hook for several events
+  (`event_ended`), and when 256 hooks already wait (`queue_full`). On the Mac with build 15, the fault test's burst
+  ran at most 4 hooks, 46 waited, those that got a slot in time started after up to 15.7 s and the rest were given
+  up as `deadline_near`, and the Mac kept working ([P5-09](../evidence/P5-09-hook-queue-faults-0.3.2-candidate-macos.md)).
+  One hook for several events
   of the same app stays a candidate for bursts a queue cannot absorb: at 16 s per decision 4 slots answer about 15
   events a minute.
 - **Deadlock.** The deciding agent needs the network to reach its model. If that connection also goes to ask mode,
@@ -282,7 +285,9 @@ and each run on a Mac is recorded in [`evidence/`](../evidence/).
   replaces a running extension, that its XPC service answers, and if it does not, says to restart and exits with
   status 75. [`install.md`](install.md)'s upgrade steps include the restart. The upgrade from build 4 to build 5
   with Homebrew did the same, and the check caught it ([P5-02](../evidence/P5-02-homebrew-upgrade-from-release-macos.md)):
-  two upgrades out of two. Why is not known; for now an upgrade means a restart.
+  two upgrades out of two. Why is not known; for now an upgrade means a restart. The upgrade to build 15 answered
+  at once, but the build 14 it replaced had been activated over build 13 that morning and had never been reachable,
+  with no restart in between ([P5-09](../evidence/P5-09-hook-queue-faults-0.3.2-candidate-macos.md)).
 - **Events with no connection left.** In P5-01, `blackice pending` failed with "the network extension sent an
   invalid reply: events has an invalid entry": an event whose paused flows were all dropped with `hold_expired`
   stays pending, by design, and is listed with 0 connections, while the CLI's check of the reply required at
