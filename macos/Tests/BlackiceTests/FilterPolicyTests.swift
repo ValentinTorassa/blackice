@@ -313,6 +313,55 @@ struct FilterPolicyTests {
             == .drop(reason: "address_mismatch"))
     }
 
+    @Test func anEncryptedClientHelloEstablishesNoHost() throws {
+        // The name in the clear is a public front end; the destination is in the encrypted part.
+        var reader = TLSServerNameReader()
+        let ech = reader.receive(clientHello("pypi.org", extra: [0xfe, 0x0d, 0, 4, 0x42, 0x87, 0x19, 0xff]), offset: 0)
+        #expect(ech == .serverName("pypi.org", echPresent: true))
+        let blockAll = try policySnapshot(.blockAll)
+        let ask = try policySnapshot(.ask)
+        let approved = context(approved: [key(agent, "api.example.com"), key(probe, "example.org")],
+                               answers: ["api.example.com": [flowAddress], "example.org": [flowAddress]])
+        let dropped = FlowVerdict.drop(reason: "encrypted_client_hello")
+        let cases: [(FlowFacts, String, ProviderConfiguration, PolicyContext)] = [
+            // A rule for the name in the clear, with no host name, a DNS name or a host name.
+            (flow(curl, nil), "pypi.org", blockAll, matching),
+            (flow(curl, nil, dnsNames: ["pypi.org"]), "pypi.org", blockAll, matching),
+            (flow(agent, "api.example.com"), "api.example.com", blockAll, matching),
+            (flow(agent, "api.example.com"), "api.example.com", ask, approved),
+            // An approval does not cover it either, and ask mode does not ask about it.
+            (flow(probe, "example.org"), "example.org", ask, approved),
+            (flow(probe, nil), "example.org", ask, approved),
+            (flow(probe, nil), "evil.example.net", ask, matching),
+            (flow(adHoc, nil), "example.org", ask, matching),
+            // The Apple services table does not either.
+            (flow(signed("com.apple.apsd", nil), nil), "1-courier.push.apple.com", blockAll, matching),
+        ]
+        for (facts, name, snapshot, context) in cases {
+            #expect(FilterPolicy.decide(facts, serverName: .serverName(name, echPresent: true), snapshot: snapshot,
+                                        context: context) == dropped, "\(facts) \(name)")
+            // Without the extension the same hello is decided on its server name.
+            #expect(FilterPolicy.decide(facts, serverName: .serverName(name), snapshot: snapshot, context: context)
+                != dropped, "\(facts) \(name)")
+        }
+        // A hosts = ["*"] rule and accept-all check nothing, ECH included.
+        let star = try ProviderConfiguration(generation: 7, mode: .blockAll, configText: """
+            mode = "block-all"
+
+            [[allow]]
+            app = "com.apple.curl"
+            hosts = ["*"]
+
+            """)
+        #expect(FilterPolicy.decide(flow(curl, nil), serverName: ech, snapshot: star, context: matching)
+            == .allow(reason: "rule_line_3"))
+        #expect(FilterPolicy.decide(flow(curl, nil), serverName: ech, snapshot: try policySnapshot(.acceptAll), context: matching)
+            == .allow(reason: "accept_all"))
+        // Code that cannot be named keeps its own reason.
+        #expect(FilterPolicy.decide(flow(.unresolved, nil), serverName: ech, snapshot: blockAll, context: matching)
+            == .drop(reason: "unknown_identity"))
+    }
+
     @Test func serverNameReaderFeedsThePolicy() throws {
         let hello = clientHello("pypi.org")
         var reader = TLSServerNameReader()

@@ -20,7 +20,8 @@ import Foundation
 // name whose address was given for exactly one name is decided on that name.
 // A TCP flow on the TLS port that a host rule, the Apple services table or an approval would
 // allow passes only once its ClientHello has been read: the server name must be the flow's host
-// (from the system or from a DNS answer), or a host covered by itself.
+// (from the system or from a DNS answer), or a host covered by itself. A hello with Encrypted
+// Client Hello establishes no host, and only a hosts = ["*"] rule or accept-all lets it through.
 
 public enum FlowDirection: Sendable {
     case outbound, inbound, unknown
@@ -162,10 +163,18 @@ public enum FilterPolicy {
             return .readServerName
         case .deny(let reason):
             return .drop(reason: reason)
-        case .serverName(let name, _):
+        case .serverName(let name, let encrypted):
             if snapshot.mode == .acceptAll { return .allow(reason: "accept_all") }
             guard let identity = nameable(flow.identity, snapshot.mode) else { return .drop(reason: identityReason(flow.identity)) }
             if let verdict = anyHost(flow, snapshot) { return verdict }
+            // Encrypted Client Hello: the server name in the clear names a public front end, and
+            // the site the connection reaches is in the encrypted inner hello. A rule or an
+            // approval for the front end, or for any host on the same provider's address, would
+            // let the app reach every site behind it, so such a hello establishes no host. It is
+            // dropped in block-all, and in ask mode too: an event could only name the front end.
+            // The cost: a decoy ECH extension (GREASE), which Chrome sends when it has no ECH key
+            // for the server, looks the same, so such apps need hosts = ["*"] to reach HTTPS.
+            if encrypted { return .drop(reason: "encrypted_client_hello") }
             guard let host = normalizeHost(name) else { return .drop(reason: "server_name_invalid") }
             // The flow's host before its hello: the host name from the system, or the one name
             // the resolver gave the address for.
