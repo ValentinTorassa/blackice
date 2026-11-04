@@ -146,6 +146,13 @@ and each run on a Mac is recorded in [`evidence/`](../evidence/).
    and signed it in from `start`; the run went on with an earlier sign-in, because the new one's Vercel team had no
    card for AI Gateway, and fx approved two connections in about 5 s
    ([P5-06](../evidence/P5-06-onboarding-from-zero-macos.md)).
+   A second decider, written on 4 November 2026 and not yet run under the daemon: Claude Code in print mode
+   ([`integrations/claude-code/`](../integrations/claude-code/README.md)), with reading the event as its only tool,
+   a sign-in of its own (its own `CLAUDE_CONFIG_DIR`, kept in the login keychain, so the hook keeps `HOME`) and a
+   rule for `api.anthropic.com` and `platform.claude.com`. It answers with a verdict line on stdout, and
+   `blackice agent connect claude-code` sets it up as `connect fx` does. [`integrations/eval/run.sh`](../integrations/eval/run.sh)
+   runs any decider over the same 20 events the way the daemon runs a hook; Claude Code 2.1.317 with Sonnet
+   decided all 20 as expected, in 3 to 8 s each.
 5. **Hardening and evidence.** Fault tests (daemon down, hook hung, bursts of connections, restart), evidence
    entries in the style of blackice-poc, notarization and an installer. *Done when* `macos/scripts/fault-test.sh`
    passes on a Mac and the run is recorded in [`evidence/`](../evidence/), and a `Blackice-<version>.zip` from
@@ -227,7 +234,7 @@ and each run on a Mac is recorded in [`evidence/`](../evidence/).
   itself (see Daemon under the decisions), so it cannot run hooks of its own. What remains: such a program can keep
   the LaunchAgent's daemon from getting events, by registering again and again or by stopping it, and connections
   then wait and are denied at their timeout. And the programs a hook runs read files that any program of the user
-  can change, such as fx's rules and skill in the agent's home.
+  can change, such as fx's rules and skill, or Claude Code's instructions, in the agent's home.
 - **Prompt injection.** Host names, app names and TLS server names are chosen by whoever opens the connection, and
   they reach the model's prompt. Events carry them as structured fields, and the only accepted answers are approve
   or deny.

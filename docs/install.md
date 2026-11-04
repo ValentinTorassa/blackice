@@ -176,8 +176,14 @@ when their timeout passes.
    daemon.
 
 In ask or block-all it switches to accept-all while fx is set up (Touch ID), since fx's own connections would wait
-until its rule is loaded, and the last step loads your file again. It knows fx only, so far.
+until its rule is loaded, and the last step loads your file again.
 [`integrations/fx/README.md`](../integrations/fx/README.md) has the same steps by hand.
+
+`blackice agent connect claude-code` does the same for Claude Code. Its home is a Claude Code configuration
+directory of its own, `~/.config/blackice/agent/.claude`, signed in with `claude auth login`; the sign-in stays in
+the login keychain, apart from yours. Its hook gives it one tool, reading the event, and it answers with the last
+line of its reply. Its rule covers `api.anthropic.com` and `platform.claude.com`.
+[`integrations/claude-code/README.md`](../integrations/claude-code/README.md) has the details.
 
 ## 6. Use it
 
