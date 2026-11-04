@@ -85,6 +85,26 @@ struct AppleServicesTableTests {
         #expect(!AppleServices.allows(trustd, host: "evil.example"))
         #expect(!AppleServices.allows(trustd, host: "goog"))
     }
+
+    /// Seen asking in the 0.3.0 runs. codesign's timestamp service gets its one host and nothing
+    /// else, and the contacts sync only iCloud, as dataaccessd does.
+    @Test func servicesSeenInTheZeroThreeRuns() {
+        let timestamp = SigningIdentity(signingID: "com.apple.security.XPCTimeStampingService", teamID: nil)
+        #expect(AppleServices.allows(timestamp, host: "timestamp.apple.com"))
+        #expect(!AppleServices.allows(timestamp, host: "www.apple.com"))
+        #expect(!AppleServices.allows(SigningIdentity(signingID: timestamp.signingID, teamID: "ABCDE12345"),
+                                      host: "timestamp.apple.com"))
+        let contacts = SigningIdentity(signingID: "com.apple.AddressBookSourceSync", teamID: nil)
+        #expect(AppleServices.allows(contacts, host: "p404-contacts.icloud.com"))
+        #expect(!AppleServices.allows(contacts, host: "www.googleapis.com"))
+        let media = SigningIdentity(signingID: "com.apple.amsengagementd", teamID: nil)
+        for host in ["amp-api.media.apple.com", "bag.itunes.apple.com", "apps.mzstatic.com"] {
+            #expect(AppleServices.allows(media, host: host), "\(host)")
+        }
+        let categories = SigningIdentity(signingID: "com.apple.ctcategories.service", teamID: nil)
+        #expect(AppleServices.allows(categories, host: "amp-api.apps.apple.com"))
+        #expect(!AppleServices.allows(categories, host: "example.org"))
+    }
 }
 
 // MARK: - The policy
