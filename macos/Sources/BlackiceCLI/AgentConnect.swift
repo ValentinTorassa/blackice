@@ -139,13 +139,20 @@ public struct AgentMachine {
                 return nil
             },
             runAttached: { path, arguments, environment in
-                let process = Process()
-                process.executableURL = URL(fileURLWithPath: path)
-                process.arguments = arguments
-                process.environment = ProcessInfo.processInfo.environment.merging(environment) { $1 }
-                do { try process.run() } catch { return 127 }
-                process.waitUntilExit()
-                return process.terminationStatus
+                // Not Process: it starts the child in a process group of its own, which the terminal
+                // treats as background, so the child stops (SIGTTIN) at its first read. fx's sign-in
+                // waits for Enter and froze that way on 3 November 2026. posix_spawn without
+                // POSIX_SPAWN_SETPGROUP keeps it in blackice's group, in the foreground.
+                let variables = ProcessInfo.processInfo.environment.merging(environment) { $1 }.map { "\($0)=\($1)" }
+                let argv = ([path] + arguments).map { strdup($0) } + [nil]
+                let envp = variables.map { strdup($0) } + [nil]
+                defer { argv.forEach { free($0) }; envp.forEach { free($0) } }
+                var pid: pid_t = 0
+                guard posix_spawn(&pid, path, nil, nil, argv, envp) == 0 else { return 127 }
+                var status: Int32 = 0
+                while waitpid(pid, &status, 0) == -1, errno == EINTR {}
+                let signal = status & 0x7f
+                return signal == 0 ? (status >> 8) & 0xff : 128 + signal
             },
             runCaptured: { path, arguments, environment in
                 let process = Process()
