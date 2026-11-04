@@ -51,18 +51,32 @@ private final class FakeAgentMac: @unchecked Sendable {
     }
 }
 
+/// Loads what it is given and keeps the mode saved. `startStatuses` and `modeStatuses` answer the
+/// calls in turn (0 once they run out); a call that fails changes nothing, as with Touch ID cancelled.
 private final class Loading: SystemControlling {
     var texts: [String] = []
     var nexts: [Bool] = []
     var agentInstalls = 0
     var running: Mode?
     var modes: [Mode] = []
+    var startStatuses: [Int32] = []
+    var modeStatuses: [Int32] = []
     func start(configText: String, output: SystemOutput) -> Int32 {
-        texts.append(configText); nexts.append(output.next); output.stdout("(started)"); return 0
+        texts.append(configText); nexts.append(output.next)
+        let status = startStatuses.isEmpty ? 0 : startStatuses.removeFirst()
+        guard status == 0 else { return status }
+        running = try? BlackiceConfig(text: configText).mode
+        output.stdout("(started)")
+        return 0
     }
     func stop(output: SystemOutput) -> Int32 { 0 }
     func status(output: SystemOutput) -> Int32 { 0 }
-    func setMode(_ mode: Mode, output: SystemOutput) -> Int32 { modes.append(mode); running = mode; return 0 }
+    func setMode(_ mode: Mode, output: SystemOutput) -> Int32 {
+        modes.append(mode)
+        let status = modeStatuses.isEmpty ? 0 : modeStatuses.removeFirst()
+        if status == 0 { running = mode }
+        return status
+    }
     func runningMode() -> Mode? { running }
     func pending(output: SystemOutput) -> Int32 { 0 }
     func answer(_ request: AnswerRequest, output: SystemOutput) -> Int32 { 0 }
@@ -314,6 +328,74 @@ struct AgentConnectTests {
         #expect(system.modes == [.acceptAll])
         #expect(result.stdout.contains("blackice is in ask mode, so fx's installer, its sign-in and the test"))
         #expect(try BlackiceConfig(data: Data(system.texts.last!.utf8)).mode == .ask)
+    }
+
+    /// A setup that switched to accept-all and stops before it loads the file switches back,
+    /// whatever stopped it, instead of leaving every connection let through.
+    @Test func aSetupThatStopsLeavesAcceptAll() throws {
+        let (home, config, resources) = try setUp("mode = \"ask\"\ntimeout_seconds = 60\n")
+        defer { removeTree(home) }
+        let back = "The setup did not finish, so blackice leaves accept-all for ask mode."
+
+        // fx gives no answer in the test.
+        let silent = Loading()
+        silent.running = .ask
+        let unanswered = connect(home, config: config, mac: FakeAgentMac(signedIn: true, resources: resources, answer: nil),
+                                 system: silent)
+        #expect(unanswered.status == ExitCode.software)
+        #expect(silent.modes == [.acceptAll, .ask] && silent.running == .ask && silent.texts.isEmpty)
+        #expect(unanswered.stdout.contains("before that, it switches back to ask mode.") && unanswered.stdout.contains(back))
+
+        // The last step's Touch ID is cancelled: back to block-all, the mode before.
+        let cancelled = Loading()
+        cancelled.running = .blockAll
+        cancelled.startStatuses = [ExitCode.noPermission]
+        let lastStep = connect(home, config: config, mac: FakeAgentMac(signedIn: true, resources: resources, answer: Self.approve),
+                               system: cancelled)
+        #expect(lastStep.status == ExitCode.noPermission)
+        #expect(cancelled.modes == [.acceptAll, .blockAll] && cancelled.running == .blockAll && cancelled.texts.count == 1)
+
+        // The way back is cancelled too: say how to leave accept-all.
+        let stuck = Loading()
+        stuck.running = .ask
+        stuck.modeStatuses = [0, ExitCode.noPermission]
+        let left = connect(home, config: config, mac: FakeAgentMac(signedIn: true, resources: resources, answer: nil), system: stuck)
+        #expect(left.status == ExitCode.software && stuck.running == .acceptAll)
+        #expect(left.stderr.last == "blackice is still in accept-all mode: every connection goes through. To leave it: blackice mode ask")
+
+        // The switch itself was cancelled: there is nothing to undo.
+        let declined = Loading()
+        declined.running = .ask
+        declined.modeStatuses = [ExitCode.noPermission]
+        let refused = connect(home, config: config, mac: FakeAgentMac(signedIn: true, resources: resources, answer: Self.approve),
+                              system: declined)
+        #expect(refused.status == ExitCode.noPermission && declined.modes == [.acceptAll] && declined.running == .ask)
+        #expect(!refused.stdout.contains(back))
+    }
+
+    /// The first start picked ask mode with fx answering, and fx could not be set up: it switches
+    /// to ask mode all the same, with nobody but the person to answer.
+    @Test func aFirstStartWhoseAgentFailsLoadsTheModePicked() throws {
+        let home = try makePrivateDirectory()
+        defer { removeTree(home) }
+        let skill = home.appendingPathComponent("app-resources/agents/fx/blackice")
+        try FileManager.default.createDirectory(at: skill, withIntermediateDirectories: true)
+        let config = home.path + "/.config/blackice/blackice.toml"
+        let mac = FakeAgentMac(signedIn: false, resources: home.path + "/app-resources/agents", answer: Self.approve)
+        mac.installed = false
+        let system = Loading()
+        var picks: [[Int]] = [[1], [0], []]   // ask, fx answers, no apps
+        var typed = ["n"]                     // do not install fx
+        let interaction = Interaction(
+            ask: { _ in typed.isEmpty ? nil : typed.removeFirst() }, createFile: CLI.createFile,
+            identify: { _ in nil }, fileExists: { FileManager.default.fileExists(atPath: $0) },
+            home: home.path, version: nil, choose: { _ in picks.isEmpty ? nil : picks.removeFirst() })
+        let out = Recorder<String>(), err = Recorder<String>()
+        let status = CLI.run(["start", "--config", config], stdout: { out.append($0) }, stderr: { err.append($0) },
+                             system: system, interaction: interaction, agents: mac.machine)
+        #expect(status == ExitCode.unavailable)
+        #expect(system.texts.count == 1 && system.modes == [.ask] && system.running == .ask)
+        #expect(out.items.contains("The setup did not finish, so blackice leaves accept-all for ask mode."))
     }
 
     @Test func aSymlinkedHomeIsRefused() throws {

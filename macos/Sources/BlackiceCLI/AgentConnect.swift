@@ -329,11 +329,19 @@ extension CLI {
     // MARK: - The command
 
     /// `firstStep` numbers the steps on from where `blackice start` left off when it runs this
-    /// right after the first start.
+    /// right after the first start. `heldMode` is the mode that start put off, starting in
+    /// accept-all for the setup.
     static func connectAgent(_ name: String, configPath: String?, readFile: (String) throws -> Data,
                              system: SystemControlling, interaction: Interaction, machine: AgentMachine,
                              stdout: @escaping (String) -> Void, stderr: @escaping (String) -> Void,
-                             firstStep: Int = 1) -> Int32 {
+                             firstStep: Int = 1, heldMode: Mode? = nil) -> Int32 {
+        // Accept-all lets everything through, so a setup that switched to it and then stops before
+        // the last step loads the file, whatever the reason, switches to the mode it put off.
+        var putOff = heldMode
+        var loadedFile = false
+        defer {
+            if !loadedFile, let putOff { leaveAcceptAll(for: putOff, system: system, stdout: stdout, stderr: stderr) }
+        }
         guard let profile = AgentProfile.known.first(where: { $0.name == name }) else {
             stderr("blackice agent connect knows fx so far (Claude Code and Codex are planned): blackice agent connect fx")
             return ExitCode.usage
@@ -377,7 +385,9 @@ extension CLI {
             stdout("")
             stdout("blackice is in \(running.rawValue) mode, so \(name)'s installer, its sign-in and the test")
             stdout("would wait for an answer nobody gives yet. It switches to accept-all while")
-            stdout("\(name) is set up; the last step loads \(shown) again.")
+            stdout("\(name) is set up; the last step loads \(shown) again. If the setup stops")
+            stdout("before that, it switches back to \(running.rawValue) mode.")
+            putOff = running
             let switched = system.setMode(.acceptAll, output: SystemOutput(stdout: stdout, stderr: stderr))
             guard switched == ExitCode.success else { return switched }
         }
@@ -587,6 +597,7 @@ extension CLI {
         stdout("")
         let started = system.start(configText: loaded, output: SystemOutput(stdout: stdout, stderr: stderr))
         guard started == ExitCode.success else { return started }
+        loadedFile = true
         stdout("")
         let daemon = system.installAgent(output: SystemOutput(stdout: stdout, stderr: stderr))
         guard daemon == ExitCode.success else { return daemon }
@@ -597,6 +608,19 @@ extension CLI {
             stdout(Style.done("\(name) is ready. When you want it answering: ") + Style.command("blackice mode ask"))
         }
         return ExitCode.success
+    }
+
+    /// After a setup that switched to accept-all and did not load the file: switches to `mode`, the
+    /// one in force before, or the one the first start put off. Only when the saved mode is still
+    /// accept-all, so a switch that never happened is not undone. It takes Touch ID once more, as
+    /// the last step would have; without it, says how to leave accept-all by hand.
+    static func leaveAcceptAll(for mode: Mode, system: SystemControlling, stdout: @escaping (String) -> Void,
+                               stderr: @escaping (String) -> Void) {
+        guard mode != .acceptAll, system.runningMode() == .acceptAll else { return }
+        stdout("")
+        stdout("The setup did not finish, so blackice leaves accept-all for \(mode.rawValue) mode.")
+        guard system.setMode(mode, output: SystemOutput(stdout: stdout, stderr: stderr)) != ExitCode.success else { return }
+        stderr("blackice is still in accept-all mode: every connection goes through. To leave it: blackice mode \(mode.rawValue)")
     }
 
     /// A folder of the agent home, made private: created with mode 0700, or, when it is already

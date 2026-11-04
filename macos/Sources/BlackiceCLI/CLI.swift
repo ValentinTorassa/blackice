@@ -286,13 +286,14 @@ public enum CLI {
                                         output: SystemOutput(stdout: stdout, stderr: stderr, setup: justWritten))
                 }
                 // The agent's installer, sign-in and test need the network: start in accept-all, set
-                // the agent up, and let its last step load the file in the mode picked.
+                // the agent up, and let its last step load the file in the mode picked. A setup that
+                // does not get there switches to that mode all the same.
                 let started = system.start(configText: settingRootKey(loaded.text, "mode", to: "\"accept-all\""),
                                            output: SystemOutput(stdout: stdout, stderr: stderr, setup: true, next: false))
                 guard started == ExitCode.success else { return started }
                 stdout("  It stays in accept-all while \(agent) is set up, then switches to \(loaded.config.mode.rawValue).")
                 return connectAgent(agent, configPath: configPath, readFile: readFile, system: system, interaction: interaction,
-                                    machine: agents, stdout: stdout, stderr: stderr, firstStep: 4)
+                                    machine: agents, stdout: stdout, stderr: stderr, firstStep: 4, heldMode: loaded.config.mode)
             }
         case .stop:
             return system.stop(output: SystemOutput(stdout: stdout, stderr: stderr))

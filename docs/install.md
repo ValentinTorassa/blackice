@@ -101,7 +101,8 @@ full path, and a script that runs the full path, worked.
 
 If you pick fx, `start` also sets fx up, as `blackice agent connect fx` does (see "Let an agent answer"). It stays in
 accept-all until fx is installed, signed in and tested, and loads ask mode at the end, so nothing waits on an answer
-before fx can give it. `blackice init` asks the same questions without starting anything. Or write the file
+before fx can give it. If fx cannot be set up, it switches to ask mode all the same (Touch ID), and you answer with
+`blackice approve` and `deny`. `blackice init` asks the same questions without starting anything. Or write the file
 yourself, starting in accept-all, which lets everything through and only logs:
 
 ```toml
@@ -176,7 +177,8 @@ when their timeout passes.
    daemon.
 
 In ask or block-all it switches to accept-all while fx is set up (Touch ID), since fx's own connections would wait
-until its rule is loaded, and the last step loads your file again. It knows fx only, so far.
+until its rule is loaded, and the last step loads your file again. If the setup stops before that step, it switches
+back to the mode it was in (Touch ID). It knows fx only, so far.
 [`integrations/fx/README.md`](../integrations/fx/README.md) has the same steps by hand.
 
 ## 6. Use it
