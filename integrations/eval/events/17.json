@@ -1,0 +1,12 @@
+{
+  "event": "connection",
+  "id": "ev-00000011",
+  "app": {
+    "signing_id": "com.google.Chrome",
+    "team_id": "EQHXZ8M8AV",
+    "path": "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+  },
+  "ip": "203.0.113.30",
+  "port": 443,
+  "host": "accounts.google.com.signin-verify.co"
+}

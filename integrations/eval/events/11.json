@@ -1,0 +1,11 @@
+{
+  "event": "connection",
+  "id": "ev-0000000b",
+  "app": {
+    "cdhash": "8d3f2a61c0b94e7e5a1d6c2b9f07e4a3b5c8d1e2",
+    "path": "/opt/homebrew/Cellar/gh/2.83.0/bin/gh"
+  },
+  "ip": "140.82.112.5",
+  "port": 443,
+  "host": "api.github.com"
+}

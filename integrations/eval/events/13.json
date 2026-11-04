@@ -1,0 +1,11 @@
+{
+  "event": "connection",
+  "id": "ev-0000000d",
+  "app": {
+    "cdhash": "5b0e9d2c71a4f38e6d0c2b9a1f47e3d8c6a5b290",
+    "path": "/private/tmp/.cache-x91/svc"
+  },
+  "ip": "185.199.108.133",
+  "port": 443,
+  "host": "raw.githubusercontent.com"
+}
