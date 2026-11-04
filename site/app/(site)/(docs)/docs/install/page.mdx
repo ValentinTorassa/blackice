@@ -4,11 +4,11 @@ export const metadata = getDocsMetadata('/docs/install')
 
 # Install
 
-Install blackice 0.3.0 with the install script, Homebrew or the release zip, check it, start it, remove it and roll it back.
+Install blackice 0.3.1 with the install script, Homebrew or the release zip, check it, start it, remove it and roll it back.
 
 <Status />
 
-The release package is `Blackice-0.3.0.zip` plus `Blackice-0.3.0.zip.sha256`, attached to the [GitHub release](https://github.com/ValentinTorassa/blackice/releases/tag/v0.3.0). On 3 November 2026 the Homebrew section ran from the published 0.1.0 release, as an upgrade over a build installed by hand ([P5-02](https://github.com/ValentinTorassa/blackice/blob/main/evidence/P5-02-homebrew-upgrade-from-release-macos.md)), and the install script checked the release and installed it into a temporary folder instead of `/Applications` ([P5-03](https://github.com/ValentinTorassa/blackice/blob/main/evidence/P5-03-curl-install-script-sandbox-macos.md)). With 0.2.1, the uninstall steps and the script installing into `/Applications` ran from the published release ([P5-04](https://github.com/ValentinTorassa/blackice/blob/main/evidence/P5-04-install-start-faults-from-release-macos.md)). With a 0.3.0 candidate, the same steps, the first `start` with its lists and fx set up by `start` ran from no configuration and no fx ([P5-06](https://github.com/ValentinTorassa/blackice/blob/main/evidence/P5-06-onboarding-from-zero-macos.md)).
+The release package is `Blackice-0.3.1.zip` plus `Blackice-0.3.1.zip.sha256`, attached to the [GitHub release](https://github.com/ValentinTorassa/blackice/releases/tag/v0.3.1). On 3 November 2026 the Homebrew section ran from the published 0.1.0 release, as an upgrade over a build installed by hand ([P5-02](https://github.com/ValentinTorassa/blackice/blob/main/evidence/P5-02-homebrew-upgrade-from-release-macos.md)), and the install script checked the release and installed it into a temporary folder instead of `/Applications` ([P5-03](https://github.com/ValentinTorassa/blackice/blob/main/evidence/P5-03-curl-install-script-sandbox-macos.md)). With 0.2.1, the uninstall steps and the script installing into `/Applications` ran from the published release ([P5-04](https://github.com/ValentinTorassa/blackice/blob/main/evidence/P5-04-install-start-faults-from-release-macos.md)). With a 0.3.0 candidate, the same steps, the first `start` with its lists and fx set up by `start` ran from no configuration and no fx ([P5-06](https://github.com/ValentinTorassa/blackice/blob/main/evidence/P5-06-onboarding-from-zero-macos.md)).
 
 You need a Mac with Apple silicon (the build is arm64 only), macOS 14 or later, and an admin account. blackice has run on macOS 27.0.1 only.
 
@@ -36,9 +36,9 @@ The first command tells Homebrew to trust this cask: Homebrew loads casks from t
 Download both files into the same folder, then, in Terminal, in that folder:
 
 ```console
-$ shasum -a 256 -c Blackice-0.3.0.zip.sha256
-Blackice-0.3.0.zip: OK
-$ ditto -x -k Blackice-0.3.0.zip .
+$ shasum -a 256 -c Blackice-0.3.1.zip.sha256
+Blackice-0.3.1.zip: OK
+$ ditto -x -k Blackice-0.3.1.zip .
 $ codesign --verify --strict --deep --verbose=2 Blackice.app
 $ codesign -dvv Blackice.app 2>&1 | grep -E '^(Identifier|TeamIdentifier)='
 Identifier=com.valentorassa.blackice
