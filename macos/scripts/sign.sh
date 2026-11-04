@@ -12,7 +12,8 @@
 #   profile from the keychain at PATH (for signing over SSH, where the login keychain is locked).
 #   DRY=1 macos/scripts/sign.sh TEAM_ID - -  signs ad hoc without profiles. It checks this
 #   script, the bundle layout and the entitlements; the result cannot activate the extension.
-#   OUT=DIR builds in DIR (default macos/build/sign-<time>). BUILD_NUMBER as in build-app.sh.
+#   OUT=DIR builds in DIR (default macos/build/sign-<time>). BUILD_NUMBER as in build-app.sh; it
+#   also ends the extension's NEMachServiceName, so each build has its own XPC service.
 set -euo pipefail
 SCRIPTS="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 MACOS_DIR="$(cd -- "$SCRIPTS/.." && pwd)"
@@ -23,7 +24,7 @@ die() { echo "ERROR: $*" >&2; exit 1; }
 step() { printf '\n== %s\n' "$*"; }
 
 if [[ $# -lt 3 || $# -gt 4 ]]; then
-    sed -n 8,15p "$0" >&2
+    sed -n 8,16p "$0" >&2
     exit 64
 fi
 TEAM_ID=$1 APP_PROFILE=$2 FILTER_PROFILE=$3 NOTARY=${4:-}
@@ -34,7 +35,6 @@ OUT="${OUT:-$MACOS_DIR/build/sign-$(date +%Y%m%d-%H%M%S)}"
 mkdir -p "$OUT/signing"
 OUT="$(cd -- "$OUT" && pwd)"
 APP_GROUP="$TEAM_ID.$HOST_ID"
-MACH_SERVICE="$APP_GROUP.filter"
 
 # A Developer ID profile for this team and App ID, with the content filter entitlement and not
 # expired. Decoded into $4.
@@ -98,6 +98,13 @@ APP="$OUT/Blackice.app"
 EXT="$APP/Contents/Library/SystemExtensions/$FILTER_ID.systemextension"
 
 step "Fill in the Team ID: NEMachServiceName, app group, application identifiers"
+# Each build listens on its own Mach service, ending in its CFBundleVersion (Peers.machServiceName):
+# while macOS replaces a running extension, the old build's launchd job still holds its name, and
+# launchd refuses the same name to the new one. build-app.sh set the same build on both bundles.
+BUILD=$("$BUDDY" -c 'Print :CFBundleVersion' "$EXT/Contents/Info.plist")
+[[ "$("$BUDDY" -c 'Print :CFBundleVersion' "$APP/Contents/Info.plist")" == "$BUILD" ]] \
+    || die "the app's and the extension's CFBundleVersion differ"
+MACH_SERVICE="$APP_GROUP.filter.$BUILD"
 command cp "$MACOS_DIR/Resources/Blackice.entitlements" "$OUT/signing/Blackice.entitlements"
 command cp "$MACOS_DIR/Resources/Filter.entitlements" "$OUT/signing/Filter.entitlements"
 "$BUDDY" -c "Set :NetworkExtension:NEMachServiceName $MACH_SERVICE" "$EXT/Contents/Info.plist"
