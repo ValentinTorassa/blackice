@@ -171,10 +171,11 @@ struct AppleServicesPolicyTests {
     @Test func blockAllAllowsApplePlatformServicesToTheirHosts() throws {
         let blockAll = try snapshot(.blockAll)
         let cases: [(FlowFacts, FlowVerdict)] = [
-            (flow(cloudd, "p01-ckdatabase.icloud.com"), .allow(reason: "apple_service")),
+            // On the TLS port the server name is read before the flow passes.
+            (flow(cloudd, "p01-ckdatabase.icloud.com"), .readServerName),
             (flow(cloudd, "cvws.icloud-content.com", port: 8443), .allow(reason: "apple_service")),
             // A rule that names the host comes first.
-            (flow(cloudd, "gateway.icloud.com"), .allow(reason: "rule_line_13")),
+            (flow(cloudd, "gateway.icloud.com", port: 8443), .allow(reason: "rule_line_13")),
             (flow(cloudd, "example.org"), .drop(reason: "no_rule")),
             // The same signing identifier with a Team ID is not Apple's code.
             (flow(fakeCloudd, "p01-ckdatabase.icloud.com"), .drop(reason: "no_rule")),
@@ -219,11 +220,20 @@ struct AppleServicesPolicyTests {
             == .allow(reason: "apple_service;server_name"))
         #expect(FilterPolicy.decide(held, serverName: .serverName("evil.example"), snapshot: blockAll, context: matching)
             == .drop(reason: "no_rule"))
+        // With a host name from the system, the hello must name that host or another one the table covers.
+        let named = flow(cloudd, "p01-ckdatabase.icloud.com")
+        #expect(FilterPolicy.decide(named, serverName: .serverName("p01-ckdatabase.icloud.com"), snapshot: blockAll,
+                                    context: matching) == .allow(reason: "apple_service;server_name"))
+        #expect(FilterPolicy.decide(named, serverName: .serverName("gateway.icloud.com"), snapshot: blockAll,
+                                    context: matching) == .allow(reason: "rule_line_13;server_name"))
+        #expect(FilterPolicy.decide(named, serverName: .serverName("evil.example"), snapshot: blockAll, context: matching)
+            == .drop(reason: "server_name_mismatch"))
     }
 
     @Test func askModeDoesNotAskAboutCoveredServices() throws {
         let ask = try snapshot(.ask)
-        #expect(decide(flow(cloudd, "p01-ckdatabase.icloud.com"), ask) == .allow(reason: "apple_service"))
+        #expect(decide(flow(cloudd, "p01-ckdatabase.icloud.com", port: 8443), ask) == .allow(reason: "apple_service"))
+        #expect(decide(flow(cloudd, "p01-ckdatabase.icloud.com"), ask) == .readServerName)
         #expect(decide(flow(fakeCloudd, "p01-ckdatabase.icloud.com"), ask) == .ask(reason: "no_rule", addressMatches: true))
         #expect(decide(flow(curl, "gateway.icloud.com"), ask) == .ask(reason: "no_rule", addressMatches: true))
         #expect(decide(flow(cloudd, "example.org"), ask) == .ask(reason: "no_rule", addressMatches: true))
@@ -236,13 +246,13 @@ struct AppleServicesPolicyTests {
         #expect(decide(flow(apsd, "12-courier.push.apple.com"), blockAll) == .drop(reason: "no_rule"))
         #expect(decide(flow(apsd, nil), blockAll) == .drop(reason: "no_rule"))
         // Rules still count.
-        #expect(decide(flow(cloudd, "gateway.icloud.com"), blockAll) == .allow(reason: "rule_line_13"))
+        #expect(decide(flow(cloudd, "gateway.icloud.com", port: 8443), blockAll) == .allow(reason: "rule_line_13"))
         #expect(decide(flow(cloudd, nil), blockAll) == .readServerName)
         let ask = try snapshot(.ask, "apple_services = false")
         #expect(decide(flow(cloudd, "p01-ckdatabase.icloud.com"), ask) == .ask(reason: "no_rule", addressMatches: true))
         // Written out as true, it is the default.
         let explicit = try snapshot(.blockAll, "apple_services = true")
-        #expect(decide(flow(cloudd, "p01-ckdatabase.icloud.com"), explicit) == .allow(reason: "apple_service"))
+        #expect(decide(flow(cloudd, "p01-ckdatabase.icloud.com", port: 8443), explicit) == .allow(reason: "apple_service"))
     }
 
     @Test func acceptAllIsUnchanged() throws {

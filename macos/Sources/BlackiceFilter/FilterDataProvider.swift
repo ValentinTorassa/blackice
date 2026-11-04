@@ -466,8 +466,9 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
         askLock.unlock()
         for (paused, step, after) in outcomes {
             switch step {
-            case .allow, .learnNames: resume(paused, allow: true)
-            case .drop, .hold: resume(paused, allow: false)
+            // .hold comes only at the new-flow stage on the TLS port, where resume holds the flow.
+            case .allow, .learnNames, .hold: resume(paused, allow: true)
+            case .drop: resume(paused, allow: false)
             case .pause: break // waiting for an answer, or for another lookup of the same host
             }
             perform(after)
@@ -475,9 +476,9 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
     }
 
     /// Resumes a flow paused by this provider. Called outside flow callbacks. A flow paused at
-    /// the new-flow stage that still needs its server name read (named by a DNS answer, on the
-    /// TLS port) resumes into the hold: NEFilterDataProvider.h takes a new-flow verdict, such as
-    /// filterDataVerdict, for a flow paused in handleNewFlow.
+    /// the new-flow stage that still needs its server name read (TCP on the TLS port, named by
+    /// the system or by a DNS answer) resumes into the hold: NEFilterDataProvider.h takes a
+    /// new-flow verdict, such as filterDataVerdict, for a flow paused in handleNewFlow.
     private func resume(_ paused: Paused, allow: Bool) {
         let verdict: NEFilterVerdict
         switch paused.stage {

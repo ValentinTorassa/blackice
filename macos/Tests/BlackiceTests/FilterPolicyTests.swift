@@ -61,11 +61,14 @@ private func key(_ identity: IdentityResolution, _ host: String) -> ApprovalKey 
 
 /// Flows whose block-all verdicts the tests pin down, with every host resolving to the flow's address.
 private let blockAllCases: [(FlowFacts, FlowVerdict)] = [
-    (flow(agent, "api.example.com"), .allow(reason: "rule_line_3")),
-    (flow(agent, "API.Example.COM."), .allow(reason: "rule_line_3")),
+    // TCP on the TLS port: the rule matches, and the server name is read before the flow passes.
+    (flow(agent, "api.example.com"), .readServerName),
+    (flow(agent, "API.Example.COM."), .readServerName),
     (flow(agent, "api.example.com", port: 8443), .allow(reason: "rule_line_3")),
+    (flow(agent, "api.example.com", tcp: false), .allow(reason: "rule_line_3")),
     (flow(agent, "other.example.com"), .drop(reason: "no_rule")),
-    (flow(curl, "pypi.org"), .allow(reason: "rule_line_8")),
+    (flow(curl, "pypi.org"), .readServerName),
+    (flow(curl, "pypi.org", port: 80), .allow(reason: "rule_line_8")),
     (flow(probe, "pypi.org"), .drop(reason: "no_rule")),
     // Same signing identifier, another team or none: not the app the rule names.
     (flow(signed("com.example.agent", "ZZZZZ99999"), "api.example.com"), .drop(reason: "no_rule")),
@@ -111,7 +114,9 @@ struct FilterPolicyTests {
         #expect(FilterPolicy.decide(facts, snapshot: snapshot, context: context()) == .resolveHost("api.example.com"))
         // CDN-style answers: the flow's address is one of several, of both families.
         let cdn = context(answers: ["api.example.com": ["198.51.100.1", flowAddress, "2001:db8::1"]])
-        #expect(FilterPolicy.decide(facts, snapshot: snapshot, context: cdn) == .allow(reason: "rule_line_3"))
+        #expect(FilterPolicy.decide(facts, snapshot: snapshot, context: cdn) == .readServerName)
+        #expect(FilterPolicy.decide(flow(agent, "api.example.com", port: 8443), snapshot: snapshot, context: cdn)
+            == .allow(reason: "rule_line_3"))
         // The app named the rule's host but connects somewhere else.
         let elsewhere = context(answers: ["api.example.com": ["198.51.100.1", "198.51.100.2"]])
         #expect(FilterPolicy.decide(facts, snapshot: snapshot, context: elsewhere) == .drop(reason: "address_mismatch"))
@@ -131,17 +136,20 @@ struct FilterPolicyTests {
         let snapshot = try policySnapshot(.ask)
         let here = [flowAddress]
         let cases: [(FlowFacts, PolicyContext, FlowVerdict)] = [
-            (flow(agent, "api.example.com"), context(answers: ["api.example.com": here]), .allow(reason: "rule_line_3")),
+            (flow(agent, "api.example.com"), context(answers: ["api.example.com": here]), .readServerName),
+            (flow(agent, "api.example.com", port: 8443), context(answers: ["api.example.com": here]),
+             .allow(reason: "rule_line_3")),
             // Looked up even without a rule, so the paused flow knows whether an approval may release it.
             (flow(agent, "other.example.com"), context(), .resolveHost("other.example.com")),
             (flow(agent, "other.example.com"), context(answers: ["other.example.com": here]),
              .ask(reason: "no_rule", addressMatches: true)),
             (flow(agent, "other.example.com"), context(answers: ["other.example.com": ["198.51.100.9"]]),
              .ask(reason: "no_rule", addressMatches: false)),
-            // An approval counts once the address checks out; a mismatch asks again.
+            // An approval counts once the address checks out (on the TLS port, the server name is
+            // read next); a mismatch asks again.
             (flow(agent, "other.example.com"),
              context(approved: [key(agent, "other.example.com")], answers: ["other.example.com": here]),
-             .allow(reason: "approval")),
+             .readServerName),
             (flow(agent, "other.example.com"),
              context(approved: [key(agent, "other.example.com")], answers: ["other.example.com": ["198.51.100.9"]]),
              .ask(reason: "address_mismatch", addressMatches: false)),
@@ -153,7 +161,7 @@ struct FilterPolicyTests {
              .allow(reason: "approval")),
             // Ad hoc code is asked about and approved by its cdhash.
             (flow(adHoc, "example.org"), context(answers: ["example.org": here]), .ask(reason: "no_rule", addressMatches: true)),
-            (flow(adHoc, "example.org"), context(approved: [key(adHoc, "example.org")], answers: ["example.org": here]),
+            (flow(adHoc, "example.org", port: 22), context(approved: [key(adHoc, "example.org")], answers: ["example.org": here]),
              .allow(reason: "approval")),
             // Another build of it has another cdhash.
             (flow(.adHoc(cdhash: String(repeating: "e", count: 40)), "example.org"),
@@ -245,6 +253,64 @@ struct FilterPolicyTests {
 
         // The mode can change to accept-all while a flow is held.
         #expect(decide(.serverName("evil.example.net"), try policySnapshot(.acceptAll)) == .allow(reason: "accept_all"))
+    }
+
+    @Test func aHostNameFromTheSystemIsHeldToItsServerName() throws {
+        // URLSession and Network.framework flows carry a host name the app chose. A rule for that
+        // host must not let the app reach another site on the same address by naming it in its hello.
+        let blockAll = try policySnapshot(.blockAll)
+        let named = flow(agent, "api.example.com")
+        let here = context(answers: ["api.example.com": [flowAddress]])
+        func hello(_ name: String, _ snapshot: ProviderConfiguration, _ facts: FlowFacts,
+                   _ context: PolicyContext) -> FlowVerdict {
+            FilterPolicy.decide(facts, serverName: .serverName(name), snapshot: snapshot, context: context)
+        }
+        #expect(FilterPolicy.decide(named, snapshot: blockAll, context: here) == .readServerName)
+        #expect(hello("api.example.com", blockAll, named, here) == .allow(reason: "rule_line_3;server_name"))
+        #expect(hello("API.Example.com.", blockAll, named, here) == .allow(reason: "rule_line_3;server_name"))
+        // Another site behind the same address, or a host another app's rule names: dropped.
+        #expect(hello("evil.example.net", blockAll, named, matching) == .drop(reason: "server_name_mismatch"))
+        #expect(hello("pypi.org", blockAll, named, matching) == .drop(reason: "server_name_mismatch"))
+        // A server name the app's own rule also covers goes on to its own address check.
+        let twoHosts = try ProviderConfiguration(generation: 7, mode: .blockAll, configText: """
+            mode = "block-all"
+
+            [[allow]]
+            app = "com.example.agent"
+            team = "ABCDE12345"
+            hosts = ["api.example.com", "cdn.example.com"]
+
+            """)
+        #expect(hello("cdn.example.com", twoHosts, named, here) == .resolveHost("cdn.example.com"))
+        #expect(hello("cdn.example.com", twoHosts, named, context(answers: ["cdn.example.com": [flowAddress]]))
+            == .allow(reason: "rule_line_3;server_name"))
+        #expect(hello("cdn.example.com", twoHosts, named, context(answers: ["cdn.example.com": ["198.51.100.9"]]))
+            == .drop(reason: "server_name_mismatch"))
+
+        // Ask mode, after an approval of the host name: the hello must name it, never a second question.
+        let ask = try policySnapshot(.ask)
+        let other = flow(agent, "other.example.com")
+        let approved = context(approved: [key(agent, "other.example.com")], answers: ["other.example.com": [flowAddress]])
+        #expect(FilterPolicy.decide(other, snapshot: ask, context: approved) == .readServerName)
+        #expect(hello("other.example.com", ask, other, approved) == .allow(reason: "approval;server_name"))
+        #expect(hello("evil.example.net", ask, other, approved) == .drop(reason: "server_name_mismatch"))
+        // Not approved yet: asked about by its host name before it connects, with the whole timeout
+        // to wait; an approval then resumes it into the hold.
+        #expect(FilterPolicy.decide(other, snapshot: ask, context: context(answers: ["other.example.com": [flowAddress]]))
+            == .ask(reason: "no_rule", addressMatches: true))
+        #expect(FilterPolicy.holdLimit(other, afterServerName: false) == nil)
+        #expect(FilterPolicy.needsServerName(other))
+
+        // Off the TLS port, or over UDP, the host name decides as before; so does a host name that
+        // no rule covers, or that fails its address check.
+        #expect(FilterPolicy.decide(flow(agent, "api.example.com", port: 8443), snapshot: blockAll, context: here)
+            == .allow(reason: "rule_line_3"))
+        #expect(FilterPolicy.decide(flow(agent, "api.example.com", tcp: false), snapshot: blockAll, context: here)
+            == .allow(reason: "rule_line_3"))
+        #expect(FilterPolicy.decide(flow(agent, "evil.example.net"), snapshot: blockAll, context: matching)
+            == .drop(reason: "no_rule"))
+        #expect(FilterPolicy.decide(named, snapshot: blockAll, context: context(answers: ["api.example.com": ["198.51.100.9"]]))
+            == .drop(reason: "address_mismatch"))
     }
 
     @Test func serverNameReaderFeedsThePolicy() throws {

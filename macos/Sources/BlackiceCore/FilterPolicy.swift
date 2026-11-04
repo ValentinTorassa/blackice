@@ -18,6 +18,9 @@ import Foundation
 // In ask and block-all the extension also reads the resolver's DNS responses, passing every
 // byte, to learn which names each address was given for (DNSMessage.swift). A flow with no host
 // name whose address was given for exactly one name is decided on that name.
+// A TCP flow on the TLS port that a host rule, the Apple services table or an approval would
+// allow passes only once its ClientHello has been read: the server name must be the flow's host
+// (from the system or from a DNS answer), or a host covered by itself.
 
 public enum FlowDirection: Sendable {
     case outbound, inbound, unknown
@@ -129,13 +132,17 @@ public enum FilterPolicy {
         guard let identity = nameable(flow.identity, snapshot.mode) else { return .drop(reason: identityReason(flow.identity)) }
         guard flow.internetSocket else { return .drop(reason: "unsupported_socket") }
         if let verdict = anyHost(flow, snapshot) { return verdict }
+        let tls = flow.tcp && flow.port == tlsPort
         if let raw = flow.hostname {
             guard let host = normalizeHost(raw) else { return .drop(reason: "hostname_invalid") }
-            return named(identity, host: host, flow, snapshot, context, suffix: "")
+            let verdict = named(identity, host: host, flow, snapshot, context, suffix: "")
+            // The app chose this host name. On the TLS port the server name it sends picks the
+            // site behind the address, so it is read before the flow passes, as for a DNS name.
+            if tls, case .allow = verdict { return .readServerName }
+            return verdict
         }
         // No host name from the system. Ask mode reads the TLS server name to have a host to ask
         // about; block-all reads it only when a rule or the Apple services table could match this app.
-        let tls = flow.tcp && flow.port == tlsPort
         // The system resolver gave the address for exactly one name: decide on that name now.
         if let name = flow.dnsName, let verdict = dnsNamed(identity, name: name, tls: tls, snapshot, context) {
             return verdict
@@ -160,10 +167,19 @@ public enum FilterPolicy {
             guard let identity = nameable(flow.identity, snapshot.mode) else { return .drop(reason: identityReason(flow.identity)) }
             if let verdict = anyHost(flow, snapshot) { return verdict }
             guard let host = normalizeHost(name) else { return .drop(reason: "server_name_invalid") }
-            // The app looked one name up and names another server in its hello, perhaps on the
-            // same CDN address: that server name passes only if a rule or an approval covers it
-            // (and the address checks out), never by asking.
-            if flow.hostname == nil, let looked = flow.dnsName, host != looked {
+            // The flow's host before its hello: the host name from the system, or the one name
+            // the resolver gave the address for.
+            let claimed: String?
+            if let raw = flow.hostname {
+                guard let named = normalizeHost(raw) else { return .drop(reason: "hostname_invalid") }
+                claimed = named
+            } else {
+                claimed = flow.dnsName
+            }
+            // The app named one host and names another server in its hello, perhaps on the same
+            // CDN address: that server name passes only if a rule or an approval covers it (and
+            // the address checks out), never by asking.
+            if let claimed, host != claimed {
                 guard covers(identity, host, snapshot, context) else { return .drop(reason: "server_name_mismatch") }
                 let verdict = named(identity, host: host, flow, snapshot, context, suffix: ";server_name")
                 switch verdict {
@@ -230,14 +246,15 @@ public enum FilterPolicy {
     /// verdict only keeps the app from seeing the connection, so the server's clock is running.
     /// nil: the whole timeout.
     public static func holdLimit(_ flow: FlowFacts, afterServerName: Bool) -> TimeInterval? {
-        if afterServerName || !flow.tcp || needsServerName(flow) { return connectedHoldSeconds }
+        if afterServerName || !flow.tcp || (flow.hostname == nil && needsServerName(flow)) { return connectedHoldSeconds }
         return nil
     }
 
-    /// A TCP flow on the TLS port with no host name from the system: allowed only once its
-    /// ClientHello has been read, also after an approval.
+    /// A TCP flow on the TLS port: a host rule, the Apple services table or an approval allows it
+    /// only once its ClientHello has been read, also after an approval, with or without a host
+    /// name from the system.
     public static func needsServerName(_ flow: FlowFacts) -> Bool {
-        flow.hostname == nil && flow.tcp && flow.port == tlsPort
+        flow.tcp && flow.port == tlsPort
     }
 
     /// A flow with a host name: rules, then the Apple services table, then approvals, each only once
