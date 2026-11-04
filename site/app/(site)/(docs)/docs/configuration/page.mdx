@@ -40,7 +40,7 @@ Each `[[allow]]` rule names one app and the hosts it may reach, in every mode.
 - A host counts only when the address the app connects to is among the host's answers from the system resolver. Otherwise ask mode asks and block-all drops, and the log says `address_mismatch`.
 - Rules say nothing about ports.
 
-`codesign -dv` shows an app's identity. Apple's own programs show `TeamIdentifier=not set`.
+`codesign -dv` shows an app's identity. Apple's own programs show `TeamIdentifier=not set`. Apple's developer tools, installed with the Command Line Tools or Xcode, show `TeamIdentifier=59GAB85EFG`, and a rule names them with that Team ID; git over HTTPS connects as `com.apple.git-remote-http`. Mac App Store apps show their developer's Team ID.
 
 ```console
 $ codesign -dv /Applications/Tailscale.app/Contents/Library/SystemExtensions/*.systemextension 2>&1 | grep -E '^(Identifier|TeamIdentifier)='

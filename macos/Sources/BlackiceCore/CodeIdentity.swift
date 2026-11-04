@@ -41,10 +41,29 @@ public final class IdentityCache: @unchecked Sendable {
 public enum CodeIdentity {
     public static let cache = IdentityCache()
 
-    private static func requirement(_ text: String) -> SecRequirement? {
+    static func requirement(_ text: String) -> SecRequirement? {
         var requirement: SecRequirement?
         guard SecRequirementCreateWithString(text as CFString, [], &requirement) == errSecSuccess else { return nil }
         return requirement
+    }
+
+    /// The requirement code must satisfy to be known by this signing identifier and Team ID, running
+    /// or on disk. Without a Team ID, only Apple platform code qualifies. With one, three kinds of
+    /// signature do:
+    /// - Developer ID and Apple Development certificates, which name the team in the leaf's OU;
+    /// - Apple's own ("Software Signing", `anchor apple`) on the tools the Command Line Tools and
+    ///   Xcode install, such as git, git-remote-https, python3 and notarytool, which carry Team ID
+    ///   59GAB85EFG;
+    /// - the Mac App Store's ("Apple Mac OS Application Signing", leaf field
+    ///   1.2.840.113635.100.6.1.9), which carries the developer's Team ID.
+    /// In the last two the leaf's OU is not the Team ID, but Apple's signature covers the code
+    /// directory, and the Team ID in it. Checking the OU alone made both invalid_signature, and in ask
+    /// and block-all their connections were dropped without asking: git over HTTPS, notarytool and
+    /// Mac App Store apps among them.
+    static func requirementText(signingID: String, teamID: String?) -> String {
+        guard let teamID else { return "anchor apple and identifier \"\(signingID)\"" }
+        return "identifier \"\(signingID)\" and (anchor apple or anchor apple generic and " +
+            "(certificate leaf[subject.OU] = \"\(teamID)\" or certificate leaf[field.1.2.840.113635.100.6.1.9] exists))"
     }
 
     /// The audit token includes the process generation. No PID-only lookups,
@@ -113,17 +132,11 @@ public enum CodeIdentity {
         guard let signingID = info[kSecCodeInfoIdentifier as String] as? String, validSigningID(signingID) else {
             return SecCodeCheckValidity(code, strict, nil) == errSecSuccess ? .unresolved : .invalidSignature
         }
-        let expression: String
-        if let teamID {
-            guard validTeamID(teamID) else { return .invalidSignature }
-            expression = "anchor apple generic and identifier \"\(signingID)\" and certificate leaf[subject.OU] = \"\(teamID)\""
-        } else {
-            // Only Apple platform code can be considered known without a Team ID.
-            expression = "anchor apple and identifier \"\(signingID)\""
-        }
-        // Check the dynamic guest against the exact signed metadata, including
-        // the certificate's OU. An ad hoc signature cannot satisfy either anchor.
-        guard let exact = requirement(expression), SecCodeCheckValidity(code, strict, exact) == errSecSuccess else { return .invalidSignature }
+        if let teamID, !validTeamID(teamID) { return .invalidSignature }
+        // Check the dynamic guest against the exact signed metadata (see requirementText). An ad hoc
+        // signature cannot satisfy either anchor.
+        guard let exact = requirement(requirementText(signingID: signingID, teamID: teamID)),
+              SecCodeCheckValidity(code, strict, exact) == errSecSuccess else { return .invalidSignature }
         return .verified(SigningIdentity(signingID: signingID, teamID: teamID))
     }
 
@@ -156,14 +169,8 @@ public enum CodeIdentity {
         if let flags = info[kSecCodeInfoFlags as String] as? NSNumber,
            flags.uint32Value & SecCodeSignatureFlags.adhoc.rawValue != 0 { return nil }
         let teamID = info[kSecCodeInfoTeamIdentifier as String] as? String
-        let expression: String
-        if let teamID {
-            guard validTeamID(teamID) else { return nil }
-            expression = "anchor apple generic and identifier \"\(signingID)\" and certificate leaf[subject.OU] = \"\(teamID)\""
-        } else {
-            expression = "anchor apple and identifier \"\(signingID)\""
-        }
-        guard let exact = requirement(expression),
+        if let teamID, !validTeamID(teamID) { return nil }
+        guard let exact = requirement(requirementText(signingID: signingID, teamID: teamID)),
               SecStaticCodeCheckValidity(staticCode, SecCSFlags(rawValue: kSecCSStrictValidate), exact) == errSecSuccess
         else { return nil }
         return SigningIdentity(signingID: signingID, teamID: teamID)

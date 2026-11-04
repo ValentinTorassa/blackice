@@ -18,6 +18,10 @@ An agent that answers, set up from the first start.
   sign-in is not cut when the filter comes up.
 - fx's sign-in can read the terminal, so pressing Enter opens the page, and a failed sign-in is offered again. When
   AI Gateway refuses fx's test because the Vercel team has no card on file, `agent connect` says so.
+- In ask and block-all, connections of Apple's developer tools (git over HTTPS, python3, notarytool and the rest of
+  the Command Line Tools and Xcode) and of Mac App Store apps were dropped as `invalid_signature`, without asking,
+  and no rule could name them. They are known now by their signing identifier and the Team ID `codesign -dv` shows:
+  59GAB85EFG for Apple's tools, the developer's for Mac App Store apps.
 - The install script takes `BLACKICE_ZIP`, the path of a `Blackice-<version>.zip` that is not published, to try a
   build with the same checks.
 
