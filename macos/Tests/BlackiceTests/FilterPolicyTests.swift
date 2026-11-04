@@ -319,8 +319,7 @@ struct FilterPolicyTests {
             == .drop(reason: "address_mismatch"))
     }
 
-    @Test func anEncryptedClientHelloEstablishesNoHost() throws {
-        // The name in the clear is a public front end; the destination is in the encrypted part.
+    @Test func anEncryptedClientHelloIsJudgedOnItsOuterName() throws {
         var reader = TLSServerNameReader()
         let ech = reader.receive(clientHello("pypi.org", extra: [0xfe, 0x0d, 0, 4, 0x42, 0x87, 0x19, 0xff]), offset: 0)
         #expect(ech == .serverName("pypi.org", echPresent: true))
@@ -328,28 +327,49 @@ struct FilterPolicyTests {
         let ask = try policySnapshot(.ask)
         let approved = context(approved: [key(agent, "api.example.com"), key(probe, "example.org")],
                                answers: ["api.example.com": [flowAddress], "example.org": [flowAddress]])
-        let dropped = FlowVerdict.drop(reason: "encrypted_client_hello")
-        let cases: [(FlowFacts, String, ProviderConfiguration, PolicyContext)] = [
-            // A rule for the name in the clear, with no host name, a DNS name or a host name.
-            (flow(curl, nil), "pypi.org", blockAll, matching),
-            (flow(curl, nil, dnsNames: ["pypi.org"]), "pypi.org", blockAll, matching),
-            (flow(agent, "api.example.com"), "api.example.com", blockAll, matching),
-            (flow(agent, "api.example.com"), "api.example.com", ask, approved),
-            // An approval does not cover it either, and ask mode does not ask about it.
-            (flow(probe, "example.org"), "example.org", ask, approved),
-            (flow(probe, nil), "example.org", ask, approved),
-            (flow(probe, nil), "evil.example.net", ask, matching),
-            (flow(adHoc, nil), "example.org", ask, matching),
-            // The Apple services table does not either.
-            (flow(signed("com.apple.apsd", nil), nil), "1-courier.push.apple.com", blockAll, matching),
+        let frontEnd = "cloudflare-ech.com"
+        let cases: [(FlowFacts, String, ProviderConfiguration, PolicyContext, FlowVerdict)] = [
+            // A decoy extension (GREASE) leaves the real host in the clear: it passes as without ECH.
+            (flow(curl, nil), "pypi.org", blockAll, matching, .allow(reason: "rule_line_8;server_name;ech")),
+            (flow(curl, nil, dnsNames: ["pypi.org"]), "pypi.org", blockAll, matching,
+             .allow(reason: "rule_line_8;server_name;ech")),
+            (flow(agent, "api.example.com"), "api.example.com", blockAll, matching,
+             .allow(reason: "rule_line_3;server_name;ech")),
+            (flow(probe, "example.org"), "example.org", ask, approved, .allow(reason: "approval;server_name;ech")),
+            (flow(signed("com.apple.apsd", nil), nil), "1-courier.push.apple.com", blockAll, matching,
+             .allow(reason: "apple_service;server_name;ech")),
+            // Real ECH puts the provider's front end in the clear: not the flow's host, so dropped.
+            (flow(agent, "api.example.com"), frontEnd, blockAll, matching, .drop(reason: "server_name_mismatch;ech")),
+            (flow(curl, nil, dnsNames: ["pypi.org"]), frontEnd, blockAll, matching, .drop(reason: "server_name_mismatch;ech")),
+            (flow(probe, "example.org"), frontEnd, ask, approved, .drop(reason: "server_name_mismatch;ech")),
+            (flow(curl, nil), frontEnd, blockAll, matching, .drop(reason: "no_rule;ech")),
+            // With no host before the hello, ask mode asks about the front end.
+            (flow(probe, nil), frontEnd, ask, matching, .ask(reason: "no_rule;ech", addressMatches: true)),
+            // A lookup still comes first, and its verdict is not marked; the decision after it is.
+            (flow(curl, nil), "pypi.org", blockAll, context(), .resolveHost("pypi.org")),
         ]
-        for (facts, name, snapshot, context) in cases {
-            #expect(FilterPolicy.decide(facts, serverName: .serverName(name, echPresent: true), snapshot: snapshot,
-                                        context: context) == dropped, "\(facts) \(name)")
-            // Without the extension the same hello is decided on its server name.
+        for (facts, name, snapshot, context, expected) in cases {
+            let verdict = FilterPolicy.decide(facts, serverName: .serverName(name, echPresent: true), snapshot: snapshot,
+                                              context: context)
+            #expect(verdict == expected, "\(facts) \(name)")
+            // ECH changes only the reason.
             #expect(FilterPolicy.decide(facts, serverName: .serverName(name), snapshot: snapshot, context: context)
-                != dropped, "\(facts) \(name)")
+                .adding(";ech") == expected, "\(facts) \(name)")
         }
+        // The limit: a rule or an approval for a front-end name covers every site behind it.
+        let fronted = try ProviderConfiguration(generation: 7, mode: .blockAll, configText: """
+            mode = "block-all"
+
+            [[allow]]
+            app = "com.apple.curl"
+            hosts = ["cloudflare-ech.com"]
+
+            """)
+        #expect(FilterPolicy.decide(flow(curl, nil), serverName: .serverName(frontEnd, echPresent: true), snapshot: fronted,
+                                    context: matching) == .allow(reason: "rule_line_3;server_name;ech"))
+        let frontApproved = context(approved: [key(probe, frontEnd)], answers: [frontEnd: [flowAddress]])
+        #expect(FilterPolicy.decide(flow(probe, nil), serverName: .serverName(frontEnd, echPresent: true), snapshot: ask,
+                                    context: frontApproved) == .allow(reason: "approval;server_name;ech"))
         // A hosts = ["*"] rule and accept-all check nothing, ECH included.
         let star = try ProviderConfiguration(generation: 7, mode: .blockAll, configText: """
             mode = "block-all"

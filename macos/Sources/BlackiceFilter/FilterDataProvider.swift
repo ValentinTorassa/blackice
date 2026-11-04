@@ -81,6 +81,8 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
         let facts: FlowFacts
         /// Set when the flow was paused after its TLS server name was read.
         let serverName: String?
+        /// Whether that hello had the encrypted_client_hello extension, for its verdict's reason.
+        let echPresent: Bool
         let stage: Stage
         let generation: UInt64
     }
@@ -227,7 +229,8 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
                               remoteAddress: address,
                               process: flow.sourceProcessAuditToken.map { CodeIdentity.resolve(auditToken: $0) },
                               dnsNames: dnsNames.names(for: address))
-        let paused = Paused(flow: flow, facts: facts, serverName: nil, stage: .newFlow, generation: snapshot?.generation ?? 0)
+        let paused = Paused(flow: flow, facts: facts, serverName: nil, echPresent: false, stage: .newFlow,
+                            generation: snapshot?.generation ?? 0)
         askLock.lock()
         let verdict = FilterPolicy.decide(facts, snapshot: snapshot, context: context(now: Self.now))
         let (step, after) = place(verdict, paused, snapshot, now: Self.now)
@@ -294,8 +297,9 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
         heldLock.unlock()
 
         var serverName: String?
-        if case .serverName(let name, _) = result { serverName = name }
-        let paused = Paused(flow: flow, facts: entry.facts, serverName: serverName, stage: .data,
+        var echPresent = false
+        if case .serverName(let name, let ech) = result { (serverName, echPresent) = (name, ech) }
+        let paused = Paused(flow: flow, facts: entry.facts, serverName: serverName, echPresent: echPresent, stage: .data,
                             generation: entry.generation)
         askLock.lock()
         let verdict = FilterPolicy.decide(entry.facts, serverName: result, snapshot: snapshot, context: context(now: Self.now))
@@ -476,7 +480,8 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
             } else {
                 let context = context(now: now, resolved: (host, answers))
                 verdict = paused.serverName.map {
-                    FilterPolicy.decide(paused.facts, serverName: .serverName($0), snapshot: snapshot, context: context)
+                    FilterPolicy.decide(paused.facts, serverName: .serverName($0, echPresent: paused.echPresent),
+                                        snapshot: snapshot, context: context)
                 } ?? FilterPolicy.decide(paused.facts, snapshot: snapshot, context: context)
             }
             let (step, after) = place(verdict, paused, snapshot, now: now)

@@ -21,7 +21,7 @@ import Foundation
 // A TCP flow on the TLS port that a host rule, the Apple services table or an approval would
 // allow passes only once its ClientHello has been read: the server name must be the flow's host
 // (from the system or from a DNS answer), or a host covered by itself. A hello with Encrypted
-// Client Hello establishes no host, and only a hosts = ["*"] rule or accept-all lets it through.
+// Client Hello is judged on its server name in the clear, and its verdict's reason ends in ";ech".
 
 public enum FlowDirection: Sendable {
     case outbound, inbound, unknown
@@ -90,6 +90,16 @@ public enum FlowVerdict: Equatable, Sendable {
         case .readServerName: return "reading_server_name"
         case .resolveHost: return "resolving_host"
         case .learnNames: return "system_resolver"
+        }
+    }
+
+    /// An allow, drop or ask with `suffix` after its reason; any other verdict unchanged.
+    func adding(_ suffix: String) -> FlowVerdict {
+        switch self {
+        case .allow(let reason): return .allow(reason: reason + suffix)
+        case .drop(let reason): return .drop(reason: reason + suffix)
+        case .ask(let reason, let addressMatches): return .ask(reason: reason + suffix, addressMatches: addressMatches)
+        case .readServerName, .resolveHost, .learnNames: return self
         }
     }
 }
@@ -167,37 +177,45 @@ public enum FilterPolicy {
             if snapshot.mode == .acceptAll { return .allow(reason: "accept_all") }
             guard let identity = nameable(flow.identity, snapshot.mode) else { return .drop(reason: identityReason(flow.identity)) }
             if let verdict = anyHost(flow, snapshot) { return verdict }
-            // Encrypted Client Hello: the server name in the clear names a public front end, and
-            // the site the connection reaches is in the encrypted inner hello. A rule or an
-            // approval for the front end, or for any host on the same provider's address, would
-            // let the app reach every site behind it, so such a hello establishes no host. It is
-            // dropped in block-all, and in ask mode too: an event could only name the front end.
-            // The cost: a decoy ECH extension (GREASE), which Chrome sends when it has no ECH key
-            // for the server, looks the same, so such apps need hosts = ["*"] to reach HTTPS.
-            if encrypted { return .drop(reason: "encrypted_client_hello") }
-            guard let host = normalizeHost(name) else { return .drop(reason: "server_name_invalid") }
-            // The flow's host before its hello: the host name from the system, or the one name
-            // the resolver gave the address for.
-            let claimed: String?
-            if let raw = flow.hostname {
-                guard let named = normalizeHost(raw) else { return .drop(reason: "hostname_invalid") }
-                claimed = named
-            } else {
-                claimed = flow.dnsName
-            }
-            // The app named one host and names another server in its hello, perhaps on the same
-            // CDN address: that server name passes only if a rule or an approval covers it (and
-            // the address checks out), never by asking.
-            if let claimed, host != claimed {
-                guard covers(identity, host, snapshot, context) else { return .drop(reason: "server_name_mismatch") }
-                let verdict = named(identity, host: host, flow, snapshot, context, suffix: ";server_name")
-                switch verdict {
-                case .allow, .resolveHost: return verdict
-                default: return .drop(reason: "server_name_mismatch")
-                }
-            }
-            return named(identity, host: host, flow, snapshot, context, suffix: ";server_name")
+            // Encrypted Client Hello (ECH): the server name in the clear is then the provider's
+            // public front end (cloudflare-ech.com, say), and the site the connection reaches is
+            // in the encrypted inner hello, which blackice cannot read. The outer name is judged
+            // like any server name: it must be the flow's host, or be covered itself with its own
+            // address check. A decoy ECH extension (GREASE, which Chrome sends when it has no ECH
+            // key) leaves the real host there, so it passes as before. What remains: a rule or an
+            // approval for a front-end name covers every site behind it, for that app; and the
+            // app writes the outer name itself, so where the provider decrypts ECH whatever that
+            // name says, any covered name it hosts can serve as the front end. Reasons say ";ech".
+            let verdict = serverNamed(identity, name, flow, snapshot, context)
+            return encrypted ? verdict.adding(";ech") : verdict
         }
+    }
+
+    /// A held flow's server name, read in the clear.
+    private static func serverNamed(_ identity: AppIdentity, _ name: String, _ flow: FlowFacts,
+                                    _ snapshot: ProviderConfiguration, _ context: PolicyContext) -> FlowVerdict {
+        guard let host = normalizeHost(name) else { return .drop(reason: "server_name_invalid") }
+        // The flow's host before its hello: the host name from the system, or the one name the
+        // resolver gave the address for.
+        let claimed: String?
+        if let raw = flow.hostname {
+            guard let named = normalizeHost(raw) else { return .drop(reason: "hostname_invalid") }
+            claimed = named
+        } else {
+            claimed = flow.dnsName
+        }
+        // The app named one host and names another server in its hello, perhaps on the same CDN
+        // address: that server name passes only if a rule or an approval covers it (and the
+        // address checks out), never by asking.
+        if let claimed, host != claimed {
+            guard covers(identity, host, snapshot, context) else { return .drop(reason: "server_name_mismatch") }
+            let verdict = named(identity, host: host, flow, snapshot, context, suffix: ";server_name")
+            switch verdict {
+            case .allow, .resolveHost: return verdict
+            default: return .drop(reason: "server_name_mismatch")
+            }
+        }
+        return named(identity, host: host, flow, snapshot, context, suffix: ";server_name")
     }
 
     /// A rule with hosts = ["*"] for the flow's verified identity allows it outright: no host name
