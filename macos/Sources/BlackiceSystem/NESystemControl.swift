@@ -134,10 +134,12 @@ public final class NESystemControl: SystemControlling {
             filter = .unreadable
         }
         var pending: PendingReply?
+        var upgrade: UnfinishedUpgrade?
         if case .on = filter, let teamID = CodeIdentity.current()?.teamID {
             pending = try? FilterClient(teamID: teamID).pending()
+            if pending == nil { upgrade = Self.unfinishedUpgrade() }
         }
-        CLI.statusLines(StatusReport(filter: filter, daemonRunning: Self.daemonRunning(), pending: pending))
+        CLI.statusLines(StatusReport(filter: filter, daemonRunning: Self.daemonRunning(), pending: pending, upgrade: upgrade))
             .forEach(output.stdout)
         return ExitCode.success
     }
@@ -151,6 +153,21 @@ public final class NESystemControl: SystemControlling {
     /// Whether launchd has the daemon's LaunchAgent loaded for this user.
     static func daemonRunning() -> Bool {
         LaunchAgent.run(["print", "gui/\(getuid())/\(LaunchAgent.label)"]).status == 0
+    }
+
+    /// Asked when the extension does not answer: whether macOS runs another build of it than the
+    /// one inside this app, because the app was replaced and `blackice start` has not run since.
+    /// One properties request to macOS; nil when it fails or the builds match.
+    static func unfinishedUpgrade() -> UnfinishedUpgrade? {
+        let result = Completion()
+        let delegate = ExtensionPropertiesDelegate(result: result)
+        let request = OSSystemExtensionRequest.propertiesRequest(forExtensionWithIdentifier: BlackiceIdentifiers.filter,
+                                                                 queue: .main)
+        request.delegate = delegate
+        OSSystemExtensionManager.shared.submitRequest(request)
+        let status = withExtendedLifetime(delegate) { MainLoop.wait(for: result, timeout: 5) }
+        guard status == ExitCode.success else { return nil }
+        return UnfinishedUpgrade(app: Peers.extensionBuild(app: Bundle.main.bundleURL), running: delegate.running)
     }
 
     public func setMode(_ mode: Mode, output: SystemOutput) -> Int32 {
@@ -201,7 +218,8 @@ public final class NESystemControl: SystemControlling {
             CLI.pendingLines(reply).forEach(output.stdout)
             return ExitCode.success
         } catch {
-            output.stderr("Cannot reach blackice's filter (\(error)). Is blackice on? Check with: blackice status")
+            output.stderr(Self.unfinishedUpgrade().map { "Cannot reach blackice's filter. " + $0.hint }
+                ?? "Cannot reach blackice's filter (\(error)). Is blackice on? Check with: blackice status")
             return ExitCode.unavailable
         }
     }
@@ -226,7 +244,8 @@ public final class NESystemControl: SystemControlling {
             if reply.status == .done { output.stdout(reply.message) } else { output.stderr("\(command): \(reply.message)") }
             return CLI.answerStatus(reply)
         } catch {
-            output.stderr("\(command): cannot reach blackice's filter (\(error)). Is blackice on? Check with: blackice status")
+            output.stderr(Self.unfinishedUpgrade().map { "\(command): cannot reach blackice's filter. " + $0.hint }
+                ?? "\(command): cannot reach blackice's filter (\(error)). Is blackice on? Check with: blackice status")
             return ExitCode.unavailable
         }
     }
@@ -465,6 +484,35 @@ final class ExtensionRequestDelegate: NSObject, OSSystemExtensionRequestDelegate
         }
         output.stderr("macOS refused the network extension request: \(error.localizedDescription) " +
                       "(\(error.domain) \(error.code)).")
+        result.finish(ExitCode.software)
+    }
+}
+
+/// The builds of the extension that macOS has enabled and is not uninstalling, from a properties
+/// request. Never asks the person and never replaces anything.
+final class ExtensionPropertiesDelegate: NSObject, OSSystemExtensionRequestDelegate {
+    private let result: Completion
+    private(set) var running: [String] = []
+
+    init(result: Completion) { self.result = result }
+
+    func request(_ request: OSSystemExtensionRequest, foundProperties properties: [OSSystemExtensionProperties]) {
+        running = properties.filter { $0.isEnabled && !$0.isUninstalling }.map(\.bundleVersion)
+        result.finish(ExitCode.success)
+    }
+
+    func requestNeedsUserApproval(_ request: OSSystemExtensionRequest) {}
+
+    func request(_ request: OSSystemExtensionRequest, actionForReplacingExtension existing: OSSystemExtensionProperties,
+                 withExtension candidate: OSSystemExtensionProperties) -> OSSystemExtensionRequest.ReplacementAction {
+        .cancel
+    }
+
+    func request(_ request: OSSystemExtensionRequest, didFinishWithResult result: OSSystemExtensionRequest.Result) {
+        self.result.finish(ExitCode.success)
+    }
+
+    func request(_ request: OSSystemExtensionRequest, didFailWithError error: Error) {
         result.finish(ExitCode.software)
     }
 }
