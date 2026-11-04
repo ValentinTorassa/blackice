@@ -7,7 +7,9 @@ import BlackiceCore
 // rules that let it run only `blackice approve` and `blackice deny`; let it decide one sample
 // event through the hook runner, with blackice replaced by a stand-in; add a rule that lets it
 // reach its model in every mode, and the hook; load it. What differs between agents (where its
-// settings live, how it signs in, its hook line) is in its `AgentProfile`. fx is the first.
+// settings live, how it signs in, its hook line) is in its `AgentProfile`. fx is the first;
+// Claude Code (claude-code) answers with a verdict line on stdout instead, and its limits are on
+// its command line rather than in a settings file.
 
 /// What blackice needs to know about one coding agent.
 public struct AgentProfile: Sendable {
@@ -18,9 +20,10 @@ public struct AgentProfile: Sendable {
     /// What it needs to reach for its model and sign-in. blackice.toml allows these in every
     /// mode, bound to the agent's signature, or the agent would wait on its own approval.
     public let hosts: [String]
-    /// Inside the agent home: the folder its skills are read from, and its settings file.
+    /// Inside the agent home: the folder its skills are read from, and its settings file, when
+    /// blackice writes one.
     let skillsFolder: String
-    let settingsFile: String
+    let settingsFile: String?
     /// The skill's folder under Blackice.app's Resources/agents.
     let resource: String
     /// Where to get it, when it is not installed.
@@ -35,12 +38,20 @@ public struct AgentProfile: Sendable {
     let loginArguments: [String]
     /// Whether the status command's output says it is signed in.
     let signedIn: @Sendable (_ statusOutput: String) -> Bool
-    /// Its settings file, with the rules set and its other keys kept.
-    let settings: @Sendable (_ existing: Data?) throws -> Data
+    /// Its settings file, with the rules set and its other keys kept; nil with no settings file.
+    let settings: (@Sendable (_ existing: Data?) throws -> Data)?
     /// The hook's run line, with blackice (or the test's stand-in) from `blackiceDirectory`.
     let hookRun: @Sendable (_ executable: String, _ agentHome: String, _ blackiceDirectory: String) -> String
     /// What to do about a failure the agent's output names, when the test gets no answer.
     var advice: @Sendable (_ stderr: String) -> [String] = { _ in [] }
+    /// Text that only this agent's hook line holds: a hook whose line holds it is already there.
+    var hookMarker = AgentProfile.prompt
+    /// What that hook runs, as in "A hook already runs the blackice skill".
+    var decider = "the blackice skill"
+    /// What keeps it to deciding, said once its home is ready, when it has no settings file.
+    var limits: String?
+    /// It answers with a verdict line on stdout (`approve 1h`, `deny`), not by running blackice.
+    var verdictOnStdout = false
 
     public static let fx = AgentProfile(
         name: "fx", executable: "fx", hosts: ["ai-gateway.vercel.sh", "vercel.com", "api.vercel.com"],
@@ -64,7 +75,39 @@ public struct AgentProfile: Sendable {
                 : []
         })
 
-    public static let known = [fx]
+    /// Claude Code in print mode; its hook is `CLI.claudeCodeHook`. Its configuration directory in
+    /// the agent home holds its own sign-in and the instructions, and nothing of yours.
+    public static let claudeCode = AgentProfile(
+        // api.anthropic.com for the model; platform.claude.com renews the sign-in (Claude Code
+        // 2.1.317's OAuth token endpoint). Nothing else was reached in 20 decisions on 4 November 2026.
+        name: "claude-code", executable: "claude", hosts: ["api.anthropic.com", "platform.claude.com"],
+        skillsFolder: ".claude", settingsFile: nil, resource: "claude-code/blackice",
+        installHint: "https://code.claude.com/docs/en/setup",
+        // Anthropic's native installer; it puts claude in ~/.local/bin.
+        installer: "curl -fsSL https://claude.ai/install.sh | bash",
+        loginHint: ["Claude Code opens a sign-in page in your browser. Sign in with the account whose",
+                    "usage its decisions should count against, then come back here."],
+        // HOME stays the account's own: Claude Code keeps its sign-in in the login keychain, and
+        // macOS finds that keychain through HOME. The keychain item is named after
+        // CLAUDE_CONFIG_DIR, so this sign-in is apart from yours.
+        environment: { ["CLAUDE_CONFIG_DIR": CLI.claudeCodeConfigDirectory(agentHome: $0)] },
+        statusArguments: ["auth", "status", "--json"], loginArguments: ["auth", "login"],
+        signedIn: { CLI.claudeCodeSignedIn($0) }, settings: nil,
+        hookRun: { claude, agentHome, _ in CLI.claudeCodeHookRun(claude: claude, agentHome: agentHome) },
+        advice: { output in
+            // A hook gets none of the shell's variables, so a sign-in through ANTHROPIC_API_KEY,
+            // which `claude auth status` counts, is not there.
+            output.contains("Not logged in")
+                ? ["Claude Code had no sign-in in the hook's environment, which has none of your shell's",
+                   "variables (ANTHROPIC_API_KEY among them). Sign it in for blackice with:",
+                   "CLAUDE_CONFIG_DIR=~/.config/blackice/agent/.claude claude auth login"]
+                : []
+        },
+        hookMarker: CLI.claudeCodePrompt, decider: "Claude Code with the blackice instructions",
+        limits: "Its hook gives it one tool, reading the event: no shell, no web, no MCP servers",
+        verdictOnStdout: true)
+
+    public static let known = [fx, claudeCode]
 
     /// What the hook asks the agent. A hook whose line holds it already uses the blackice skill.
     public static let prompt = "Use the blackice skill to decide whether to approve the pending connection"
@@ -82,7 +125,7 @@ struct AgentPaths {
 
     var skills: String { home + "/" + profile.skillsFolder }
     var skill: String { skills + "/blackice" }
-    var settings: String { home + "/" + profile.settingsFile }
+    var settings: String? { profile.settingsFile.map { home + "/" + $0 } }
     var test: String { home + "/test" }
     /// The folders to create, outermost first.
     var folders: [String] {
@@ -260,6 +303,73 @@ extension CLI {
         return false
     }
 
+    // MARK: - Claude Code
+
+    /// What Claude Code's hook asks it. Its hook line holds it, and nothing else does.
+    static let claudeCodePrompt = "Decide the pending blackice connection in event.json."
+
+    /// Claude Code's configuration directory in the agent home (CLAUDE_CONFIG_DIR).
+    static func claudeCodeConfigDirectory(agentHome: String) -> String { agentHome + "/.claude" }
+
+    /// Claude Code's hook: the program, its arguments, and what it adds to the environment the
+    /// daemon builds (whose HOME it needs; see `AgentProfile.claudeCode`). Print mode with Read as
+    /// its only tool, confined to the event's directory (--restricted, which also ignores the
+    /// settings files); no CLAUDE.md, hooks, plugins or MCP servers (--safe-mode,
+    /// --strict-mcp-config); nothing saved; the instructions as its whole system prompt; plain text,
+    /// whose last line is the verdict. integrations/eval/agents/claude-code.sh runs the same line.
+    static func claudeCodeHook(claude: String, agentHome: String) -> (program: String, arguments: [String],
+                                                                       environment: [(String, String)]) {
+        let configuration = claudeCodeConfigDirectory(agentHome: agentHome)
+        return (claude,
+                ["-p", "--restricted", "--safe-mode", "--tools", "Read", "--strict-mcp-config", "--no-session-persistence",
+                 "--permission-prompts", "none", "--model", "sonnet", "--max-turns", "3", "--output-format", "text",
+                 "--system-prompt-file", configuration + "/blackice/instructions.md", claudeCodePrompt],
+                [("CLAUDE_CONFIG_DIR", configuration), ("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1")])
+    }
+
+    /// `claudeCodeHook` as a `run` line, the only form a hook has so far. stdin is closed: claude -p
+    /// adds what it reads there to the prompt, and the event should reach it only through Read, as
+    /// data. The paths must pass `fitsHookLine`.
+    static func claudeCodeHookRun(claude: String, agentHome: String) -> String {
+        let hook = claudeCodeHook(claude: claude, agentHome: agentHome)
+        let words = hook.environment.map { "\($0.0)=\(hookWord($0.1))" } + [hookWord(hook.program)] + hook.arguments.map(hookWord)
+        return words.joined(separator: " ") + " </dev/null"
+    }
+
+    /// A word of a hook line: as it is when it is plain, in double quotes otherwise.
+    static func hookWord(_ word: String) -> String {
+        !word.isEmpty && word.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber || "-_./:=,".contains($0)) }
+            ? word : "\"\(word)\""
+    }
+
+    /// `claude auth status --json` prints an object whose `loggedIn` is true once it is signed in.
+    static func claudeCodeSignedIn(_ status: String) -> Bool {
+        guard let start = status.firstIndex(of: "{"), let end = status.lastIndex(of: "}"), start < end,
+              let object = try? JSONSerialization.jsonObject(with: Data(status[start...end].utf8)) as? [String: Any] else {
+            return false
+        }
+        return object["loggedIn"] as? Bool == true
+    }
+
+    /// What a hook that answers on stdout answered, read the way the daemon reads it: when it
+    /// exited 0, the last non-empty line, trimmed, is exactly `deny`, `approve <N>m` (N from 1 to
+    /// 1440) or `approve <N>h` (1 to 24). Anything else is no answer.
+    static func verdictAnswer(_ stdout: String, outcome: HookResult.Outcome) -> TestAnswer {
+        guard outcome == .exited(status: 0),
+              let last = stdout.split(whereSeparator: \.isNewline).map({ $0.trimmingCharacters(in: .whitespaces) })
+                .last(where: { !$0.isEmpty }) else { return .none }
+        if last == "deny" { return .denied }
+        let limits: [Character: Int] = ["m": 1440, "h": 24]
+        if last.hasPrefix("approve "), let unit = last.last, let limit = limits[unit] {
+            let digits = last.dropFirst("approve ".count).dropLast()
+            if let first = digits.first, first != "0", digits.count <= 4, digits.allSatisfy({ $0.isASCII && $0.isNumber }),
+               let amount = Int(digits), amount <= limit {
+                return .approved
+            }
+        }
+        return .wrong("ended with \"\(last.prefix(60))\", which is not a verdict line")
+    }
+
     /// The stand-in writes one line per call, its arguments as the shell passed them.
     static func testAnswer(_ recorded: String, token: String) -> TestAnswer {
         let calls = recorded.split(whereSeparator: \.isNewline).map(String.init)
@@ -335,7 +445,8 @@ extension CLI {
                              stdout: @escaping (String) -> Void, stderr: @escaping (String) -> Void,
                              firstStep: Int = 1) -> Int32 {
         guard let profile = AgentProfile.known.first(where: { $0.name == name }) else {
-            stderr("blackice agent connect knows fx so far (Claude Code and Codex are planned): blackice agent connect fx")
+            stderr("blackice agent connect knows \(listed(AgentProfile.known.map(\.name))) so far (Codex is planned): " +
+                   "blackice agent connect fx")
             return ExitCode.usage
         }
         let name = profile.name
@@ -464,13 +575,17 @@ extension CLI {
             }
             stdout("  " + Style.done("\(name) is signed in"))
         }
-        do {
-            let settings = try profile.settings(files.contents(atPath: paths.settings))
-            try writeAtomically(settings, to: paths.settings, mode: 0o600)
-        } catch {
-            return fail(ExitCode.cannotCreate, "Cannot write \(Describe.path(paths.settings, home: interaction.home)): \(describe(error))")
+        if let settingsPath = paths.settings, let makeSettings = profile.settings {
+            do {
+                let settings = try makeSettings(files.contents(atPath: settingsPath))
+                try writeAtomically(settings, to: settingsPath, mode: 0o600)
+            } catch {
+                return fail(ExitCode.cannotCreate, "Cannot write \(Describe.path(settingsPath, home: interaction.home)): \(describe(error))")
+            }
+            stdout("  " + Style.done("There, \(name) may run blackice approve and blackice deny, and nothing else"))
+        } else if let limits = profile.limits {
+            stdout("  " + Style.done(limits))
         }
-        stdout("  " + Style.done("There, \(name) may run blackice approve and blackice deny, and nothing else"))
 
         // 3. One sample event through the hook runner, with a stand-in for blackice.
         step("Try it on a sample connection")
@@ -488,20 +603,28 @@ extension CLI {
         }
         defer { try? files.removeItem(atPath: paths.test) }
         stdout("  \(name) is deciding whether Visual Studio Code may reach")
-        stdout("  update.code.visualstudio.com. blackice is a stand-in for this test, so")
+        stdout("  update.code.visualstudio.com. " +
+               (profile.verdictOnStdout ? "Its answer goes nowhere in this test, so" : "blackice is a stand-in for this test, so"))
         stdout("  nothing is let through…")
-        let result = machine.runHook(profile.hookRun(executable, paths.home, standIn), event,
+        // The hook runner drops a hook's stdout, so the test keeps it in a file of its own.
+        let run = profile.hookRun(executable, paths.home, standIn)
+        let printedPath = paths.test + "/stdout"
+        let result = machine.runHook(profile.verdictOnStdout ? "{ \(run); } >\"\(printedPath)\"" : run, event,
                                      paths.test + "/work", agentTestSeconds)
         let recorded = files.contents(atPath: standIn + "/answers").map { String(decoding: $0, as: UTF8.self) } ?? ""
+        let printed = profile.verdictOnStdout
+            ? files.contents(atPath: printedPath).map { String(decoding: $0, as: UTF8.self) } ?? "" : ""
         let seconds = Int(result.duration.rounded())
-        switch testAnswer(recorded, token: event.token) {
+        let answer = profile.verdictOnStdout ? verdictAnswer(printed, outcome: result.outcome)
+            : testAnswer(recorded, token: event.token)
+        switch answer {
         case .approved:
             stdout("  " + Style.done("\(name) approved it in \(seconds) s"))
         case .denied:
             stdout("  " + Style.done("\(name) answered in \(seconds) s (it denied it; any answer shows the wiring works)"))
         case .none, .wrong:
             let why: String
-            switch testAnswer(recorded, token: event.token) {
+            switch answer {
             case .wrong(let reason): why = "\(name) \(reason)"
             default:
                 switch result.outcome {
@@ -513,12 +636,14 @@ extension CLI {
                 }
             }
             stderr("  \(why), so blackice.toml was left as it was.")
-            let tail = result.stderr.split(whereSeparator: \.isNewline).suffix(8)
+            // Claude Code prints its errors ("Not logged in") on stdout.
+            let output = printed.isEmpty ? result.stderr : result.stderr + "\n" + printed
+            let tail = output.split(whereSeparator: \.isNewline).suffix(8)
             if !tail.isEmpty {
                 stderr("  \(name)'s last lines:")
                 tail.forEach { stderr("    " + $0.prefix(200)) }
             }
-            let advice = profile.advice(result.stderr)
+            let advice = profile.advice(output)
             if advice.isEmpty {
                 stderr("  If blackice is in ask or block-all mode, \(name)'s own connections wait too: switch to")
                 stderr("  accept-all (blackice mode accept-all), then: \(retry)")
@@ -532,7 +657,7 @@ extension CLI {
         // 4. The rule for its model, the hook, and time enough to answer.
         step("Add \(name) to \(shown)")
         let missing = profile.hosts.filter { config.allowRule(for: identity, host: $0) == nil }
-        let existingHook = config.hooks.first { $0.run.contains(AgentProfile.prompt) }
+        let existingHook = config.hooks.first { $0.run.contains(profile.hookMarker) }
         var updated = text
         if !updated.isEmpty, !updated.hasSuffix("\n") { updated += "\n" }
         updated += agentAddition(name, identity: identity, hosts: missing,
@@ -551,7 +676,7 @@ extension CLI {
             stdout("    " + listed(missing))
         }
         if let existingHook {
-            stdout("  A hook already runs the blackice skill (line \(existingHook.line)); it stays as it is.")
+            stdout("  A hook already runs \(profile.decider) (line \(existingHook.line)); it stays as it is.")
         } else {
             stdout("  " + Style.done("A hook runs \(name) for each connection that waits"))
         }
