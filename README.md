@@ -34,6 +34,9 @@ macOS 27.0.1. Each run is recorded in
   `agent connect fx` loaded ask mode, and fx approved two `nscurl` requests in about 5 s (P5-06).
 - In ask mode, candidate build 11 dropped git over HTTPS, `notarytool` and Apple's other developer tools without
   asking. Build 13, the 0.3.0 release, asks about them, and fx approved git and `notarytool` in about 5 s (P5-07).
+- From the published 0.3.0, recorded: the one-liner, then one `blackice start` to ask mode with fx answering in
+  1 min 16 s. In the next ten minutes, bursts of connections from a VPN client outran fx, and 31 connections were
+  dropped at the deadline (P5-08; see "Hooks in a burst" in the plan).
 
 Open problems are in [`docs/plan.md`](docs/plan.md).
 
