@@ -353,8 +353,14 @@ struct ReportTests {
             "blackice is on, in accept-all mode: every connection goes through and is logged.",
             "  rules      none",
             "  hooks      none",
+            "  next       blackice agent connect fx, or blackice mode ask to answer by hand",
             "  waiting    nothing",
         ])
+        // With a hook, accept-all is a choice made after an agent was connected: no hint.
+        let hooked = try snapshot(.acceptAll, withHook)
+        #expect(!CLI.statusLines(StatusReport(filter: .on(hooked), daemonRunning: true,
+                                              pending: PendingReply(events: [], approvals: []).deciding(with: hooked)))
+            .contains { $0.hasPrefix("  next") })
 
         let tool = AppReference(signingID: "com.apple.curl", teamID: nil, cdhash: nil)
         let busy = PendingReply(

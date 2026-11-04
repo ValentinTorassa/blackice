@@ -76,6 +76,10 @@ extension CLI {
             row("hooks", "\(config.hooks.count), " + (report.daemonRunning ? "run by the daemon"
                 : "but the daemon is not running: blackice agent install"))
         }
+        // What a first start whose agent setup did not finish leaves: on, filtering nothing.
+        if configuration.mode == .acceptAll, config.hooks.isEmpty {
+            row("next", "blackice agent connect fx, or blackice mode ask to answer by hand")
+        }
         if configuration.mode == .ask { row("answer in", "\(config.timeoutSeconds) s, or the connection is denied") }
         guard let pending = report.pending else {
             row("filter", "not answering. If blackice was just upgraded, restart the Mac.")

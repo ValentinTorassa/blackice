@@ -101,9 +101,11 @@ full path, and a script that runs the full path, worked.
 
 If you pick fx, `start` also sets fx up, as `blackice agent connect fx` does (see "Let an agent answer"). It stays in
 accept-all until fx is installed, signed in and tested, and loads ask mode at the end, so nothing waits on an answer
-before fx can give it. If fx cannot be set up, it switches to ask mode all the same (Touch ID), and you answer with
-`blackice approve` and `deny`. `blackice init` asks the same questions without starting anything. Or write the file
-yourself, starting in accept-all, which lets everything through and only logs:
+before fx can give it. If fx cannot be set up, or you stop the setup with Control-C, blackice stays on in accept-all,
+filtering nothing, as before that first start, and says so. Finish it later with `blackice agent connect fx`, or
+filter without an agent with `blackice mode ask` (you answer with `blackice approve` and `deny`) or
+`blackice mode block-all`; until then `blackice status` says the same. `blackice init` asks the same questions without
+starting anything. Or write the file yourself, starting in accept-all, which lets everything through and only logs:
 
 ```toml
 mode = "accept-all"     # "accept-all", "ask" or "block-all"

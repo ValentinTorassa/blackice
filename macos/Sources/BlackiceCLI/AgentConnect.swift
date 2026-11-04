@@ -392,22 +392,30 @@ extension CLI {
     // MARK: - The command
 
     /// `firstStep` numbers the steps on from where `blackice start` left off when it runs this
-    /// right after the first start. `heldMode` is the mode that start put off, starting in
-    /// accept-all for the setup.
+    /// right after the first start (`fromFirstStart`), which loaded the file in accept-all.
     static func connectAgent(_ name: String, configPath: String?, readFile: (String) throws -> Data,
                              system: SystemControlling, interaction: Interaction, machine: AgentMachine,
                              stdout: @escaping (String) -> Void, stderr: @escaping (String) -> Void,
-                             firstStep: Int = 1, heldMode: Mode? = nil) -> Int32 {
+                             firstStep: Int = 1, fromFirstStart: Bool = false) -> Int32 {
         // Control-C and the other stop signals end the setup at its next check instead of ending
         // blackice, so that what follows can put things back. Released last: defers run last first.
         let releaseInterrupts = machine.catchInterrupts()
         defer { releaseInterrupts() }
         // Accept-all lets everything through, so a setup that switched to it and then stops before
-        // the last step loads the file, whatever the reason, switches to the mode it put off.
-        var putOff = heldMode
+        // the last step loads the file, whatever the reason, switches back to the mode it put off.
+        // Before the first start nothing was filtered: after it, the setup stays in accept-all and
+        // says so.
+        var putOff: Mode?
         var loadedFile = false
+        var reached: String?
         defer {
-            if !loadedFile, let putOff { leaveAcceptAll(for: putOff, system: system, stdout: stdout, stderr: stderr) }
+            if !loadedFile, let putOff {
+                leaveAcceptAll(for: putOff, system: system, stdout: stdout, stderr: stderr)
+            } else if !loadedFile, fromFirstStart {
+                let retry = "blackice agent connect \(name)" + (configPath.map { " --config \(Describe.path($0, home: interaction.home))" } ?? "")
+                reportAcceptAll(name, reached: reached, interrupted: machine.interrupted(), retry: retry,
+                                system: system, stderr: stderr)
+            }
         }
         guard let profile = AgentProfile.known.first(where: { $0.name == name }) else {
             stderr("blackice agent connect knows fx so far (Claude Code and Codex are planned): blackice agent connect fx")
@@ -438,6 +446,7 @@ extension CLI {
         var number = firstStep
         func step(_ title: String) {
             stdout(""); stdout(Style.heading("\(number) · \(title)")); stdout("")
+            reached = "step \(number) (\(title))"
             number += 1
         }
         func fail(_ status: Int32, _ lines: String...) -> Int32 { lines.forEach { stderr("  " + $0) }; return status }
@@ -701,10 +710,10 @@ extension CLI {
         return ExitCode.success
     }
 
-    /// After a setup that switched to accept-all and did not load the file: switches to `mode`, the
-    /// one in force before, or the one the first start put off. Only when the saved mode is still
-    /// accept-all, so a switch that never happened is not undone. It takes Touch ID once more, as
-    /// the last step would have; without it, says how to leave accept-all by hand.
+    /// After a setup that switched to accept-all and did not load the file: switches back to `mode`,
+    /// the one in force before. Only when the saved mode is still accept-all, so a switch that never
+    /// happened is not undone. It takes Touch ID once more, as the last step would have; without
+    /// it, says how to leave accept-all by hand.
     static func leaveAcceptAll(for mode: Mode, system: SystemControlling, stdout: @escaping (String) -> Void,
                                stderr: @escaping (String) -> Void) {
         guard mode != .acceptAll, system.runningMode() == .acceptAll else { return }
@@ -712,6 +721,20 @@ extension CLI {
         stdout("The setup did not finish, so blackice leaves accept-all for \(mode.rawValue) mode.")
         guard system.setMode(mode, output: SystemOutput(stdout: stdout, stderr: stderr)) != ExitCode.success else { return }
         stderr("blackice is still in accept-all mode: every connection goes through. To leave it: blackice mode \(mode.rawValue)")
+    }
+
+    /// After a first start whose agent setup did not load the file. That start left blackice on in
+    /// accept-all, and nothing was filtered before it, so it stays that way rather than hold each
+    /// connection no rule covers until someone answers by hand. Says so plainly, and how to go on.
+    static func reportAcceptAll(_ name: String, reached: String?, interrupted: Bool, retry: String,
+                                system: SystemControlling, stderr: (String) -> Void) {
+        guard system.runningMode() == .acceptAll else { return }
+        let at = reached.map { " at \($0)" } ?? ""
+        stderr("")
+        stderr("blackice is on in accept-all mode and filters nothing: every connection goes through.")
+        stderr(interrupted ? "The \(name) setup was interrupted\(at)." : "The \(name) setup failed\(at), for the reason above.")
+        stderr("To finish it: \(retry)")
+        stderr("To filter without an agent: blackice mode ask, or blackice mode block-all")
     }
 
     /// A folder of the agent home, made private: created with mode 0700, or, when it is already

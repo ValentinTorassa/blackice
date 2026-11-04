@@ -454,29 +454,56 @@ struct AgentConnectTests {
         #expect(try BlackiceConfig(data: Data(contentsOf: URL(fileURLWithPath: blockConfig))).hooks.count == 1)
     }
 
-    /// The first start picked ask mode with fx answering, and fx could not be set up: it switches
-    /// to ask mode all the same, with nobody but the person to answer.
-    @Test func aFirstStartWhoseAgentFailsLoadsTheModePicked() throws {
-        let home = try makePrivateDirectory()
-        defer { removeTree(home) }
-        let skill = home.appendingPathComponent("app-resources/agents/fx/blackice")
-        try FileManager.default.createDirectory(at: skill, withIntermediateDirectories: true)
-        let config = home.path + "/.config/blackice/blackice.toml"
-        let mac = FakeAgentMac(signedIn: false, resources: home.path + "/app-resources/agents", answer: Self.approve)
-        mac.installed = false
-        let system = Loading()
-        var picks: [[Int]] = [[1], [0], []]   // ask, fx answers, no apps
-        var typed = ["n"]                     // do not install fx
-        let interaction = Interaction(
-            ask: { _ in typed.isEmpty ? nil : typed.removeFirst() }, createFile: CLI.createFile,
-            identify: { _ in nil }, fileExists: { FileManager.default.fileExists(atPath: $0) },
-            home: home.path, version: nil, choose: { _ in picks.isEmpty ? nil : picks.removeFirst() })
-        let out = Recorder<String>(), err = Recorder<String>()
-        let status = CLI.run(["start", "--config", config], stdout: { out.append($0) }, stderr: { err.append($0) },
-                             system: system, interaction: interaction, agents: mac.machine)
-        #expect(status == ExitCode.unavailable)
-        #expect(system.texts.count == 1 && system.modes == [.ask] && system.running == .ask)
-        #expect(out.items.contains("The setup did not finish, so blackice leaves accept-all for ask mode."))
+    /// The first start picked ask mode with fx answering, and fx could not be set up. Nothing was
+    /// filtered before that start, so it stays in accept-all, and says so plainly.
+    @Test func aFirstStartWhoseAgentFailsStaysInAcceptAll() throws {
+        func firstStart(_ answers: [String]) throws -> (status: Int32, system: Loading, stdout: [String], stderr: [String],
+                                                       written: BlackiceConfig) {
+            let home = try makePrivateDirectory()
+            defer { removeTree(home) }
+            let skill = home.appendingPathComponent("app-resources/agents/fx/blackice")
+            try FileManager.default.createDirectory(at: skill, withIntermediateDirectories: true)
+            let config = home.path + "/.config/blackice/blackice.toml"
+            let mac = FakeAgentMac(signedIn: false, resources: home.path + "/app-resources/agents", answer: Self.approve)
+            mac.installed = false
+            let system = Loading()
+            var picks: [[Int]] = [[1], [0], []]   // ask, fx answers, no apps
+            var typed = answers
+            let interaction = Interaction(
+                ask: { _ in
+                    guard !typed.isEmpty else { return nil }
+                    let answer = typed.removeFirst()
+                    if answer == Self.controlC { mac.interrupted = true; return nil }
+                    return answer
+                }, createFile: CLI.createFile,
+                identify: { _ in nil }, fileExists: { FileManager.default.fileExists(atPath: $0) },
+                home: home.path, version: nil, choose: { _ in picks.isEmpty ? nil : picks.removeFirst() })
+            let out = Recorder<String>(), err = Recorder<String>()
+            let status = CLI.run(["start", "--config", config], stdout: { out.append($0) }, stderr: { err.append($0) },
+                                 system: system, interaction: interaction, agents: mac.machine)
+            return (status, system, out.items, err.items, try BlackiceConfig(data: Data(contentsOf: URL(fileURLWithPath: config))))
+        }
+        let advice = ["To finish it: blackice agent connect fx --config ~/.config/blackice/blackice.toml",
+                      "To filter without an agent: blackice mode ask, or blackice mode block-all"]
+
+        let declined = try firstStart(["n"])   // do not install fx
+        #expect(declined.status == ExitCode.unavailable)
+        #expect(declined.system.texts.count == 1 && declined.system.modes.isEmpty && declined.system.running == .acceptAll)
+        #expect(Array(declined.stderr.suffix(5)) == [
+            "", "blackice is on in accept-all mode and filters nothing: every connection goes through.",
+            "The fx setup failed at step 4 (Find fx), for the reason above.",
+        ] + advice)
+        #expect(!declined.stdout.contains { $0.hasPrefix("The setup did not finish") })
+        // The file keeps the mode picked, for agent connect to load once fx is set up.
+        #expect(declined.written.mode == .ask)
+
+        let interrupted = try firstStart([Self.controlC])
+        #expect(interrupted.status == ExitCode.interrupted && interrupted.system.modes.isEmpty)
+        #expect(Array(interrupted.stderr.suffix(6)) == [
+            "  Interrupted, so the setup stops here.",
+            "", "blackice is on in accept-all mode and filters nothing: every connection goes through.",
+            "The fx setup was interrupted at step 4 (Find fx).",
+        ] + advice)
     }
 
     /// An edit to blackice.toml while fx is set up is kept: the file is read again before fx's rule
