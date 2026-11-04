@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.2 (4 November 2026)
 
 Fewer connections waiting in ask mode.
 
@@ -15,6 +15,13 @@ Fewer connections waiting in ask mode.
   than 10 s of its time is left, when it ends while it waits, or when 256 already wait. The event log says so:
   `hook_queued`, `waited_ms`, and `hook_dropped` with `deadline_near`, `event_ended` or `queue_full` in place of
   `concurrency_limit`.
+
+Upgrading from 0.3.1: run the install script with `--force` (`curl -fsSL
+https://blackice-macos.vercel.app/install.sh | sh -s -- --force`) or `brew upgrade --cask blackice`, then `blackice
+start`, then restart the Mac. On macOS 27 an extension upgraded in place cannot be reached until the Mac restarts.
+Then run `blackice agent uninstall` and `blackice agent install`, so that the daemon runs the new binary: the queue
+is in the daemon. If you already have a configuration, the first start's list does not run again; to trust a VPN
+client, add a rule with `hosts = ["*"]` for its network extension (`systemextensionsctl list` names it).
 
 ## 0.3.1 (4 November 2026)
 
