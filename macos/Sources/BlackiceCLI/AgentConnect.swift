@@ -39,6 +39,8 @@ public struct AgentProfile: Sendable {
     let settings: @Sendable (_ existing: Data?) throws -> Data
     /// The hook's run line, with blackice (or the test's stand-in) from `blackiceDirectory`.
     let hookRun: @Sendable (_ executable: String, _ agentHome: String, _ blackiceDirectory: String) -> String
+    /// What to do about a failure the agent's output names, when the test gets no answer.
+    var advice: @Sendable (_ stderr: String) -> [String] = { _ in [] }
 
     public static let fx = AgentProfile(
         name: "fx", executable: "fx", hosts: ["ai-gateway.vercel.sh", "vercel.com", "api.vercel.com"],
@@ -53,7 +55,14 @@ public struct AgentProfile: Sendable {
         environment: { ["HOME": $0, "FX_DISABLE_KEYCHAIN": "1"] },
         statusArguments: ["status"], loginArguments: ["login", "vercel"],
         signedIn: { CLI.fxSignedIn($0) }, settings: { try CLI.fxSettings($0) },
-        hookRun: { CLI.fxHookRun(fx: $0, agentHome: $1, blackiceDirectory: $2) })
+        hookRun: { CLI.fxHookRun(fx: $0, agentHome: $1, blackiceDirectory: $2) },
+        // Seen on 3 November 2026: a Vercel team with no card on file gets HTTP 403 from AI Gateway.
+        advice: { stderr in
+            stderr.contains("customer_verification_required")
+                ? ["Vercel's AI Gateway needs a card on file for the team fx signed in with. Add one",
+                   "in that team's billing settings on vercel.com, then run this again."]
+                : []
+        })
 
     public static let known = [fx]
 
@@ -509,8 +518,14 @@ extension CLI {
                 stderr("  \(name)'s last lines:")
                 tail.forEach { stderr("    " + $0.prefix(200)) }
             }
-            stderr("  If blackice is in ask or block-all mode, \(name)'s own connections wait too: switch to")
-            stderr("  accept-all (blackice mode accept-all), then: \(retry)")
+            let advice = profile.advice(result.stderr)
+            if advice.isEmpty {
+                stderr("  If blackice is in ask or block-all mode, \(name)'s own connections wait too: switch to")
+                stderr("  accept-all (blackice mode accept-all), then: \(retry)")
+            } else {
+                advice.forEach { stderr("  " + $0) }
+                stderr("  To retry: \(retry)")
+            }
             return ExitCode.software
         }
 

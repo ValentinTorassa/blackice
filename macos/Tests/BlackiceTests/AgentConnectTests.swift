@@ -7,6 +7,7 @@ import Testing
 /// by writing what fx would run into the stand-in's answers file.
 private final class FakeAgentMac: @unchecked Sendable {
     var signedIn: Bool
+    var hookStderr = "fx: done"
     var loginFailures = 0
     var installed = true
     var installs: [[String]] = []
@@ -43,7 +44,7 @@ private final class FakeAgentMac: @unchecked Sendable {
                     let standIn = String(run[start.upperBound..<end])
                     try? Data((answer(event) + "\n").utf8).write(to: URL(fileURLWithPath: standIn + "/answers"))
                 }
-                return HookResult(hookLine: 0, outcome: .exited(status: 0), stderr: "fx: done", stderrTruncated: false,
+                return HookResult(hookLine: 0, outcome: .exited(status: 0), stderr: self.hookStderr, stderrTruncated: false,
                                   duration: 14)
             },
             agentResources: resources)
@@ -179,6 +180,15 @@ struct AgentConnectTests {
         #expect(silent.status == ExitCode.software)
         #expect(silent.stderr.first == "  fx exited with status 0 and gave no answer, so blackice.toml was left as it was.")
         #expect(silent.stderr.contains("    fx: done"))
+        #expect(try String(contentsOfFile: config, encoding: .utf8) == text && system.texts.isEmpty)
+
+        // A Vercel team with no card on file (3 November 2026): say what to do about it.
+        let unpaid = FakeAgentMac(signedIn: true, resources: resources, answer: nil)
+        unpaid.hookStderr = "fx ask: API access denied · HTTP 403 · customer_verification_required: AI Gateway requires a valid credit card"
+        let refused = connect(home, config: config, mac: unpaid, system: system)
+        #expect(refused.status == ExitCode.software)
+        #expect(refused.stderr.contains("  Vercel's AI Gateway needs a card on file for the team fx signed in with. Add one"))
+        #expect(refused.stderr.last == "  To retry: blackice agent connect fx --config ~/.config/blackice/blackice.toml")
         #expect(try String(contentsOfFile: config, encoding: .utf8) == text && system.texts.isEmpty)
 
         let tokenless = connect(home, config: config, mac: FakeAgentMac(signedIn: true, resources: resources,
