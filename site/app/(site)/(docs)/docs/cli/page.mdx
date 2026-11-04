@@ -23,7 +23,7 @@ The commands.
 | `blackice validate PATH` | Check a `blackice.toml` without loading it. |
 | `blackice version` | The installed version and build. |
 
-`start`, `stop`, `mode`, and `approve` or `deny` without a token ask for Touch ID, or your login password. Exit statuses follow sysexits: 0 done, 64 a usage error, 65 an invalid `blackice.toml`, 66 no file to read, 69 not running from the signed Blackice.app, or the filter did not answer, 70 a macOS request failed, 73 `init` found a file already there, 75 run it again (after restarting the Mac, when blackice says so), 77 Touch ID cancelled.
+`start`, `stop`, `mode`, and `approve` or `deny` without a token ask for Touch ID, or your login password. Exit statuses follow sysexits: 0 done, 64 a usage error, 65 an invalid `blackice.toml`, 66 no file to read, 69 not running from the signed Blackice.app, or the filter did not answer, 70 a macOS request failed, or the filter kept another configuration than the one just saved, 73 `init` found a file already there, 75 run it again (after restarting the Mac, when blackice says so), 77 Touch ID cancelled.
 
 `approve` and `deny` need the event's token when a hook calls them. A person can run them by hand after confirming with Touch ID. Without `--team`, `--app` names Apple's own code, which is signed without a Team ID. `--cdhash` names ad hoc signed code, which has no signing identity, by the CDHash that `codesign -dvvv` prints; a rebuild changes it and asks again.
 

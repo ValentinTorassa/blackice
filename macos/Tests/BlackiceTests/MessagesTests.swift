@@ -121,7 +121,33 @@ struct MessagesTests {
                                                           ip: "203.0.113.7", port: 443, secondsLeft: 3, connections: 1)],
                                    approvals: [ApprovalSummary(app: AppReference(tool), host: "example.com", secondsLeft: 60)])
         #expect(try Messages.decode(PendingReply.self, from: Messages.encode(pending)) == pending)
+        let deciding = pending.deciding(with: try policySnapshot(.ask, generation: 9))
+        #expect(deciding.active?.generation == 9 && deciding.active?.mode == .ask && deciding.events == pending.events)
+        #expect(try Messages.decode(PendingReply.self, from: Messages.encode(deciding)) == deciding)
         #expect(try Messages.decode(RegisterRequest.self, from: Messages.encode(RegisterRequest())) == RegisterRequest())
+    }
+
+    @Test func thePendingReplyNamesTheConfigurationInForce() throws {
+        let configuration = try policySnapshot(.blockAll, generation: 4)
+        let active = ActiveConfiguration(configuration)
+        #expect(active.configSHA256.count == 64 && active.matches(configuration))
+        #expect(!active.matches(try configuration.with(mode: .ask)))
+        #expect(!active.matches(try ProviderConfiguration(generation: 4, mode: .blockAll, configText: policyRules + "# more\n")))
+        let reply = PendingReply(events: [], approvals: [], active: active)
+        let json = String(decoding: try Messages.encode(reply), as: UTF8.self)
+        #expect(json.contains(#""active":{"config_sha256":"\#(active.configSHA256)","generation":4,"mode":"block-all"}"#))
+        let edits: [(inout [String: Any]) -> Void] = [
+            { $0["active"] = ["config_sha256": active.configSHA256, "generation": 0, "mode": "block-all"] },
+            { $0["active"] = ["config_sha256": "x", "generation": 4, "mode": "block-all"] },
+            { $0["active"] = ["config_sha256": active.configSHA256.uppercased(), "generation": 4, "mode": "block-all"] },
+            { $0["active"] = ["config_sha256": active.configSHA256, "generation": 4, "mode": "allow-all"] },
+            { $0["active"] = ["generation": 4, "mode": "block-all"] },
+        ]
+        for edit in edits {
+            #expect(refused { try decodeEdited(PendingReply.self, reply, edit) })
+        }
+        // A reply with no configuration says the extension holds none.
+        #expect(try decodeEdited(PendingReply.self, reply) { $0["active"] = nil }.active == nil)
     }
 
     @Test func answersOutsideTheirFormAreRefused() {

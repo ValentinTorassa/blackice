@@ -34,8 +34,9 @@ extension CheckedMessage {
 
 public enum Messages {
     /// Bumped on any change to a message; both ends must agree. 2: the register reply carries the
-    /// configuration, and events carry its generation.
-    public static let version = 2
+    /// configuration, and events carry its generation. 3: the pending reply names the
+    /// configuration the extension decides with.
+    public static let version = 3
     /// The limit of a message that sets none of its own. The pending reply and the register reply
     /// set theirs from the largest content their checks accept.
     public static let maximumBytes = 262_144
@@ -276,6 +277,39 @@ public struct ApprovalSummary: Codable, Equatable, Sendable {
     }
 }
 
+extension Mode: Codable {}
+
+/// The configuration the extension decides with: its generation, its mode and the SHA-256 of its
+/// blackice.toml text. After saving one, `start` and `mode` wait until the extension names it.
+public struct ActiveConfiguration: Codable, Equatable, Sendable {
+    public let generation: UInt64
+    public let mode: Mode
+    public let configSHA256: String
+
+    public init(_ configuration: ProviderConfiguration) {
+        generation = configuration.generation
+        mode = configuration.mode
+        configSHA256 = configuration.configSHA256
+    }
+
+    /// Whether the extension decides with `configuration`.
+    public func matches(_ configuration: ProviderConfiguration) -> Bool {
+        self == ActiveConfiguration(configuration)
+    }
+
+    func validate() throws {
+        guard generation > 0 else { throw MessageError("active.generation", "must be at least 1") }
+        guard configSHA256.utf8.count == 64, configSHA256.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }) else {
+            throw MessageError("active.config_sha256", "must be 64 lower-case hex digits")
+        }
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case generation, mode
+        case configSHA256 = "config_sha256"
+    }
+}
+
 public struct PendingReply: CheckedMessage, Equatable {
     public static let maximumEntries = 1024
     /// The largest reply `validate` accepts, encoded: each event at most 1 KiB plus its escaped
@@ -288,11 +322,19 @@ public struct PendingReply: CheckedMessage, Equatable {
     public let version: Int
     public let events: [PendingSummary]
     public let approvals: [ApprovalSummary]
+    /// The configuration the extension decides with now; nil when it holds none.
+    public let active: ActiveConfiguration?
 
-    public init(events: [PendingSummary], approvals: [ApprovalSummary]) {
+    public init(events: [PendingSummary], approvals: [ApprovalSummary], active: ActiveConfiguration? = nil) {
         version = Messages.version
         self.events = events
         self.approvals = approvals
+        self.active = active
+    }
+
+    /// The same lists, naming the configuration the extension decides with.
+    public func deciding(with configuration: ProviderConfiguration?) -> PendingReply {
+        PendingReply(events: events, approvals: approvals, active: configuration.map(ActiveConfiguration.init))
     }
 
     /// At most as many events and approvals as the extension holds, each in the form it writes.
@@ -300,6 +342,7 @@ public struct PendingReply: CheckedMessage, Equatable {
         guard events.count <= AskLimits.events, approvals.count <= ApprovalTable.maximumEntries else {
             throw MessageError("pending", "has too many entries")
         }
+        try active?.validate()
         for event in events {
             guard validEventID(event.id), event.app.identity != nil, normalizeHost(event.host) == event.host,
                   IPAddress(event.ip)?.description == event.ip, event.secondsLeft >= 0, event.connections >= 0,

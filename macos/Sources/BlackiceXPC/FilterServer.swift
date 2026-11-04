@@ -106,8 +106,11 @@ public final class FilterServer: NSObject, NSXPCListenerDelegate {
         return RegisterReply(generation: configuration.generation, configText: configuration.configText)
     }
 
+    /// The handler's lists and the configuration it decides with, which `start` and `mode` check
+    /// against the one they saved.
     fileprivate func pendingReply() -> PendingReply {
-        handler?.pendingReply() ?? PendingReply(events: [], approvals: [])
+        guard let handler else { return PendingReply(events: [], approvals: []) }
+        return handler.pendingReply().deciding(with: handler.currentConfiguration())
     }
 
     fileprivate func answer(_ request: AnswerRequest) -> AnswerReply {

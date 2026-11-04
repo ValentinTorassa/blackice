@@ -335,7 +335,7 @@ struct ReportTests {
             == ["blackice is off. Start it with: blackice start"])
         #expect(CLI.statusLines(StatusReport(filter: .disabled, daemonRunning: false, pending: nil)).count == 2)
 
-        let empty = PendingReply(events: [], approvals: [])
+        let empty = PendingReply(events: [], approvals: []).deciding(with: try snapshot(.acceptAll))
         #expect(CLI.statusLines(StatusReport(filter: .on(try snapshot(.acceptAll)), daemonRunning: false, pending: empty)) == [
             "blackice is on, in accept-all mode: every connection goes through and is logged.",
             "  rules      none",
@@ -347,7 +347,7 @@ struct ReportTests {
         let busy = PendingReply(
             events: [PendingSummary(id: "ev-0000002a", app: tool, path: nil, host: "example.com", ip: "203.0.113.7",
                                     port: 443, secondsLeft: 8, connections: 3)],
-            approvals: [ApprovalSummary(app: tool, host: "pypi.org", secondsLeft: 60)])
+            approvals: [ApprovalSummary(app: tool, host: "pypi.org", secondsLeft: 60)]).deciding(with: try snapshot(.ask, withHook))
         #expect(CLI.statusLines(StatusReport(filter: .on(try snapshot(.ask, withHook)), daemonRunning: false, pending: busy)) == [
             "blackice is on, in ask mode: connections no rule covers wait until you, or a hook, answers.",
             "  rules      1 app allowed in every mode",
@@ -359,6 +359,43 @@ struct ReportTests {
         let unreachable = CLI.statusLines(StatusReport(filter: .on(try snapshot(.ask, withHook)), daemonRunning: true, pending: nil))
         #expect(unreachable[2] == "  hooks      1, run by the daemon")
         #expect(unreachable.last == "  filter     not answering. If blackice was just upgraded, restart the Mac.")
+    }
+
+    /// The saved configuration is not always the one the filter decides with: it keeps its own when
+    /// it refuses the saved one, and status says so instead of naming the saved mode.
+    @Test func statusSaysWhenTheFilterHoldsAnotherConfiguration() throws {
+        let saved = try ProviderConfiguration(generation: 6, mode: .blockAll, configText: "mode = \"block-all\"\n")
+        let held = try ProviderConfiguration(generation: 5, mode: .acceptAll, configText: "mode = \"block-all\"\n")
+        let other = PendingReply(events: [], approvals: []).deciding(with: held)
+        #expect(CLI.statusLines(StatusReport(filter: .on(saved), daemonRunning: false, pending: other)).prefix(2) == [
+            "blackice is on, but its filter decides in accept-all mode (generation 5), not with the saved block-all mode (generation 6).",
+            "  Load yours again with: blackice start",
+        ])
+        let none = CLI.statusLines(StatusReport(filter: .on(saved), daemonRunning: false, pending: PendingReply(events: [], approvals: [])))
+        #expect(none.first == "blackice is on, but its filter holds no configuration.")
+    }
+
+    /// What start and mode make of the filter's answer after they saved a configuration.
+    @Test func startAndModeCheckThatTheFilterTookIt() throws {
+        let saved = try ProviderConfiguration(generation: 6, mode: .blockAll, configText: "mode = \"block-all\"\n")
+        #expect(Activation(PendingReply(events: [], approvals: []).deciding(with: saved), saved: saved) == .active)
+        #expect(Activation(nil, saved: saved) == .noAnswer)
+        #expect(Activation(PendingReply(events: [], approvals: []), saved: saved) == .other(nil))
+        // Same generation and mode, other text: not the one saved.
+        let edited = try ProviderConfiguration(generation: 6, mode: .blockAll, configText: "mode = \"block-all\"\n# edited\n")
+        #expect(Activation(PendingReply(events: [], approvals: []).deciding(with: edited), saved: saved) == .other(ActiveConfiguration(edited)))
+        let previous = try ProviderConfiguration(generation: 5, mode: .acceptAll, configText: "mode = \"block-all\"\n")
+        let refusedOne = Activation(PendingReply(events: [], approvals: []).deciding(with: previous), saved: saved)
+
+        #expect(CLI.notActiveLines(saved, .active).isEmpty && CLI.activationStatus(.active) == 0)
+        #expect(CLI.notActiveLines(saved, refusedOne).first
+            == "blackice's filter did not load the configuration just saved (generation 6): it decides in accept-all mode (generation 5). Its log says why:")
+        #expect(CLI.notActiveLines(saved, refusedOne).last?.contains("subsystem == \"com.valentorassa.blackice.filter\"") == true)
+        #expect(CLI.activationStatus(refusedOne) == ExitCode.software)
+        #expect(CLI.notActiveLines(saved, .noAnswer).first
+            == "block-all mode is saved, but blackice's filter did not answer, so whether it is in force is not known.")
+        #expect(CLI.activationStatus(.noAnswer) == ExitCode.unavailable)
+        #expect(CLI.notActiveLines(saved, .other(nil)).first?.hasPrefix("blackice's filter holds no configuration") == true)
     }
 
     @Test func modeAndFirstStartHints() throws {

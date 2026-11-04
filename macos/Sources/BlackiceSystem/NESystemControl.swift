@@ -69,31 +69,45 @@ public final class NESystemControl: SystemControlling {
         guard save(manager, output, firstSave: firstSave) else { return ExitCode.software }
         // The filter's process can come up seconds after the save, and macOS cuts the connections
         // open at that moment (on 3 November 2026 it cut fx's sign-in, started right after the
-        // first start). Wait until it answers, so that what runs next does not lose its connection.
-        let answering = Self.extensionAnswers(attempts: 40, interval: 0.5)
+        // first start). Wait until it answers, so that what runs next does not lose its connection,
+        // and until it names the configuration just saved: it keeps the one it has when it refuses
+        // the new one, and saving says nothing about that.
+        let inForce = Self.activation(of: candidate)
         output.stdout("")
-        CLI.onLines(candidate).forEach(output.stdout)
-        if replaced, !answering {
+        if replaced, inForce == .noAnswer {
             output.stderr("blackice was upgraded, and macOS needs a restart to finish. Restart the Mac, then run blackice start again.")
             output.stderr("Until then hooks, pending, approve and deny cannot reach the filter, and ask mode drops what it holds.")
             return ExitCode.tempFail
         }
+        guard inForce == .active else {
+            CLI.notActiveLines(candidate, inForce).forEach(output.stderr)
+            return CLI.activationStatus(inForce)
+        }
+        CLI.onLines(candidate).forEach(output.stdout)
         if neededApproval || output.setup, output.next {
             CLI.firstStartLines(candidate, daemonRunning: Self.daemonRunning()).forEach(output.stdout)
         }
         return ExitCode.success
     }
 
-    /// Whether the extension's XPC service answers `pending`, trying for a few seconds while a newly
-    /// launched extension starts listening. On 3 November 2026 an extension that replaced an older
-    /// version in place had no Mach service until the Mac restarted (docs/install.md, "Upgrading").
-    static func extensionAnswers(attempts: Int = 10, interval: TimeInterval = 0.5) -> Bool {
-        guard let teamID = CodeIdentity.current()?.teamID else { return false }
+    /// Asks the extension which configuration it decides with until it names `candidate`, for up
+    /// to `attempts` × `interval`: a newly launched extension takes a few seconds to listen, and a
+    /// running one installs a change on its own queue. On 3 November 2026 an extension that
+    /// replaced an older version in place had no Mach service until the Mac restarted
+    /// (docs/install.md, "Upgrading").
+    static func activation(of candidate: ProviderConfiguration, attempts: Int = 40, interval: TimeInterval = 0.5) -> Activation {
+        guard let teamID = CodeIdentity.current()?.teamID else { return .noAnswer }
+        var last = Activation.noAnswer
         for attempt in 1...attempts {
-            if (try? FilterClient(teamID: teamID).pending()) != nil { return true }
+            if let reply = try? FilterClient(teamID: teamID).pending() {
+                last = Activation(reply, saved: candidate)
+                if last == .active { return last }
+                // A newer generation: another change came after this one.
+                if let active = reply.active, active.generation > candidate.generation { return last }
+            }
             if attempt < attempts { Thread.sleep(forTimeInterval: interval) }
         }
-        return false
+        return last
     }
 
     public func stop(output: SystemOutput) -> Int32 {
@@ -186,6 +200,11 @@ public final class NESystemControl: SystemControlling {
         }
         manager.providerConfiguration = provider
         guard save(manager, output) else { return ExitCode.software }
+        let inForce = Self.activation(of: candidate)
+        guard inForce == .active else {
+            CLI.notActiveLines(candidate, inForce).forEach(output.stderr)
+            return CLI.activationStatus(inForce)
+        }
         CLI.modeChangedLines(candidate, daemonRunning: Self.daemonRunning()).forEach(output.stdout)
         return ExitCode.success
     }

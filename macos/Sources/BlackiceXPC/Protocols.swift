@@ -25,7 +25,7 @@ import Foundation
     /// the extension holds; the daemon calls it again on the same connection when an event names a
     /// generation it does not hold.
     func register(_ request: Data, reply: @escaping (Data) -> Void)
-    /// PendingRequest -> PendingReply.
+    /// PendingRequest -> PendingReply, which also names the configuration the extension decides with.
     func pending(_ request: Data, reply: @escaping (Data) -> Void)
     /// AnswerRequest -> AnswerReply.
     func answer(_ request: Data, reply: @escaping (Data) -> Void)

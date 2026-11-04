@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 // What the CLI saves in the filter's provider configuration and the extension reads back:
@@ -112,6 +113,12 @@ public struct ProviderConfiguration: Equatable, Sendable {
             throw ProviderConfigurationError("missing provider configuration")
         }
         try self.init(data: data)
+    }
+
+    /// The SHA-256 of the blackice.toml text, in lower-case hex, so the extension can say which
+    /// text it holds without sending it.
+    public var configSHA256: String {
+        SHA256.hash(data: Data(configText.utf8)).map { String(format: "%02x", $0) }.joined()
     }
 
     public var summary: String {
