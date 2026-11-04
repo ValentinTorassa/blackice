@@ -10,6 +10,11 @@ Fewer connections waiting in ask mode.
 - Four more macOS services pass without a rule, each seen waiting in those runs: codesign's timestamp service, to
   timestamp.apple.com only (in ask mode a signature could end up with no timestamp), iCloud contacts, Apple Media
   Services and the app categories Screen Time uses.
+- A connection that arrives while 4 hooks run waits for a free one instead of getting no hook, and the waiting
+  connections take turns between apps, so one app's burst no longer crowds out the rest. One is given up when less
+  than 10 s of its time is left, when it ends while it waits, or when 256 already wait. The event log says so:
+  `hook_queued`, `waited_ms`, and `hook_dropped` with `deadline_near`, `event_ended` or `queue_full` in place of
+  `concurrency_limit`.
 
 ## 0.3.1 (4 November 2026)
 

@@ -112,14 +112,15 @@ and each run on a Mac is recorded in [`evidence/`](../evidence/).
    data in the command line. The event goes on stdin and in a 0600 file inside a private 0700 directory, named in
    `BLACKICE_EVENT_FILE`. The hook runs in that directory, which is deleted afterwards. Hooks get a short, explicit
    environment without the token. At the deadline the hook's process group gets SIGTERM, then SIGKILL after a grace
-   period, and anything a hook leaves in its group is killed when it exits. At most 4 hooks run at once; a hook with
-   no free slot is not started, is logged as dropped, and the connection is denied when its timeout passes.
+   period, and anything a hook leaves in its group is killed when it exits. At most 4 hooks run at once. Until
+   4 November 2026 a hook with no free slot was not started and was logged as dropped; since then it waits for one
+   (see "Hooks in a burst" under the open problems).
    *On a Mac*, the daemon registered with the extension, received each event and ran the hook. fx prints the
    commands it runs, token included, and the first run copied them into the event log with the hook's stderr;
    the runner now replaces the token, and any piece of it of 8 characters or more, with `[token]`. With build 4
    (P2-02) the daemon took its hooks from the extension's configuration, and each hook record's stderr held
    `[token]` where fx had printed the token. The fault tests (P5-01) showed a hung hook killed at the deadline and,
-   in a burst, at most 4 hooks at once with the rest logged as dropped.
+   in a burst, at most 4 hooks at once with the rest logged as dropped (before the queue).
    *Done* on 3 November 2026: on a Mac the hook, running fx, approved api.github.com and denied pastebin.com
    (P2-01, P2-02).
 4. **The agent decides.** An fx skill that says what to look at, when to approve and how to call `approve`. A fixed
@@ -157,7 +158,8 @@ and each run on a Mac is recorded in [`evidence/`](../evidence/).
    deadline drops it; a hook that sleeps past the deadline is killed (`hook_killed`, reason `deadline`) and its
    connection dropped (`timed_out`); a burst of 50 connections to distinct hosts and 70 to one host shows one event
    per app, host and port, at most 64 connections per event (`flow drop ask_capacity` beyond), at most 4 hooks at
-   once with the rest logged as `hook_dropped` (`concurrency_limit`), and `curl` with a rule still working; and after
+   once with the rest waiting for a slot (`hook_queued`, then `hook_started` with `waited_ms`, or `hook_dropped`
+   with `deadline_near` once too little time is left), and `curl` with a rule still working; and after
    the daemon is killed, launchd starts it and it registers again (`control xpc daemon_registered`), then a
    configuration change while connections wait drops them (`configuration_changed`) and cancels their events.
    *On a Mac*, 3 November 2026, with build 4 ([P5-01](../evidence/P5-01-faults-macos.md)): 24 checks passed and 4
@@ -189,11 +191,12 @@ and each run on a Mac is recorded in [`evidence/`](../evidence/).
 
 ## Open problems
 
-- **Hooks in a burst.** The daemon runs at most 4 hooks at once and has no queue: an event that arrives while 4 run
-  is logged as `hook_dropped` (`concurrency_limit`) and waits for its deadline. fx answers in about 16 s, so one app
-  that opens many connections at once crowds out the rest. On the Mac after the recorded onboarding, a VPN client's
-  network extension sent 53 of 94 events in ten minutes, mostly in two bursts; 62 events got no hook and 31
-  connections were dropped at the deadline ([P5-08](../evidence/P5-08-onboarding-published-0.3.0-recorded-macos.md)).
+- **Hooks in a burst.** The daemon runs at most 4 hooks at once. Until 4 November 2026 it had no queue: an event
+  that arrived while 4 ran was logged as `hook_dropped` (`concurrency_limit`) and waited for its deadline. fx answers
+  in about 16 s, so one app that opens many connections at once crowded out the rest. On the Mac after the
+  recorded onboarding, a VPN client's network extension sent 53 of 94 events in ten minutes, mostly in two bursts;
+  62 events got no hook and 31 connections were dropped at the deadline
+  ([P5-08](../evidence/P5-08-onboarding-published-0.3.0-recorded-macos.md)).
   Twenty minutes later, building 0.3.1 in ask mode failed the same way: `codesign`'s request to Apple's timestamp
   service (`com.apple.security.XPCTimeStampingService` to timestamp.apple.com) arrived while 4 hooks ran, got no
   hook, and the signature had no timestamp.
@@ -203,9 +206,14 @@ and each run on a Mac is recorded in [`evidence/`](../evidence/).
   Replaying the log with 4 hooks of 16 s each, the events other than Tailscale's, the Apple services above and the
   tests lose 35 without a queue and none with one.
   Done since: the first start's list shows the running system extensions, so a VPN client's can be trusted there,
-  and the timestamp service and three other services seen in the log are in the Apple services table. Next: a
-  queue in the daemon, so an event that finds 4 hooks running waits for a slot until its deadline, taking turns
-  between apps. One hook for several events of the same app stays a candidate for bursts a queue cannot absorb.
+  and the timestamp service and three other services seen in the log are in the Apple services table. And the
+  daemon has a queue: a hook that finds 4 running waits for a slot without holding a thread (`hook_queued`, then
+  `hook_started` with `waited_ms`). Waiting hooks take turns between apps (by signing identity, or cdhash), oldest
+  first within an app, so one app's burst no longer crowds out the rest. A waiting hook is dropped once less than
+  10 s of its time is left (`deadline_near`), when the extension reports its event's end while it waits
+  (`event_ended`), and when 256 hooks already wait (`queue_full`). Not run on a Mac yet. One hook for several events
+  of the same app stays a candidate for bursts a queue cannot absorb: at 16 s per decision 4 slots answer about 15
+  events a minute.
 - **Deadlock.** The deciding agent needs the network to reach its model. If that connection also goes to ask mode,
   it waits for its own approval. Phase 4's fixed rule for the decider handles this; it has to exist before ask mode
   is turned on for real.
@@ -283,8 +291,9 @@ and each run on a Mac is recorded in [`evidence/`](../evidence/).
 - **Limits of the host check.** The system resolver may answer blackice's lookup differently than it answered
   the app (round-robin, CDNs, split DNS), which shows as a mismatch: ask mode asks and block-all drops. And a match
   proves only that the name resolves to that address now, not who controls the name.
-- **Hook limits.** The limit of 4 hooks at once, the 2 s grace period and the 4 KiB of stderr kept per hook are
-  first guesses, set in code rather than in `blackice.toml`.
+- **Hook limits.** The limit of 4 hooks at once, at most 256 hooks waiting for a slot, the 10 s a waiting hook needs
+  left to start (or the whole timeout, when that is shorter), the 2 s grace period and the 4 KiB of stderr kept per
+  hook are first guesses, set in code rather than in `blackice.toml`.
 - **Log rotation.** The event log only grows. Rotation, or leaving it to newsyslog, is not decided.
 - **Installation.** No dialog per connection, but macOS asks once to allow the extension in System Settings, unless
   the Mac is managed with an MDM profile.
