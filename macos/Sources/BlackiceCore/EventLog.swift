@@ -28,7 +28,10 @@ public enum LogRecord: Sendable {
     /// No hook ran for the event: "configuration_unavailable" when the extension could not be asked
     /// for its configuration, "configuration_changed" when it holds a newer one than the event's.
     case hooksSkipped(eventID: String, reason: String)
-    case hookStarted(eventID: String, hookLine: Int, pid: Int32)
+    /// No hook slot was free, so the hook waits; `waiting` hooks wait now, this one included.
+    case hookQueued(eventID: String, hookLine: Int, waiting: Int)
+    /// `waited` is how long it waited for a slot; 0 when one was free.
+    case hookStarted(eventID: String, hookLine: Int, pid: Int32, waited: TimeInterval = 0)
     case hookFinished(eventID: String, HookResult)
     /// Written when the extension reports how a paused connection ended.
     case verdict(eventID: String, Verdict)
@@ -126,15 +129,22 @@ public final class EventLog: @unchecked Sendable {
         case .noHooks(let eventID):
             fields["type"] = .string("no_hooks")
             fields["event"] = .string(eventID)
-        case .hookStarted(let eventID, let hookLine, let pid):
+        case .hookQueued(let eventID, let hookLine, let waiting):
+            fields["type"] = .string("hook_queued")
+            fields["event"] = .string(eventID)
+            fields["hook_line"] = .int(hookLine)
+            fields["waiting"] = .int(waiting)
+        case .hookStarted(let eventID, let hookLine, let pid, let waited):
             fields["type"] = .string("hook_started")
             fields["event"] = .string(eventID)
             fields["hook_line"] = .int(hookLine)
             fields["pid"] = .int(Int(pid))
+            if waited > 0 { fields["waited_ms"] = .int(milliseconds(waited)) }
         case .hookFinished(let eventID, let result):
             fields["event"] = .string(eventID)
             fields["hook_line"] = .int(result.hookLine)
-            fields["duration_ms"] = .int(Int((result.duration * 1000).rounded()))
+            fields["duration_ms"] = .int(milliseconds(result.duration))
+            if result.waited > 0 { fields["waited_ms"] = .int(milliseconds(result.waited)) }
             switch result.outcome {
             case .exited(let status):
                 fields["type"] = .string("hook_exited")
@@ -170,6 +180,8 @@ public final class EventLog: @unchecked Sendable {
         precondition(!data.contains(0x0A) && !data.contains(0x0D), "a log record must be one line")
         return data
     }
+
+    static func milliseconds(_ seconds: TimeInterval) -> Int { Int((seconds * 1000).rounded()) }
 
     enum Field: Encodable {
         case string(String)

@@ -18,9 +18,14 @@ import Foundation
 // grace period, SIGKILL. When the hook's shell exits, whatever it left behind in its group
 // is killed too. A process that leaves the group on purpose (setsid, setpgid) escapes this.
 //
-// At most `maximumConcurrent` hooks run at once. A hook that finds no free slot does not
-// run and does not wait: it is reported as dropped, and with no answer the connection is
-// denied when its timeout passes.
+// At most `maximumConcurrent` hooks run at once. A hook that finds no free slot waits for one,
+// without holding a thread. Waiting hooks take turns between apps, first come first served
+// within an app, so one app that opens many connections at once cannot crowd out the rest (on
+// 3 November 2026 Tailscale's network extension sent 316 of 905 events). A waiting hook is
+// dropped when less than `minimumStartBudget` of its time is left (`deadline_near`), when its
+// event ends while it waits (`event_ended`), and when `maximumWaiting` hooks already wait
+// (`queue_full`). A dropped hook's connection is denied when its timeout passes, unless
+// something else answers it.
 
 public struct HookResult: Equatable, Sendable {
     public enum Outcome: Equatable, Sendable {
@@ -38,8 +43,14 @@ public struct HookResult: Equatable, Sendable {
     }
 
     public enum DropReason: String, Equatable, Sendable {
-        case concurrencyLimit = "concurrency_limit"
+        /// The event's deadline had passed when its hook came to run.
         case deadlinePassed = "deadline_passed"
+        /// The hook waited for a slot until less than `minimumStartBudget` of its time was left.
+        case deadlineNear = "deadline_near"
+        /// The extension reported how the event's connection ended while the hook waited.
+        case eventEnded = "event_ended"
+        /// `maximumWaiting` hooks were already waiting for a slot.
+        case queueFull = "queue_full"
         case invalidEventID = "invalid_event_id"
     }
 
@@ -49,19 +60,27 @@ public struct HookResult: Equatable, Sendable {
     /// The first `stderrLimit` bytes the hook wrote to stderr, decoded as UTF-8 with replacement.
     public let stderr: String
     public let stderrTruncated: Bool
+    /// From the hook's start, or from when it was dropped; the time it waited is not included.
     public let duration: TimeInterval
+    /// How long the hook waited for a slot; 0 when one was free.
+    public let waited: TimeInterval
 
-    public init(hookLine: Int, outcome: Outcome, stderr: String, stderrTruncated: Bool, duration: TimeInterval) {
+    public init(hookLine: Int, outcome: Outcome, stderr: String, stderrTruncated: Bool, duration: TimeInterval,
+                waited: TimeInterval = 0) {
         self.hookLine = hookLine
         self.outcome = outcome
         self.stderr = stderr
         self.stderrTruncated = stderrTruncated
         self.duration = duration
+        self.waited = waited
     }
 }
 
 public enum HookProgress: Sendable {
-    case started(hookLine: Int, pid: Int32)
+    /// No slot was free: the hook waits, with `waiting` hooks waiting now, itself included.
+    case queued(hookLine: Int, waiting: Int)
+    /// `waited` is how long it waited for a slot; 0 when one was free.
+    case started(hookLine: Int, pid: Int32, waited: TimeInterval)
     case finished(HookResult)
 }
 
@@ -73,15 +92,23 @@ public final class HookRunner: @unchecked Sendable {
         /// Build it with `HookRunner.environment(for:)`; nothing is inherited from the daemon.
         public var environment: [String: String]
         public var maximumConcurrent: Int
+        /// Hooks waiting for a slot, at most; the extension holds at most 256 events at once.
+        public var maximumWaiting: Int
+        /// A hook that waited starts only with this much time left (or the whole timeout, when that
+        /// is shorter). fx takes 10 to 27 s to answer; a hook started with less is mostly killed.
+        public var minimumStartBudget: TimeInterval
         /// Time between SIGTERM and SIGKILL.
         public var gracePeriod: TimeInterval
         public var stderrLimit: Int
 
         public init(workDirectory: URL, environment: [String: String], maximumConcurrent: Int = 4,
+                    maximumWaiting: Int = 256, minimumStartBudget: TimeInterval = 10,
                     gracePeriod: TimeInterval = 2, stderrLimit: Int = 4096) {
             self.workDirectory = workDirectory
             self.environment = environment
             self.maximumConcurrent = maximumConcurrent
+            self.maximumWaiting = maximumWaiting
+            self.minimumStartBudget = minimumStartBudget
             self.gracePeriod = gracePeriod
             self.stderrLimit = stderrLimit
         }
@@ -95,9 +122,30 @@ public final class HookRunner: @unchecked Sendable {
     public let options: Options
     private let lock = NSLock()
     private var running = 0
+    /// Hooks waiting for a slot, by app, oldest first. `turns` holds each app with a waiting hook
+    /// once, in the order the next free slots go to them. While a hook waits every slot is taken:
+    /// a slot that frees goes straight to the next waiting hook.
+    private var waiting: [String: [Waiter]] = [:]
+    private var turns: [String] = []
+    private var waitingTotal = 0
+    private var nextTicket: UInt64 = 0
+
+    private struct Waiter {
+        let ticket: UInt64
+        let eventID: String
+        /// Past this, less than the minimum start budget is left.
+        let startBy: Date
+        let continuation: CheckedContinuation<Admission, Never>
+    }
+
+    private enum Admission {
+        case admitted
+        case dropped(HookResult.DropReason)
+    }
 
     public init(options: Options) throws {
         precondition(options.maximumConcurrent >= 1, "maximumConcurrent must be at least 1")
+        precondition(options.maximumWaiting >= 0, "maximumWaiting must not be negative")
         try PrivateDirectory.ensure(options.workDirectory)
         self.options = options
     }
@@ -117,6 +165,13 @@ public final class HookRunner: @unchecked Sendable {
         return running
     }
 
+    /// Hooks waiting for a slot right now.
+    public var waitingCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return waitingTotal
+    }
+
     /// Runs `hooks` for `event` side by side and returns one result per hook, in file order.
     /// Each hook is killed at `event.deadline` or after `timeoutSeconds`, whichever comes first.
     public func run(_ hooks: [Hook], for event: HookEvent, timeoutSeconds: Int,
@@ -124,15 +179,9 @@ public final class HookRunner: @unchecked Sendable {
         await withTaskGroup(of: HookResult.self) { group in
             for hook in hooks {
                 group.addTask {
-                    // waitpid and the pipe reads block, so each hook gets its own thread
-                    // instead of a thread from the concurrency pool.
-                    await withCheckedContinuation { continuation in
-                        Thread {
-                            let result = self.runBlocking(hook, event: event, timeoutSeconds: timeoutSeconds, progress: progress)
-                            progress(.finished(result))
-                            continuation.resume(returning: result)
-                        }.start()
-                    }
+                    let result = await self.runOne(hook, for: event, timeoutSeconds: timeoutSeconds, progress: progress)
+                    progress(.finished(result))
+                    return result
                 }
             }
             var results: [HookResult] = []
@@ -141,21 +190,62 @@ public final class HookRunner: @unchecked Sendable {
         }
     }
 
+    /// The extension reported how `eventID`'s connection ended: its hooks that still wait for a slot
+    /// have nothing left to decide, and are dropped (`event_ended`). Running hooks are left alone.
+    public func eventEnded(_ eventID: String) {
+        lock.lock()
+        var ended: [Waiter] = []
+        for (app, list) in waiting where list.contains(where: { $0.eventID == eventID }) {
+            ended += list.filter { $0.eventID == eventID }
+            setWaiters(list.filter { $0.eventID != eventID }, of: app)
+        }
+        lock.unlock()
+        ended.forEach { $0.continuation.resume(returning: .dropped(.eventEnded)) }
+    }
+
     // MARK: - One hook
 
-    private func runBlocking(_ hook: Hook, event: HookEvent, timeoutSeconds: Int,
+    private func runOne(_ hook: Hook, for event: HookEvent, timeoutSeconds: Int,
+                        progress: @escaping @Sendable (HookProgress) -> Void) async -> HookResult {
+        func dropped(_ reason: HookResult.DropReason, waited: TimeInterval = 0) -> HookResult {
+            HookResult(hookLine: hook.line, outcome: .dropped(reason), stderr: "", stderrTruncated: false, duration: 0,
+                       waited: waited)
+        }
+        guard Self.validEventID(event.id) else { return dropped(.invalidEventID) }
+        guard min(event.deadline.timeIntervalSinceNow, TimeInterval(timeoutSeconds)) > 0 else {
+            return dropped(.deadlinePassed)
+        }
+        let queuedAt = uptime()
+        let needed = min(options.minimumStartBudget, TimeInterval(timeoutSeconds))
+        let (admission, queued) = await admit(app: Self.appKey(event.app), eventID: event.id,
+                                              startBy: event.deadline.addingTimeInterval(-needed)) { waitingNow in
+            progress(.queued(hookLine: hook.line, waiting: waitingNow))
+        }
+        let waited = queued ? uptime() - queuedAt : 0
+        if case .dropped(let reason) = admission { return dropped(reason, waited: waited) }
+        // waitpid and the pipe reads block, so each hook gets its own thread instead of a thread
+        // from the concurrency pool. A hook gets its thread only once it holds a slot.
+        return await withCheckedContinuation { continuation in
+            Thread {
+                let result = self.runBlocking(hook, event: event, timeoutSeconds: timeoutSeconds, waited: waited,
+                                              progress: progress)
+                continuation.resume(returning: result)
+            }.start()
+        }
+    }
+
+    /// Runs one hook that holds a slot, and gives the slot back when it is done.
+    private func runBlocking(_ hook: Hook, event: HookEvent, timeoutSeconds: Int, waited: TimeInterval,
                              progress: @Sendable (HookProgress) -> Void) -> HookResult {
+        defer { releaseSlot() }
         let started = uptime()
         func finish(_ outcome: HookResult.Outcome, stderr: String = "", truncated: Bool = false) -> HookResult {
             HookResult(hookLine: hook.line, outcome: outcome, stderr: stderr, stderrTruncated: truncated,
-                       duration: uptime() - started)
+                       duration: uptime() - started, waited: waited)
         }
 
-        guard Self.validEventID(event.id) else { return finish(.dropped(.invalidEventID)) }
         let budget = min(event.deadline.timeIntervalSinceNow, TimeInterval(timeoutSeconds))
         guard budget > 0 else { return finish(.dropped(.deadlinePassed)) }
-        guard acquireSlot() else { return finish(.dropped(.concurrencyLimit)) }
-        defer { releaseSlot() }
 
         let json: Data
         let directory: URL
@@ -185,7 +275,7 @@ public final class HookRunner: @unchecked Sendable {
         } catch {
             return finish(.failedToStart("\(error)"))
         }
-        progress(.started(hookLine: hook.line, pid: child.pid))
+        progress(.started(hookLine: hook.line, pid: child.pid, waited: waited))
 
         let collector = OutputCollector(limit: options.stderrLimit)
         collector.start(reading: child.stderr)
@@ -258,18 +348,105 @@ public final class HookRunner: @unchecked Sendable {
         }
     }
 
-    private func acquireSlot() -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        guard running < options.maximumConcurrent else { return false }
-        running += 1
-        return true
+    // MARK: - Slots and the queue
+
+    /// Turns are per app: its signing identity, or its cdhash when it is signed ad hoc.
+    static func appKey(_ app: HookEvent.App) -> String {
+        if let cdhash = app.cdhash { return "cdhash:" + cdhash }
+        return "id:" + (app.signingID ?? "") + "/" + (app.teamID ?? "")
     }
 
+    /// Takes a free slot, or waits for one until `startBy`. `queued` is true when the hook waited;
+    /// `onQueued` is told how many hooks wait once this one does.
+    private func admit(app: String, eventID: String, startBy: Date,
+                       onQueued: @escaping @Sendable (Int) -> Void) async -> (Admission, queued: Bool) {
+        var queued = false
+        let admission: Admission = await withCheckedContinuation { continuation in
+            lock.lock()
+            if running < options.maximumConcurrent {
+                running += 1
+                lock.unlock()
+                continuation.resume(returning: .admitted)
+                return
+            }
+            guard startBy.timeIntervalSinceNow > 0 else {
+                lock.unlock()
+                continuation.resume(returning: .dropped(.deadlineNear))
+                return
+            }
+            guard waitingTotal < options.maximumWaiting else {
+                lock.unlock()
+                continuation.resume(returning: .dropped(.queueFull))
+                return
+            }
+            nextTicket += 1
+            let ticket = nextTicket
+            if waiting[app] == nil { turns.append(app) }
+            waiting[app, default: []].append(Waiter(ticket: ticket, eventID: eventID, startBy: startBy,
+                                                    continuation: continuation))
+            waitingTotal += 1
+            let waitingNow = waitingTotal
+            queued = true
+            lock.unlock()
+            onQueued(waitingNow)
+            // A timer, not a sleeping thread, gives the hook up once too little time is left.
+            DispatchQueue.global().asyncAfter(deadline: .now() + max(0, startBy.timeIntervalSinceNow)) { [weak self] in
+                self?.giveUp(ticket, app: app)
+            }
+        }
+        return (admission, queued)
+    }
+
+    /// The waiting hook's start-by time came: drop it, if it still waits.
+    private func giveUp(_ ticket: UInt64, app: String) {
+        lock.lock()
+        let list = waiting[app] ?? []
+        guard let index = list.firstIndex(where: { $0.ticket == ticket }) else {
+            lock.unlock()
+            return
+        }
+        let waiter = list[index]
+        setWaiters(list.filter { $0.ticket != ticket }, of: app)
+        lock.unlock()
+        waiter.continuation.resume(returning: .dropped(.deadlineNear))
+    }
+
+    /// Hands the slot to the next waiting hook, taking turns between apps, or frees it. A hook
+    /// whose start-by time has passed is dropped on the way, before its timer fires.
     private func releaseSlot() {
         lock.lock()
-        running -= 1
+        var late: [Waiter] = []
+        var next: Waiter?
+        while next == nil, !turns.isEmpty {
+            let app = turns.removeFirst()
+            var list = waiting[app] ?? []
+            guard !list.isEmpty else { waiting[app] = nil; continue }
+            let waiter = list.removeFirst()
+            waitingTotal -= 1
+            if list.isEmpty {
+                waiting[app] = nil
+            } else {
+                waiting[app] = list
+                turns.append(app)
+            }
+            if waiter.startBy.timeIntervalSinceNow > 0 { next = waiter } else { late.append(waiter) }
+        }
+        if next == nil { running -= 1 }
         lock.unlock()
+        late.forEach { $0.continuation.resume(returning: .dropped(.deadlineNear)) }
+        next?.continuation.resume(returning: .admitted)
+    }
+
+    /// Replaces an app's waiting hooks with `list`, keeping the counts and the turns in step.
+    /// Call with the lock held.
+    private func setWaiters(_ list: [Waiter], of app: String) {
+        waitingTotal -= (waiting[app]?.count ?? 0) - list.count
+        if list.isEmpty {
+            waiting[app] = nil
+            turns.removeAll { $0 == app }
+        } else {
+            waiting[app] = list
+        }
     }
 
     /// mkdtemp creates the directory with mode 0700.

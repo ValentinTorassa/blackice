@@ -6,7 +6,8 @@
 #   2. hook hung: a hook that sleeps past the deadline is killed, and the connection is dropped;
 #   3. burst: BURST connections to distinct hosts and SAME to one host, at once: one event per app,
 #      host and port, at most 64 connections per event, at most 4 hooks at once with the rest
-#      logged as dropped, and the Mac keeps working;
+#      waiting for a slot, those left when too little time remains logged as dropped
+#      (deadline_near), and the Mac keeps working;
 #   4. restart: the daemon is killed, launchd starts it again and it registers; then a
 #      configuration change while connections wait drops them and cancels their events. That
 #      change is the switch back to accept-all at the end.
@@ -187,8 +188,9 @@ settled() {
         "$2" > /dev/null
 }
 
-# For nscurl's events to the hosts in HOSTFILE: events, distinct hosts, hooks started, dropped at the
-# limit, dropped otherwise, exited, failed, and events with no hook record at all; tab-separated.
+# For nscurl's events to the hosts in HOSTFILE: events, distinct hosts, hooks queued, hooks started,
+# started after waiting, dropped while waiting (deadline_near, queue_full, event_ended), dropped
+# otherwise, exited, failed, and events with no hook record at all; tab-separated.
 burst_summary() {
     "$JQ" -Rnr --arg app "$NSCURL_ID" --rawfile hosts "$2" '
         ($hosts | split("\n") | map(select(length > 0))) as $h
@@ -197,11 +199,12 @@ burst_summary() {
         | ($ev | map(.event)) as $ids
         | [$all[] | select(.event as $e | $ids | index($e))] as $r
         | def n(f): [$r[] | select(f)] | length;
-        [($ev | length), ([$ev[].host] | unique | length), n(.type == "hook_started"),
-         n(.type == "hook_dropped" and .reason == "concurrency_limit"),
-         n(.type == "hook_dropped" and .reason != "concurrency_limit"), n(.type == "hook_exited"),
+        def queue_drop: .type == "hook_dropped" and (.reason | IN("deadline_near", "queue_full", "event_ended"));
+        [($ev | length), ([$ev[].host] | unique | length), n(.type == "hook_queued"), n(.type == "hook_started"),
+         n(.type == "hook_started" and (.waited_ms // 0) > 0), n(queue_drop),
+         n(.type == "hook_dropped" and (queue_drop | not)), n(.type == "hook_exited"),
          n(.type == "hook_failed")] as $c
-        | $c + [$c[0] - $c[2] - $c[3] - $c[4] - $c[6]] | @tsv' "$1"
+        | $c + [$c[0] - $c[3] - $c[5] - $c[6] - $c[8]] | @tsv' "$1"
 }
 
 # The most hooks running at once: +1 at hook_started, -1 when a started hook ended. An end and a
@@ -311,19 +314,25 @@ ev-00000007 plain invalid"
         e 00:00.110 ev-b1 "$NSCURL_ID" "$b1"; r 00:00.111 hook_started ev-b1 ',"pid":102'
         e 00:00.120 ev-b2 "$NSCURL_ID" "$b2"; r 00:00.121 hook_started ev-b2 ',"pid":103'
         e 00:00.130 ev-b3 "$NSCURL_ID" "$b3"; r 00:00.131 hook_started ev-b3 ',"pid":104'
-        e 00:00.140 ev-b4 "$NSCURL_ID" "$b4"; r 00:00.141 hook_dropped ev-b4 ',"reason":"concurrency_limit","duration_ms":0'
-        e 00:00.150 ev-b5 "$NSCURL_ID" "$b5"; r 00:00.151 hook_dropped ev-b5 ',"reason":"concurrency_limit","duration_ms":0'
-        e 00:00.500 ev-s1 "$NSCURL_ID" "$SAME_HOST"; r 00:00.501 hook_dropped ev-s1 ',"reason":"concurrency_limit","duration_ms":0'
+        e 00:00.140 ev-b4 "$NSCURL_ID" "$b4"; r 00:00.141 hook_queued ev-b4 ',"waiting":1'
+        e 00:00.150 ev-b5 "$NSCURL_ID" "$b5"; r 00:00.151 hook_queued ev-b5 ',"waiting":2'
+        e 00:00.500 ev-s1 "$NSCURL_ID" "$SAME_HOST"; r 00:00.501 hook_queued ev-s1 ',"waiting":3'
         printf '{"ts":"2026-11-03T10:00:00.600Z","type":"event_rec\n'   # a line cut short
-        # One hook ends and another starts in the same millisecond while three still run.
+        # A hook ends and a waiting one starts in the same millisecond while three still run.
         r 00:10.300 hook_exited ev-b3 ',"status":0,"duration_ms":10169'
-        e 00:10.290 ev-o1 com.apple.cloudd gateway.icloud.com; r 00:10.300 hook_started ev-o1 ',"pid":105'
-        r 00:10.340 hook_exited ev-o1 ',"status":0,"duration_ms":40'
+        r 00:10.300 hook_started ev-b4 ',"pid":105,"waited_ms":10159'
+        e 00:10.290 ev-o1 com.apple.cloudd gateway.icloud.com; r 00:10.291 hook_queued ev-o1 ',"waiting":3'
         r 00:15.101 hook_exited ev-b0 ',"status":0,"duration_ms":15000'
+        r 00:15.101 hook_started ev-o1 ',"pid":106,"waited_ms":4810'
         r 00:15.111 hook_exited ev-b1 ',"status":0,"duration_ms":15000'
+        r 00:15.111 hook_started ev-s1 ',"pid":107,"waited_ms":14610'
         r 00:15.121 hook_exited ev-b2 ',"status":0,"duration_ms":15000'
+        r 00:15.140 hook_exited ev-o1 ',"status":0,"duration_ms":39,"waited_ms":4810'
+        r 00:15.200 hook_exited ev-s1 ',"status":0,"duration_ms":89,"waited_ms":14610'
+        r 00:20.151 hook_dropped ev-b5 ',"reason":"deadline_near","duration_ms":0,"waited_ms":20000'
+        r 00:25.000 hook_exited ev-b4 ',"status":0,"duration_ms":14700,"waited_ms":10159'
         e 05:00.000 ev-s2 "$NSCURL_ID" "$SAME_HOST"   # a retry long after the first event ended
-        e 01:00.000 ev-h1 "$NSCURL_ID" "$HUNG_HOST"; r 01:00.002 hook_started ev-h1 ',"pid":106'
+        e 01:00.000 ev-h1 "$NSCURL_ID" "$HUNG_HOST"; r 01:00.002 hook_started ev-h1 ',"pid":108'
         r 01:30.010 hook_killed ev-h1 ',"reason":"deadline","signal":15,"duration_ms":30008'
         printf '{"ts":"2026-11-03T10:01:30.600Z","type":"verdict","event":"ev-h1","verdict":"timed_out"}\n'
         e 02:00.000 ev-r1 "$NSCURL_ID" "${RESTART_HOSTS[0]}"
@@ -340,8 +349,8 @@ ev-00000007 plain invalid"
     verdict "settled waits for a verdict and a hook end" "$(is settled ev-h1 "$S")"
     verdict "settled is false without a hook end" "$(is test "$(is settled ev-r1 "$S")" == 0)"
     got=$(burst_summary "$S" "$OUT/dry/hosts.txt")
-    verdict "burst_summary counts events, starts and drops ($got)" \
-        "$(is test "$got" == "$(printf '6\t6\t4\t2\t0\t4\t0\t0')")"
+    verdict "burst_summary counts events, waits, starts and drops ($got)" \
+        "$(is test "$got" == "$(printf '6\t6\t2\t5\t1\t1\t0\t5\t0\t0')")"
     verdict "max_hooks sees 4 at once, an end and a start in the same ms counted once" "$(is test "$(max_hooks "$S")" -eq 4)"
     printf '%s\n' 'Waiting:' \
         "  ev-91fd1910  apple/$NSCURL_ID -> $SAME_HOST:443 (2606:4700:10::ac42:9ded), 64 connections, 25 s left" \
@@ -559,7 +568,7 @@ sleep 2
 slice "$off" "$OUT/3-events.jsonl"
 filter_log "$since" "$OUT/3-filter.log"
 slice "$OFF0" "$OUT/events.jsonl"
-IFS=$'\t' read -r b_events b_hosts b_started b_limit b_other b_exited b_failed b_missing \
+IFS=$'\t' read -r b_events b_hosts b_queued b_started b_waited b_queue_drop b_other b_exited b_failed b_missing \
     <<<"$(burst_summary "$OUT/3-events.jsonl" "$OUT/burst-hosts.txt")"
 same_events=$(ev_count "$SAME_HOST" "$OUT/3-events.jsonl" $((TIMEOUT - 1)))
 capacity=$(count_in 'flow drop ask_capacity' "$OUT/3-filter.log")
@@ -573,9 +582,9 @@ if (( SAME > PER_EVENT )); then
 fi
 verdict "3. $b_hosts of $BURST distinct hosts raised an event ($b_events events)" "$(( b_hosts * 10 >= BURST * 8 ))"
 verdict "3. at most $HOOK_SLOTS hooks ran at once (most seen in the event log: $most)" "$(( most >= 1 && most <= HOOK_SLOTS ))"
-verdict "3. hooks over the limit were logged as dropped ($b_started started, $b_limit dropped: concurrency_limit)" \
-    "$(( b_limit >= 1 ))"
-verdict "3. every burst event ran its hook or was logged as dropped ($b_missing with no record, $b_other dropped otherwise, $b_failed failed)" \
+verdict "3. hooks over the limit waited for a slot ($b_queued queued, $b_waited of $b_started started after waiting)" \
+    "$(( b_queued >= 1 && b_waited >= 1 ))"
+verdict "3. every burst event ran its hook or was logged as dropped ($b_missing with no record, $b_queue_drop dropped while waiting, $b_other dropped otherwise, $b_failed failed)" \
     "$(( b_missing == 0 && b_failed == 0 ))"
 verdict "3. curl reached $CONTROL_HOST during the burst (HTTP $code after $curl_s s)" "$(is test "$code" == 200)"
 verdict "3. blackice status answered during the burst" "$status_ok"
