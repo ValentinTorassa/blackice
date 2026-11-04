@@ -1,6 +1,6 @@
 # Plan
 
-blackice is early: 0.3.0 is its current release ([`CHANGELOG.md`](../CHANGELOG.md)), and it has run on one Mac. This file holds the phases, the decisions
+blackice is early: 0.3.1 is its current release ([`CHANGELOG.md`](../CHANGELOG.md)), and it has run on one Mac. This file holds the phases, the decisions
 taken so far and the open problems. A phase is done when its check passes on a real Mac, not when the code compiles,
 and each run on a Mac is recorded in [`evidence/`](../evidence/).
 
@@ -189,6 +189,16 @@ and each run on a Mac is recorded in [`evidence/`](../evidence/).
 
 ## Open problems
 
+- **Hooks in a burst.** The daemon runs at most 4 hooks at once and has no queue: an event that arrives while 4 run
+  is logged as `hook_dropped` (`concurrency_limit`) and waits for its deadline. fx answers in about 16 s, so one app
+  that opens many connections at once crowds out the rest. On the Mac after the recorded onboarding, a VPN client's
+  network extension sent 53 of 94 events in ten minutes, mostly in two bursts; 62 events got no hook and 31
+  connections were dropped at the deadline ([P5-08](../evidence/P5-08-onboarding-published-0.3.0-recorded-macos.md)).
+  Twenty minutes later, building 0.3.1 in ask mode failed the same way: `codesign`'s request to Apple's timestamp
+  service (`com.apple.security.XPCTimeStampingService` to timestamp.apple.com) arrived while 4 hooks ran, got no
+  hook, and the signature had no timestamp.
+  To weigh: a queue per app and host, one hook for several events of the same app, and offering VPN extensions in
+  the first start's list (they run from `/Library/SystemExtensions`, so the list does not show them).
 - **Deadlock.** The deciding agent needs the network to reach its model. If that connection also goes to ask mode,
   it waits for its own approval. Phase 4's fixed rule for the decider handles this; it has to exist before ask mode
   is turned on for real.
