@@ -22,6 +22,7 @@ Answers go through the command line, for example `blackice approve --app com.exa
 - From the published 0.2.1, the uninstall steps of [Install](/docs/install) removed the previous install, and the install script checked the release and installed it into `/Applications`.
 - After an upgrade in place, the daemon and the CLI could not reach the new extension until the Mac restarted.
 - With 0.3.0 candidates and no blackice or fx on the Mac, the first `start` asked its questions as lists, installed fx and signed it in. fx's test failed with HTTP 403 for a Vercel team with no card on file. With an earlier sign-in, `blackice agent connect fx` turned ask mode on, and fx approved two connections about 5 s after they started.
+- An earlier 0.3.0 candidate dropped git over HTTPS, `notarytool` and Apple's other developer tools in ask mode without asking. The 0.3.0 release asks about them, and fx approved git and `notarytool` in about 5 s.
 
 [Install](/docs/install) has the steps. The phases and open problems are in the repository's [plan](https://github.com/ValentinTorassa/blackice/blob/main/docs/plan.md).
 

@@ -183,7 +183,9 @@ and each run on a Mac is recorded in [`evidence/`](../evidence/).
    configuration change included. The System Settings steps that 0.2.1 prints for macOS 14 and 15 have not run.
    With 0.3.0 candidates the uninstall steps, the one-liner and the first `start` ran again, from no configuration
    and no fx, and three failures on the way were fixed before build 11
-   ([P5-06](../evidence/P5-06-onboarding-from-zero-macos.md)).
+   ([P5-06](../evidence/P5-06-onboarding-from-zero-macos.md)). Build 11 dropped Apple's developer tools (git over
+   HTTPS, `notarytool`) and Mac App Store apps as `invalid_signature` in ask mode; build 13 asks about them
+   ([P5-07](../evidence/P5-07-apple-tools-invalid-signature-macos.md)).
 
 ## Open problems
 

@@ -32,6 +32,8 @@ macOS 27.0.1. Each run is recorded in
 - With 0.3.0 candidates and no blackice or fx on the Mac: the first `start` asked with lists, then installed fx and
   signed it in. fx's test failed with HTTP 403 for a Vercel team with no card on file. With an earlier sign-in,
   `agent connect fx` loaded ask mode, and fx approved two `nscurl` requests in about 5 s (P5-06).
+- In ask mode, candidate build 11 dropped git over HTTPS, `notarytool` and Apple's other developer tools without
+  asking. Build 13, the 0.3.0 release, asks about them, and fx approved git and `notarytool` in about 5 s (P5-07).
 
 Open problems are in [`docs/plan.md`](docs/plan.md).
 

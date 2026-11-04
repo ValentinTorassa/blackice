@@ -270,6 +270,8 @@ approved apple/com.apple.nscurl -> pypi.org for 600 s; 8 waiting connections, 8 
 - The person picked no apps from the list, and picked fx, not "Me". The other answers ran only in `WizardTests`.
 - The 20 s wait for the extension let the sign-in through once. How long the filter takes to come up was not
   measured beyond build 10's run.
+- Build 11 dropped Apple's developer tools and Mac App Store apps as `invalid_signature` in ask mode, without
+  asking (P5-07). `nscurl` and fx were not affected, so this run did not show it.
 - fx approved `nscurl` here and denied it in P5-05. Which connections an agent approves depends on the model and
   varies between runs.
 - When the filter started, macOS closed the SSH sessions that followed the logs, as in P5-04.
