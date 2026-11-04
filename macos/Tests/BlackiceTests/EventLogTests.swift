@@ -104,7 +104,9 @@ struct EventLogTests {
             (.exited(status: 2), "hook_exited", "status", 2),
             (.signaled(signal: SIGSEGV), "hook_signaled", "signal", Int(SIGSEGV)),
             (.timedOut(signal: SIGKILL), "hook_killed", "signal", Int(SIGKILL)),
-            (.dropped(.concurrencyLimit), "hook_dropped", "reason", "concurrency_limit"),
+            (.dropped(.deadlineNear), "hook_dropped", "reason", "deadline_near"),
+            (.dropped(.eventEnded), "hook_dropped", "reason", "event_ended"),
+            (.dropped(.queueFull), "hook_dropped", "reason", "queue_full"),
             (.failedToStart("no shell"), "hook_failed", "error", "no shell"),
         ]
         for (outcome, type, key, value) in cases {
@@ -115,7 +117,25 @@ struct EventLogTests {
             #expect(record["duration_ms"] as? Int == 1235)
             #expect("\(record[key] ?? "missing")" == "\(value)")
             #expect(record["stderr"] == nil)
+            #expect(record["waited_ms"] == nil)
         }
+    }
+
+    /// A hook that had to wait for a slot: hook_queued, then waited_ms on its start and its end.
+    @Test func aHookThatWaitedSaysSo() throws {
+        func record(_ entry: LogRecord) throws -> [String: Any] {
+            try #require(try JSONSerialization.jsonObject(with: EventLog.encode(entry, at: Date())) as? [String: Any])
+        }
+        let queued = try record(.hookQueued(eventID: "ev-1", hookLine: 9, waiting: 3))
+        #expect(queued["type"] as? String == "hook_queued")
+        #expect(queued["event"] as? String == "ev-1" && queued["hook_line"] as? Int == 9 && queued["waiting"] as? Int == 3)
+        let started = try record(.hookStarted(eventID: "ev-1", hookLine: 9, pid: 42, waited: 12.3456))
+        #expect(started["type"] as? String == "hook_started" && started["waited_ms"] as? Int == 12346)
+        #expect(try record(.hookStarted(eventID: "ev-1", hookLine: 9, pid: 42))["waited_ms"] == nil)
+        let ended = try record(.hookFinished(eventID: "ev-1", HookResult(
+            hookLine: 9, outcome: .dropped(.deadlineNear), stderr: "", stderrTruncated: false, duration: 0, waited: 40.5)))
+        #expect(ended["type"] as? String == "hook_dropped" && ended["reason"] as? String == "deadline_near")
+        #expect(ended["waited_ms"] as? Int == 40500 && ended["duration_ms"] as? Int == 0)
     }
 
     @Test func configurationAndSkippedHooksHaveTheirRecords() throws {

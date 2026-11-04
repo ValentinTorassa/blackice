@@ -246,17 +246,21 @@ public final class Daemon: Sendable {
         }
         _ = await runner.run(hooks, for: event, timeoutSeconds: configuration.timeoutSeconds) { progress in
             switch progress {
-            case .started(let hookLine, let pid):
-                self.record(.hookStarted(eventID: event.id, hookLine: hookLine, pid: pid))
+            case .queued(let hookLine, let waiting):
+                self.record(.hookQueued(eventID: event.id, hookLine: hookLine, waiting: waiting))
+            case .started(let hookLine, let pid, let waited):
+                self.record(.hookStarted(eventID: event.id, hookLine: hookLine, pid: pid, waited: waited))
             case .finished(let result):
                 self.record(.hookFinished(eventID: event.id, result))
             }
         }
     }
 
-    /// The extension reported how a paused connection ended.
+    /// The extension reported how a paused connection ended. Its hooks that still wait for a slot
+    /// have nothing left to decide and are dropped.
     public func recordVerdict(eventID: String, _ verdict: Verdict) {
         record(.verdict(eventID: eventID, verdict))
+        runner.eventEnded(eventID)
     }
 
     private func record(_ record: LogRecord) {

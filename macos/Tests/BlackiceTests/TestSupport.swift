@@ -20,18 +20,29 @@ func removeTree(_ url: URL) {
 
 let testToken = "q8Zr0d3XyB1mVt5LkS9wJpQa2NcEf7HgUi4Ko6Rl0Ys"
 
-func testEvent(host: String? = "example.com", id: String = "ev-0a1b2c3d", deadlineIn seconds: TimeInterval = 30) -> HookEvent {
+func testEvent(host: String? = "example.com", id: String = "ev-0a1b2c3d", deadlineIn seconds: TimeInterval = 30,
+               app signingID: String = "com.example.tool") -> HookEvent {
     HookEvent(id: id, token: testToken,
-              app: .init(signingID: "com.example.tool", teamID: "ABCDE12345", path: "/Applications/Tool.app"),
+              app: .init(signingID: signingID, teamID: "ABCDE12345", path: "/Applications/Tool.app"),
               host: host, ip: "203.0.113.7", port: 443, deadline: Date().addingTimeInterval(seconds))
 }
 
-func testRunner(_ directory: URL, limit: Int = 4, grace: TimeInterval = 0.3,
-                environment: [String: String]? = nil) throws -> HookRunner {
+func testRunner(_ directory: URL, limit: Int = 4, waiting: Int = 256, minimumStart: TimeInterval = 10,
+                grace: TimeInterval = 0.3, environment: [String: String]? = nil) throws -> HookRunner {
     try HookRunner(options: .init(
         workDirectory: directory.appendingPathComponent("work", isDirectory: true),
         environment: environment ?? HookRunner.environment(for: try UserAccount.current()),
-        maximumConcurrent: limit, gracePeriod: grace))
+        maximumConcurrent: limit, maximumWaiting: waiting, minimumStartBudget: minimumStart, gracePeriod: grace))
+}
+
+/// Polls `condition` every 10 ms for up to `seconds`; true once it holds.
+func eventually(within seconds: TimeInterval = 5, _ condition: () -> Bool) async -> Bool {
+    let end = Date().addingTimeInterval(seconds)
+    while Date() < end {
+        if condition() { return true }
+        try? await Task.sleep(nanoseconds: 10_000_000)
+    }
+    return condition()
 }
 
 /// A made-up account for tests that must not depend on the real user.

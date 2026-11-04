@@ -186,26 +186,146 @@ struct HookRunnerTests {
         let dir = try makePrivateDirectory()
         defer { removeTree(dir) }
         let runner = try testRunner(dir, limit: 2)
-        let hooks = (1...3).map { hook("sleep 1", line: $0) }
+        // Each hook counts the hooks alive with it, from files they hold while they run.
+        let alive = dir.appendingPathComponent("alive")
+        #expect(mkdir(alive.path, 0o700) == 0)
+        let counts = dir.appendingPathComponent("counts")
+        let command = "touch \(quotedPath(alive))/$$; ls \(quotedPath(alive)) | wc -l >> \(quotedPath(counts)); " +
+            "sleep 0.5; rm \(quotedPath(alive))/$$"
+        let hooks = (1...5).map { hook(command, line: $0) }
         let results = await runner.run(hooks, for: testEvent(), timeoutSeconds: 10)
-        #expect(results.filter { $0.outcome == .exited(status: 0) }.count == 2)
-        #expect(results.filter { $0.outcome == .dropped(.concurrencyLimit) }.count == 1)
-        #expect(runner.runningCount == 0)
-
-        // The slots come back once the hooks finish.
-        let again = await runner.run(Array(hooks.prefix(2)), for: testEvent(), timeoutSeconds: 10)
-        #expect(again.map(\.outcome) == [.exited(status: 0), .exited(status: 0)])
+        #expect(results.map(\.outcome) == Array(repeating: .exited(status: 0), count: 5))
+        let seen = try read(counts).split(separator: "\n").compactMap { Int($0.trimmingCharacters(in: .whitespaces)) }
+        #expect(seen.count == 5 && seen.allSatisfy { (1...2).contains($0) }, "\(seen)")
+        // Three of the five waited for a slot.
+        #expect(results.filter { $0.waited > 0.3 }.count == 3)
+        #expect(runner.runningCount == 0 && runner.waitingCount == 0)
     }
 
-    @Test func theLimitCountsHooksFromEveryEvent() async throws {
+    @Test func aHookWaitsForASlotFromAnotherEvent() async throws {
         let dir = try makePrivateDirectory()
         defer { removeTree(dir) }
         let runner = try testRunner(dir, limit: 1)
         async let first = runner.run([hook("sleep 1")], for: testEvent(id: "ev-1"), timeoutSeconds: 10)
-        async let second = runner.run([hook("sleep 1")], for: testEvent(id: "ev-2"), timeoutSeconds: 10)
-        let outcomes = (await first + second).map(\.outcome)
-        #expect(outcomes.filter { $0 == .exited(status: 0) }.count == 1)
-        #expect(outcomes.filter { $0 == .dropped(.concurrencyLimit) }.count == 1)
+        #expect(await eventually { runner.runningCount == 1 })
+        let progress = Recorder<String>()
+        let second = await runner.run([hook("true")], for: testEvent(id: "ev-2"), timeoutSeconds: 10) { update in
+            switch update {
+            case .queued(_, let waiting): progress.append("queued \(waiting)")
+            case .started(_, _, let waited): progress.append("started \(waited > 0.5)")
+            case .finished(let result): progress.append("finished \(result.outcome)")
+            }
+        }
+        let firstResults = await first
+        #expect(firstResults.map(\.outcome) == [.exited(status: 0)] && firstResults[0].waited == 0)
+        #expect(second.map(\.outcome) == [.exited(status: 0)])
+        #expect(second[0].waited > 0.5 && second[0].duration < 1, "waited \(second[0].waited), ran \(second[0].duration)")
+        #expect(progress.items == ["queued 1", "started true", "finished exited(status: 0)"])
+    }
+
+    /// One app with many waiting hooks does not hold the others back: the free slots go to the
+    /// apps in turn, oldest first within each app.
+    @Test func appsTakeTurnsForTheSlots() async throws {
+        let dir = try makePrivateDirectory()
+        defer { removeTree(dir) }
+        let runner = try testRunner(dir, limit: 1)
+        let order = Recorder<String>()
+        func launch(_ id: String, _ app: String, _ run: String = "sleep 0.2") -> Task<[HookResult], Never> {
+            Task {
+                await runner.run([hook(run)], for: testEvent(id: id, app: app), timeoutSeconds: 10) { update in
+                    if case .started = update { order.append(id) }
+                }
+            }
+        }
+        let tasks = [launch("ev-a1", "com.example.a", "sleep 0.5")]
+        #expect(await eventually { runner.runningCount == 1 })
+        var queued = tasks
+        for (index, (id, app)) in [("ev-a2", "com.example.a"), ("ev-a3", "com.example.a"),
+                                   ("ev-b1", "com.example.b")].enumerated() {
+            queued.append(launch(id, app))
+            #expect(await eventually { runner.waitingCount == index + 1 })
+        }
+        for task in queued { #expect(await task.value.map(\.outcome) == [.exited(status: 0)]) }
+        #expect(order.items == ["ev-a1", "ev-a2", "ev-b1", "ev-a3"])
+    }
+
+    @Test func aWaitingHookIsDroppedWhenTooLittleTimeIsLeft() async throws {
+        let dir = try makePrivateDirectory()
+        defer { removeTree(dir) }
+        let runner = try testRunner(dir, limit: 1, minimumStart: 0.4)
+        async let busy = runner.run([hook("sleep 2")], for: testEvent(id: "ev-1"), timeoutSeconds: 10)
+        #expect(await eventually { runner.runningCount == 1 })
+        let started = Date()
+        let late = await runner.run([hook("true")], for: testEvent(id: "ev-2", deadlineIn: 1.2), timeoutSeconds: 10)
+        let elapsed = Date().timeIntervalSince(started)
+        #expect(late.map(\.outcome) == [.dropped(.deadlineNear)])
+        // Given up 0.4 s before its deadline, not when the slot came free.
+        #expect((0.5...1.5).contains(late[0].waited) && elapsed < 1.8, "waited \(late[0].waited), took \(elapsed)")
+        #expect(runner.waitingCount == 0)
+        // With less than the minimum left on arrival it does not wait at all.
+        let tooLate = await runner.run([hook("true")], for: testEvent(id: "ev-3", deadlineIn: 0.2), timeoutSeconds: 10)
+        #expect(tooLate.map(\.outcome) == [.dropped(.deadlineNear)] && tooLate[0].waited == 0)
+        #expect(await busy.map(\.outcome) == [.exited(status: 0)])
+    }
+
+    @Test func theQueueIsCapped() async throws {
+        let dir = try makePrivateDirectory()
+        defer { removeTree(dir) }
+        let runner = try testRunner(dir, limit: 1, waiting: 1)
+        async let busy = runner.run([hook("sleep 1")], for: testEvent(id: "ev-1"), timeoutSeconds: 10)
+        #expect(await eventually { runner.runningCount == 1 })
+        async let waits = runner.run([hook("true")], for: testEvent(id: "ev-2"), timeoutSeconds: 10)
+        #expect(await eventually { runner.waitingCount == 1 })
+        let full = await runner.run([hook("true")], for: testEvent(id: "ev-3"), timeoutSeconds: 10)
+        #expect(full.map(\.outcome) == [.dropped(.queueFull)])
+        #expect(await busy.map(\.outcome) == [.exited(status: 0)])
+        #expect(await waits.map(\.outcome) == [.exited(status: 0)])
+    }
+
+    /// A burst waits without a thread per hook, and every hook in it runs once slots free. Other suites
+    /// run alongside and start threads of their own, so the bound leaves room for them: a thread per
+    /// waiting hook would add at least 100.
+    @Test func aBurstWaitsWithoutAThreadEach() async throws {
+        let dir = try makePrivateDirectory()
+        defer { removeTree(dir) }
+        let runner = try testRunner(dir, limit: 2)
+        func threads() -> Int32 {
+            var info = proc_taskinfo()
+            let size = Int32(MemoryLayout<proc_taskinfo>.size)
+            return proc_pidinfo(getpid(), PROC_PIDTASKINFO, 0, &info, size) == size ? info.pti_threadnum : -1
+        }
+        let busy = (1...2).map { index in
+            Task { await runner.run([hook("sleep 1")], for: testEvent(id: "ev-busy\(index)"), timeoutSeconds: 10) }
+        }
+        #expect(await eventually { runner.runningCount == 2 })
+        let before = threads()
+        let burst = (1...100).map { index in
+            Task { await runner.run([hook("true")], for: testEvent(id: "ev-\(index)", app: "com.example.app\(index % 3)"),
+                                    timeoutSeconds: 10) }
+        }
+        #expect(await eventually { runner.waitingCount == 100 })
+        let during = threads()
+        #expect(before > 0 && during - before < 60, "\(before) threads before the burst, \(during) while 100 hooks wait")
+        for task in busy + burst { #expect(await task.value.map(\.outcome) == [.exited(status: 0)]) }
+        #expect(runner.waitingCount == 0 && runner.runningCount == 0)
+    }
+
+    @Test func aWaitingHookIsDroppedWhenItsEventEnds() async throws {
+        let dir = try makePrivateDirectory()
+        defer { removeTree(dir) }
+        let runner = try testRunner(dir, limit: 1)
+        async let busy = runner.run([hook("sleep 1.5")], for: testEvent(id: "ev-1"), timeoutSeconds: 10)
+        #expect(await eventually { runner.runningCount == 1 })
+        let waiting = Task { await runner.run([hook("true")], for: testEvent(id: "ev-2"), timeoutSeconds: 10) }
+        #expect(await eventually { runner.waitingCount == 1 })
+        // An end for the running event leaves it alone; the waiting one's end drops it.
+        runner.eventEnded("ev-1")
+        let ended = Date()
+        runner.eventEnded("ev-2")
+        #expect(await waiting.value.map(\.outcome) == [.dropped(.eventEnded)])
+        #expect(Date().timeIntervalSince(ended) < 1)
+        #expect(await busy.map(\.outcome) == [.exited(status: 0)])
+        #expect(runner.waitingCount == 0 && runner.runningCount == 0)
     }
 
     @Test func stderrIsBoundedAndDrained() async throws {
@@ -256,12 +376,13 @@ struct HookRunnerTests {
         let results = try await testRunner(dir).run([hook("echo oops >&2; exit 2", line: 7)], for: testEvent(),
                                                      timeoutSeconds: 10) { update in
             switch update {
-            case .started(let line, let pid): progress.append("started \(line) \(pid > 0)")
+            case .queued: progress.append("queued")
+            case .started(let line, let pid, let waited): progress.append("started \(line) \(pid > 0) \(waited)")
             case .finished(let result): progress.append("finished \(result.hookLine) \(result.outcome)")
             }
         }
         #expect(results.first?.stderr == "oops\n")
-        #expect(progress.items == ["started 7 true", "finished 7 exited(status: 2)"])
+        #expect(progress.items == ["started 7 true 0.0", "finished 7 exited(status: 2)"])
     }
 
     @Test func anOpenWorkDirectoryIsRefused() throws {
