@@ -194,6 +194,9 @@ and each run on a Mac is recorded in [`evidence/`](../evidence/).
   that opens many connections at once crowds out the rest. On the Mac after the recorded onboarding, a VPN client's
   network extension sent 53 of 94 events in ten minutes, mostly in two bursts; 62 events got no hook and 31
   connections were dropped at the deadline ([P5-08](../evidence/P5-08-onboarding-published-0.3.0-recorded-macos.md)).
+  Twenty minutes later, building 0.3.1 in ask mode failed the same way: `codesign`'s request to Apple's timestamp
+  service (`com.apple.security.XPCTimeStampingService` to timestamp.apple.com) arrived while 4 hooks ran, got no
+  hook, and the signature had no timestamp.
   To weigh: a queue per app and host, one hook for several events of the same app, and offering VPN extensions in
   the first start's list (they run from `/Library/SystemExtensions`, so the list does not show them).
 - **Deadlock.** The deciding agent needs the network to reach its model. If that connection also goes to ask mode,
