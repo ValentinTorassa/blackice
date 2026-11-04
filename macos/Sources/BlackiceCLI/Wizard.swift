@@ -332,7 +332,7 @@ struct ConfigWizard {
     /// The file `blackice init` writes, with comments that say how to go on.
     static func render(_ answers: Answers) -> String {
         var lines = [
-            "# blackice configuration, written by blackice init.",
+            "# blackice configuration, written by blackice.",
             "# Change it any time, then load it with: blackice start",
             "# Every key: \(docs)",
             "",

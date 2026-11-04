@@ -142,7 +142,7 @@ struct WizardTests {
         let text = ConfigWizard.render(result)
         let config = try BlackiceConfig(data: Data(text.utf8))
         #expect(config.mode == .acceptAll && config.timeoutSeconds == 60 && config.allow.isEmpty)
-        #expect(text.hasPrefix("# blackice configuration, written by blackice init.\n"))
+        #expect(text.hasPrefix("# blackice configuration, written by blackice.\n"))
         #expect(text.contains("mode = \"accept-all\"     # accept-all, ask or block-all\n"))
         #expect(text.contains("timeout_seconds = 60    # in ask mode, no answer in time means deny\n"))
         #expect(text.contains("# [[allow]]\n"))
