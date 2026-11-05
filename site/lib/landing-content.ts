@@ -25,7 +25,7 @@ export const steps = [
   'An app, script, or command on your Mac opens a connection.',
   'The network extension allows it, denies it, or pauses it, depending on the mode and your rules.',
   'A paused connection becomes a request. You inspect it with `blackice pending` and answer with `blackice approve` or `blackice deny`.',
-  'Optionally, a hook passes the request to an agent such as fx, which answers the same way.',
+  'Optionally, a hook passes the request to an agent such as fx, which answers with its last line of output, `approve 1h` or `deny`, for the app and host it was asked about.',
 ]
 
 export type Mode = { name: string; body: string }
@@ -73,4 +73,8 @@ hosts = ["api.example.com"]
 
 [[hook]]
 on = "connection"
-run = 'fx ask "Use the blackice skill to decide whether to approve the pending connection"'`
+program = "/Users/me/.local/bin/fx"
+app = "com.vercel.fx"
+team = "JW6Y669B67"
+args = ["ask", "--no-save", "--no-color", "Use the blackice skill to decide whether to approve the pending connection"]
+env = ["HOME=/Users/me/.config/blackice/agent", "FX_DISABLE_KEYCHAIN=1"]`

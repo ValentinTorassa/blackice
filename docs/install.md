@@ -165,13 +165,15 @@ when their timeout passes.
    (`curl -fsSL https://fx.sh/setup.sh | bash`) and runs it if you say yes.
 2. It gives fx a home of its own, `~/.config/blackice/agent`, with the blackice skill from Blackice.app. If fx has
    no sign-in there, it runs `fx login vercel`: press Enter to open the page fx names, and allow access. If the
-   sign-in fails, it offers it again. It sets fx's rules there so that fx can run `blackice approve` and
-   `blackice deny` and nothing else.
-3. It runs the hook once on a sample connection, with `blackice` replaced by a stand-in so nothing is let through,
-   and checks that fx answered with the event's token. AI Gateway needs a card on file for the Vercel team fx
-   signed in with; without one, the test fails with HTTP 403 `customer_verification_required`.
+   sign-in fails, it offers it again. It sets fx's rules there so that fx can read files and nothing else: no
+   shell, no edits, no web.
+3. It runs the hook once on a sample connection and checks that fx's last line is an answer, `deny` or
+   `approve 10m`. That answer is only read, so nothing is let through. AI Gateway needs a card on file for the
+   Vercel team fx signed in with; without one, the test fails with HTTP 403 `customer_verification_required`.
 4. Only then does it add to `blackice.toml` a rule that lets fx reach its model (Vercel's AI Gateway) in every mode,
-   and the hook, and raise `timeout_seconds` to at least 60.
+   and the hook, and raise `timeout_seconds` to at least 60. The hook starts fx directly, and only when fx's
+   signature names the signing identifier and Team ID read in step 1. A hook from 0.3 that runs the skill with
+   `run` is replaced.
 5. Unless the file is in ask mode already, it asks whether to switch. It loads the file (Touch ID) and starts the
    daemon.
 
