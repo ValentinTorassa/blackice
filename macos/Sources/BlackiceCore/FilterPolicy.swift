@@ -405,8 +405,9 @@ public enum FilterPolicy {
     }
 }
 
-/// One line of the extension's flow log, as JSON. The fields come from the flow, so they are
-/// encoded, never pasted into the text.
+/// One line of the extension's flow log: `publicText` in the clear, then the JSON, which unified
+/// logging keeps private. The JSON's fields come from the flow, so they are encoded, never pasted
+/// into the text.
 public struct FlowLogLine: Encodable, Sendable {
     public let event = "flow"
     public let verdict: String
@@ -435,6 +436,14 @@ public struct FlowLogLine: Encodable, Sendable {
     }
 
     enum CodingKeys: String, CodingKey { case event, verdict, reason, app, host, port, mode, generation }
+
+    /// What the line shows after "flow" to anyone who reads the log: the verdict, the reason and
+    /// the app, as in `drop tls_unparsed app=ABCDE12345/com.example.tool`, so `log show` and
+    /// `blackice report` can count drops by app. The app is the label `blackice pending` uses:
+    /// `apple/<id>`, `<team>/<id>`, `cdhash/<hex>`, `unknown` or `invalid_signature`. CodeIdentity
+    /// accepts only letters, digits, '-', '.' and '_' in a signing identifier, and reasons are
+    /// fixed codes, so no field holds a space. The host, the port and the rest stay private.
+    public var publicText: String { "\(verdict) \(reason) app=\(app)" }
 
     public func json() -> String {
         let encoder = JSONEncoder()

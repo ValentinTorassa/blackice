@@ -215,7 +215,9 @@ and says so.
   $ /usr/bin/log show --last 10m --style compact --predicate 'subsystem == "com.valentorassa.blackice.filter"'
   ```
 
-  The app and host of each line show as `<private>`; the verdict and reason are public.
+  Each line shows the verdict, the reason and the app in the clear (`flow drop timeout
+  app=ABCDE12345/com.example.tool`, `apple/…` for Apple's own code, `cdhash/…` for ad hoc code); the host and
+  the rest show as `<private>`.
 - A connection blackice drops fails in the app with "Bad file descriptor" (EBADF) when it connects: `ssh` and the
   Tailscale CLI print `connect: Bad file descriptor`. That is blackice, not the network or a bug in the app, and the
   filter's log above shows why (`flow drop` and the reason). macOS gives a filter no way to refuse with another

@@ -100,7 +100,9 @@ and each run on a Mac is recorded in [`evidence/`](../evidence/).
    decision is unit-tested. In every mode inbound connections pass and Apple's resolver may reach port 53, since
    rules name hosts. Without a host name from the system, the extension reads the TLS server name, but only for
    an app that has a rule. It logs one line per decision to unified logging; the JSONL event log is the daemon's
-   and holds events, hooks and verdicts.
+   and holds events, hooks and verdicts. Since 5 November 2026 a line names the app in the clear after the verdict
+   and reason (`flow drop timeout app=ABCDE12345/com.example.tool`), so the log tells which apps lost connections;
+   the host and the rest stay private.
    *On a Mac*, phase 0's run showed this with the probe in place of `curl`: refused in block-all, with the log
    line `flow drop no_rule`, and let through in accept-all.
 2. **Ask mode.** Pausing, XPC, the pending list, deny on timeout, `blackice pending/approve/deny` with `--app`,

@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- The filter's log lines name the app in the clear, after the verdict and reason: `flow drop timeout
+  app=ABCDE12345/com.example.tool`, `apple/…` for Apple's own code, `cdhash/…` for ad hoc code. The host and the
+  rest stay private. Until now nobody could tell from the log which apps lost connections.
+
 ## 0.4.0 (5 November 2026)
 
 Hooks answer on their output, Claude Code can be the agent, blackice sits in the menu bar, and upgrades no longer

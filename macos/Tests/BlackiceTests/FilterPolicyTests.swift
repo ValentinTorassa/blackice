@@ -457,6 +457,25 @@ struct FlowLogLineTests {
         #expect(adHocLine["app"] as? String == "cdhash/" + testCDHash && adHocLine["verdict"] as? String == "drop")
     }
 
+    /// The part `log show` prints in the clear: verdict, reason and the app's label, never the host.
+    @Test func publicTextNamesTheAppAndNotTheHost() throws {
+        let snapshot = try policySnapshot(.ask)
+        let cases: [(IdentityResolution, FlowVerdict, String)] = [
+            (agent, .drop(reason: "tls_unparsed"), "drop tls_unparsed app=ABCDE12345/com.example.agent"),
+            (curl, .allow(reason: "rule_line_8;server_name"), "allow rule_line_8;server_name app=apple/com.apple.curl"),
+            (adHoc, .ask(reason: "no_rule", addressMatches: true), "ask no_rule app=cdhash/" + testCDHash),
+            (.unresolved, .drop(reason: "unknown_identity"), "drop unknown_identity app=unknown"),
+            (.invalidSignature, .readServerName, "hold reading_server_name app=invalid_signature"),
+        ]
+        for (identity, verdict, expected) in cases {
+            let line = FlowLogLine(flow: flow(identity, "secret.example.com"), verdict: verdict, snapshot: snapshot,
+                                   serverName: "other.example.com")
+            #expect(line.publicText == expected)
+            #expect(!line.publicText.contains("example.com") && !line.publicText.contains("443"))
+            #expect(line.json().contains("other.example.com"))
+        }
+    }
+
     @Test func askAndResolveVerdicts() throws {
         let snapshot = try policySnapshot(.ask)
         let asked = try object(FlowLogLine(flow: flow(agent, "other.example.com"),

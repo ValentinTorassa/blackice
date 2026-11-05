@@ -611,11 +611,12 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
         }
     }
 
-    /// Verdict and reason are public so `log show` can count them; the app and host are private.
+    /// Verdict, reason and app are public so `log show` and `blackice report` can count them; the
+    /// host and the rest are private (FlowLogLine.publicText).
     private func log(_ facts: FlowFacts, _ verdict: FlowVerdict, _ snapshot: ProviderConfiguration?,
                      serverName: String? = nil) {
         let line = FlowLogLine(flow: facts, verdict: verdict, snapshot: snapshot, serverName: serverName)
-        flowLog.notice("flow \(line.verdict, privacy: .public) \(line.reason, privacy: .public) \(line.json(), privacy: .private)")
+        flowLog.notice("flow \(line.publicText, privacy: .public) \(line.json(), privacy: .private)")
     }
 
     private func control(_ event: String, _ detail: String) {
