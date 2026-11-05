@@ -27,6 +27,7 @@ public enum Command: Equatable, Sendable {
     case agent(AgentAction)
     /// `blackice agent connect NAME`: set an agent up to answer what waits in ask mode.
     case connectAgent(name: String, configPath: String?)
+    case menu(MenuRequest)
 
     public var name: String {
         switch self {
@@ -43,8 +44,15 @@ public enum Command: Equatable, Sendable {
         case .validate: return "validate"
         case .daemon: return "daemon"
         case .agent, .connectAgent: return "agent"
+        case .menu: return "menu"
         }
     }
+}
+
+/// `blackice menu` runs the menu bar app; `--login on|off` turns opening it at login on or off.
+public enum MenuRequest: Equatable, Sendable {
+    case run
+    case login(Bool)
 }
 
 /// `blackice agent install` or `uninstall`: the daemon's LaunchAgent.
@@ -112,6 +120,8 @@ public enum CLI {
                                 Let fx answer what waits in ask mode: its own home, a
                                 test, its rule and hook, then ask mode if you want
       agent install|uninstall   Run hooks for waiting connections, now and at each login
+      menu [--login on|off]     Show blackice in the menu bar until you quit it; --login on
+                                opens it now and at each login, --login off stops that
       stop                      Stop filtering and remove the network extension (Touch ID)
       version                   The installed version
       help                      This help
@@ -171,6 +181,11 @@ public enum CLI {
                 throw UsageError("agent takes install, uninstall or connect")
             }
             return .agent(action)
+        case "menu":
+            let options = try parseOptions(rest, allowed: ["login"], command: first)
+            guard let value = options["login"] else { return .menu(.run) }
+            guard let on = ["on": true, "off": false][value] else { throw UsageError("menu: --login takes on or off") }
+            return .menu(.login(on))
         case "approve":
             let options = try parseOptions(rest, allowed: ["app", "team", "cdhash", "host", "for", "token"], command: first)
             let target = try target(options, command: first)
@@ -201,7 +216,8 @@ public enum CLI {
     public static func run(_ arguments: [String], stdout: @escaping (String) -> Void, stderr: @escaping (String) -> Void,
                            readFile: (String) throws -> Data = readConfigFile,
                            system: SystemControlling = UnsignedSystem(),
-                           interaction: Interaction = .none, agents: AgentMachine = .none) -> Int32 {
+                           interaction: Interaction = .none, agents: AgentMachine = .none,
+                           menuBar: MenuBarControlling = NoMenuBar()) -> Int32 {
         if arguments.isEmpty {
             stderr(usage)
             return ExitCode.usage
@@ -257,6 +273,10 @@ public enum CLI {
         case .connectAgent(let name, let configPath):
             return connectAgent(name, configPath: configPath, readFile: readFile, system: system, interaction: interaction,
                                 machine: agents, stdout: stdout, stderr: stderr)
+        case .menu(.run):
+            return menuBar.run(output: SystemOutput(stdout: stdout, stderr: stderr))
+        case .menu(.login(let on)):
+            return menuBar.setOpenAtLogin(on, output: SystemOutput(stdout: stdout, stderr: stderr))
         case .start(let configPath):
             let path = configPath ?? defaultConfigPath
             let shown = Describe.path(path, home: interaction.home)
@@ -282,8 +302,12 @@ public enum CLI {
             case .success(let loaded):
                 if !justWritten { stdout("Using \(shown): \(loaded.config.overview).") }
                 guard let agent, loaded.config.mode != .acceptAll else {
-                    return system.start(configText: loaded.text,
-                                        output: SystemOutput(stdout: stdout, stderr: stderr, setup: justWritten))
+                    let started = system.start(configText: loaded.text,
+                                               output: SystemOutput(stdout: stdout, stderr: stderr, setup: justWritten))
+                    if justWritten, started == ExitCode.success {
+                        offerMenuBar(menuBar, interaction: interaction, stdout: stdout, stderr: stderr)
+                    }
+                    return started
                 }
                 // The agent's installer, sign-in and test need the network: start in accept-all, set
                 // the agent up, and let its last step load the file in the mode picked.
@@ -291,8 +315,13 @@ public enum CLI {
                                            output: SystemOutput(stdout: stdout, stderr: stderr, setup: true, next: false))
                 guard started == ExitCode.success else { return started }
                 stdout("  It stays in accept-all while \(agent) is set up, then switches to \(loaded.config.mode.rawValue).")
-                return connectAgent(agent, configPath: configPath, readFile: readFile, system: system, interaction: interaction,
-                                    machine: agents, stdout: stdout, stderr: stderr, firstStep: 4)
+                let connected = connectAgent(agent, configPath: configPath, readFile: readFile, system: system,
+                                             interaction: interaction, machine: agents, stdout: stdout, stderr: stderr,
+                                             firstStep: 4)
+                if connected == ExitCode.success {
+                    offerMenuBar(menuBar, interaction: interaction, stdout: stdout, stderr: stderr)
+                }
+                return connected
             }
         case .stop:
             return system.stop(output: SystemOutput(stdout: stdout, stderr: stderr))
