@@ -62,6 +62,9 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
     private var runID: UUID?
     private var observation: NSKeyValueObservation?
     private var timer: DispatchSourceTimer?
+    /// Seconds of maintenance since start, and the identity cache's change count when last saved.
+    private var maintenanceTicks = 0
+    private var savedIdentityChanges = -1
     private let heldLock = NSLock()
     private var held: [UUID: Held] = [:]
     private let flowLog = Logger(subsystem: BlackiceIdentifiers.logSubsystem, category: "flows")
@@ -130,6 +133,7 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
             snapshots.clear()
             runID = identifier
             _ = try? snapshots.install(candidate)
+            restoreIdentities()
         }
         apply(Self.makeSettings()) { [weak self] error in
             guard let lifecycle = self?.lifecycle else { completionHandler(error); return }
@@ -229,6 +233,7 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
             self.dnsLock.unlock()
             for flow in reading { self.update(flow, using: .allow(), for: .any) }
             self.dnsNames.removeAll()
+            self.saveIdentities()
             self.control("stopped", "reason_\(reason.rawValue)")
             self.snapshots.clear()
             completionHandler()
@@ -618,9 +623,44 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
             let idle = self.dnsFlows.expire(now: now)
             self.dnsLock.unlock()
             for flow in idle { self.update(flow, using: .allow(), for: .any) }
+            self.maintenanceTicks += 1
+            if self.maintenanceTicks % 60 == 0 { self.saveIdentities() }
         }
         self.timer = timer
         timer.resume()
+    }
+
+    // MARK: - Identities across runs
+
+    /// Where the identity cache waits for the extension's next run in this boot: after an upgrade
+    /// or a stop and start, a running app whose program file was removed meanwhile (an app updated
+    /// while it runs) keeps the identity checked while the file was there (CodeIdentity.resolve).
+    private static let identitiesURL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?
+        .appendingPathComponent("com.valentorassa.blackice.filter", isDirectory: true)
+        .appendingPathComponent("identities.json")
+
+    /// On the lifecycle queue.
+    private func restoreIdentities() {
+        guard let url = Self.identitiesURL, let boot = CodeIdentity.bootSession(),
+              let data = try? Data(contentsOf: url) else { return }
+        control("identities_restored", "\(CodeIdentity.cache.restore(data, boot: boot))")
+        savedIdentityChanges = CodeIdentity.cache.changes
+    }
+
+    /// On the lifecycle queue. Only processes that still run are kept.
+    private func saveIdentities() {
+        let changes = CodeIdentity.cache.changes
+        guard changes != savedIdentityChanges, let url = Self.identitiesURL, let boot = CodeIdentity.bootSession(),
+              let data = CodeIdentity.cache.encoded(boot: boot, keep: CodeIdentity.kernelReportsValid) else { return }
+        do {
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true,
+                                                    attributes: [.posixPermissions: 0o700])
+            try data.write(to: url, options: [.atomic])
+            _ = chmod(url.path, 0o600)
+            savedIdentityChanges = changes
+        } catch {
+            control("identities_not_saved", "\(error)")
+        }
     }
 
     /// Called outside flow callbacks, where NetworkExtension allows update().
