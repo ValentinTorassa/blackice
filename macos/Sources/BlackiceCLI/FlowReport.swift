@@ -103,6 +103,8 @@ public struct FlowReport: Equatable, Sendable {
     public private(set) var total = 0
     /// Drops: reason -> app -> lines.
     public private(set) var dropped: [String: [String: Int]] = [:]
+    /// Connections the app closed before writing a byte, by app: logged as drops, but nothing was cut.
+    public private(set) var closedEarly: [String: Int] = [:]
     /// Ask mode: flows paused to ask, by app.
     public private(set) var asked: [String: Int] = [:]
     /// Accept-all lines that carry a dry run of ask mode.
@@ -125,6 +127,7 @@ public struct FlowReport: Equatable, Sendable {
         total += 1
         let app = entry.app ?? Self.noApp
         switch entry.verdict {
+        case "drop" where entry.reason == "closed_before_hello": closedEarly[app, default: 0] += 1
         case "drop": dropped[entry.reason, default: [:]][app, default: 0] += 1
         case "ask": asked[app, default: 0] += 1
         default: break
@@ -154,6 +157,11 @@ public struct FlowReport: Equatable, Sendable {
         } else {
             lines.append("Dropped: \(drops)")
             lines += Self.byReason(dropped, indent: "  ")
+        }
+        if !closedEarly.isEmpty {
+            lines += ["", "Closed by the app before it sent anything: \(closedEarly.values.reduce(0, +))"]
+            lines.append("  Nothing was cut: an app that opens two connections at once uses one and closes the other.")
+            lines += Self.rows(closedEarly, indent: "  ")
         }
         if !asked.isEmpty {
             lines += ["", "Paused to ask: \(asked.values.reduce(0, +))"]

@@ -389,7 +389,12 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
         heldLock.lock()
         let entry = held.removeValue(forKey: flow.identifier)
         heldLock.unlock()
-        if let entry { log(entry.facts, .drop(reason: "tls_unparsed"), snapshots.read()) }
+        // An app that opens two connections at once (IPv6 and IPv4) uses the first one up and closes
+        // the other before it writes a byte: nothing was cut, and the log says so.
+        if let entry {
+            let reason = entry.reader.received == 0 ? "closed_before_hello" : "tls_unparsed"
+            log(entry.facts, .drop(reason: reason), snapshots.read())
+        }
         return .drop()
     }
 
