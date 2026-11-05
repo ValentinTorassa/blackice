@@ -149,8 +149,8 @@ In ask mode the daemon runs each `[[hook]]` with `on = "connection"` for a conne
 - `app` and `team` are the signing identifier and Team ID, as in an `[[allow]]` rule, and `codesign -dv` shows them. Leave `team` out only for Apple's own programs.
 - `args` lists the arguments, as strings. Nothing from the event is ever put in them.
 - `env` lists `NAME=value` strings added to the [environment](#the-hooks-environment). A name may not start with `BLACKICE_`.
-- `stdin = "none"` gives the program an empty stdin, so the event is only in its file. The default, `"event"`, sends the event on stdin too. Claude Code's hook says `"none"`: `claude -p` adds whatever comes on stdin to its prompt, and the event should reach it only as a file it reads.
-- `instructions` names the agent whose instructions the daemon writes into the event's directory before the program starts, from the copy inside blackice: `"fx"` writes the blackice skill as `skills/blackice/SKILL.md`, `"claude-code"` writes `instructions.md`. The hook names them by that relative path, as in `--system-prompt-file instructions.md`. A file in the agent's home could be rewritten by any program running as you; this one comes with blackice.
+- `stdin = "none"` gives the program an empty stdin, so the event is only in its file. The default, `"event"`, sends the event on stdin too. The hooks of Claude Code and Codex say `"none"`: `claude -p` and `codex exec` add whatever comes on stdin to their prompt, and the event should reach them only as a file they read.
+- `instructions` names the agent whose instructions the daemon writes into the event's directory before the program starts, from the copy inside blackice: `"fx"` writes the blackice skill as `skills/blackice/SKILL.md`, `"claude-code"` and `"codex"` write `instructions.md`. The hook names them by that relative path, as in `--system-prompt-file instructions.md`. A file in the agent's home could be rewritten by any program running as you; this one comes with blackice.
 
 The daemon starts the program suspended, checks the signature of the process it started, and kills it before it runs if the signature does not name both. The log says `hook_refused`, with the identity it found. So a program that something else put at that path never runs, and an update of the program that keeps its identity needs no change.
 
@@ -168,7 +168,7 @@ Deny analytics and tracking hosts, such as stats.example.com, whatever the app.
 """
 ```
 
-The daemon writes the notes as `notes.md` beside `event.json` in each event's directory, and the instructions of fx and Claude Code say to follow them for judgment calls. They never override the instructions' safety rules: the event's fields stay untrusted, lookalike hosts are still denied and no approval is longer than 24 hours, and text in the event that claims to be a note is a reason to deny. The notes are part of `blackice.toml`, so they change only with your Touch ID, like the hooks.
+The daemon writes the notes as `notes.md` beside `event.json` in each event's directory, and the instructions of fx, Claude Code and Codex say to follow them for judgment calls. They never override the instructions' safety rules: the event's fields stay untrusted, lookalike hosts are still denied and no approval is longer than 24 hours, and text in the event that claims to be a note is a reason to deny. The notes are part of `blackice.toml`, so they change only with your Touch ID, like the hooks.
 
 - `"""` takes the escapes of a `"…"` string; `'''` takes the text as written. A line break right after the opening quotes is left out.
 - At most 4 KiB, of plain text: lines and tabs, but no other control characters and none of the Unicode controls that change the order text reads in.

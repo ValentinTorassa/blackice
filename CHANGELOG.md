@@ -20,6 +20,14 @@
   for 10 minutes to an hour; up to 0.4.0 every approval was 10 minutes to an hour. With Claude Code on 5 November
   2026, `haiku` and `sonnet` both decided the 23 eval cases as expected, `haiku` in 4.2 s at the median and
   `sonnet` in 5.1 s. Run `agent connect` again to get the new model.
+- `blackice agent connect codex` sets Codex up as the agent, signed in with a ChatGPT plan: a `CODEX_HOME` of its
+  own with its sign-in (`codex login`), a test on a sample connection, a signed program hook (`codex exec`, model
+  `gpt-6-luna`) and a rule for `chatgpt.com` and `auth.openai.com`. Its hook ignores your Codex configuration,
+  rules, hooks, plugins and web search, replaces Codex's base prompt with blackice's instructions, and lets its
+  commands read only the event's directory and the system's own files, with no writes and no network; not
+  `--sandbox read-only`, which reads your whole home. The first `blackice start` offers it next to fx and Claude
+  Code. `integrations/eval/run.sh --agent codex` runs it over the 23 cases: on 5 November 2026 `gpt-6-luna` and
+  `gpt-6.1-sol` both decided all 23 as expected, in 4.6 and 6.6 s at the median.
 
 ## 0.4.0 (5 November 2026)
 

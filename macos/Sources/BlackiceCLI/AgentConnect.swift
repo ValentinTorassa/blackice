@@ -131,7 +131,38 @@ public struct AgentProfile: Sendable {
         // Read tool, as data.
         eventOnStdin: false)
 
-    public static let known = [fx, claudeCode]
+    /// Codex (`codex exec`), signed in with a ChatGPT plan. CODEX_HOME in the agent home holds its
+    /// own sign-in, apart from yours in ~/.codex.
+    public static let codex = AgentProfile(
+        // chatgpt.com for the model (its backend API) with a ChatGPT sign-in; auth.openai.com renews
+        // that sign-in. On 5 November 2026 Codex 0.166.0 reached only chatgpt.com in its decisions.
+        name: "codex", executable: "codex", hosts: ["chatgpt.com", "auth.openai.com"],
+        folder: ".codex", settingsFile: nil, instructions: .codex,
+        // "Fast and affordable model for easier tasks", in Codex 0.166.0's list; it counts against the plan.
+        defaultModel: "gpt-6-luna",
+        installHint: "brew install --cask codex, or https://developers.openai.com/codex/cli",
+        installer: nil,
+        loginHint: ["Codex opens a sign-in page in your browser. Sign in with the ChatGPT account whose",
+                    "plan its decisions should count against, then come back here."],
+        // HOME stays the account's own, as the daemon sets it; CODEX_HOME keeps the sign-in apart.
+        environment: { ["CODEX_HOME": CLI.codexHome(agentHome: $0)] },
+        statusArguments: ["login", "status"], loginArguments: ["login"],
+        signedIn: { CLI.codexSignedIn($0) }, settings: nil,
+        askArguments: { _, model in CLI.codexArguments(model: model) },
+        // With no sign-in in CODEX_HOME, Codex 0.166.0 tries api.openai.com and stops at HTTP 401.
+        advice: { output in
+            output.contains("401 Unauthorized")
+                ? ["Codex had no sign-in in the hook's environment, which has none of your shell's",
+                   "variables (OPENAI_API_KEY among them). Sign it in for blackice with:",
+                   "CODEX_HOME=~/.config/blackice/agent/.codex codex login"]
+                : []
+        },
+        hookMarker: CLI.codexPrompt,
+        limits: "Its hook lets it read only the event's directory: no writes, no network, no web search, no MCP servers",
+        // codex exec adds what comes on stdin to its prompt. The event reaches it only as a file.
+        eventOnStdin: false)
+
+    public static let known = [fx, claudeCode, codex]
 
     /// What the hook asks the agent. A hook whose line holds it already uses the blackice skill.
     public static let prompt = "Use the blackice skill to decide whether to approve the pending connection"
@@ -460,6 +491,49 @@ extension CLI {
          "--system-prompt-file", "instructions.md", claudeCodePrompt]
     }
 
+    /// What the hook asks Codex.
+    static let codexPrompt = "Decide the pending blackice connection described in event.json."
+
+    /// Codex's own home, CODEX_HOME, inside the agent home.
+    static func codexHome(agentHome: String) -> String { agentHome + "/.codex" }
+
+    /// Codex's `args`: one `codex exec` request, checked against Codex 0.166.0.
+    /// - Nothing of yours: no config.toml (--ignore-user-config), no exec-policy rules
+    ///   (--ignore-rules), no AGENTS.md from the working directory (project_doc_max_bytes=0), no
+    ///   hooks, plugins, apps, subagents, image generation, browser or computer use, no web search,
+    ///   no session saved (--ephemeral) and no history. --strict-config refuses a key it does not know.
+    /// - The instructions the daemon writes into the event's directory replace Codex's own
+    ///   (model_instructions_file, relative to the working directory).
+    /// - Its commands run in a sandbox that reads only the event's directory and the system's own
+    ///   files (`:minimal`), writes nothing and has no network. Not `--sandbox read-only`: that
+    ///   reads the whole disk, your home included, and takes the place of the profile when both are given.
+    ///   Nothing asks for approval (approval_policy never), and the shell is not a login shell.
+    /// integrations/eval/agents/codex.sh runs the same (a test checks).
+    static func codexArguments(model: String) -> [String] {
+        ["exec", "--strict-config", "--skip-git-repo-check", "--ephemeral", "--ignore-user-config", "--ignore-rules",
+         "--color", "never", "-m", model,
+         "-c", "model_reasoning_effort=\"low\"",
+         "-c", "model_instructions_file=\"instructions.md\"",
+         "-c", "project_doc_max_bytes=0",
+         "-c", "default_permissions=\"blackice\"",
+         "-c", "permissions.blackice.filesystem={\":minimal\"=\"read\",\":workspace_roots\"=\"read\"}",
+         "-c", "approval_policy=\"never\"",
+         "-c", "allow_login_shell=false",
+         "-c", "web_search=\"disabled\"",
+         "-c", "analytics.enabled=false",
+         "-c", "feedback.enabled=false",
+         "-c", "history.persistence=\"none\"",
+         "--disable", "hooks", "--disable", "plugins", "--disable", "apps", "--disable", "multi_agent",
+         "--disable", "image_generation", "--disable", "browser_use", "--disable", "computer_use",
+         codexPrompt]
+    }
+
+    /// `codex login status` says "Logged in using ChatGPT" (or an API key) once it is signed in,
+    /// and "Not logged in" before.
+    static func codexSignedIn(_ status: String) -> Bool {
+        status.split(whereSeparator: \.isNewline).contains { $0.hasPrefix("Logged in") }
+    }
+
     /// `claude auth status --json` prints an object whose `loggedIn` is true once it is signed in.
     static func claudeCodeSignedIn(_ status: String) -> Bool {
         guard let start = status.firstIndex(of: "{"), let end = status.lastIndex(of: "}"), start < end,
@@ -571,7 +645,7 @@ extension CLI {
             }
         }
         guard let profile = AgentProfile.known.first(where: { $0.name == name }) else {
-            stderr("blackice agent connect knows \(listed(AgentProfile.known.map(\.name))) so far (Codex is planned): " +
+            stderr("blackice agent connect knows \(listed(AgentProfile.known.map(\.name))): " +
                    "blackice agent connect fx")
             return ExitCode.usage
         }

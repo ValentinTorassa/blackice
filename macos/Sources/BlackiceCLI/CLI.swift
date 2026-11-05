@@ -117,8 +117,8 @@ public enum CLI {
 
     Setup
       validate PATH             Check a blackice.toml without loading it
-      agent connect fx|claude-code [--model NAME] [--config PATH]
-                                Let fx or Claude Code answer what waits in ask mode: its
+      agent connect fx|claude-code|codex [--model NAME] [--config PATH]
+                                Let fx, Claude Code or Codex answer what waits in ask mode: its
                                 own home, a test, its rule and hook, then ask mode if you want.
                                 --model picks the model it decides with (a small one by default)
       agent install|uninstall   Run hooks for waiting connections, now and at each login

@@ -20,13 +20,15 @@ public struct AgentFile: Equatable, Sendable {
 public enum AgentInstructions: String, CaseIterable, Sendable {
     case fx
     case claudeCode = "claude-code"
+    case codex
 
     /// What the daemon writes. fx reads skills from its workspace's `skills/` folder; Claude Code
-    /// gets `--system-prompt-file instructions.md`.
+    /// gets `--system-prompt-file instructions.md`, Codex `-c model_instructions_file="instructions.md"`.
     public var files: [AgentFile] {
         switch self {
         case .fx: return [AgentFile(path: "skills/blackice/SKILL.md", text: AgentInstructionsText.fx)]
         case .claudeCode: return [AgentFile(path: "instructions.md", text: AgentInstructionsText.claudeCode)]
+        case .codex: return [AgentFile(path: "instructions.md", text: AgentInstructionsText.codex)]
         }
     }
 

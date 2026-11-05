@@ -99,6 +99,40 @@ private final class FakeClaudeMac: @unchecked Sendable {
     }
 }
 
+/// A Mac with Codex at /opt/fake/codex: `login status` says whether `login` ran, and the hook
+/// "decides" by printing `printed`.
+private final class FakeCodexMac: @unchecked Sendable {
+    var signedIn: Bool
+    var printed: String
+    var status: Int32 = 0
+    var logins: [[String: String]] = []
+    var hookRuns: [Hook] = []
+
+    init(signedIn: Bool, printed: String) {
+        self.signedIn = signedIn
+        self.printed = printed
+    }
+
+    var machine: AgentMachine {
+        AgentMachine(
+            findExecutable: { $0 == "codex" ? "/opt/fake/codex" : nil },
+            runAttached: { _, arguments, environment in
+                if arguments == ["login"] { self.logins.append(environment); self.signedIn = true }
+                return 0
+            },
+            runCaptured: { _, arguments, _ in
+                arguments == ["login", "status"] ? (self.signedIn ? 0 : 1, self.signedIn ? "Logged in using ChatGPT\n" : "Not logged in\n")
+                    : (0, "")
+            },
+            runHook: { hook, _, _, _, _ in
+                self.hookRuns.append(hook)
+                return HookResult(hookLine: 0, outcome: .exited(status: self.status), stderr: self.status == 0 ? "" :
+                                    "ERROR: unexpected status 401 Unauthorized: Missing bearer or basic authentication in header",
+                                  stderrTruncated: false, duration: 5, stdout: Data(self.printed.utf8))
+            })
+    }
+}
+
 /// Loads what it is given and keeps the mode saved. `startStatuses` and `modeStatuses` answer the
 /// calls in turn (0 once they run out); a call that fails changes nothing, as with Touch ID cancelled.
 private final class Loading: SystemControlling {
@@ -324,6 +358,88 @@ struct AgentConnectTests {
         #expect(try String(contentsOfFile: config, encoding: .utf8) == text)
     }
 
+    static let codex = SigningIdentity(signingID: "codex", teamID: "2DC432GLL2")
+    static func codexProgram(_ home: URL, model: String = AgentProfile.codex.defaultModel) -> HookProgram {
+        HookProgram(path: "/opt/fake/codex", arguments: CLI.codexArguments(model: model),
+                    environment: ["CODEX_HOME": agent(home) + "/.codex"], identity: codex, eventOnStdin: false,
+                    instructions: .codex)
+    }
+
+    private func connectCodex(_ home: URL, config: String, mac: FakeCodexMac, system: Loading,
+                              extra: [String] = []) -> Connected {
+        let interaction = Interaction(
+            ask: { _ in nil }, createFile: CLI.createFile,
+            identify: { $0 == "/opt/fake/codex" ? Self.codex : nil }, fileExists: { FileManager.default.fileExists(atPath: $0) },
+            home: home.path, version: nil)
+        let out = Recorder<String>(), err = Recorder<String>()
+        let status = CLI.run(["agent", "connect", "codex", "--config", config] + extra, stdout: { out.append($0) },
+                             stderr: { err.append($0) }, system: system, interaction: interaction, agents: mac.machine)
+        return Connected(status: status, stdout: out.items, stderr: err.items)
+    }
+
+    /// Codex: its own CODEX_HOME and sign-in, no settings file, a program hook with no event on
+    /// stdin in place of Claude Code's, and a rule for chatgpt.com and auth.openai.com.
+    @Test func connectsCodexInPlaceOfClaudeCode() throws {
+        let (home, config) = try setUp("""
+            mode = "ask"
+            timeout_seconds = 60
+
+            [[hook]]
+            on = "connection"
+            program = "/opt/fake/claude"
+            app = "com.anthropic.claude-code"
+            team = "Q6L2SF6YDW"
+            args = ["-p", "\(CLI.claudeCodePrompt)"]
+            stdin = "none"
+            instructions = "claude-code"
+            """)
+        defer { removeTree(home) }
+        let mac = FakeCodexMac(signedIn: false, printed: "com.microsoft.VSCode -> update.code.visualstudio.com: its update server\napprove 12h\n")
+        let system = Loading()
+        let result = connectCodex(home, config: config, mac: mac, system: system)
+        #expect(result.status == 0, "\(result.stderr)")
+
+        let agent = Self.agent(home)
+        #expect(mac.logins == [["CODEX_HOME": agent + "/.codex"]])
+        for folder in [agent, agent + "/.codex"] { #expect(try permissions(URL(fileURLWithPath: folder)) == 0o700) }
+        #expect(mac.hookRuns == [Hook(program: Self.codexProgram(home), line: 0)])
+        let written = try String(contentsOfFile: config, encoding: .utf8)
+        let loaded = try BlackiceConfig(data: Data(written.utf8))
+        #expect(loaded.hooks.map(\.program) == [Self.codexProgram(home)] && loaded.hooks[0].line == 4)
+        #expect(written.contains("program = \"/opt/fake/codex\"\napp = \"codex\"\nteam = \"2DC432GLL2\"\n"))
+        #expect(written.contains("stdin = \"none\"\ninstructions = \"codex\"\n") && !written.contains("claude"))
+        #expect(written.contains(#""-c", "permissions.blackice.filesystem={\":minimal\"=\"read\",\":workspace_roots\"=\"read\"}""#))
+        for host in AgentProfile.codex.hosts { #expect(loaded.allowRule(for: Self.codex, host: host) != nil) }
+        #expect(AgentProfile.codex.hosts == ["chatgpt.com", "auth.openai.com"])
+
+        #expect(result.stdout.contains("  ✓ /opt/fake/codex is codex, team 2DC432GLL2"))
+        #expect(result.stdout.contains("  ✓ Its hook lets it read only the event's directory: no writes, no network, no web search, no MCP servers"))
+        #expect(result.stdout.contains("  It decides with gpt-6-luna; --model NAME picks another."))
+        #expect(result.stdout.contains("  ✓ codex approved it in 5 s"))
+        #expect(result.stdout.contains("  ✓ The hook on line 4 ran claude-code; it now starts codex instead,"))
+
+        // No sign-in under the hook: what to do about it, and the file as it was.
+        let unsigned = FakeCodexMac(signedIn: true, printed: "")
+        unsigned.status = 1
+        let refused = connectCodex(home, config: config, mac: unsigned, system: system, extra: ["--model", "gpt-6.1-sol"])
+        #expect(refused.status == ExitCode.software)
+        #expect(refused.stderr.contains("  CODEX_HOME=~/.config/blackice/agent/.codex codex login"))
+        #expect(unsigned.hookRuns.first?.program == Self.codexProgram(home, model: "gpt-6.1-sol"))
+        #expect(try String(contentsOfFile: config, encoding: .utf8) == written)
+    }
+
+    @Test func codexPieces() {
+        #expect(CLI.codexSignedIn("Logged in using ChatGPT\n") && CLI.codexSignedIn("Logged in using an API key - sk-…\n"))
+        #expect(!CLI.codexSignedIn("Not logged in\n") && !CLI.codexSignedIn(""))
+        let arguments = CLI.codexArguments(model: "gpt-6-luna")
+        #expect(arguments.starts(with: ["exec", "--strict-config"]) && arguments.last == CLI.codexPrompt)
+        // Never the whole-disk read-only sandbox, which would take the profile's place.
+        #expect(!arguments.contains("--sandbox") && !arguments.contains("-s"))
+        #expect(arguments.contains("model_instructions_file=\"instructions.md\"") && arguments.contains("project_doc_max_bytes=0"))
+        #expect(arguments.count <= BlackiceConfig.maximumHookArguments)
+        #expect(CLI.agentRunning(Hook(program: Self.codexProgram(URL(fileURLWithPath: "/h")), line: 1))?.name == "codex")
+    }
+
     @Test func claudeCodePieces() throws {
         #expect(CLI.claudeCodeSignedIn("{\n  \"loggedIn\": true,\n  \"authMethod\": \"claude.ai\"\n}"))
         #expect(CLI.claudeCodeSignedIn("A notice first\n{\"loggedIn\": true}\n"))
@@ -343,7 +459,7 @@ struct AgentConnectTests {
         let config = try BlackiceConfig(data: Data(text.utf8))
         #expect(config.hooks.first?.program == program && program.eventOnStdin == false)
         #expect(CLI.agentRunning(config.hooks[0])?.name == "claude-code")
-        #expect(AgentProfile.known.map(\.name) == ["fx", "claude-code"])
+        #expect(AgentProfile.known.map(\.name) == ["fx", "claude-code", "codex"])
         #expect(try adapter("claude-code").contains("agent_stdin=none"))
     }
 
@@ -362,10 +478,13 @@ struct AgentConnectTests {
         let text = try adapter(name)
         var rest = Substring(text)
         for argument in profile.askArguments("/Users/me/.config/blackice/agent", profile.defaultModel) {
-            let word = argument == profile.defaultModel ? "\"${MODEL:-\(argument)}\"" : "\"" + argument + "\""
-            let range = try #require(rest.range(of: word), "\(argument) is not in the eval's arguments for \(name)")
+            // In double quotes, or in single quotes when it holds some.
+            let words = argument == profile.defaultModel ? ["\"${MODEL:-\(argument)}\""] : ["\"" + argument + "\"", "'" + argument + "'"]
+            let range = try #require(words.compactMap { rest.range(of: $0) }.min { $0.lowerBound < $1.lowerBound },
+                                     "\(argument) is not in the eval's arguments for \(name)")
             rest = rest[range.upperBound...]
         }
+        #expect(text.contains("agent_stdin=none") == !profile.eventOnStdin)
     }
 
     @Test func aModelOfYourOwn() throws {
@@ -857,7 +976,7 @@ struct AgentConnectTests {
         let mac = FakeAgentMac(signedIn: true, answer: Self.approve)
         let other = connect(home, config: config, mac: mac, system: Loading(), arguments: ["agent", "connect", "claude"])
         #expect(other.status == ExitCode.usage
-            && other.stderr.first?.hasPrefix("blackice agent connect knows fx and claude-code so far") == true)
+            && other.stderr.first == "blackice agent connect knows fx, claude-code and codex: blackice agent connect fx")
 
         let missing = connect(home, config: home.path + "/none.toml", mac: mac, system: Loading())
         #expect(missing.status == ExitCode.unreadable)

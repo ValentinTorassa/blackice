@@ -97,12 +97,12 @@ full path, and a script that runs the full path, worked.
 `blackice start` reads `~/.config/blackice/blackice.toml` unless you pass `--config PATH`. If the file is not there,
 `start` asks a few questions and writes it. You pick the answers from lists with the arrow keys:
 - the mode;
-- in ask mode, who answers: fx, Claude Code, or you;
+- in ask mode, who answers: fx, Claude Code, Codex, or you;
 - apps to trust, from the apps and system extensions running now (a VPN client's network extension, such as
   Tailscale's, is one). Each may reach any host, and "Another app" takes a path such as
   `/Applications/Slack.app` or a signing identifier.
 
-If you pick an agent, `start` also sets it up, as `blackice agent connect fx` or `claude-code` does (see "Let an agent
+If you pick an agent, `start` also sets it up, as `blackice agent connect` does for that agent (see "Let an agent
 answer"). It stays in accept-all until the agent is installed, signed in and tested, and loads ask mode at the end, so
 nothing waits on an answer before the agent can give it. If the agent cannot be set up, or you stop the setup with
 Control-C, blackice stays on in accept-all, filtering nothing, as before that first start, and says so. Finish it
@@ -201,9 +201,16 @@ the login keychain, apart from yours. Its hook gives it one tool, reading the ev
 stdin (`stdin = "none"`), since `claude -p` would add it to the prompt. Its rule covers `api.anthropic.com` and
 `platform.claude.com`. [`integrations/claude-code/README.md`](../integrations/claude-code/README.md) has the details.
 
+`blackice agent connect codex` does the same for Codex, signed in with a ChatGPT plan. Install it first (`brew
+install --cask codex`). Its home is a `CODEX_HOME` of its own, `~/.config/blackice/agent/.codex`, signed in with
+`codex login`. Its hook runs `codex exec` with commands that can read only the event's directory and the system's
+own files, write nothing and reach no network, and keeps the event off its stdin. Its rule covers `chatgpt.com` and
+`auth.openai.com`. [`integrations/codex/README.md`](../integrations/codex/README.md) has the details.
+
 Each agent decides with a small model, since a decision is a short read and a two-line answer: fx with Claude
 Haiku 5.5 through AI Gateway (`anthropic/claude-haiku-5.5`, billed to the Vercel team fx signed in with), Claude Code
-with `haiku` (counted against its subscription). `--model NAME` writes another into the hook, such as
+with `haiku` (counted against its subscription), Codex with `gpt-6-luna` (counted against the ChatGPT plan).
+`--model NAME` writes another into the hook, such as
 `blackice agent connect claude-code --model sonnet`; running `agent connect` again with another model replaces the
 hook's. The agents approve clearly ordinary developer and vendor traffic for 8 to 24 hours and anything less plain
 for 10 minutes to an hour.

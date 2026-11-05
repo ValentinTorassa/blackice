@@ -22,6 +22,8 @@ literal() {
     literal fx integrations/fx/skills/blackice/SKILL.md
     echo
     literal claudeCode integrations/claude-code/blackice/instructions.md
+    echo
+    literal codex integrations/codex/instructions.md
     echo "}"
 } > "$out.tmp"
 mv "$out.tmp" "$out"

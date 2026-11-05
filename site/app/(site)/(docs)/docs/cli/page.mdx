@@ -21,6 +21,7 @@ The commands.
 | `blackice agent install` / `blackice agent uninstall` | Load the daemon's LaunchAgent for the current user, or unload and remove it. |
 | `blackice agent connect fx [--model ID] [--config PATH]` | Set fx up to answer what waits in ask mode: its own home with its sign-in and rules, one test on a sample connection, then its rule and hook in `blackice.toml`, ask mode if you say so, and the daemon. Touch ID once, to load it. `--model` picks the model (default `anthropic/claude-haiku-5.5`). |
 | `blackice agent connect claude-code [--model NAME] [--config PATH]` | The same for Claude Code: its own configuration directory and sign-in, with reading the event as its only tool. `--model` picks the model (default `haiku`). |
+| `blackice agent connect codex [--model NAME] [--config PATH]` | The same for Codex, signed in with a ChatGPT plan: its own `CODEX_HOME` and sign-in, with commands that can read only the event's directory. `--model` picks the model (default `gpt-6-luna`). |
 | `blackice menu [--login on \| off]` | Show blackice in the menu bar until you quit it. `--login on` opens it now and at each login, `--login off` stops that. |
 | `blackice validate PATH` | Check a `blackice.toml` without loading it. |
 | `blackice version` | The installed version and build. |

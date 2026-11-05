@@ -2,7 +2,7 @@
 # Runs one decider over the events in events/ the way blackice's daemon runs a program hook, and
 # checks each answer against cases.json. Nothing is allowed or blocked: the answers go nowhere.
 #
-#   integrations/eval/run.sh --agent fx|claude-code [--only 01,05] [path/to/agent]
+#   integrations/eval/run.sh --agent fx|claude-code|codex [--only 01,05] [path/to/agent]
 #
 # agents/NAME.sh gives the hook's args, env and stdin, as `blackice agent connect NAME` writes
 # them; the program is the agent's executable. The [[hook]] table is printed first. Each event
@@ -22,7 +22,7 @@
 #   NOTES=file  the owner's notes, as `notes` in [agent]: copied to notes.md in each event's
 #               directory, as the daemon writes them
 #   KEEP=1      keep the work directory, with each event's stdout and stderr
-#   The agent's file says what else it reads (AGENT_HOME, CLAUDE_CONFIG_DIR, MODEL).
+#   The agent's file says what else it reads (AGENT_HOME, CLAUDE_CONFIG_DIR, CODEX_HOME, MODEL).
 set -euo pipefail
 
 here=$(cd "$(dirname "$0")" && pwd)
