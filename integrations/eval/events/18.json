@@ -1,0 +1,12 @@
+{
+  "event": "connection",
+  "id": "ev-00000012",
+  "app": {
+    "signing_id": "com.tinyspeck.slackmacgap",
+    "team_id": "BQR82RBBHL",
+    "path": "/Applications/Slack.app/Contents/MacOS/Slack"
+  },
+  "ip": "34.226.36.51",
+  "port": 443,
+  "host": "wss-primary.slack.com"
+}

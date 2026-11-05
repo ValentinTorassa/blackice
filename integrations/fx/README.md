@@ -114,20 +114,22 @@ signature check covers fx itself, not the files it reads.
 
 ## Checking the skill
 
-[`eval/run.sh`](eval/run.sh) runs fx once per event in [`eval/events/`](eval/events/), the
-way the hook would, with `BLACKICE_EVENT_FILE` set. It reads each answer from fx's stdout with the daemon's rules
-(exit status 0, at most 64 KiB, the last non-empty line) and compares it with
-[`eval/cases.json`](eval/cases.json). Nothing is allowed or blocked.
+fx's eval is the one every decider shares, [`../eval/run.sh`](../eval/run.sh)
+(`eval/run.sh` here runs it). It starts fx once per event in [`../eval/events/`](../eval/events/) as the daemon
+starts a program hook, with fx's `args` and `env`, `BLACKICE_EVENT_FILE` set and the event on stdin. It reads each
+answer from fx's stdout with the daemon's rules (exit status 0, at most 64 KiB, the last non-empty line) and
+compares it with [`../eval/cases.json`](../eval/cases.json). Nothing is allowed or blocked.
 
 ```console
-$ AGENT_HOME="$HOME/.config/blackice/agent" integrations/fx/eval/run.sh /path/to/fx
+$ AGENT_HOME="$HOME/.config/blackice/agent" integrations/eval/run.sh --agent fx /path/to/fx
 ```
 
 Each event gets its own private directory with `event.json` and the repository's copy of the
-skill in it, and fx runs there, as under the hook. `AGENT_HOME` is the `HOME` fx runs with; it defaults to yours.
-`KEEP=1` keeps the work directory with fx's stdout, stderr and exit status for each event.
+skill in it, and fx runs there, as under the hook. `AGENT_HOME` is the `HOME` fx runs with, with
+`FX_DISABLE_KEYCHAIN=1` as in the hook; without it, fx runs with your own `HOME`. `KEEP=1` keeps the work directory
+with fx's stdout and stderr for each event.
 
-The fifteen events cover:
+There are 23 events. The first twelve were fx's own, and they cover:
 
 - apps reaching their own servers: VS Code, Chrome, Docker and GitHub Desktop;
 - two programs signed ad hoc, named by their cdhash: a Homebrew `gh` reaching the GitHub API,
@@ -135,14 +137,17 @@ The fifteen events cover:
 - an unknown binary in `~/Downloads` reaching a paste site;
 - a lookalike domain;
 - SSH to a dynamic DNS name;
-- three connections with no name, whose host is their address: `ssh` to a Tailscale address
-  (approve), an unknown binary in `~/Downloads` to a public address on port 4444, and `curl` to
-  a public address (both deny);
 - an event with no host;
 - instructions injected into the host and into the app path.
 
-The eval has not run with the 0.4.0 skill yet, nor with the three events that name an address. With the 0.3 skill,
-which had fx run `blackice approve` and `deny` with the token, against a stub:
+The next eight add a binary in a hidden `/tmp` directory, a bare IP address as the host, odd ports (6667, 8080),
+instructions in a valid host name, a lookalike of Google's sign-in host, Slack reaching its own service and an
+unknown binary in `~/Downloads` reaching an ordinary host. The last three are connections with no name, whose host
+is their address: `ssh` to a Tailscale address (approve), an unknown binary in `~/Downloads` to a public address on
+port 4444, and `curl` to a public address on 443 (both deny).
+
+The eval has not run with fx and the 0.4.0 skill yet. With the 0.3 skill, which had fx run `blackice approve` and `deny`
+with the token, against a stub:
 
 On 2 November 2026, with fx 0.0.16 signed in with a ChatGPT account, four runs each came out
 ten for ten:

@@ -8,7 +8,8 @@ any app, and has three modes:
 - `ask` pauses any connection no rule covers until someone answers. A hook can pass the question to an agent such as
   [fx](https://github.com/vercel-labs/fx), which answers with `blackice approve` or `blackice deny`.
 
-There is no window or menu bar icon. Starting, stopping and changing the mode take Touch ID.
+There is no window. A menu bar icon shows the mode and what waits, and answers by hand. Starting, stopping and
+changing the mode take Touch ID.
 
 Docs: [blackice-macos.vercel.app](https://blackice-macos.vercel.app)
 
@@ -58,8 +59,9 @@ $ brew install --cask valentintorassa/tap/blackice
 
 Or download the zip from the [release](https://github.com/ValentinTorassa/blackice/releases/tag/v0.3.2). The first
 `blackice start` asks a few questions to write your configuration, then opens System Settings so you can allow the
-extension. `blackice agent install` starts the daemon
-that runs hooks. Run `blackice stop` before you uninstall. [`docs/install.md`](docs/install.md) has the rest.
+extension, and at the end offers the menu bar icon (`blackice menu --login on` adds it later). `blackice agent install`
+starts the daemon that runs hooks. Run `blackice stop` before you uninstall. [`docs/install.md`](docs/install.md) has the
+rest.
 
 ## Configuration
 
@@ -88,6 +90,19 @@ connection with no name, and expires; by hand, `blackice approve` needs Touch ID
 pass unless `loopback = false`. Rules you want to keep go in the file. The [configuration docs](https://blackice-macos.vercel.app/docs/configuration) cover every
 key.
 
+## Agents
+
+`blackice agent connect NAME` sets an agent up to answer what waits in ask mode, in one command: a home of its own
+under `~/.config/blackice/agent`, one test on a sample connection, a rule that lets it reach its model, and the hook.
+
+- `fx`: [fx](https://github.com/vercel-labs/fx) with the blackice skill ([`integrations/fx/`](integrations/fx/)).
+- `claude-code`: [Claude Code](https://code.claude.com) in print mode, with reading the event as its only tool and a
+  sign-in of its own ([`integrations/claude-code/`](integrations/claude-code/)). It ends its reply with a verdict
+  line, `approve 1h` or `deny`. On 4 November 2026 it decided the first 20 eval cases as expected, in 4 s at the median.
+
+One agent answers at a time: connecting one replaces the other's hook.
+[`integrations/eval/run.sh`](integrations/eval/run.sh) runs either one over the same 23 cases.
+
 ## Development
 
 ```console
@@ -97,7 +112,8 @@ $ cd site && npm ci && npm run dev
 ```
 
 [`macos/`](macos/) is the Swift package: the CLI, the network extension and the daemon. [`integrations/fx/`](integrations/fx/)
-has a draft fx skill, [`packaging/npm/`](packaging/npm/) an npm installer that isn't published yet, and
+has a draft fx skill, [`integrations/claude-code/`](integrations/claude-code/) Claude Code's instructions,
+[`integrations/eval/`](integrations/eval/) the eval for both, [`packaging/npm/`](packaging/npm/) an npm installer that isn't published yet, and
 [`site/`](site/) the project page.
 
 ## Who

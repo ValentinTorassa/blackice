@@ -1,6 +1,6 @@
 {
   "event": "connection",
-  "id": "ev-12",
+  "id": "ev-0000000c",
   "app": {
     "cdhash": "c47e0b1a9d2f85e36b4a0c7d1e9f2b58a3d6e0f4",
     "path": "/Users/me/Library/Caches/com.apple.helper/.agent/updater"

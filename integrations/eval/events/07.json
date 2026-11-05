@@ -1,6 +1,6 @@
 {
   "event": "connection",
-  "id": "ev-07",
+  "id": "ev-00000007",
   "app": {
     "signing_id": "com.apple.curl",
     "path": "/usr/bin/curl"

@@ -10,7 +10,7 @@ blackice is a headless application firewall for macOS, operated through a CLI. A
 
 blackice is a network extension, a small daemon and a CLI. The extension sees every new outbound connection on the Mac, from any app. There are three modes. Accept all lets everything through, block all drops everything that no rule allows, and ask pauses each new connection that no rule or approval covers until it gets an answer.
 
-Answers go through the command line, for example `blackice approve --app com.example.tool --host example.com --for 1h`. You can give them yourself, with Touch ID, or a hook can pass the request to an agent such as fx, which answers with its last line of output, `approve 1h` or `deny`, for the app and host it was asked about. There is no dialog to click.
+Answers go through the command line, for example `blackice approve --app com.example.tool --host example.com --for 1h`. You can give them yourself, with Touch ID, or a hook can pass the request to an agent such as fx, which answers with its last line of output, `approve 1h` or `deny`, for the app and host it was asked about. There is no dialog to click. A menu bar icon shows the mode and the connections that wait, and can answer them by hand with Touch ID.
 
 ## Status
 

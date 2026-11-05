@@ -82,7 +82,7 @@ public struct Hook: Equatable, Sendable {
     }
 }
 
-/// `program`, `args`, `env`, `app` and `team` in a [[hook]].
+/// `program`, `args`, `env`, `app`, `team` and `stdin` in a [[hook]].
 public struct HookProgram: Equatable, Sendable {
     /// Absolute. Started with posix_spawn, with no shell and no PATH lookup.
     public let path: String
@@ -93,12 +93,18 @@ public struct HookProgram: Equatable, Sendable {
     /// The signing identifier and Team ID the running program must have, checked as [[allow]]
     /// rules check apps. No Team ID means Apple platform code.
     public let identity: SigningIdentity
+    /// Whether the event comes on stdin too (`stdin = "event"`, the default). With `stdin =
+    /// "none"`, stdin is empty, and the event is only in the file: for a program that adds what
+    /// comes on stdin to a model's prompt (`claude -p`), where the event should arrive as data.
+    public let eventOnStdin: Bool
 
-    public init(path: String, arguments: [String] = [], environment: [String: String] = [:], identity: SigningIdentity) {
+    public init(path: String, arguments: [String] = [], environment: [String: String] = [:], identity: SigningIdentity,
+                eventOnStdin: Bool = true) {
         self.path = path
         self.arguments = arguments
         self.environment = environment
         self.identity = identity
+        self.eventOnStdin = eventOnStdin
     }
 }
 
@@ -325,7 +331,7 @@ extension BlackiceConfig {
         guard let runEntry = table.entries["run"] else {
             throw ConfigError(line: table.line, "[[hook]] needs a 'program' or a 'run' key")
         }
-        for key in ["args", "env", "app", "team"] {
+        for key in ["args", "env", "app", "team", "stdin"] {
             if let entry = table.entries[key] { throw ConfigError(line: entry.line, "\(key) goes with program, not run") }
         }
         let run = try runEntry.string("run")
@@ -365,7 +371,16 @@ extension BlackiceConfig {
                 environment[name] = String(item[item.index(after: equals)...])
             }
         }
-        return HookProgram(path: path, arguments: arguments, environment: environment, identity: identity)
+        var eventOnStdin = true
+        if let stdinEntry = table.entries["stdin"] {
+            let stdin = try stdinEntry.string("stdin")
+            guard ["event", "none"].contains(stdin) else {
+                throw ConfigError(line: stdinEntry.line, "stdin must be \"event\" or \"none\", not \(quoted(stdin))")
+            }
+            eventOnStdin = stdin == "event"
+        }
+        return HookProgram(path: path, arguments: arguments, environment: environment, identity: identity,
+                           eventOnStdin: eventOnStdin)
     }
 
     /// An array of at most `limit` strings, each at most `maximumHookStringBytes` with no control
@@ -459,7 +474,7 @@ private enum TableKind: String {
         switch self {
         case .root: return ["mode", "timeout_seconds", "apple_services", "loopback"]
         case .allow: return ["app", "team", "hosts"]
-        case .hook: return ["on", "run", "program", "args", "env", "app", "team"]
+        case .hook: return ["on", "run", "program", "args", "env", "app", "team", "stdin"]
         }
     }
 

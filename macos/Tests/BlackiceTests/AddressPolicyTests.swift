@@ -458,17 +458,17 @@ struct AddressMessageTests {
         try request.validate(now: Date())
     }
 
-    /// The fx eval's events with an address as the host must stay in the format the daemon sends.
-    @Test(arguments: ["13", "14", "15"])
-    func fxEvalAddressEventsValidate(_ id: String) throws {
+    /// The eval's events with an address as the host must stay in the format the daemon sends.
+    @Test(arguments: ["14", "21", "22", "23"])
+    func evalAddressEventsValidate(_ id: String) throws {
         let url = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
-            .appendingPathComponent("integrations/fx/eval/events/\(id).json")
+            .appendingPathComponent("integrations/eval/events/\(id).json")
         var object = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
         // run.sh adds the deadline; the daemon holds the token.
         object["token"] = testToken
         object["deadline"] = ISO8601DateFormatter().string(from: Date().addingTimeInterval(60))
-        object["id"] = "ev-000000" + id
+        #expect(object["id"] as? String == "ev-" + String(format: "%08x", try #require(Int(id))))
         let decoded = try HookEvent.decode(JSONSerialization.data(withJSONObject: object))
         try decoded.validate(now: Date())
         #expect(decoded.host == decoded.ip)

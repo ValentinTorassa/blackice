@@ -258,6 +258,20 @@ public struct PendingSummary: Codable, Equatable, Sendable {
         case id, app, path, host, ip, port, connections
         case secondsLeft = "seconds_left"
     }
+
+    /// A connection with no name is asked about by its address, which is then its host.
+    public var hostIsAddress: Bool { host == ip }
+
+    /// "example.com:443 (203.0.113.7)", or "100.66.32.75:22 (no host name)" and
+    /// "[fd7a:115c:a1e0::1]:22 (no host name)" for a connection asked about by its address.
+    public var destination: String {
+        hostIsAddress ? "\(hostAndPort) (no host name)" : "\(hostAndPort) (\(ip))"
+    }
+
+    /// "example.com:443", "100.66.32.75:22", "[fd7a:115c:a1e0::1]:22".
+    public var hostAndPort: String {
+        (hostIsAddress && ip.contains(":") ? "[\(ip)]" : host) + ":\(port)"
+    }
 }
 
 public struct ApprovalSummary: Codable, Equatable, Sendable {

@@ -165,14 +165,14 @@ public final class NESystemControl: SystemControlling {
     }
 
     /// Whether launchd has the daemon's LaunchAgent loaded for this user.
-    static func daemonRunning() -> Bool {
+    public static func daemonRunning() -> Bool {
         LaunchAgent.run(["print", "gui/\(getuid())/\(LaunchAgent.label)"]).status == 0
     }
 
     /// Asked when the extension does not answer: whether macOS runs another build of it than the
     /// one inside this app, because the app was replaced and `blackice start` has not run since.
     /// One properties request to macOS; nil when it fails or the builds match.
-    static func unfinishedUpgrade() -> UnfinishedUpgrade? {
+    public static func unfinishedUpgrade() -> UnfinishedUpgrade? {
         let result = Completion()
         let delegate = ExtensionPropertiesDelegate(result: result)
         let request = OSSystemExtensionRequest.propertiesRequest(forExtensionWithIdentifier: BlackiceIdentifiers.filter,
@@ -311,7 +311,7 @@ public final class NESystemControl: SystemControlling {
 
     /// This process is Blackice.app's own executable, signed with a Developer ID for the
     /// blackice App ID. Anything else cannot activate the extension, so it is told so plainly.
-    static func isSignedHost() -> Bool {
+    public static func isSignedHost() -> Bool {
         guard Bundle.main.bundleIdentifier == BlackiceIdentifiers.host,
               let identity = CodeIdentity.current(), identity.teamID != nil,
               identity.signingID == BlackiceIdentifiers.host else { return false }

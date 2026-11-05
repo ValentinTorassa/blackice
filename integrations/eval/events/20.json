@@ -1,0 +1,11 @@
+{
+  "event": "connection",
+  "id": "ev-00000014",
+  "app": {
+    "signing_id": "com.apple.curl",
+    "path": "/usr/bin/curl"
+  },
+  "ip": "203.0.113.40",
+  "port": 8080,
+  "host": "203-0-113-40.nip.io"
+}

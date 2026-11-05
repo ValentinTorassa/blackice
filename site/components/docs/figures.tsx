@@ -154,7 +154,7 @@ export function FigArchitecture({ n }: { n?: number }) {
         Blackice.app
       </T>
       <T x={212} y={70} c="f-s">
-        no UI, in /Applications
+        menu bar, in /Applications
       </T>
       <Box x={216} y={88} w={230} h={64} title="network extension" sub="rules, approvals, paused flows" tone="key" />
       <Box x={216} y={212} w={230} h={56} title="blackice CLI" sub="start, mode, approve, pending" />
