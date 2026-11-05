@@ -7,7 +7,8 @@ public struct SystemOutput {
     /// The first start, right after the questions (step 1): start numbers Touch ID step 2 and
     /// allowing the extension step 3.
     public let setup: Bool
-    /// Whether the first start ends with the "Next" commands; not when more setup follows.
+    /// Whether start ends with its own lines: that blackice is on, and after a first start the
+    /// "Next" commands. Not when more setup follows, and the caller says what happened.
     public let next: Bool
     /// Start loads the file as written, mode and `answers` included. Otherwise (`blackice start`) a
     /// mode or an answerer switched with `blackice mode` or the menu since the last start stays
@@ -78,9 +79,8 @@ public struct UnsignedSystem: SystemControlling {
     /// Also what a person sees who runs the command through a symbolic link, since then the
     /// process is not the signed app.
     public static func refusal(_ command: String) -> String {
-        "blackice \(command) works only from Blackice.app in /Applications, signed with its Developer ID. " +
-            "Run /Applications/Blackice.app/Contents/MacOS/blackice, or the blackice command the installer added; " +
-            "a symbolic link to it does not work."
+        "blackice \(command) works only from the signed Blackice.app in /Applications: run the blackice command " +
+            "the installer added, or /Applications/Blackice.app/Contents/MacOS/blackice, not a symbolic link to it."
     }
 
     public func start(configText: String, output: SystemOutput) -> Int32 { refuse("start", output) }

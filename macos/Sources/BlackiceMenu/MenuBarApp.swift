@@ -40,7 +40,7 @@ public struct MenuBar: MenuBarControlling {
         }
         switch MenuApp.openNow() {
         case .opened, .alreadyRunning:
-            output.stdout(Style.done("The menu bar app was from before the upgrade; it runs this build now."))
+            output.stdout(Style.done("The menu bar app runs this build now"))
         case .failed(let why):
             output.stderr("The menu bar app from before the upgrade quit, and this build's did not open (\(why)). Open Blackice.app.")
         }
@@ -65,19 +65,19 @@ public struct MenuBar: MenuBarControlling {
             return ExitCode.software
         }
         guard on else {
-            output.stdout(Style.done("blackice no longer opens at login. Its menu has Quit Menu to close it now."))
+            output.stdout(Style.done("blackice no longer opens at login; Quit Menu in its menu closes it now"))
             return ExitCode.success
         }
-        if LoginItem.state == .needsApproval {
-            output.stdout("macOS lists Blackice in System Settings › General › Login Items: turn it on there.")
+        let needsApproval = LoginItem.state == .needsApproval
+        if needsApproval {
+            output.stdout("To open it at each login, turn Blackice on in System Settings › General › Login Items.")
             LoginItem.openSettings()
-        } else {
-            output.stdout(Style.done("blackice opens in the menu bar at each login."))
         }
         switch MenuApp.openNow() {
-        case .alreadyRunning: output.stdout("  It is in the menu bar already.")
-        case .opened: output.stdout("  It is in the menu bar now.")
-        case .failed(let why): output.stderr("  It did not open now (\(why)). Open Blackice.app to start it.")
+        case .alreadyRunning, .opened:
+            output.stdout(Style.done("blackice is in the menu bar" + (needsApproval ? "" : ", and opens there at each login")))
+        case .failed(let why):
+            output.stderr("blackice did not open in the menu bar now (\(why)). Open Blackice.app to start it.")
         }
         return ExitCode.success
     }

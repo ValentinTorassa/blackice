@@ -263,7 +263,7 @@ struct AskStateTests {
         #expect(outcome.verdicts.allSatisfy { $0.verdict == .denied })
         // A person's deny removes the approval too.
         let revoke = ask.answer(request(.deny, host: "other.example.com"), now: 3)
-        #expect(revoke.reply.message.contains("its approval was removed"))
+        #expect(revoke.reply.message.contains("removing its approval"))
         #expect(!ask.approvals.covers(ApprovalKey(identity: tool, host: "other.example.com"), now: 4))
     }
 
@@ -272,7 +272,7 @@ struct AskStateTests {
         let key = ApprovalKey(identity: tool, host: "example.com")
         // A hook's deny, sent with the event's token.
         let outcome = ask.answer(request(.deny, token: try #require(events["a1"]?.token)), now: 2)
-        #expect(outcome.reply.message.hasPrefix("denied ABCDE12345/com.example.tool -> example.com for 600 s;"))
+        #expect(outcome.reply.message.hasPrefix("Denied com.example.tool → example.com for 10m;"))
         #expect(ask.denials.covers(key, now: 601.9) && !ask.denials.covers(key, now: 602))
         #expect(ask.denials.summaries(now: 2) == [ApprovalSummary(app: AppReference(tool), host: "example.com", secondsLeft: 600)])
         // Only that app and that host.
@@ -291,11 +291,11 @@ struct AskStateTests {
         _ = ask.answer(request(.deny, build, host: "example.org"), now: 0)
         #expect(ask.denials.covers(key, now: 1))
         let approved = ask.answer(request(.approve, build, host: "example.org", seconds: 60), now: 1)
-        #expect(approved.reply.message.contains("its denial was removed"))
+        #expect(approved.reply.message.contains("replacing its denial"))
         #expect(!ask.denials.covers(key, now: 2) && ask.approvals.covers(key, now: 2))
         // A deny replaces the approval, as before, and is remembered again.
         let denied = ask.answer(request(.deny, build, host: "example.org"), now: 3)
-        #expect(denied.reply.message.contains("its approval was removed"))
+        #expect(denied.reply.message.contains("removing its approval"))
         #expect(ask.denials.covers(key, now: 4) && !ask.approvals.covers(key, now: 4))
     }
 
@@ -324,7 +324,7 @@ struct AskStateTests {
         var ask = AskState<String>()
         let outcome = ask.answer(request(.approve, build, host: "example.org", seconds: 60), now: 0)
         #expect(outcome.reply.status == .done && outcome.released.isEmpty)
-        #expect(outcome.reply.message.contains("no connection was waiting"))
+        #expect(outcome.reply.message.contains("nothing was waiting"))
         #expect(ask.approvals.covers(ApprovalKey(identity: build, host: "example.org"), now: 59))
     }
 
@@ -378,7 +378,7 @@ struct AskStateTests {
         // Approved: nothing to release, but the approval covers the app's next connection.
         let outcome = ask.answer(request(.approve, seconds: 600, token: event.token), now: 20)
         #expect(outcome.reply.status == .done && outcome.released.isEmpty)
-        #expect(outcome.reply.message.contains("no connection was waiting"))
+        #expect(outcome.reply.message.contains("nothing was waiting"))
         #expect(outcome.verdicts.map(\.eventID) == [event.id] && ask.pending.eventCount == 0)
         #expect(ask.approvals.covers(ApprovalKey(identity: tool, host: "example.com"), now: 21))
 

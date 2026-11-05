@@ -326,8 +326,8 @@ public struct AskState<Flow> {
                                             eventID: entry.event.id))
                 }
             }
-            message = "approved \(identity.label) -> \(request.host) for \(Int((expires - now).rounded())) s"
-                + (replaced ? "; its denial was removed" : "")
+            message = "Approved \(identity.name) → \(request.host) for \(Describe.left(Int((expires - now).rounded())))"
+                + (replaced ? ", replacing its denial" : "")
         case .deny:
             let revoked = approvals.remove(key)
             let remembered = denials.add(key, seconds: Self.rememberedDenialSeconds, now: now)
@@ -337,14 +337,17 @@ public struct AskState<Flow> {
                     released.append(Release(flow: paused.flow, allow: false, reason: "denied", eventID: entry.event.id))
                 }
             }
-            message = "denied \(identity.label) -> \(request.host) for \(Int((remembered - now).rounded())) s"
-                + (revoked ? "; its approval was removed" : "")
+            message = "Denied \(identity.name) → \(request.host) for \(Describe.left(Int((remembered - now).rounded())))"
+                + (revoked ? ", removing its approval" : "")
         }
         let verdict: Verdict = request.kind == .approve ? .approved : .denied
         let ids = entries.map(\.event.id)
         let allowed = released.filter(\.allow).count
-        let detail = released.isEmpty ? "; no connection was waiting"
-            : "; \(released.count) waiting connection\(released.count == 1 ? "" : "s"), \(allowed) allowed"
+        let waiting = Describe.count(released.count, "waiting connection")
+        let detail = released.isEmpty ? "; nothing was waiting"
+            : request.kind == .deny ? "; \(waiting) dropped"
+            : allowed == released.count ? "; \(waiting) let through"
+            : "; \(waiting), \(allowed) let through (the others went to another address)"
         return Outcome(reply: AnswerReply(status: .done, reason: verdict.rawValue, message: message + detail,
                                           events: ids, released: released.count),
                        released: released, verdicts: ids.map { ($0, verdict) })

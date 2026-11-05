@@ -77,7 +77,10 @@ struct ParseTests {
         #expect(try CLI.parse(["stop"]) == .stop)
         #expect(try CLI.parse(["status"]) == .status)
         #expect(try CLI.parse(["pending"]) == .pending)
-        #expect(try CLI.parse(["--help"]) == .help)
+        #expect(try CLI.parse(["--help"]) == .help())
+        #expect(try CLI.parse(["help", "mode"]) == .help("mode"))
+        #expect(try CLI.parse(["approve", "--help"]) == .help("approve"))
+        #expect(throws: UsageError.self) { try CLI.parse(["help", "nothing"]) }
         #expect(try CLI.parse(["validate", "blackice.toml"]) == .validate(path: "blackice.toml"))
         for mode in Mode.allCases { #expect(try CLI.parse(["mode", mode.rawValue]) == .mode(mode)) }
         #expect(try CLI.parse(["mode", "ask", "--agent", "claude-code"]) == .mode(.ask, answerer: .agent(.claudeCode)))
@@ -117,10 +120,10 @@ struct ParseTests {
                     == .approve(Approval(identity: ssh, host: host, seconds: 3600)), "\(raw)")
             #expect(try CLI.parse(["deny", "--app", "com.apple.ssh", "--host", raw]) == .deny(Denial(identity: ssh, host: host)))
         }
-        let ranges = "wildcards and ranges are not accepted"
+        let ranges = "with no wildcards, ranges or leading zeros"
         let cases: [(String, String)] = [
-            ("010.0.0.1", "no leading zeros"), ("10.1", ranges), ("100.64.0.0/10", ranges), ("2001:db8::/32", ranges),
-            ("fe80::1", "a link-local address needs its interface"), ("2001:db8::1%en0", ranges),
+            ("010.0.0.1", "leading zeros"), ("10.1", ranges), ("100.64.0.0/10", ranges), ("2001:db8::/32", ranges),
+            ("fe80::1", "link-local address's interface"), ("2001:db8::1%en0", ranges),
         ]
         for (raw, fragment) in cases {
             let message = usageError(["approve", "--app", "com.apple.ssh", "--host", raw])
@@ -138,7 +141,7 @@ struct ParseTests {
             do {
                 _ = try CLI.parse(arguments)
             } catch {
-                #expect("\(error)".contains("no longer takes --token: a hook answers by printing approve or deny"))
+                #expect("\(error)".contains("takes no --token: a hook answers with its last line of output"))
             }
         }
     }
@@ -184,7 +187,6 @@ struct ParseTests {
             (["mode", "ask", "--agent"], "--agent needs a value"),
             (["validate"], "one path"),
             (["validate", "a", "b"], "one path"),
-            (["validate", "--help"], "one path"),
             (["approve", "--host", "example.com"], "needs --app or --cdhash"),
             (["approve", "--cdhash", testCDHash, "--app", "com.a", "--host", "example.com"], "cannot be combined"),
             (["deny", "--cdhash", testCDHash, "--team", "ABCDE12345", "--host", "example.com"], "cannot be combined"),
@@ -193,7 +195,7 @@ struct ParseTests {
             (["approve", "--app", "com.a"], "needs --host"),
             (["approve", "--app", "com.a\" or true", "--host", "example.com"], "signing identifier"),
             (["approve", "--app", "com.a", "--team", "abc", "--host", "example.com"], "Team ID"),
-            (["approve", "--app", "com.a", "--host", "*.example.com"], "wildcards and ranges are not accepted"),
+            (["approve", "--app", "com.a", "--host", "*.example.com"], "with no wildcards"),
             (["approve", "--app", "com.a", "--host", "example.com", "--for", "25h"], "at most 24h"),
             (["approve", "--app", "com.a", "--host", "example.com", "--for", "forever"], "at most 24h"),
             (["approve", "--app", "com.a", "--host", "example.com", "--for", "1441m"], "at most 24h"),
@@ -220,16 +222,28 @@ struct ParseTests {
 struct RunTests {
     @Test func helpAndNoArguments() {
         let help = run(["help"])
-        #expect(help.status == 0 && help.stdout.hasPrefix("blackice: an application firewall") && help.stderr.isEmpty)
-        #expect(help.stdout.contains("Usage: blackice <command>") && !help.stdout.contains("phase-0"))
+        #expect(help.status == 0 && help.stdout.hasPrefix("blackice: an app firewall for macOS") && help.stderr.isEmpty)
+        #expect(help.stdout.contains("Usage: blackice COMMAND [options]") && !help.stdout.contains("phase-0"))
+        // One screen: the commands, then where their options are.
+        #expect(help.stdout.split(separator: "\n").count <= 20)
+        for name in ["codex", "opencode", "agent install", "validate"] { #expect(help.stdout.contains(name), "\(name)") }
         let none = run([])
-        #expect(none.status == ExitCode.usage && none.stderr.hasPrefix("blackice: an application firewall") && none.stdout.isEmpty)
+        #expect(none.status == ExitCode.usage && none.stderr.hasPrefix("blackice: an app firewall") && none.stdout.isEmpty)
+        // Each command's own help starts with its usage line.
+        let mode = run(["help", "mode"])
+        #expect(mode.status == 0 && mode.stdout.hasPrefix("Usage: blackice mode accept-all|ask|block-all [--agent NAME]"))
+        #expect(mode.stdout.contains("codex, opencode or you"))
+        #expect(run(["approve", "--help"]).stdout.hasPrefix("Usage: blackice approve --app ID"))
+        for name in CLI.commandHelp.keys { #expect(CLI.commandHelp[name]?.first?.hasPrefix("Usage: blackice \(name)") == true, "\(name)") }
+        // Every line fits an 80-column Terminal window.
+        for line in CLI.usage.split(separator: "\n").map(String.init) + CLI.commandHelp.values.flatMap({ $0 }) { #expect(line.count <= 80, "\(line)") }
     }
 
     @Test func usageErrorExitsWith64() {
         let result = run(["mode", "sometimes"])
         #expect(result.status == 64)
-        #expect(result.stderr.contains("blackice: mode takes one of accept-all, ask or block-all"))
+        #expect(result.stderr == "blackice: mode takes accept-all, ask or block-all\nUsage: blackice mode accept-all|ask|block-all [--agent NAME]")
+        #expect(run(["sometimes"]).stderr == "blackice: unknown command 'sometimes'\nRun: blackice help")
         #expect(result.stdout.isEmpty)
     }
 
@@ -264,7 +278,7 @@ struct RunTests {
         // start checks its configuration first, so a bad file is reported even here.
         let start = run(["start", "--config", "n.toml"], files: ["n.toml": Data("mode = \"block-all\"\n".utf8)])
         #expect(start.status == 69)
-        #expect(start.stdout == "Using n.toml: block-all mode, no rules, no hooks.")
+        #expect(start.stdout.isEmpty)
         #expect(start.stderr == UnsignedSystem.refusal("start"))
     }
 
@@ -273,7 +287,7 @@ struct RunTests {
         let system = FakeSystem()
         let result = run(["start", "--config", "n.toml"], files: ["n.toml": Data(text.utf8)], system: system)
         #expect(result.status == 0)
-        #expect(result.stdout == "Using n.toml: accept-all mode, 1 rule, no hooks.\nstarted")
+        #expect(result.stdout == "started")
         #expect(system.calls == ["start " + text])
 
         let defaultPath = FakeSystem()
@@ -334,15 +348,18 @@ struct RunTests {
                      PendingSummary(id: "ev-0000002b", app: AppReference(signingID: nil, teamID: nil, cdhash: testCDHash),
                                     path: nil, host: "pypi.org", ip: "2001:db8::1", port: 80, secondsLeft: 2, connections: 1)],
             approvals: [ApprovalSummary(app: tool, host: "api.example.com", secondsLeft: 3599)])
+        let adHoc = "ad hoc " + testCDHash.prefix(8)
         #expect(CLI.pendingLines(reply) == [
-            "Waiting:",
-            "  ev-0000002a  ABCDE12345/com.example.tool -> example.com:443 (203.0.113.7), 3 connections, 8 s left",
-            "      /usr/local/bin/tool",
-            "  ev-0000002b  cdhash/\(testCDHash) -> pypi.org:80 (2001:db8::1), 1 connection, 2 s left",
-            "Approvals:",
-            "  ABCDE12345/com.example.tool -> api.example.com, 3599 s left",
+            "Waiting",
+            "  com.example.tool → example.com:443  3 connections, 8s left",
+            "    blackice approve --app com.example.tool --team ABCDE12345 --host example.com",
+            "  \(adHoc) → pypi.org:80  1 connection, 2s left",
+            "    blackice approve --cdhash \(testCDHash) --host pypi.org",
+            "",
+            "Approvals",
+            "  com.example.tool → api.example.com  59m",
         ])
-        #expect(CLI.pendingLines(PendingReply(events: [], approvals: [])) == ["No connection is waiting.", "No approvals."])
+        #expect(CLI.pendingLines(PendingReply(events: [], approvals: [])) == ["Nothing waiting, and no approvals."])
 
         // A connection with no name, asked about by its address.
         let ssh = AppReference(signingID: "com.apple.ssh", teamID: nil, cdhash: nil)
@@ -353,31 +370,34 @@ struct RunTests {
                                     ip: "fd7a:115c:a1e0::1", port: 22, secondsLeft: 40, connections: 1)],
             approvals: [ApprovalSummary(app: ssh, host: "100.66.32.76", secondsLeft: 60)])
         #expect(CLI.pendingLines(byAddress) == [
-            "Waiting:",
-            "  ev-0000002c  apple/com.apple.ssh -> 100.66.32.75:22 (no host name), 1 connection, 50 s left",
-            "  ev-0000002d  apple/com.apple.ssh -> [fd7a:115c:a1e0::1]:22 (no host name), 1 connection, 40 s left",
-            "Approvals:",
-            "  apple/com.apple.ssh -> 100.66.32.76, 60 s left",
+            "Waiting",
+            "  com.apple.ssh → 100.66.32.75:22  1 connection, 50s left",
+            "    blackice approve --app com.apple.ssh --host 100.66.32.75",
+            "  com.apple.ssh → [fd7a:115c:a1e0::1]:22  1 connection, 40s left",
+            "    blackice approve --app com.apple.ssh --host fd7a:115c:a1e0::1",
+            "",
+            "Approvals",
+            "  com.apple.ssh → 100.66.32.76  1m",
         ])
 
-        // Denials remembered for a while, listed only when there are some.
+        // Denials remembered for a while, listed only when there are some, in columns.
         let denied = PendingReply(events: [], approvals: [],
                                   denials: [ApprovalSummary(app: AppReference(signingID: nil, teamID: nil, cdhash: testCDHash),
                                                             host: "registry.example.com", secondsLeft: 540),
                                             ApprovalSummary(app: ssh, host: "100.66.32.75", secondsLeft: 12)])
         #expect(CLI.pendingLines(denied) == [
-            "No connection is waiting.",
-            "No approvals.",
-            "Denied recently (dropped without asking):",
-            "  cdhash/\(testCDHash) -> registry.example.com, 540 s left",
-            "  apple/com.apple.ssh -> 100.66.32.75, 12 s left",
+            "Nothing waiting.",
+            "",
+            "Denied, dropped without asking",
+            "  \(adHoc) → registry.example.com  9m",
+            "  com.apple.ssh   → 100.66.32.75          12s",
         ])
 
-        // The path is wherever the app runs from, and may hold an escape sequence.
-        let odd = PendingReply(events: [PendingSummary(id: "ev-0000002a", app: tool, path: "/tmp/x\u{9B}2J\u{202E}y",
-                                                       host: "example.com", ip: "203.0.113.7", port: 443, secondsLeft: 8,
-                                                       connections: 1)], approvals: [])
-        #expect(CLI.pendingLines(odd)[2] == "      /tmp/x\\u{9b}2J\\u{202e}y")
+        // Ad hoc code is known by its path, which is wherever it runs from and may hold an escape sequence.
+        let odd = PendingReply(events: [PendingSummary(id: "ev-0000002a", app: AppReference(signingID: nil, teamID: nil, cdhash: testCDHash),
+                                                       path: "/tmp/x\u{9B}2J\u{202E}y", host: "example.com", ip: "203.0.113.7",
+                                                       port: 443, secondsLeft: 8, connections: 1)], approvals: [])
+        #expect(CLI.pendingLines(odd)[2] == "    /tmp/x\\u{9b}2J\\u{202e}y")
     }
 
     @Test func anEventWithNoConnectionLeftIsValidAndSaysSo() throws {
@@ -389,11 +409,14 @@ struct RunTests {
             approvals: [])
         try reply.validate(now: Date())
         #expect(CLI.pendingLines(reply) == [
-            "Waiting:",
-            "  ev-0000002c  apple/com.apple.curl -> api.github.com:443 (203.0.113.7), no connection left (an approval covers the next try), 40 s left",
-            "      /usr/bin/curl",
-            "No approvals.",
+            "Waiting",
+            "  com.apple.curl → api.github.com:443  none held, 40s left",
+            "    blackice approve --app com.apple.curl --host api.github.com",
         ])
+    }
+
+    @Test func timeLeftReadsAsHoursAndMinutes() {
+        #expect([0, 45, 60, 3599, 3600, 86155, 86400].map(Describe.left) == ["0s", "45s", "1m", "59m", "1h", "23h 55m", "24h"])
     }
 
     @Test func answerExitStatus() {
@@ -407,8 +430,7 @@ struct RunTests {
 
     @Test func theDaemonTakesNoConfigFile() throws {
         #expect(try CLI.parse(["daemon"]) == .daemon)
-        let removed = "daemon no longer takes --config: it runs the hooks of the configuration that blackice start saved, " +
-            "which it gets from the network extension"
+        let removed = "daemon takes no --config: it runs the hooks of what blackice start loaded"
         for arguments in [["daemon", "--config", "attacker.toml"], ["daemon", "--config=attacker.toml"], ["daemon", "--config"],
                           ["daemon", "--log", "x", "--config", "attacker.toml"]] {
             #expect(usageError(arguments) == removed, "\(arguments)")

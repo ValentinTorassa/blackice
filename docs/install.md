@@ -157,7 +157,7 @@ under step 6).
 
 A later `start` keeps a mode switched with `blackice mode` or the menu since the last start, and who answers in ask
 mode when that was switched too, as long as the file still has what it had then. It says what it keeps before Touch
-ID, for example `Keeping accept-all mode, switched with blackice mode or the menu; the file says ask.` A change in the
+ID, for example `Keeping accept-all mode from blackice mode or the menu; the file says ask.` A change in the
 file wins: edit `mode` or `answers` there and `start` loads the file's. So does `agent connect`, which loads the file
 it just wrote, and the first `start` right after its questions. An upgrade's `start` keeps the switch the same way.
 `blackice mode` or the menu switches again at any time.

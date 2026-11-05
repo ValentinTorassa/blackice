@@ -63,6 +63,14 @@ public enum AppIdentity: Hashable, Sendable {
         }
     }
 
+    /// For people: the signing identifier, or "ad hoc 8fbec897" for ad hoc code.
+    public var name: String {
+        switch self {
+        case .signed(let identity): return identity.signingID
+        case .cdhash(let hash): return "ad hoc " + hash.prefix(8)
+        }
+    }
+
     /// Every field in the form that messages and log lines may carry.
     public var isValid: Bool {
         switch self {

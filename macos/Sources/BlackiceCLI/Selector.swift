@@ -7,11 +7,24 @@ public struct Choice: Equatable, Sendable {
     public let multiple: Bool
     /// One option: the one highlighted first. Several: the ones ticked first.
     public let initial: [Int]
+    /// The question, drawn above the list. Once something is picked the list goes, and the question
+    /// stays with the answer after it, so the screen keeps one line per question.
+    public let prompt: String?
+    /// How each option reads in that answer ("ask" for "ask   Hold what no rule allows…").
+    public let labels: [String]?
 
-    public init(options: [String], multiple: Bool, initial: [Int] = []) {
+    public init(options: [String], multiple: Bool, initial: [Int] = [], prompt: String? = nil, labels: [String]? = nil) {
         self.options = options
         self.multiple = multiple
         self.initial = initial
+        self.prompt = prompt
+        self.labels = labels
+    }
+
+    /// What follows the question once `picks` are picked: "Slack, Safari", or "none".
+    public func answer(_ picks: [Int]) -> String {
+        let names = picks.compactMap { index in (labels ?? options).indices.contains(index) ? (labels ?? options)[index] : nil }
+        return names.isEmpty ? "none" : names.joined(separator: ", ")
     }
 }
 
@@ -105,8 +118,10 @@ enum TerminalSelector {
         var drawn = 0
         // An app chose its own name: escape what could redraw the list.
         let options = choice.options.map(Describe.terminalSafe)
+        let prompt = choice.prompt.map(Describe.terminalSafe)
         func draw() {
             var text = drawn > 0 ? "\u{1B}[\(drawn)A" : ""
+            if let prompt { text += "\r\u{1B}[2K\(prompt)\n" }
             for (index, option) in options.enumerated() {
                 let here = index == state.cursor
                 let pointer = here ? Style.command("❯") : " "
@@ -120,13 +135,20 @@ enum TerminalSelector {
             }
             text += "\r\u{1B}[2K    \(Style.wrap(hint, "2"))\n"
             write(text)
-            drawn = state.rows + 1
+            drawn = state.rows + 1 + (prompt == nil ? 0 : 1)
         }
         draw()
         while true {
             if let outcome = state.apply(readKey()) {
-                // The hint line goes, and Continue with it; the options stay, showing what was picked.
-                write(String(repeating: "\u{1B}[1A\r\u{1B}[2K", count: choice.multiple ? 2 : 1))
+                if let prompt {
+                    // The list goes; the question stays, with the answer after it.
+                    var text = "\u{1B}[\(drawn)A\r\u{1B}[J" + prompt
+                    if case .picked(let picks) = outcome { text += " " + Style.command(Describe.terminalSafe(choice.answer(picks))) }
+                    write(text + "\n")
+                } else {
+                    // The hint line goes, and Continue with it; the options stay, showing what was picked.
+                    write(String(repeating: "\u{1B}[1A\r\u{1B}[2K", count: choice.multiple ? 2 : 1))
+                }
                 switch outcome {
                 case .picked(let picks): return picks
                 case .cancelled: return nil

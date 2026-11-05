@@ -22,6 +22,15 @@ public enum Describe {
         }
     }
 
+    /// Time left, the way `pending` and the answers say it: "45s", "12m", "1h", "23h 55m".
+    public static func left(_ seconds: Int) -> String {
+        let seconds = max(0, seconds)
+        if seconds < 60 { return "\(seconds)s" }
+        if seconds < 3600 { return "\(seconds / 60)m" }
+        let minutes = seconds % 3600 / 60
+        return "\(seconds / 3600)h" + (minutes == 0 ? "" : " \(minutes)m")
+    }
+
     /// "accept-all mode, no rules, no hooks"; ask mode adds its timeout.
     static func overview(mode: Mode, rules: Int, hooks: Int, timeoutSeconds: Int) -> String {
         var parts = ["\(mode.rawValue) mode", count(rules, "rule"), count(hooks, "hook")]

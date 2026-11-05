@@ -148,29 +148,27 @@ public struct LaunchAgentInstaller {
             throw LaunchAgentError("launchctl bootstrap \(domain) failed with status \(loaded.status)" +
                                    (loaded.output.isEmpty ? "" : ": \(loaded.output)"))
         }
-        say("✓ The daemon is running, and starts again at each login.")
-        say("  It runs your hooks for connections that wait.")
-        say("  Its logs are in \(Describe.path(logDirectory.path, home: account.homeURL.path)).")
+        say("✓ The daemon runs your hooks, now and at each login (logs in \(Describe.path(logDirectory.path, home: account.homeURL.path)))")
     }
 
     /// Boots the agent out and removes its plist. When bootout fails for a reason other than the
     /// agent not being loaded, the plist stays, so that the command can be run again.
     public func uninstall(say: (String) -> Void) throws {
         let result = launchctl(["bootout", service])
-        if result.status == 0 {
-            say("✓ The daemon is stopped.")
-        } else if LaunchAgent.notLoadedStatuses.contains(result.status) {
-            say("The daemon was not running.")
-        } else {
+        let stopped = result.status == 0
+        guard stopped || LaunchAgent.notLoadedStatuses.contains(result.status) else {
             throw LaunchAgentError("launchctl bootout \(service) failed with status \(result.status)" +
                                    (result.output.isEmpty ? "" : ": \(result.output)") + "; \(plistURL.path) was left in place")
         }
-        if unlink(plistURL.path) == 0 {
-            say("✓ Removed its LaunchAgent; it no longer starts at login.")
-        } else if errno == ENOENT {
-            say("There was no LaunchAgent to remove.")
-        } else {
+        let removed = unlink(plistURL.path) == 0
+        guard removed || errno == ENOENT else {
             throw FileSafetyError(plistURL.path, "cannot remove it: \(errnoText(errno))")
+        }
+        switch (stopped, removed) {
+        case (true, true): say("✓ The daemon is stopped and no longer starts at login")
+        case (false, true): say("✓ The daemon no longer starts at login")
+        case (true, false): say("✓ The daemon is stopped")
+        case (false, false): say("The daemon was not installed.")
         }
     }
 }

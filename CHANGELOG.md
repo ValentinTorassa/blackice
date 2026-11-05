@@ -1,5 +1,26 @@
 # Changelog
 
+## Unreleased
+
+A quieter command line: each command says what happened in a line or two.
+
+Changed:
+- `blackice help` fits on one screen. `blackice help COMMAND`, or `COMMAND --help`, has that command's options,
+  and a usage error ends with the command's usage line.
+- `start` prints the Touch ID line and `✓ blackice is on in ask mode, Claude Code answers`; `mode` prints `✓ Now
+  in …` the same way. `stop` ends with `✓ blackice is off`.
+- `status` is one line for the mode, then a row each for who answers, what waits, the rules, the approvals and
+  the timeout, and the daemon only when hooks need it and it is not running.
+- `pending` shows each waiting connection as `app → host:port`, with the `blackice approve` line that lets it
+  through, and the approvals and denials in columns. Time left reads `45s`, `12m` or `23h 55m`, as do the
+  answers of `approve` and `deny`.
+- `agent connect` is a title and a check per step: the agent found, signed in, its limits, the test, the rule,
+  the hook, the file saved; then the start's own lines. The first `start` does the same under `4 · Connect fx`.
+- `report` starts with a total (`Last 1h: 10271 connections, 1244 dropped, 124 asked about`) and says each drop
+  reason in words, such as "sent nothing for 2 minutes" for `idle_before_hello`.
+- The first `start`'s lists stay on screen as one line each, the question and what was picked.
+- `agent install` and `uninstall`, and `menu --login`, say what they did in one line.
+
 ## 0.4.4 (5 November 2026)
 
 A shorter menu: Codex and opencode show in Mode once they are connected.
