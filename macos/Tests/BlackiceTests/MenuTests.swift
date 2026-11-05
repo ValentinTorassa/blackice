@@ -15,7 +15,7 @@ private func summary(_ id: String = "ev-0a1b2c3d", app: AppReference = safari,
                    connections: connections)
 }
 
-private let context = MenuContext(version: "0.3.2 (build 15)", login: .off, configExists: true, logExists: true)
+private let context = MenuContext(version: "0.3.2 (build 15)")
 
 /// The configuration saved, as the filter names it.
 private func saved(_ mode: Mode, generation: UInt64 = 3) throws -> ActiveConfiguration {
@@ -157,15 +157,14 @@ struct MenuPresentationTests {
                                     answering: Answering(agents: [.fx], answerer: .agent(.fx)))
         let entries = MenuPresentation.menu(snapshot, context, now: readAt.addingTimeInterval(5))
         #expect(titles(entries) == [
-            "Ask mode", "blackice 0.3.2 (build 15)",
+            "Ask mode",
             "Waiting", "Safari → example.com:443", "com.microsoft.VSCode → update.code.visualstudio.com:443",
-            "Mode", "Hooks: 1, run by the daemon", "Stop Filtering…",
-            "Open blackice.toml", "Show Event Log in Finder", "Documentation",
-            "Open at Login", "Quit Menu (filtering continues)",
+            "Mode", "Stop Filtering…",
+            "blackice 0.3.2 (build 15)", "Quit Menu",
         ])
         #expect(entries.first { $0.key == "stop" }.map { $0.kind == .command(.stop) && $0.enabled } == true)
         let waiting = entries.filter { $0.key.hasPrefix("waiting.ev-") }
-        #expect(waiting.map(\.detail) == ["35 s left", "0 s left"])
+        #expect(waiting.map(\.detail) == ["35s", "0s"])
         #expect(waiting.allSatisfy { $0.enabled })
         guard case .waiting(let first) = waiting[0].kind, case .waiting(let second) = waiting[1].kind else {
             Issue.record("not waiting entries")
@@ -192,7 +191,8 @@ struct MenuPresentationTests {
         #expect(entries.filter { $0.key.hasPrefix("waiting.ev-") }.count == MenuPresentation.waitingLimit)
         #expect(entries.contains { $0.title == "8 more: blackice pending" })
         let quiet = MenuPresentation.menu(MenuSnapshot(filter: .on(saved: ask, hooks: 0), pending: answering(ask)), context)
-        #expect(quiet.contains { $0.title == "Nothing waits for an answer" })
+        // Nothing waits: no section at all.
+        #expect(!quiet.contains { $0.key.hasPrefix("waiting.") })
         let blocking = MenuPresentation.menu(MenuSnapshot(filter: .on(saved: block, hooks: 0), pending: answering(block)), context)
         #expect(!blocking.contains { $0.key == "waiting.section" })
     }
@@ -221,16 +221,13 @@ struct MenuPresentationTests {
     }
 
     @Test func anUnsignedBuildShowsWhatItCannotDo() {
-        let unavailable = MenuContext(version: nil, login: .unavailable("Only Blackice.app opens at login, not this build"),
-                                      configExists: false, logExists: false)
-        let entries = MenuPresentation.menu(MenuSnapshot(filter: .unsignedBuild), unavailable)
+        let entries = MenuPresentation.menu(MenuSnapshot(filter: .unsignedBuild), MenuContext(version: nil))
         #expect(titles(entries) == [
-            "Not reachable", "This build is not the signed Blackice.app", "blackice, a build outside Blackice.app",
-            "Mode", "Open blackice.toml", "Show Event Log in Finder", "Documentation",
-            "Open at Login", "Only Blackice.app opens at login, not this build", "Quit Menu (filtering continues)",
+            "Not reachable", "This build is not the signed Blackice.app",
+            "Mode", "blackice, a build outside Blackice.app", "Quit Menu",
         ])
         let enabled = entries.filter(\.enabled).map(\.title)
-        #expect(enabled == ["Documentation", "Quit Menu (filtering continues)"])
+        #expect(enabled == ["Quit Menu"])
     }
 
     @Test func recentDecisionsAndTheOtherLines() throws {
@@ -244,22 +241,23 @@ struct MenuPresentationTests {
             RecentDecision(verdict: .cancelled, app: "nscurl", host: "example.net", date: nil),
         ]
         withRecent.hookRefused = now.addingTimeInterval(-600)
-        withRecent.login = .on
         let block = try saved(.blockAll)
         let entries = MenuPresentation.menu(MenuSnapshot(filter: .on(saved: block, hooks: 2), daemonRunning: false), withRecent, now: now)
         let recent = entries.filter { $0.kind == .recent }
         #expect(recent.map(\.title) == ["Allowed Safari → example.com", "Denied curl → pastebin.com", "Allowed git → github.com",
                                         "Dropped curl → example.org", "Dropped nscurl → example.net"])
-        #expect(recent.map(\.detail) == ["by hand, just now", "by a hook, 5 min ago", "6 min ago", "no answer in time, 2 h ago",
-                                         "settings changed"])
-        #expect(entries.contains { $0.title == "Hooks: 2, but the daemon is not running" })
-        #expect(entries.contains { $0.title == "Start it with: blackice agent install" })
-        #expect(entries.contains { $0.title == "A hook did not run: its signature did not match" && $0.detail == "10 min ago" })
-        #expect(entries.contains { $0.key == "login" && $0.checked && $0.enabled })
+        // One line each: the age after the title, no "by a hook" or reason.
+        #expect(recent.map(\.detail) == ["now", "5m", "6m", "2h", nil])
+        #expect(entries.first { $0.key == "recent.section" }?.title == "Recent")
+        #expect(entries.contains { $0.title == "Hooks won't run: blackice agent install" })
+        #expect(entries.contains { $0.title == "A hook's signature did not match" && $0.detail == "10m" })
         // A filter that does not answer cannot take a new mode, which `blackice mode` waits for.
         #expect(modes(entries)?.checked == ["Block All"] && modes(entries)?.enabled == false)
-        #expect(MenuPresentation.hooksLine(hooks: 0, daemonRunning: true).0 == "Hooks: none, daemon running")
-        #expect(MenuPresentation.hooksLine(hooks: 1, daemonRunning: nil).0 == "Hooks: 1")
+        // The hooks line shows up only when hooks have no daemon.
+        #expect(MenuPresentation.hooksLine(hooks: 1, daemonRunning: true) == nil)
+        #expect(MenuPresentation.hooksLine(hooks: 0, daemonRunning: false) == nil)
+        #expect(MenuPresentation.hooksLine(hooks: 1, daemonRunning: nil) == nil)
+        #expect(MenuPresentation.short(now.addingTimeInterval(-3 * 86_400), now: now) == "3d")
         // A refused hook stays in the menu for an hour.
         withRecent.hookRefused = now.addingTimeInterval(-MenuPresentation.refusedHookWindow)
         #expect(!MenuPresentation.menu(MenuSnapshot(filter: .on(saved: block, hooks: 2)), withRecent, now: now)

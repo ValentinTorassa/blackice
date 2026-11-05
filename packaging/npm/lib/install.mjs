@@ -249,25 +249,15 @@ export function nextSteps(version, replaced) {
     '',
     `Blackice.app ${version} is in /Applications.`,
     '',
-    'Next:',
-    '  1. Put the command on your PATH (a symbolic link to it does not work), for example in ~/.zshrc:',
-    '       export PATH="/Applications/Blackice.app/Contents/MacOS:$PATH"',
-    '     or keep running it as `npx blackice <command>`.',
-    '  2. Run `blackice start`. The first time, it asks a few questions to write ~/.config/blackice/blackice.toml,',
-    '     then opens System Settings so you can allow the extension.',
-    '  3. `blackice agent install` loads the daemon that runs the hooks in ask mode.',
+    'Put the command on your PATH (a symbolic link to it does not work), for example in ~/.zshrc:',
+    '  export PATH="/Applications/Blackice.app/Contents/MacOS:$PATH"',
+    'or run it as `npx blackice <command>`.',
     '',
-    'Before removing the app, run `blackice agent uninstall` and `blackice stop`.',
+    replaced
+      ? 'Next: `blackice start` finishes the upgrade. If it exits with 75, restart the Mac and run it again.'
+      : 'Next: `blackice start`. It asks a few questions, then System Settings asks you to allow the extension.',
   ]
-  if (replaced) {
-    lines.push(
-      '',
-      'You replaced an installed copy: run `blackice start` now to finish the upgrade. If it exits',
-      'with 75, restart the Mac and run it again. Then run `blackice agent connect` with your agent',
-      '(fx, claude-code or codex) again, so that its hook is the one this version expects.',
-    )
-  }
-  lines.push('', `Install guide: ${INSTALL_GUIDE}`)
+  lines.push(`Guide: ${INSTALL_GUIDE}`)
   return lines.join('\n')
 }
 

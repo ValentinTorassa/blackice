@@ -160,7 +160,7 @@ final class MenuController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var statusItem: NSStatusItem?
     private var snapshot = MenuSnapshot(filter: .unknown)
     private var look: StatusItemLook?
-    private var context = MenuContext(version: nil, login: .off, configExists: false, logExists: false)
+    private var context = MenuContext(version: nil)
     private var shown: [MenuEntry] = []
     private var items: [String: NSMenuItem] = [:]
     private var refreshTimer: Timer?
@@ -172,7 +172,6 @@ final class MenuController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var upgradeCheckedAt: Date?
     private var menuOpen = false
     private var queued: (() -> Void)?
-    private let configURL = URL(fileURLWithPath: CLI.defaultConfigPath)
     private let logURL: URL?
     private let recent: RecentDecisions?
 
@@ -316,9 +315,7 @@ final class MenuController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func menuNeedsUpdate(_ menu: NSMenu) {
         guard menu === self.menu else { return }
         let log = recent?.latest(limit: MenuPresentation.recentLimit) ?? EventLogSummary()
-        context = MenuContext(version: Self.version, recent: log.decisions, hookRefused: log.hookRefused,
-                              login: LoginItem.state, configExists: FileManager.default.fileExists(atPath: configURL.path),
-                              logExists: logURL.map { FileManager.default.fileExists(atPath: $0.path) } ?? false)
+        context = MenuContext(version: Self.version, recent: log.decisions, hookRefused: log.hookRefused)
         render(rebuild: true)
     }
 
@@ -391,13 +388,15 @@ final class MenuController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if entry.kind == .title {
             item.attributedTitle = NSAttributedString(string: entry.title, attributes: [
                 .font: NSFont.systemFont(ofSize: NSFont.systemFontSize, weight: .semibold)])
-        } else {
-            item.title = entry.title
-        }
-        if #available(macOS 14.4, *) {
-            item.subtitle = entry.detail
         } else if let detail = entry.detail {
-            item.title = entry.title + " (" + detail + ")"
+            // One line: the detail ("4m", "8s") after the title, in the secondary color.
+            let font = NSFont.menuFont(ofSize: 0)
+            let line = NSMutableAttributedString(string: entry.title + "  ", attributes: [.font: font])
+            line.append(NSAttributedString(string: detail, attributes: [.font: font, .foregroundColor: NSColor.secondaryLabelColor]))
+            item.attributedTitle = line
+        } else {
+            item.attributedTitle = nil
+            item.title = entry.title
         }
         switch entry.kind {
         case .waiting(let event):
@@ -479,10 +478,6 @@ final class MenuController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func runCommand(_ sender: NSMenuItem) {
         guard let command = sender.representedObject as? MenuCommand else { return }
         switch command {
-        case .openConfig: openConfig()
-        case .revealLog: if let logURL { NSWorkspace.shared.activateFileViewerSelecting([logURL]) }
-        case .documentation: if let url = URL(string: MenuPresentation.docs) { NSWorkspace.shared.open(url) }
-        case .openAtLogin: afterMenuCloses { [weak self] in self?.toggleOpenAtLogin() }
         case .stop: afterMenuCloses { [weak self] in self?.change(failure: "blackice did not stop") { $0.stop() } }
         case .quit: NSApp.terminate(nil)
         }
@@ -515,33 +510,6 @@ final class MenuController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         busy = false
         if case .failed(let message) = result { alert(title, message) }
         refresh(full: true)
-    }
-
-    private func openConfig() {
-        let workspace = NSWorkspace.shared
-        guard let editor = workspace.urlForApplication(toOpen: configURL) ?? workspace.urlForApplication(toOpen: .plainText) else {
-            workspace.activateFileViewerSelecting([configURL])
-            return
-        }
-        workspace.open([configURL], withApplicationAt: editor, configuration: NSWorkspace.OpenConfiguration()) { [weak self] _, error in
-            guard let message = error?.localizedDescription else { return }
-            DispatchQueue.main.async { self?.alert("blackice.toml did not open", message) }
-        }
-    }
-
-    private func toggleOpenAtLogin() {
-        do {
-            switch LoginItem.state {
-            case .unavailable: return
-            case .needsApproval: LoginItem.openSettings()
-            case .on: try LoginItem.set(false)
-            case .off:
-                try LoginItem.set(true)
-                if LoginItem.state == .needsApproval { LoginItem.openSettings() }
-            }
-        } catch {
-            alert("Open at Login did not change", error.localizedDescription)
-        }
     }
 
     private func alert(_ title: String, _ message: String) {
