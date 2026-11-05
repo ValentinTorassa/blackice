@@ -13,7 +13,7 @@ With a 0.3.0 candidate, the same steps, the first `start` with its lists and fx 
 configuration and no fx ([P5-06](../evidence/P5-06-onboarding-from-zero-macos.md)).
 
 You need a Mac with Apple silicon (the build is arm64 only), macOS 14 or later, and an admin account. blackice has
-run on macOS 27.0.1 only. The commands below use 0.4.2 as the version.
+run on macOS 27.0.1 only. The commands below use 0.4.3 as the version.
 
 ## With the install script
 
@@ -54,9 +54,9 @@ continue with step 3.
 Download both files into the same folder, then, in Terminal, in that folder:
 
 ```console
-$ shasum -a 256 -c Blackice-0.4.2.zip.sha256
-Blackice-0.4.2.zip: OK
-$ ditto -x -k Blackice-0.4.2.zip .
+$ shasum -a 256 -c Blackice-0.4.3.zip.sha256
+Blackice-0.4.3.zip: OK
+$ ditto -x -k Blackice-0.4.3.zip .
 $ codesign --verify --strict --deep --verbose=2 Blackice.app
 $ codesign -dvv Blackice.app 2>&1 | grep -E '^(Identifier|TeamIdentifier)='
 Identifier=com.valentorassa.blackice
@@ -97,7 +97,7 @@ full path, and a script that runs the full path, worked.
 `blackice start` reads `~/.config/blackice/blackice.toml` unless you pass `--config PATH`. If the file is not there,
 `start` asks a few questions and writes it. You pick the answers from lists with the arrow keys:
 - the mode;
-- in ask mode, who answers: fx, Claude Code, Codex, or you;
+- in ask mode, who answers: fx, Claude Code, Codex, opencode, or you;
 - apps to trust, from the apps and system extensions running now (a VPN client's network extension, such as
   Tailscale's, is one). Each may reach any host, and "Another app" takes a path such as
   `/Applications/Slack.app` or a signing identifier.
@@ -154,6 +154,13 @@ says which mode blackice is in, whether the daemon runs your hooks, and how many
 At the end, the first `start` asks whether to show blackice in the menu bar and open it at login (see "The menu bar"
 under step 6).
 
+A later `start` keeps a mode switched with `blackice mode` or the menu since the last start, and who answers in ask
+mode when that was switched too, as long as the file still has what it had then. It says what it keeps before Touch
+ID, for example `Keeping accept-all mode, switched with blackice mode or the menu; the file says ask.` A change in the
+file wins: edit `mode` or `answers` there and `start` loads the file's. So does `agent connect`, which loads the file
+it just wrote, and the first `start` right after its questions. An upgrade's `start` keeps the switch the same way.
+`blackice mode` or the menu switches again at any time.
+
 ## 5. Start the daemon
 
 The daemon runs the hooks for connections that wait in ask mode. It runs as a LaunchAgent for your user and takes
@@ -207,9 +214,25 @@ install --cask codex`). Its home is a `CODEX_HOME` of its own, `~/.config/blacki
 own files, write nothing and reach no network, and keeps the event off its stdin. Its rule covers `chatgpt.com` and
 `auth.openai.com`. [`integrations/codex/README.md`](../integrations/codex/README.md) has the details.
 
+`blackice agent connect opencode` does the same for opencode, with a provider you pick from a list: OpenAI (a
+ChatGPT plan or an API key), Z.AI Coding Plan, OpenCode Go, MiniMax Token Plan, OpenRouter or Anthropic.
+`--model PROVIDER/MODEL`, such as `--model openai/gpt-6-luna`, picks one without the list. If
+opencode is not installed, it offers opencode's installer (`curl -fsSL https://opencode.ai/install | bash`).
+Its home is a `HOME` of its own, `~/.config/blackice/agent/.opencode`, signed in to that provider with
+`opencode auth login`. Its hook gives it one tool, reading the event's directory, with blackice's instructions as
+its whole prompt, loads no opencode configuration, plugin or skill from a folder of yours, and keeps the event
+off its stdin. Its rule covers that provider's hosts only, such as `api.z.ai` for Z.AI. Connecting it again with
+another provider adds that provider's hosts and leaves the old provider's in the rule; remove those by hand if
+you want the rule narrow. On 5 November 2026 it decided the 23 eval cases as expected with OpenAI's `gpt-6-luna`
+on a ChatGPT plan, in 3.9 s at the median, reaching `chatgpt.com` only; with Z.AI's `glm-5.3-flash` it decided 22,
+in 12.8 s, and approved Slack on port 6667. The renewal of a ChatGPT sign-in at `auth.openai.com` has not been seen
+under the hook.
+[`integrations/opencode/README.md`](../integrations/opencode/README.md) has the details.
+
 Each agent decides with a small model, since a decision is a short read and a two-line answer: fx with Claude
 Haiku 5.5 through AI Gateway (`anthropic/claude-haiku-5.5`, billed to the Vercel team fx signed in with), Claude Code
-with `haiku` (counted against its subscription), Codex with `gpt-6-luna` (counted against the ChatGPT plan).
+with `haiku` (counted against its subscription), Codex with `gpt-6-luna` (counted against the ChatGPT plan),
+opencode with the provider's small one, such as `gpt-6-luna` with a ChatGPT plan.
 `--model NAME` writes another into the hook, such as
 `blackice agent connect claude-code --model sonnet`; running `agent connect` again with another model replaces the
 hook's. The agents approve clearly ordinary developer and vendor traffic for 8 to 24 hours and anything less plain
@@ -217,9 +240,10 @@ for 10 minutes to an hour.
 
 One agent answers at a time, and you choose which. Each agent you connect keeps its hook in `blackice.toml`, and
 `answers` in its `[agent]` table names the one that answers: connecting a second agent adds its hook, keeps the
-first one's and sets `answers` to the new one. `blackice mode ask --agent fx` (or `claude-code`, `codex`, or `you`
-to answer yourself) switches, with Touch ID; the menu's Mode does the same. That switch changes the configuration
-blackice holds, not the file, as `blackice mode` does, so `blackice start` loads the file's own `answers` again.
+first one's and sets `answers` to the new one. `blackice mode ask --agent fx` (or `claude-code`, `codex`, `opencode`,
+or `you` to answer yourself) switches, with Touch ID; the menu's Mode does the same. That switch changes the configuration
+blackice holds, not the file, as `blackice mode` does. `blackice start` keeps it, and says so before Touch ID, as long
+as the file's own `answers` is still what it was at the last start; a change in the file wins (see step 4).
 A hook that runs an agent but names no `instructions`, such as one from 0.3 or 0.4.0, would run whoever `answers`
 names: `agent connect` replaces it with the agent's own hook, or removes it when it ran another agent.
 

@@ -21,23 +21,27 @@ public enum AgentInstructions: String, CaseIterable, Sendable {
     case fx
     case claudeCode = "claude-code"
     case codex
+    case opencode
 
     /// What the daemon writes. fx reads skills from its workspace's `skills/` folder; Claude Code
-    /// gets `--system-prompt-file instructions.md`, Codex `-c model_instructions_file="instructions.md"`.
+    /// gets `--system-prompt-file instructions.md`, Codex `-c model_instructions_file="instructions.md"`,
+    /// opencode an agent whose prompt is `{file:./instructions.md}`.
     public var files: [AgentFile] {
         switch self {
         case .fx: return [AgentFile(path: "skills/blackice/SKILL.md", text: AgentInstructionsText.fx)]
         case .claudeCode: return [AgentFile(path: "instructions.md", text: AgentInstructionsText.claudeCode)]
         case .codex: return [AgentFile(path: "instructions.md", text: AgentInstructionsText.codex)]
+        case .opencode: return [AgentFile(path: "instructions.md", text: AgentInstructionsText.opencode)]
         }
     }
 
-    /// The agent's name for people: "fx", "Claude Code", "Codex".
+    /// The agent's name for people: "fx", "Claude Code", "Codex", "opencode".
     public var title: String {
         switch self {
         case .fx: return "fx"
         case .claudeCode: return "Claude Code"
         case .codex: return "Codex"
+        case .opencode: return "opencode"
         }
     }
 
@@ -78,7 +82,7 @@ func writePrivateFile(_ url: URL, _ data: Data) throws {
 
 /// Who answers the connections that wait in ask mode: one agent, through its hook, or you, from the
 /// menu or with `blackice approve` and `deny`. `answers` in [agent] names it ("fx", "claude-code",
-/// "codex" or "you").
+/// "codex", "opencode" or "you").
 public enum Answerer: Hashable, Sendable {
     case agent(AgentInstructions)
     case you
@@ -112,7 +116,7 @@ public enum Answerer: Hashable, Sendable {
     /// Every agent blackice knows, then you.
     public static var all: [Answerer] { AgentInstructions.allCases.map { .agent($0) } + [.you] }
 
-    /// "fx", "claude-code", "codex" or "you", for messages.
+    /// "fx", "claude-code", "codex", "opencode" or "you", for messages.
     public static var names: String {
         let quoted = all.map { "\"\($0.name)\"" }
         return quoted.dropLast().joined(separator: ", ") + " or " + quoted.last!

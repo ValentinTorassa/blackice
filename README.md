@@ -16,7 +16,7 @@ Docs: [blackice-macos.vercel.app](https://blackice-macos.vercel.app)
 
 ## Status
 
-Early. 0.4.2 is the current release ([changelog](CHANGELOG.md)), and blackice has run on one Mac, a MacBook Air with
+Early. 0.4.3 is the current release ([changelog](CHANGELOG.md)), and blackice has run on one Mac, a MacBook Air with
 macOS 27.0.1. Each run is recorded in
 [`evidence/`](evidence/):
 
@@ -58,7 +58,7 @@ $ brew trust --cask valentintorassa/tap/blackice
 $ brew install --cask valentintorassa/tap/blackice
 ```
 
-Or download the zip from the [release](https://github.com/ValentinTorassa/blackice/releases/tag/v0.4.2). The first
+Or download the zip from the [release](https://github.com/ValentinTorassa/blackice/releases/tag/v0.4.3). The first
 `blackice start` asks a few questions to write your configuration, then opens System Settings so you can allow the
 extension, and at the end offers the menu bar icon (`blackice menu --login on` adds it later). `blackice agent install`
 starts the daemon that runs hooks. Run `blackice stop` before you uninstall. [`docs/install.md`](docs/install.md) has the
@@ -105,11 +105,17 @@ under `~/.config/blackice/agent`, one test on a sample connection, a rule that l
 - `codex`: [Codex](https://developers.openai.com/codex/cli) with `codex exec`, signed in with a ChatGPT plan, its
   commands able to read only the event's directory ([`integrations/codex/`](integrations/codex/)). On 5 November
   2026, with `gpt-6-luna`, it decided the 23 eval cases as expected, in 4.6 s at the median.
+- `opencode`: [opencode](https://opencode.ai/docs) with `opencode run`, signed in to a provider you pick when you
+  connect it (OpenAI, Z.AI Coding Plan, OpenCode Go, MiniMax Token Plan, OpenRouter or Anthropic), with reading the
+  event's directory as its only tool and a rule for that provider's hosts ([`integrations/opencode/`](integrations/opencode/)).
+  On 5 November 2026, with `openai/gpt-6-luna` on a ChatGPT plan, it decided the 23 eval cases as expected, in
+  3.9 s at the median; with Z.AI's `glm-5.3-flash`, 22, in 12.8 s (it approved Slack on port 6667).
 
 Each agent decides with a small model unless `--model NAME` names another: a decision is a short read and a
 two-line answer. The instructions approve clearly ordinary developer and vendor traffic for 8 to 24 hours and
 anything less plain for 10 minutes to an hour, so ordinary traffic is asked about once a day at most. One agent
-answers at a time: connecting one replaces another's hook.
+answers at a time: each one you connect keeps its hook, `answers` in `[agent]` names the one that runs, and
+`blackice mode ask --agent NAME` or the menu's Mode switches.
 [`integrations/eval/run.sh`](integrations/eval/run.sh) runs any of them over the same 23 cases.
 
 ## Development
@@ -122,7 +128,7 @@ $ cd site && npm ci && npm run dev
 
 [`macos/`](macos/) is the Swift package: the CLI, the network extension and the daemon. [`integrations/fx/`](integrations/fx/)
 has a draft fx skill, [`integrations/claude-code/`](integrations/claude-code/) Claude Code's instructions,
-[`integrations/eval/`](integrations/eval/) the eval for both, [`packaging/npm/`](packaging/npm/) an npm installer that isn't published yet, and
+[`integrations/eval/`](integrations/eval/) the eval for every agent, [`packaging/npm/`](packaging/npm/) an npm installer that isn't published yet, and
 [`site/`](site/) the project page.
 
 ## Who

@@ -4,11 +4,11 @@ export const metadata = getDocsMetadata('/docs/install')
 
 # Install
 
-Install blackice 0.4.2 with the install script, Homebrew or the release zip, check it, start it, remove it and roll it back.
+Install blackice 0.4.3 with the install script, Homebrew or the release zip, check it, start it, remove it and roll it back.
 
 <Status />
 
-The release package is `Blackice-0.4.2.zip` plus `Blackice-0.4.2.zip.sha256`, attached to the [GitHub release](https://github.com/ValentinTorassa/blackice/releases/tag/v0.4.2). On 3 November 2026 the Homebrew section ran from the published 0.1.0 release, as an upgrade over a build installed by hand ([P5-02](https://github.com/ValentinTorassa/blackice/blob/main/evidence/P5-02-homebrew-upgrade-from-release-macos.md)), and the install script checked the release and installed it into a temporary folder instead of `/Applications` ([P5-03](https://github.com/ValentinTorassa/blackice/blob/main/evidence/P5-03-curl-install-script-sandbox-macos.md)). With 0.2.1, the uninstall steps and the script installing into `/Applications` ran from the published release ([P5-04](https://github.com/ValentinTorassa/blackice/blob/main/evidence/P5-04-install-start-faults-from-release-macos.md)). With a 0.3.0 candidate, the same steps, the first `start` with its lists and fx set up by `start` ran from no configuration and no fx ([P5-06](https://github.com/ValentinTorassa/blackice/blob/main/evidence/P5-06-onboarding-from-zero-macos.md)).
+The release package is `Blackice-0.4.3.zip` plus `Blackice-0.4.3.zip.sha256`, attached to the [GitHub release](https://github.com/ValentinTorassa/blackice/releases/tag/v0.4.3). On 3 November 2026 the Homebrew section ran from the published 0.1.0 release, as an upgrade over a build installed by hand ([P5-02](https://github.com/ValentinTorassa/blackice/blob/main/evidence/P5-02-homebrew-upgrade-from-release-macos.md)), and the install script checked the release and installed it into a temporary folder instead of `/Applications` ([P5-03](https://github.com/ValentinTorassa/blackice/blob/main/evidence/P5-03-curl-install-script-sandbox-macos.md)). With 0.2.1, the uninstall steps and the script installing into `/Applications` ran from the published release ([P5-04](https://github.com/ValentinTorassa/blackice/blob/main/evidence/P5-04-install-start-faults-from-release-macos.md)). With a 0.3.0 candidate, the same steps, the first `start` with its lists and fx set up by `start` ran from no configuration and no fx ([P5-06](https://github.com/ValentinTorassa/blackice/blob/main/evidence/P5-06-onboarding-from-zero-macos.md)).
 
 You need a Mac with Apple silicon (the build is arm64 only), macOS 14 or later, and an admin account. blackice has run on macOS 27.0.1 only.
 
@@ -36,9 +36,9 @@ The first command tells Homebrew to trust this cask: Homebrew loads casks from t
 Download both files into the same folder, then, in Terminal, in that folder:
 
 ```console
-$ shasum -a 256 -c Blackice-0.4.2.zip.sha256
-Blackice-0.4.2.zip: OK
-$ ditto -x -k Blackice-0.4.2.zip .
+$ shasum -a 256 -c Blackice-0.4.3.zip.sha256
+Blackice-0.4.3.zip: OK
+$ ditto -x -k Blackice-0.4.3.zip .
 $ codesign --verify --strict --deep --verbose=2 Blackice.app
 $ codesign -dvv Blackice.app 2>&1 | grep -E '^(Identifier|TeamIdentifier)='
 Identifier=com.valentorassa.blackice
@@ -72,7 +72,7 @@ Use the folder on the `PATH`, or a script that runs the full path, rather than a
 `blackice start` reads `~/.config/blackice/blackice.toml` unless you pass `--config PATH`. If the file is not there, `start` asks a few questions and writes it. You pick the answers from lists with the arrow keys:
 
 - the mode;
-- in ask mode, who answers: fx, Claude Code, Codex, or you;
+- in ask mode, who answers: fx, Claude Code, Codex, opencode, or you;
 - apps to trust, from the apps and system extensions running now (a VPN client's network extension, such as Tailscale's, is one). Each may reach any host, and "Another app" takes a path such as `/Applications/Slack.app` or a signing identifier.
 
 If you pick an agent, `start` also sets it up, as `blackice agent connect` does for that agent (see "Let an agent answer"). It stays in accept-all until the agent is installed, signed in and tested, and loads ask mode at the end, so nothing waits on an answer before the agent can give it. If the agent cannot be set up, or you stop the setup with Control-C, blackice stays on in accept-all, filtering nothing, as before that first start, and says so. Finish it later with `blackice agent connect` and its name, or filter without an agent with `blackice mode ask` (you answer with `blackice approve` and `deny`) or `blackice mode block-all`; until then `blackice status` says the same. `blackice init` asks the same questions without starting anything. Or write the file yourself, starting in accept-all, which lets everything through and only logs:
@@ -141,7 +141,7 @@ In ask or block-all it switches to accept-all while fx is set up (Touch ID), sin
 - The hook keeps the event off Claude Code's stdin (`stdin = "none"`): `claude -p` adds what comes on stdin to its prompt, and the event should reach it only as a file it reads.
 - Its rule lets `com.anthropic.claude-code` (team Q6L2SF6YDW) reach `api.anthropic.com` and `platform.claude.com`.
 
-Each agent decides with a small model, since a decision is a short read and a two-line answer: fx with Claude Haiku 5.5 through AI Gateway (`anthropic/claude-haiku-5.5`, billed to the Vercel team fx signed in with), Claude Code with `haiku` (counted against its subscription), Codex with `gpt-6-luna` (counted against the ChatGPT plan). `--model NAME` writes another into the hook, such as `blackice agent connect claude-code --model sonnet`; running `agent connect` again with another model replaces the hook's. The agents approve clearly ordinary developer and vendor traffic for 8 to 24 hours and anything less plain for 10 minutes to an hour.
+Each agent decides with a small model, since a decision is a short read and a two-line answer: fx with Claude Haiku 5.5 through AI Gateway (`anthropic/claude-haiku-5.5`, billed to the Vercel team fx signed in with), Claude Code with `haiku` (counted against its subscription), Codex with `gpt-6-luna` (counted against the ChatGPT plan), opencode with the provider's small one, such as `gpt-6-luna` with a ChatGPT plan. `--model NAME` writes another into the hook, such as `blackice agent connect claude-code --model sonnet`; running `agent connect` again with another model replaces the hook's. The agents approve clearly ordinary developer and vendor traffic for 8 to 24 hours and anything less plain for 10 minutes to an hour.
 
 `blackice agent connect codex` does the same for [Codex](https://developers.openai.com/codex/cli), signed in with a ChatGPT plan, with these differences:
 
@@ -153,7 +153,19 @@ Each agent decides with a small model, since a decision is a short read and a tw
 
 [integrations/codex/README.md](https://github.com/ValentinTorassa/blackice/blob/main/integrations/codex/README.md) has the hook and what each flag does.
 
-One agent answers at a time, and you choose which. Each agent you connect keeps its hook in `blackice.toml`, and `answers` in its `[agent]` table names the one that answers: connecting a second agent adds its hook, keeps the first one's and sets `answers` to the new one. `blackice mode ask --agent fx` (or `claude-code`, `codex`, or `you` to answer yourself) switches, with Touch ID; the menu's Mode does the same. That switch changes the configuration blackice holds, not the file, as `blackice mode` does, so `blackice start` loads the file's own `answers` again. A hook that runs an agent but names no `instructions`, such as one from 0.3 or 0.4.0, would run whoever `answers` names: `agent connect` replaces it with the agent's own hook, or removes it when it ran another agent.
+`blackice agent connect opencode` does the same for [opencode](https://opencode.ai/docs), with a provider you pick from a list: OpenAI (a ChatGPT plan or an API key), Z.AI Coding Plan, OpenCode Go, MiniMax Token Plan, OpenRouter or Anthropic. These are the differences:
+
+- `--model PROVIDER/MODEL`, such as `--model openai/gpt-6-luna`, picks the provider without the list.
+- If opencode is not installed, it offers opencode's installer (`curl -fsSL https://opencode.ai/install | bash`), which puts it in `~/.opencode/bin`.
+- Its home is a `HOME` of its own, `~/.config/blackice/agent/.opencode`. If opencode has no sign-in there for that provider, it runs `opencode auth login`, which asks for an API key or opens a sign-in page. A key in a variable of your shell does not count: the hook gets none of them.
+- Its hook runs `opencode run` as an agent whose whole prompt is its instructions from blackice, with reading the event's directory as its only tool: no shell, no edits, no web, no MCP servers. It loads no opencode configuration, `AGENTS.md`, plugin or skill from a folder of yours, checks for no update and fetches no model list.
+- The hook keeps the event off opencode's stdin (`stdin = "none"`), as for Claude Code.
+- Its rule lets `opencode` (team 5NZ4Q7NXJ4) reach that provider's hosts only, such as `api.z.ai` for Z.AI. Connecting it again with another provider adds that provider's hosts and leaves the old provider's in the rule; remove those by hand if you want the rule narrow.
+- On 5 November 2026 it decided the 23 eval cases as expected with OpenAI's `gpt-6-luna` on a ChatGPT plan, in 3.9 s at the median, reaching `chatgpt.com` only. With Z.AI's `glm-5.3-flash` it decided 22, in 12.8 s at the median: it approved Slack on port 6667. Each other provider's host was checked that day by a decision with a key that was not one, through a proxy that logged what opencode reached. The renewal of a ChatGPT sign-in at `auth.openai.com` has not been seen under the hook.
+
+[integrations/opencode/README.md](https://github.com/ValentinTorassa/blackice/blob/main/integrations/opencode/README.md) has the hook, the providers and their hosts, and what each setting does.
+
+One agent answers at a time, and you choose which. Each agent you connect keeps its hook in `blackice.toml`, and `answers` in its `[agent]` table names the one that answers: connecting a second agent adds its hook, keeps the first one's and sets `answers` to the new one. `blackice mode ask --agent fx` (or `claude-code`, `codex`, `opencode`, or `you` to answer yourself) switches, with Touch ID; the menu's Mode does the same. That switch changes the configuration blackice holds, not the file, as `blackice mode` does. `blackice start` keeps it, and says so before Touch ID, as long as the file's own `answers` is still what it was at the last start; a change in the file wins. A hook that runs an agent but names no `instructions`, such as one from 0.3 or 0.4.0, would run whoever `answers` names: `agent connect` replaces it with the agent's own hook, or removes it when it ran another agent.
 
 [integrations/claude-code/README.md](https://github.com/ValentinTorassa/blackice/blob/main/integrations/claude-code/README.md) has the hook, how the sign-in works under the daemon, and the eval: the 23 cases as expected with `haiku` and with `sonnet` on 5 November 2026, 4.2 and 5.1 s at the median.
 

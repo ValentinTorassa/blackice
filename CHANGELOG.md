@@ -1,5 +1,35 @@
 # Changelog
 
+## 0.4.3 (5 November 2026)
+
+opencode can be the agent, `blackice start` keeps the mode and the answerer you switched to, and a connection
+that waits before its first byte is no longer cut after 10 s.
+
+New:
+- opencode can be the agent: `blackice agent connect opencode` asks which provider it decides with (OpenAI, Z.AI
+  Coding Plan, OpenCode Go, MiniMax Token Plan, OpenRouter or Anthropic), signs it in to that provider in a home of
+  its own, and adds a rule for that provider's hosts only. `--model PROVIDER/MODEL` skips the list. Its hook gives it
+  the read tool and no other, in the event's directory, with blackice's instructions as its whole prompt, and no
+  configuration, plugin or skill from a folder of yours. It is in the first start's list and in the menu's Mode.
+  On 5 November 2026 it decided the 23 eval cases as expected with `openai/gpt-6-luna` on a ChatGPT plan, and 22
+  with Z.AI's `glm-5.3-flash`, which approved Slack on port 6667, so OpenAI is first in the list.
+
+Changed:
+- `blackice start` keeps a mode, and who answers in ask mode, switched with `blackice mode` or the menu since the last
+  start, as long as the file still has what it had then, and says so before Touch ID. A change in the file wins, and
+  `agent connect` loads the file it wrote. Until now every `start`, an upgrade's included, went back to the file's
+  mode: an upgrade switched a Mac in accept-all back to the file's ask mode.
+
+Fixed:
+- A connection held for its TLS hello in ask or block-all is no longer cut 10 s after it opens when the app has
+  written nothing yet: it may stay quiet for 2 minutes, and has 10 s from its first byte for the hello. fx and
+  Claude Code lost 175 connections in two days to the old deadline. A quiet one dropped at 2 minutes is logged
+  `idle_before_hello`, apart from `server_name_timeout`.
+
+Upgrading from 0.4.2: `brew upgrade --cask blackice` or the install script with `--force`, then `blackice
+start`, which keeps a mode or an answerer you switched to with 0.4.2's menu. The agents' hooks need nothing;
+`blackice agent connect opencode` sets opencode up.
+
 ## 0.4.2 (5 November 2026)
 
 You choose who answers in ask mode from a smaller menu, an app updated while it runs keeps its connections, an

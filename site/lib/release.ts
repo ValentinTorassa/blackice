@@ -3,7 +3,7 @@ import { canonicalSiteUrl, site } from './site-metadata'
 /* The current release, shared by the landing page, its markdown twin and
    the install docs' links. The zip and its checksum are attached to the
    GitHub release; macos/scripts/package.sh names them. */
-const version = '0.4.2'
+const version = '0.4.3'
 
 export const release = {
   version,

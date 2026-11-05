@@ -24,6 +24,8 @@ literal() {
     literal claudeCode integrations/claude-code/blackice/instructions.md
     echo
     literal codex integrations/codex/instructions.md
+    echo
+    literal opencode integrations/opencode/instructions.md
     echo "}"
 } > "$out.tmp"
 mv "$out.tmp" "$out"

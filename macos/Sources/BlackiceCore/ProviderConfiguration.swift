@@ -2,8 +2,9 @@ import CryptoKit
 import Foundation
 
 // What the CLI saves in the filter's provider configuration and the extension reads back:
-// the blackice.toml text, the current mode (blackice mode changes it without editing the
-// file) and a generation that only goes up. Stored as one JSON value under one key of
+// the blackice.toml text (with `answers` switched in it when blackice mode or the menu picked
+// another answerer), the current mode (blackice mode changes it without editing the file) and a
+// generation that only goes up. Stored as one JSON value under one key of
 // NEFilterProviderConfiguration.vendorConfiguration. The extension never reads user files.
 
 public struct ProviderConfigurationError: Error, Equatable, CustomStringConvertible, Sendable {
@@ -33,10 +34,40 @@ public struct ProviderConfiguration: Equatable, Sendable {
     }
 
     /// A first configuration, or the next one after `previous`, in the file's own mode.
-    public static func starting(configText: String, after previous: ProviderConfiguration?) throws -> ProviderConfiguration {
+    ///
+    /// With `keepingSwitches` (`blackice start`), a mode or an answerer switched with `blackice mode`
+    /// or the menu since the last start stays, as long as the file still has what it had then:
+    /// a change in the file wins over the switch. The mode: `with(mode:)` leaves the text's `mode`
+    /// line as the file had it, so the previous text's mode is the file's at the last start. Who
+    /// answers: from the comment `BlackiceConfig.switchingAnswers` leaves (`answersSwitched(from:)`).
+    /// An answerer whose hook is gone from the file gives way to the file's.
+    public static func starting(configText: String, after previous: ProviderConfiguration?,
+                                keepingSwitches: Bool = false) throws -> ProviderConfiguration {
         let config = try BlackiceConfig(text: configText)
-        return try ProviderConfiguration(generation: try nextGeneration(after: previous), mode: config.mode,
-                                         configText: configText)
+        let generation = try nextGeneration(after: previous)
+        guard keepingSwitches, let previous else {
+            return try ProviderConfiguration(generation: generation, mode: config.mode, configText: configText)
+        }
+        let mode = config.mode == previous.config.mode ? previous.mode : config.mode
+        var text = configText
+        if let running = previous.config.answers, running != config.answers,
+           let switched = previous.answersSwitched(from: configText), switched.fileHas == config.answers,
+           let kept = try? BlackiceConfig.switchingAnswers(running, in: configText) {
+            text = kept
+        }
+        return try ProviderConfiguration(generation: generation, mode: mode, configText: text)
+    }
+
+    /// What the file had for `answers` when this text was switched to another answerer, or nil
+    /// when it was not. From the comment `BlackiceConfig.switchingAnswers` leaves; a text that 0.4.2
+    /// switched has none, and counts as switched when the only difference from `fileText`, the
+    /// file as it is now, is its `answers` line as `settingAnswers` writes it.
+    public func answersSwitched(from fileText: String) -> BlackiceConfig.SwitchedAnswers? {
+        if let switched = try? BlackiceConfig.switchedAnswers(in: configText) { return switched }
+        guard let running = config.answers, configText != fileText,
+              (try? BlackiceConfig.settingAnswers(running, in: fileText)) == configText,
+              let file = try? BlackiceConfig(text: fileText) else { return nil }
+        return BlackiceConfig.SwitchedAnswers(fileHas: file.answers)
     }
 
     /// The same rules in another mode, one generation later.
@@ -45,12 +76,13 @@ public struct ProviderConfiguration: Equatable, Sendable {
     }
 
     /// In `mode`, with `answerer` answering, one generation later. When someone else answers now,
-    /// the text gets `answers` in [agent] (`BlackiceConfig.settingAnswers`): the file on disk is not
-    /// edited, as `blackice mode` leaves it, and `blackice start` loads its own `answers` again.
+    /// the text gets `answers` in [agent] with a comment naming what the file has
+    /// (`BlackiceConfig.switchingAnswers`): the file on disk is not edited, as `blackice mode` leaves
+    /// it, and `blackice start` keeps the switch until the file's own `answers` changes.
     public func with(mode: Mode, answerer: Answerer?) throws -> ProviderConfiguration {
         guard let answerer, answerer != config.answering.answerer else { return try with(mode: mode) }
         return try ProviderConfiguration(generation: try Self.nextGeneration(after: self), mode: mode,
-                                         configText: try BlackiceConfig.settingAnswers(answerer, in: configText))
+                                         configText: try BlackiceConfig.switchingAnswers(answerer, in: configText))
     }
 
     /// The same configuration, generation included, as if it were in `mode`, without parsing the
