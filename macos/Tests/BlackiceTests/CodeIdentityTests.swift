@@ -20,7 +20,88 @@ private func ownAuditToken() -> Data? {
     return withUnsafeBytes(of: &token) { Data($0) }
 }
 
+/// The audit token of a child process, through its task name port.
+private func auditToken(of pid: pid_t) -> Data? {
+    var name: mach_port_t = 0
+    guard task_name_for_pid(mach_task_self_, pid, &name) == KERN_SUCCESS else { return nil }
+    defer { mach_port_deallocate(mach_task_self_, name) }
+    var token = audit_token_t()
+    var count = mach_msg_type_number_t(MemoryLayout<audit_token_t>.size / MemoryLayout<natural_t>.size)
+    let result = withUnsafeMutablePointer(to: &token) {
+        $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+            task_info(name, task_flavor_t(TASK_AUDIT_TOKEN), $0, &count)
+        }
+    }
+    guard result == KERN_SUCCESS else { return nil }
+    return withUnsafeBytes(of: &token) { Data($0) }
+}
+
 struct CodeIdentityTests {
+    /// An app updated while it runs: its program file is removed, and Security no longer finds the
+    /// process. The identity checked while the file was there stays for that process image, also in
+    /// a cache restored from disk in the same boot, and goes when the process exits.
+    @Test func aRunningProcessKeepsItsIdentityWhenItsFileIsRemoved() throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("blackice-removed-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let copy = folder.appendingPathComponent("sleep")
+        try FileManager.default.copyItem(atPath: "/bin/sleep", toPath: copy.path)
+        let sleep = Process()
+        sleep.executableURL = copy
+        sleep.arguments = ["30"]
+        try sleep.run()
+        defer { if sleep.isRunning { sleep.terminate(); sleep.waitUntilExit() } }
+        let token = try #require(auditToken(of: sleep.processIdentifier))
+
+        let cache = IdentityCache()
+        let identity = IdentityResolution.verified(SigningIdentity(signingID: "com.apple.sleep", teamID: nil))
+        #expect(CodeIdentity.resolve(auditToken: token, cache: cache) == identity)
+        let boot = try #require(CodeIdentity.bootSession())
+        let stored = try #require(cache.encoded(boot: boot, keep: CodeIdentity.kernelReportsValid))
+
+        try FileManager.default.removeItem(at: copy)
+        #expect(CodeIdentity.kernelReportsValid(auditToken: token))
+        #expect(CodeIdentity.resolve(auditToken: token, cache: cache) == identity)
+        // A new run of the extension: nothing cached, then the stored cache.
+        let fresh = IdentityCache()
+        #expect(CodeIdentity.resolve(auditToken: token, cache: fresh) == .unresolved)
+        #expect(fresh.restore(stored, boot: boot) == 1)
+        #expect(CodeIdentity.resolve(auditToken: token, cache: fresh) == identity)
+
+        sleep.terminate()
+        sleep.waitUntilExit()
+        #expect(!CodeIdentity.kernelReportsValid(auditToken: token))
+        #expect(CodeIdentity.resolve(auditToken: token, cache: cache) == .unresolved)
+    }
+
+    /// A stored cache comes back only in the boot it was written in, and only with entries a
+    /// resolution could have made.
+    @Test func storedIdentitiesComeBackOnlyInTheSameBoot() throws {
+        let size = MemoryLayout<audit_token_t>.size
+        let signed = Data(repeating: 1, count: size), adHoc = Data(repeating: 2, count: size), gone = Data(repeating: 3, count: size)
+        let cache = IdentityCache()
+        cache.store(signed, .verified(SigningIdentity(signingID: "com.example.agent", teamID: "ABCDE12345")))
+        cache.store(adHoc, .adHoc(cdhash: String(repeating: "a", count: 40)))
+        cache.store(gone, .verified(SigningIdentity(signingID: "com.example.gone", teamID: nil)))
+        let data = try #require(cache.encoded(boot: "boot-1", keep: { $0 != gone }))
+
+        let again = IdentityCache()
+        #expect(again.restore(data, boot: "boot-2") == 0)
+        #expect(again.restore(Data("not json".utf8), boot: "boot-1") == 0)
+        #expect(again.restore(data, boot: "boot-1") == 2)
+        #expect(again.read(signed) == cache.read(signed))
+        #expect(again.read(adHoc) == cache.read(adHoc))
+        #expect(again.read(gone) == nil)
+
+        let forged = try JSONEncoder().encode(StoredIdentities(boot: "boot-1", entries: [
+            .init(token: Data(repeating: 4, count: size), signingID: "bad id with spaces", teamID: nil, cdhash: nil),
+            .init(token: Data(repeating: 5, count: size), signingID: "com.example.x", teamID: "short", cdhash: nil),
+            .init(token: Data(repeating: 6, count: size), signingID: "com.example.y", teamID: nil, cdhash: String(repeating: "b", count: 40)),
+            .init(token: Data([7]), signingID: "com.example.z", teamID: nil, cdhash: nil),
+        ]))
+        #expect(IdentityCache().restore(forged, boot: "boot-1") == 0)
+    }
+
     @Test func cacheStaysBounded() {
         let small = IdentityCache(limit: 2)
         for byte in UInt8(1)...3 { small.store(Data([byte]), .adHoc(cdhash: String(repeating: "a", count: 40))) }
