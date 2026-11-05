@@ -202,11 +202,13 @@ public final class Daemon: Sendable {
         self.reportLogFailure = reportLogFailure
     }
 
-    /// Handles events until the intake finishes, several at a time.
+    /// Handles events until the intake finishes, several at a time. The group discards each
+    /// event's task as it ends: a plain task group keeps finished ones until they are collected,
+    /// and this one lasts as long as the daemon.
     public func run(_ intake: some EventIntake) async {
         let store = ConfigurationStore(fetch: { try await intake.configuration() },
                                        loaded: { configuration in self.record(.configurationLoaded(configuration)) })
-        await withTaskGroup(of: Void.self) { group in
+        await withDiscardingTaskGroup { group in
             for await message in intake.messages() {
                 switch message {
                 case .registered(let configuration):

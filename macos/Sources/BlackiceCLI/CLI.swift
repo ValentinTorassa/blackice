@@ -12,6 +12,7 @@ public enum ExitCode {
     public static let software: Int32 = 70    // EX_SOFTWARE: a system request failed
     public static let tempFail: Int32 = 75    // EX_TEMPFAIL: the saved configuration changed meanwhile; retry
     public static let noPermission: Int32 = 77 // EX_NOPERM: Touch ID cancelled or failed
+    public static let interrupted: Int32 = 130 // 128 + SIGINT, as shells report it: a setup stopped by Control-C
 }
 
 public enum Command: Equatable, Sendable {
@@ -285,13 +286,14 @@ public enum CLI {
                                         output: SystemOutput(stdout: stdout, stderr: stderr, setup: justWritten))
                 }
                 // The agent's installer, sign-in and test need the network: start in accept-all, set
-                // the agent up, and let its last step load the file in the mode picked.
+                // the agent up, and let its last step load the file in the mode picked. Nothing was
+                // filtered before, so a setup that does not get there stays in accept-all and says so.
                 let started = system.start(configText: settingRootKey(loaded.text, "mode", to: "\"accept-all\""),
                                            output: SystemOutput(stdout: stdout, stderr: stderr, setup: true, next: false))
                 guard started == ExitCode.success else { return started }
                 stdout("  It stays in accept-all while \(agent) is set up, then switches to \(loaded.config.mode.rawValue).")
                 return connectAgent(agent, configPath: configPath, readFile: readFile, system: system, interaction: interaction,
-                                    machine: agents, stdout: stdout, stderr: stderr, firstStep: 4)
+                                    machine: agents, stdout: stdout, stderr: stderr, firstStep: 4, fromFirstStart: true)
             }
         case .stop:
             return system.stop(output: SystemOutput(stdout: stdout, stderr: stderr))
@@ -414,7 +416,7 @@ public enum CLI {
     }
 
     /// What `blackice pending` prints. The fields came from the extension, already checked;
-    /// none of them is a token.
+    /// none of them is a token. The path is wherever the app runs from, so it is escaped.
     public static func pendingLines(_ reply: PendingReply) -> [String] {
         var lines: [String] = []
         if reply.events.isEmpty {
@@ -429,7 +431,7 @@ public enum CLI {
                     : event.connections == 1 ? "1 connection" : "\(event.connections) connections"
                 lines.append("  \(event.id)  \(label) -> \(event.host):\(event.port) (\(event.ip)), \(count), " +
                              "\(event.secondsLeft) s left")
-                if let path = event.path { lines.append("      " + path) }
+                if let path = event.path { lines.append("      " + Describe.terminalSafe(path)) }
             }
         }
         if reply.approvals.isEmpty {

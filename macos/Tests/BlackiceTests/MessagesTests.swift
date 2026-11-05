@@ -16,7 +16,7 @@ private func event(app: HookEvent.App = .init(tool, path: "/Applications/Tool.ap
 }
 
 /// Encodes `message`, swaps in raw JSON fields, and decodes as `type`.
-private func decodeEdited<Message: CheckedMessage>(_ type: Message.Type, _ message: some Encodable,
+private func decodeEdited<Message: CheckedMessage>(_ type: Message.Type, _ message: some CheckedMessage,
                                                    _ edit: (inout [String: Any]) -> Void) throws -> Message {
     var object = try #require(JSONSerialization.jsonObject(with: Messages.encode(message)) as? [String: Any])
     edit(&object)
@@ -121,7 +121,33 @@ struct MessagesTests {
                                                           ip: "203.0.113.7", port: 443, secondsLeft: 3, connections: 1)],
                                    approvals: [ApprovalSummary(app: AppReference(tool), host: "example.com", secondsLeft: 60)])
         #expect(try Messages.decode(PendingReply.self, from: Messages.encode(pending)) == pending)
+        let deciding = pending.deciding(with: try policySnapshot(.ask, generation: 9))
+        #expect(deciding.active?.generation == 9 && deciding.active?.mode == .ask && deciding.events == pending.events)
+        #expect(try Messages.decode(PendingReply.self, from: Messages.encode(deciding)) == deciding)
         #expect(try Messages.decode(RegisterRequest.self, from: Messages.encode(RegisterRequest())) == RegisterRequest())
+    }
+
+    @Test func thePendingReplyNamesTheConfigurationInForce() throws {
+        let configuration = try policySnapshot(.blockAll, generation: 4)
+        let active = ActiveConfiguration(configuration)
+        #expect(active.configSHA256.count == 64 && active.matches(configuration))
+        #expect(!active.matches(try configuration.with(mode: .ask)))
+        #expect(!active.matches(try ProviderConfiguration(generation: 4, mode: .blockAll, configText: policyRules + "# more\n")))
+        let reply = PendingReply(events: [], approvals: [], active: active)
+        let json = String(decoding: try Messages.encode(reply), as: UTF8.self)
+        #expect(json.contains(#""active":{"config_sha256":"\#(active.configSHA256)","generation":4,"mode":"block-all"}"#))
+        let edits: [(inout [String: Any]) -> Void] = [
+            { $0["active"] = ["config_sha256": active.configSHA256, "generation": 0, "mode": "block-all"] },
+            { $0["active"] = ["config_sha256": "x", "generation": 4, "mode": "block-all"] },
+            { $0["active"] = ["config_sha256": active.configSHA256.uppercased(), "generation": 4, "mode": "block-all"] },
+            { $0["active"] = ["config_sha256": active.configSHA256, "generation": 4, "mode": "allow-all"] },
+            { $0["active"] = ["generation": 4, "mode": "block-all"] },
+        ]
+        for edit in edits {
+            #expect(refused { try decodeEdited(PendingReply.self, reply, edit) })
+        }
+        // A reply with no configuration says the extension holds none.
+        #expect(try decodeEdited(PendingReply.self, reply) { $0["active"] = nil }.active == nil)
     }
 
     @Test func answersOutsideTheirFormAreRefused() {
@@ -194,6 +220,59 @@ struct MessagesTests {
         #expect(refused { try Messages.decode(PendingRequest.self, from: Data("not json".utf8)) })
         #expect(refused { try Messages.decode(PendingRequest.self, from: Data(count: Messages.maximumBytes + 1)) })
         #expect(refused { try Messages.decode(PendingRequest.self, from: Data(#"{"version":0}"#.utf8)) })
+        // The sender holds to the same limit.
+        let long = AnswerReply(status: .done, reason: "approved", message: String(repeating: "a", count: Messages.maximumBytes))
+        #expect(refused { try Messages.encode(long) })
+    }
+
+    /// The most a pending reply can hold: as many events as the extension keeps, each with the
+    /// longest path (all of it escaped), identity, host and address, and every approval.
+    private static func largestPendingReply() -> PendingReply {
+        let signingID = String(repeating: "a", count: 255)
+        let app = AppReference(signingID: signingID, teamID: "ABCDE12345", cdhash: nil)
+        let label = String(repeating: "h", count: 63)
+        let host = [label, label, label, String(repeating: "h", count: 61)].joined(separator: ".")
+        let path = String(repeating: "\"\\", count: HookEvent.maximumPathBytes / 2)
+        let events = (0..<AskLimits.events).map { index in
+            PendingSummary(id: String(format: "ev-%08x", index), app: app, path: path, host: host,
+                           ip: "ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff", port: .max, secondsLeft: .max, connections: .max)
+        }
+        let approvals = (0..<ApprovalTable.maximumEntries).map { _ in
+            ApprovalSummary(app: app, host: host, secondsLeft: .max)
+        }
+        return PendingReply(events: events, approvals: approvals)
+    }
+
+    @Test func theLargestPendingReplyFitsAndRoundTrips() throws {
+        let largest = Self.largestPendingReply()
+        try largest.validate(now: Date())
+        #expect(largest.events[0].host.utf8.count == 253 && largest.events[0].path?.utf8.count == HookEvent.maximumPathBytes)
+        let data = try Messages.encode(largest)
+        #expect(data.count <= PendingReply.maximumBytes)
+        #expect(data.count > Messages.maximumBytes, "the old limit refused this reply")
+        #expect(try Messages.decode(PendingReply.self, from: data) == largest)
+        // Up to the limit, padded with spaces, it is read; one byte more and it is not.
+        let padded = data + Data(repeating: 0x20, count: PendingReply.maximumBytes - data.count)
+        #expect(try Messages.decode(PendingReply.self, from: padded) == largest)
+        #expect(refused { try Messages.decode(PendingReply.self, from: padded + Data([0x20])) })
+    }
+
+    @Test func aPendingReplyBeyondTheExtensionsLimitsIsRefused() throws {
+        let largest = Self.largestPendingReply()
+        let more = PendingReply(events: largest.events + [largest.events[0]], approvals: [])
+        #expect(refused { try Messages.decode(PendingReply.self, from: Messages.encode(more)) })
+        let tooManyApprovals = PendingReply(events: [], approvals: largest.approvals + [largest.approvals[0]])
+        #expect(refused { try Messages.decode(PendingReply.self, from: Messages.encode(tooManyApprovals)) })
+        // An address only as the extension writes it: a zone could make it any length.
+        let event = PendingSummary(id: "ev-0a1b2c3d", app: AppReference(build), path: nil, host: "example.com",
+                                   ip: "fe80::1", port: 443, secondsLeft: 3, connections: 1)
+        let zoned = PendingReply(events: [event], approvals: [])
+        #expect(try Messages.decode(PendingReply.self, from: Messages.encode(zoned)) == zoned)
+        #expect(refused { try decodeEdited(PendingReply.self, zoned) {
+            $0["events"] = [["id": "ev-0a1b2c3d", "app": ["cdhash": testCDHash], "host": "example.com",
+                             "ip": "fe80::1%" + String(repeating: "x", count: 4096), "port": 443, "seconds_left": 3,
+                             "connections": 1]]
+        } })
     }
 
     @Test func peersAreNamedByTeam() {
@@ -328,7 +407,7 @@ struct RegisterReplyTests {
         let text = header + String(repeating: "\"\\", count: (BlackiceConfig.maximumBytes - header.utf8.count) / 2)
         #expect(text.utf8.count <= BlackiceConfig.maximumBytes)
         let data = try Messages.encode(RegisterReply(generation: UInt64.max, configText: text))
-        #expect(data.count <= Messages.maximumBytes)
+        #expect(data.count <= RegisterReply.maximumBytes && RegisterReply.maximumBytes <= Messages.maximumBytes)
         #expect(try RegisterReply.configuration(from: data).generation == UInt64.max)
     }
 }

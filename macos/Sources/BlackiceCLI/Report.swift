@@ -56,12 +56,28 @@ public struct UnfinishedUpgrade: Equatable, Sendable {
     }
 }
 
+/// What the filter said after `start` or `mode` saved a configuration.
+public enum Activation: Equatable, Sendable {
+    /// It decides with the configuration saved.
+    case active
+    /// It answered, deciding with another configuration, or with none.
+    case other(ActiveConfiguration?)
+    /// It did not answer.
+    case noAnswer
+
+    /// What a reply from the filter says about `saved`; nil for no reply.
+    public init(_ reply: PendingReply?, saved: ProviderConfiguration) {
+        guard let reply else { self = .noAnswer; return }
+        self = reply.active?.matches(saved) == true ? .active : .other(reply.active)
+    }
+}
+
 extension CLI {
     public static func statusLines(_ report: StatusReport) -> [String] {
         let configuration: ProviderConfiguration
         switch report.filter {
         case .foreign(let owner):
-            return ["blackice is off: another product (\(owner)) has this Mac's content filter, and blackice leaves it alone."]
+            return ["blackice is off: another product (\(Describe.terminalSafe(owner))) has this Mac's content filter, and blackice leaves it alone."]
         case .notConfigured:
             return ["blackice is off. Start it with: blackice start"]
         case .disabled:
@@ -74,6 +90,13 @@ extension CLI {
         }
         let config = configuration.config
         var lines = ["blackice is on, in \(configuration.mode.rawValue) mode: \(configuration.mode.explanation)."]
+        // The filter keeps the configuration it has when it refuses the saved one.
+        if let pending = report.pending, pending.active.map({ !$0.matches(configuration) }) ?? true {
+            lines = [pending.active.map {
+                "blackice is on, but its filter decides in \($0.mode.rawValue) mode (generation \($0.generation)), " +
+                    "not with the saved \(configuration.mode.rawValue) mode (generation \(configuration.generation))."
+            } ?? "blackice is on, but its filter holds no configuration.", "  Load yours again with: blackice start"]
+        }
         func row(_ label: String, _ value: String) { lines.append("  " + label.padding(toLength: 11, withPad: " ", startingAt: 0) + value) }
         row("rules", config.allow.isEmpty ? "none" : Describe.count(config.allow.count, "app") + " allowed in every mode")
         if config.hooks.isEmpty {
@@ -81,6 +104,10 @@ extension CLI {
         } else {
             row("hooks", "\(config.hooks.count), " + (report.daemonRunning ? "run by the daemon"
                 : "but the daemon is not running: blackice agent install"))
+        }
+        // What a first start whose agent setup did not finish leaves: on, filtering nothing.
+        if configuration.mode == .acceptAll, config.hooks.isEmpty {
+            row("next", "blackice agent connect fx, or blackice mode ask to answer by hand")
         }
         if configuration.mode == .ask { row("answer in", "\(config.timeoutSeconds) s, or the connection is denied") }
         guard let pending = report.pending else {
@@ -113,6 +140,34 @@ extension CLI {
             lines.append("Your hooks need the daemon, which is not running: blackice agent install")
         }
         return lines
+    }
+
+    /// Why the filter is not known to decide with `saved` after start or mode saved it, and what to
+    /// do; empty when it does.
+    public static func notActiveLines(_ saved: ProviderConfiguration, _ activation: Activation) -> [String] {
+        let log = "  /usr/bin/log show --last 5m --style compact --predicate 'subsystem == \"\(BlackiceIdentifiers.logSubsystem)\"'"
+        switch activation {
+        case .active:
+            return []
+        case .noAnswer:
+            return ["\(saved.mode.rawValue) mode is saved, but blackice's filter did not answer, so whether it is in force is not known.",
+                    "Check with: blackice status. If blackice was just upgraded, restart the Mac."]
+        case .other(nil):
+            return ["blackice's filter holds no configuration, so \(saved.mode.rawValue) mode is not in force. Its log says why:", log]
+        case .other(let active?):
+            return ["blackice's filter did not load the configuration just saved (generation \(saved.generation)): it decides in " +
+                    "\(active.mode.rawValue) mode (generation \(active.generation)). Its log says why:", log]
+        }
+    }
+
+    /// 0 when the filter decides with what was saved, 69 when it did not answer, 70 when it holds
+    /// another configuration.
+    public static func activationStatus(_ activation: Activation) -> Int32 {
+        switch activation {
+        case .active: return ExitCode.success
+        case .noAnswer: return ExitCode.unavailable
+        case .other: return ExitCode.software
+        }
     }
 
     /// After a successful start: the mode, and what it does on a line of its own.
