@@ -146,6 +146,25 @@ struct FlowReportTests {
         #expect(none.contains("Dropped: none"))
     }
 
+    /// A connection held for its hello that stayed quiet for 2 minutes is a drop of its own reason,
+    /// apart from a hello that started and did not finish in time.
+    @Test func idleConnectionsAreDropsOfTheirOwn() {
+        let text = ([line("drop idle_before_hello app=\(node) <private>"),
+                     line("drop idle_before_hello app=\(node) <private>"),
+                     line("drop server_name_timeout app=\(tool) <private>")])
+            .joined(separator: "\n")
+        #expect(FlowReport(logText: text).summary(last: "1h") == [
+            "blackice's filter, last 1h: 3 flow lines.",
+            "",
+            "Dropped: 3",
+            "  idle_before_hello: 2",
+            "    2  \(node)",
+            "  server_name_timeout: 1",
+            "    1  \(tool)",
+            "  idle_before_hello: the app opened the connection and sent nothing for 2 minutes.",
+        ])
+    }
+
     @Test func sumsUpTheDryRunOfAskMode() {
         let apps = (1...7).map { "apple/com.apple.service\($0)" }
         var lines = Array(repeating: line("allow accept_all app=\(node) would=ask <private>"), count: 12)
