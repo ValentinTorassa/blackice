@@ -281,12 +281,13 @@ struct MenuPresentationTests {
             Issue.record("no Mode line")
             return
         }
-        #expect(choices.map(\.title) == ["Accept All", "Ask: fx", "Ask: Claude Code", "Ask: Codex", "Ask: You (Manual)", "Block All"])
+        #expect(choices.map(\.title) == ["Accept All", "Ask: fx", "Ask: Claude Code", "Ask: Codex", "Ask: opencode",
+                                          "Ask: You (Manual)", "Block All"])
         #expect(choices.filter(\.checked).map(\.title) == ["Ask: Claude Code"])
         #expect(choices.filter(\.enabled).map(\.title) == ["Accept All", "Ask: fx", "Ask: Claude Code", "Ask: You (Manual)", "Block All"])
-        #expect(choices.map(\.detail) == [nil, nil, nil, "blackice agent connect codex", nil, nil])
-        #expect(choices.map(\.answerer) == [nil, .agent(.fx), .agent(.claudeCode), .agent(.codex), .you, nil])
-        #expect(choices.map(\.mode) == [.acceptAll, .ask, .ask, .ask, .ask, .blockAll])
+        #expect(choices.map(\.detail) == [nil, nil, nil, "blackice agent connect codex", "blackice agent connect opencode", nil, nil])
+        #expect(choices.map(\.answerer) == [nil, .agent(.fx), .agent(.claudeCode), .agent(.codex), .agent(.opencode), .you, nil])
+        #expect(choices.map(\.mode) == [.acceptAll, .ask, .ask, .ask, .ask, .ask, .blockAll])
 
         // In accept-all the check mark is on Accept All, whoever would answer in ask mode.
         let quiet = MenuSnapshot(filter: .on(saved: accept, hooks: 1), pending: answering(accept, []), answering: who)

@@ -11,8 +11,10 @@ import BlackiceCore
 // come from blackice itself: the daemon writes them into each event's directory (see
 // AgentInstructions), so nothing in the agent's home says how to decide. What differs between
 // agents (where its settings live, how it signs in, its arguments) is in its `AgentProfile`. fx
-// is the first. Claude Code (claude-code) has no settings file: its limits are its arguments. Each
-// connected agent keeps its hook, and `answers` in [agent] names the one that answers.
+// is the first. Claude Code (claude-code) has no settings file: its limits are its arguments.
+// opencode decides with a provider chosen when it is connected, and the rule names that
+// provider's hosts. Each connected agent keeps its hook, and `answers` in [agent] names the one
+// that answers.
 
 /// What blackice needs to know about one coding agent.
 public struct AgentProfile: Sendable {
@@ -62,6 +64,14 @@ public struct AgentProfile: Sendable {
     /// when the copy on PATH cannot be named by a rule (a development build, unsigned or ad hoc
     /// signed); nil when its installer cannot do that.
     var privateInstall: (@Sendable (_ folder: String) -> [String: String])?
+    /// Folders in the home, besides the usual ones, where its installer puts it.
+    var installFolders: [String] = []
+    /// The providers it can decide with, when it asks which one; empty for an agent that has one.
+    var providers: [AgentProvider] = []
+    /// This agent with that provider: its hosts, model and sign-in.
+    var forProvider: (@Sendable (AgentProvider) -> AgentProfile)?
+    /// The provider this profile is for, when it has one.
+    var provider: AgentProvider?
 
     public static let fx = AgentProfile(
         name: "fx", executable: "fx", hosts: ["ai-gateway.vercel.sh", "vercel.com", "api.vercel.com"],
@@ -170,10 +180,78 @@ public struct AgentProfile: Sendable {
         // codex exec adds what comes on stdin to its prompt. The event reaches it only as a file.
         eventOnStdin: false)
 
-    public static let known = [fx, claudeCode, codex]
+    /// opencode with the first provider in its list; `agent connect opencode` asks which one.
+    public static let opencode = openCode(AgentProvider.openCode[0])
+
+    /// opencode (`opencode run`) with one provider. Its HOME is its own folder in the agent home,
+    /// where it keeps that provider's sign-in, apart from yours in ~/.local/share/opencode.
+    static func openCode(_ provider: AgentProvider) -> AgentProfile {
+        AgentProfile(
+            name: "opencode", executable: "opencode", hosts: provider.hosts,
+            folder: ".opencode", settingsFile: nil, instructions: .opencode,
+            defaultModel: provider.id + "/" + provider.model,
+            installHint: "https://opencode.ai/docs",
+            // opencode's own installer; it puts opencode in ~/.opencode/bin.
+            installer: "curl -fsSL https://opencode.ai/install | bash",
+            loginHint: ["opencode signs in to \(provider.title): it asks for an API key, or opens a sign-in",
+                        "page in your browser. Use the account whose plan its decisions should count",
+                        "against, then come back here."],
+            environment: { CLI.openCodeEnvironment(agentHome: $0) },
+            statusArguments: ["auth", "list", "--standalone", "--format", "json"],
+            loginArguments: ["auth", "login", "--standalone", provider.id],
+            signedIn: { CLI.openCodeSignedIn($0, provider: provider.id) }, settings: nil,
+            askArguments: { _, model in CLI.openCodeArguments(model: model) },
+            // With no sign-in for the provider, opencode 2.2.5 says the model is unavailable; with a
+            // key the provider refuses, it prints the provider's own error ("token expired or incorrect").
+            advice: { output in
+                output.contains("Model unavailable") || output.contains("No authenticated integrations")
+                    ? ["opencode had no sign-in for \(provider.title) in the hook's environment, which has none",
+                       "of your shell's variables (API keys among them). Sign it in for blackice with:",
+                       "HOME=~/.config/blackice/agent/.opencode opencode auth login --standalone \(provider.id)"]
+                    : []
+            },
+            hookMarker: CLI.openCodePrompt,
+            limits: "Its hook lets it read the event's directory and nothing else: no shell, no edits, no web, no MCP servers",
+            // opencode run adds what comes on stdin to its message. The event reaches it only as a file.
+            eventOnStdin: false,
+            installFolders: [".opencode/bin"],
+            providers: AgentProvider.openCode, forProvider: { openCode($0) }, provider: provider)
+    }
+
+    public static let known = [fx, claudeCode, codex, opencode]
 
     /// What the hook asks the agent. A hook whose line holds it already uses the blackice skill.
     public static let prompt = "Use the blackice skill to decide whether to approve the pending connection"
+}
+
+/// A provider an agent can decide with, and what blackice lets the agent reach for it.
+public struct AgentProvider: Equatable, Sendable {
+    /// The agent's name for it: `opencode auth login ID`, and `ID/model` in `--model`.
+    public let id: String
+    /// What the list shows.
+    public let title: String
+    public let hosts: [String]
+    /// A small model of its own, the part of `--model` after the first slash.
+    public let model: String
+
+    /// What opencode can decide with. On 5 November 2026, opencode 2.2.5 decided one event with
+    /// each of these, its model fetch off and a key that was not one, through a proxy that logged
+    /// what it reached: each reached only its host here, and stopped at the provider's refusal.
+    /// OpenAI's are three: api.openai.com for an API key, which that run reached, and, for a
+    /// ChatGPT sign-in, chatgpt.com (opencode 2.2.5 holds its backend-api/codex address) and
+    /// auth.openai.com, where the sign-in is renewed; those two have not been seen under the hook.
+    /// The models are the plans' small ones: the coding plans' are included, the others cost $0.10
+    /// and $0.50 per million tokens in and out in models.dev's list that day.
+    public static let openCode = [
+        AgentProvider(id: "zai-coding-plan", title: "Z.AI Coding Plan", hosts: ["api.z.ai"], model: "glm-5.3-flash"),
+        AgentProvider(id: "openai", title: "OpenAI, a ChatGPT plan or an API key",
+                      hosts: ["chatgpt.com", "auth.openai.com", "api.openai.com"], model: "gpt-6-luna"),
+        AgentProvider(id: "opencode-go", title: "OpenCode Go", hosts: ["opencode.ai"], model: "gpt-6-luna"),
+        AgentProvider(id: "minimax-coding-plan", title: "MiniMax Token Plan", hosts: ["api.minimax.io"],
+                      model: "MiniMax-M3.1-Flash"),
+        AgentProvider(id: "openrouter", title: "OpenRouter", hosts: ["openrouter.ai"], model: "openai/gpt-6-luna"),
+        AgentProvider(id: "anthropic", title: "Anthropic, an API key", hosts: ["api.anthropic.com"], model: "claude-haiku-5-5"),
+    ]
 }
 
 /// The home that agents get for answering blackice, and what is in it for one agent.
@@ -394,6 +472,53 @@ extension CLI {
                     identity: identity, eventOnStdin: profile.eventOnStdin, instructions: profile.instructions)
     }
 
+    /// The provider an agent decides with: the one `--model PROVIDER/MODEL` names, or the one picked
+    /// from the list (with the arrow keys, or typed by number). nil, said why on stderr, when
+    /// `--model` names none of them or the input ended.
+    static func chooseProvider(_ profile: AgentProfile, model: String?, choose: ((Choice) -> [Int]?)?,
+                               ask: (String) -> String?, stdout: (String) -> Void, stderr: (String) -> Void) -> AgentProvider? {
+        let providers = profile.providers
+        if let model {
+            let id = model.split(separator: "/", maxSplits: 1).first.map(String.init) ?? model
+            guard model.contains("/"), let provider = providers.first(where: { $0.id == id }) else {
+                stderr("agent connect: \(profile.name)'s --model is PROVIDER/MODEL, such as \(profile.defaultModel), with one of")
+                stderr("these providers, whose hosts blackice knows: \(listed(providers.map(\.id)))")
+                return nil
+            }
+            return provider
+        }
+        stdout("")
+        stdout("  Which provider should \(profile.name) decide with? Its rule lets it reach that")
+        stdout("  provider's hosts and nothing else, and you sign it in to that provider.")
+        stdout("")
+        let lines = providers.map { "\($0.title) (\($0.id)/\($0.model))" }
+        var picked: Int?
+        if let choose {
+            picked = choose(Choice(options: lines, multiple: false))?.first.flatMap { providers.indices.contains($0) ? $0 : nil }
+        } else {
+            for (index, line) in lines.enumerated() { stdout("    \(index + 1)  \(line)") }
+            stdout("")
+            while picked == nil, let line = ask("  Provider [1]: ") {
+                let text = line.trimmingCharacters(in: .whitespaces)
+                if text.isEmpty {
+                    picked = 0
+                } else if let number = Int(text), providers.indices.contains(number - 1) {
+                    picked = number - 1
+                } else if let index = providers.firstIndex(where: { $0.id == text }) {
+                    picked = index
+                } else {
+                    stdout("    Type a number from 1 to \(providers.count).")
+                }
+            }
+        }
+        guard let picked else {
+            stderr("  No provider chosen, so nothing changed.")
+            return nil
+        }
+        stdout("  " + Style.done("\(providers[picked].title), through \(listed(providers[picked].hosts))"))
+        return providers[picked]
+    }
+
     /// A model name `--model` takes: an ASCII letter or digit, then letters, digits and
     /// `. _ - / : @ [ ]` (`anthropic/claude-haiku-5.5`, `sonnet[1m]`), up to 100 characters. It
     /// goes into the hook's `args` as one argument, and cannot start like an option.
@@ -549,6 +674,66 @@ extension CLI {
         status.split(whereSeparator: \.isNewline).contains { $0.hasPrefix("Logged in") }
     }
 
+    // MARK: - opencode
+
+    /// What the hook asks opencode.
+    static let openCodePrompt = "Decide whether to approve the pending blackice connection in event.json."
+
+    /// opencode's `args`: one `opencode run` with a server of its own (--standalone: the shared
+    /// background service runs with your HOME), as the blackice agent that the configuration in its
+    /// environment defines. Checked against opencode 2.2.5.
+    /// integrations/eval/agents/opencode.sh runs the same (a test checks).
+    static func openCodeArguments(model: String) -> [String] {
+        ["run", "--standalone", "--agent", "blackice", "--model", model, openCodePrompt]
+    }
+
+    /// The configuration opencode gets in OPENCODE_CONFIG_CONTENT, which comes after its global and
+    /// project files and so wins over them: an agent whose whole system prompt is the instructions
+    /// the daemon writes into the event's directory, its working directory, with a few steps; the
+    /// read tool and no other, inside that directory (external_directory), for every agent and for
+    /// this one, each tool named, since a file's rule for one would otherwise stay; no update check
+    /// and no sharing.
+    static let openCodeConfiguration: String = {
+        let rules = ["*", "read", "bash", "edit", "glob", "grep", "task", "todowrite", "skill", "lsp", "question",
+                     "webfetch", "websearch", "external_directory", "doom_loop"]
+            .map { "\"\($0)\":\"\($0 == "read" ? "allow" : "deny")\"" }.joined(separator: ",")
+        return "{\"agent\":{\"blackice\":{\"mode\":\"primary\",\"prompt\":\"{file:./instructions.md}\",\"steps\":4,"
+            + "\"permission\":{\(rules)}}},\"autoupdate\":false,\"permission\":{\(rules)},\"share\":\"disabled\"}"
+    }()
+
+    /// opencode's environment, for its sign-in, its status and the hook:
+    /// - HOME is its own folder in the agent home, where it keeps its sign-in and its sessions.
+    /// - XDG_CONFIG_HOME is `.`: its global configuration folder is `opencode/` in its working
+    ///   directory, which it creates empty. For the hook that is the event's new private
+    ///   directory, so no opencode.json, AGENTS.md, plugin or skill that a program wrote into a
+    ///   folder of yours is loaded.
+    /// - No project files either (OPENCODE_DISABLE_PROJECT_CONFIG: no opencode.json or AGENTS.md
+    ///   from the folders above the event's), nothing of ~/.claude, no update check and no model
+    ///   list from the network: it knows the models of a provider it is signed in to.
+    static func openCodeEnvironment(agentHome: String) -> [String: String] {
+        ["HOME": openCodeHome(agentHome: agentHome), "XDG_CONFIG_HOME": ".",
+         "OPENCODE_CONFIG_CONTENT": openCodeConfiguration,
+         "OPENCODE_DISABLE_PROJECT_CONFIG": "1", "OPENCODE_DISABLE_CLAUDE_CODE": "1",
+         "OPENCODE_DISABLE_AUTOUPDATE": "1", "OPENCODE_DISABLE_MODELS_FETCH": "1"]
+    }
+
+    /// opencode's HOME inside the agent home.
+    static func openCodeHome(agentHome: String) -> String { agentHome + "/.opencode" }
+
+    /// `opencode auth list --format json` lists the integrations it can use, each with how it
+    /// connects. Signed in means a sign-in stored for this provider: one through a variable of
+    /// your shell (`"type": "env"`) does not reach the hook, which gets none of them.
+    static func openCodeSignedIn(_ status: String, provider: String) -> Bool {
+        guard let start = status.firstIndex(of: "["), let end = status.lastIndex(of: "]"), start < end,
+              let list = try? JSONSerialization.jsonObject(with: Data(status[start...end].utf8)) as? [[String: Any]] else {
+            return false
+        }
+        return list.contains { item in
+            let connections = item["connections"] as? [[String: Any]] ?? []
+            return item["id"] as? String == provider && connections.contains { ($0["type"] as? String).map { $0 != "env" } ?? false }
+        }
+    }
+
     /// `claude auth status --json` prints an object whose `loggedIn` is true once it is signed in.
     static func claudeCodeSignedIn(_ status: String) -> Bool {
         guard let start = status.firstIndex(of: "{"), let end = status.lastIndex(of: "}"), start < end,
@@ -659,14 +844,13 @@ extension CLI {
                                 system: system, stderr: stderr)
             }
         }
-        guard let profile = AgentProfile.known.first(where: { $0.name == name }) else {
+        guard var profile = AgentProfile.known.first(where: { $0.name == name }) else {
             stderr("blackice agent connect knows \(listed(AgentProfile.known.map(\.name))): " +
                    "blackice agent connect fx")
             return ExitCode.usage
         }
         let name = profile.name
-        let model = chosenModel ?? profile.defaultModel
-        guard validModel(model) else {
+        guard chosenModel.map(validModel) ?? true else {
             stderr("agent connect: --model takes a model name such as \(profile.defaultModel)")
             return ExitCode.usage
         }
@@ -688,10 +872,6 @@ extension CLI {
             text = loaded.text
             config = loaded.config
         }
-        // What to run to try again: from blackice start, the file is written and start would
-        // only load it, so the retry is agent connect itself.
-        let retry = "blackice agent connect \(name)" + (configPath.map { " --config \(Describe.path($0, home: interaction.home))" } ?? "")
-            + (chosenModel.map { $0.contains("[") ? " --model '\($0)'" : " --model \($0)" } ?? "")
         var number = firstStep
         func step(_ title: String) {
             stdout(""); stdout(Style.heading("\(number) · \(title)")); stdout("")
@@ -710,6 +890,26 @@ extension CLI {
             stdout("Connecting \(name) to blackice: it will answer the connections that wait in")
             stdout("ask mode, with nobody at the keyboard.")
         }
+        // An agent that decides with a provider of your choice: `--model PROVIDER/MODEL` names it,
+        // or a list asks. Its rule names that provider's hosts.
+        if let forProvider = profile.forProvider {
+            guard let provider = chooseProvider(profile, model: chosenModel, choose: interaction.choose, ask: ask,
+                                                stdout: stdout, stderr: stderr) else {
+                if machine.interrupted() {
+                    stderr("  Interrupted, so the setup stops here.")
+                    return ExitCode.interrupted
+                }
+                return ExitCode.usage
+            }
+            profile = forProvider(provider)
+        }
+        let model = chosenModel ?? profile.defaultModel
+        // What to run to try again: from blackice start, the file is written and start would
+        // only load it, so the retry is agent connect itself. With the provider chosen in a list,
+        // its model too, so that the list is not asked again.
+        let retryModel = chosenModel ?? (profile.provider == nil ? nil : model)
+        let retry = "blackice agent connect \(name)" + (configPath.map { " --config \(Describe.path($0, home: interaction.home))" } ?? "")
+            + (retryModel.map { $0.contains("[") ? " --model '\($0)'" : " --model \($0)" } ?? "")
         // Filtering in ask or block-all, the agent's installer, sign-in and test would wait for an
         // answer nobody gives yet: accept-all until the last step loads the file again.
         if let running = system.runningMode(), running != .acceptAll {
@@ -730,7 +930,8 @@ extension CLI {
         step("Find \(name)")
         let paths = AgentPaths(userHome: interaction.home, profile: profile)
         let binShown = Describe.path(paths.bin, home: interaction.home)
-        func lookUp() -> [String] { machine.findExecutables(profile.executable, [paths.bin]) }
+        let alsoIn = [paths.bin] + profile.installFolders.map { interaction.home + "/" + $0 }
+        func lookUp() -> [String] { machine.findExecutables(profile.executable, alsoIn) }
         func firstSigned(_ candidates: [String]) -> (path: String, identity: SigningIdentity)? {
             for path in candidates {
                 if let identity = interaction.identify((path as NSString).resolvingSymlinksInPath) { return (path, identity) }
@@ -754,7 +955,7 @@ extension CLI {
                 found = lookUp()
                 if found.isEmpty {
                     return fail(ExitCode.unavailable, "\(name)'s installer exited with status \(status), and \(name) is still not",
-                                "on PATH or in ~/.local/bin. Install it (\(profile.installHint)), then: \(retry)")
+                                "on PATH or in ~/\(profile.installFolders.first ?? ".local/bin"). Install it (\(profile.installHint)), then: \(retry)")
                 }
             }
         }
@@ -875,7 +1076,8 @@ extension CLI {
             return fail(ExitCode.cannotCreate, "Cannot set up the test in \(homeShown): \(describe(error))")
         }
         defer { try? files.removeItem(atPath: paths.test) }
-        stdout("  It decides with \(model)" + (chosenModel == nil ? "; --model NAME picks another." : "."))
+        stdout("  It decides with \(model)" + (chosenModel != nil ? "."
+            : profile.provider == nil ? "; --model NAME picks another." : "; --model PROVIDER/MODEL picks another."))
         stdout("  \(name) is deciding whether Visual Studio Code may reach")
         stdout("  update.code.visualstudio.com. Its answer is only read for this test, so")
         stdout("  nothing is let through…")

@@ -622,15 +622,15 @@ struct AgentAnswersTests {
         // With no answers: the one agent with a hook, or you when none has one.
         #expect(try BlackiceConfig(text: "mode = 'ask'\n" + Self.fxHook).answering.answerer == .agent(.fx))
         #expect(try BlackiceConfig(text: "mode = 'ask'\n" + Self.plainHook).answering == Answering(agents: [], answerer: .you))
-        #expect(Answerer.names == "\"fx\", \"claude-code\", \"codex\" or \"you\"")
-        #expect(Answerer.all.map(\.title) == ["fx", "Claude Code", "Codex", "you"])
+        #expect(Answerer.names == "\"fx\", \"claude-code\", \"codex\", \"opencode\" or \"you\"")
+        #expect(Answerer.all.map(\.title) == ["fx", "Claude Code", "Codex", "opencode", "you"])
         #expect(Answerer.all.map(\.name).compactMap(Answerer.init(name:)) == Answerer.all && Answerer(name: "You") == nil)
     }
 
     @Test func answersChecks() {
         let head = "mode = 'ask'\n" + Self.fxHook + "[agent]\n"
         expectError(head + "answers = 'gemini'", line: 9,
-                    containing: "answers must be \"fx\", \"claude-code\", \"codex\" or \"you\", not \"gemini\"")
+                    containing: "answers must be \"fx\", \"claude-code\", \"codex\", \"opencode\" or \"you\", not \"gemini\"")
         expectError(head + "answers = 'codex'", line: 9,
                     containing: "answers names \"codex\", but no [[hook]] has instructions = \"codex\": blackice agent connect codex")
         expectError(head + "answers = ['fx']", line: 9, containing: "answers must be a string")

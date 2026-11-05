@@ -114,7 +114,7 @@ public enum CLI {
     Every day
       mode accept-all|ask|block-all
                                 Change how new connections are treated (Touch ID)
-      mode ask --agent fx|claude-code|codex|you
+      mode ask --agent fx|claude-code|codex|opencode|you
                                 Ask mode, with that agent answering, or you (Touch ID)
       pending                   Connections waiting for an answer, and the approvals
       approve --app ID [--team TEAM] --host HOST [--for 1h]
@@ -128,10 +128,12 @@ public enum CLI {
 
     Setup
       validate PATH             Check a blackice.toml without loading it
-      agent connect fx|claude-code|codex [--model NAME] [--config PATH]
-                                Let fx, Claude Code or Codex answer what waits in ask mode: its
-                                own home, a test, its rule and hook, then ask mode if you want.
-                                --model picks the model it decides with (a small one by default)
+      agent connect fx|claude-code|codex|opencode [--model NAME] [--config PATH]
+                                Let fx, Claude Code, Codex or opencode answer what waits in
+                                ask mode: its own home, a test, its rule and hook, then ask
+                                mode if you want. --model picks the model it decides with (a
+                                small one by default; PROVIDER/MODEL for opencode, which
+                                otherwise asks which provider)
       agent install|uninstall   Run hooks for waiting connections, now and at each login
       menu [--login on|off]     Show blackice in the menu bar until you quit it; --login on
                                 opens it now and at each login, --login off stops that

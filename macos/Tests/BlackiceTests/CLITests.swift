@@ -180,7 +180,7 @@ struct ParseTests {
             (["mode", "allow-all"], "accept-all, ask or block-all"),
             (["mode", "ask", "extra"], "unexpected argument 'extra'"),
             (["mode", "block-all", "--agent", "fx"], "--agent goes with ask"),
-            (["mode", "ask", "--agent", "gemini"], "--agent takes fx, claude-code, codex, you"),
+            (["mode", "ask", "--agent", "gemini"], "--agent takes fx, claude-code, codex, opencode, you"),
             (["mode", "ask", "--agent"], "--agent needs a value"),
             (["validate"], "one path"),
             (["validate", "a", "b"], "one path"),

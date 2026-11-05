@@ -151,6 +151,49 @@ private final class FakeCodexMac: @unchecked Sendable {
     }
 }
 
+/// A Mac with opencode at /opt/fake/opencode, found only in ~/.opencode/bin, where its installer
+/// puts it: `auth list` lists a stored sign-in for each provider `auth login` ran for, and a key
+/// for Z.AI in the shell's environment, which does not count; the hook "decides" by printing `printed`.
+private final class FakeOpenCodeMac: @unchecked Sendable {
+    var providers: [String] = []
+    var printed: String
+    var status: Int32 = 0
+    var logins: [[String]] = []
+    var environments: [[String: String]] = []
+    var hookRuns: [Hook] = []
+
+    init(printed: String) {
+        self.printed = printed
+    }
+
+    var machine: AgentMachine {
+        AgentMachine(
+            findExecutables: { name, alsoIn in
+                name == "opencode" && alsoIn.contains { $0.hasSuffix("/.opencode/bin") } ? ["/opt/fake/opencode"] : []
+            },
+            runAttached: { _, arguments, environment in
+                if arguments.starts(with: ["auth", "login", "--standalone"]), let id = arguments.last {
+                    self.logins.append(arguments)
+                    self.environments.append(environment)
+                    self.providers.append(id)
+                }
+                return 0
+            },
+            runCaptured: { _, arguments, _ in
+                guard arguments == ["auth", "list", "--standalone", "--format", "json"] else { return (0, "") }
+                let stored = self.providers.map { "{\"id\":\"\($0)\",\"name\":\"\($0)\",\"connections\":[{\"type\":\"api\"}]}" }
+                let shell = "{\"id\":\"zai-coding-plan\",\"name\":\"Z.AI Coding Plan\",\"connections\":[{\"type\":\"env\",\"name\":\"ZHIPU_API_KEY\"}]}"
+                return (0, "[" + (stored + [shell]).joined(separator: ",") + "]\n")
+            },
+            runHook: { hook, _, _, _, _ in
+                self.hookRuns.append(hook)
+                return HookResult(hookLine: 0, outcome: .exited(status: self.status),
+                                  stderr: self.status == 0 ? "" : "Error: Model unavailable: zai-coding-plan/glm-5.3-flash",
+                                  stderrTruncated: false, duration: 4, stdout: Data(self.printed.utf8))
+            })
+    }
+}
+
 /// Loads what it is given and keeps the mode saved. `startStatuses` and `modeStatuses` answer the
 /// calls in turn (0 once they run out); a call that fails changes nothing, as with Touch ID cancelled.
 private final class Loading: SystemControlling {
@@ -481,6 +524,147 @@ struct AgentConnectTests {
         #expect(CLI.agentRunning(Hook(program: Self.codexProgram(URL(fileURLWithPath: "/h")), line: 1))?.name == "codex")
     }
 
+    static let opencode = SigningIdentity(signingID: "opencode", teamID: "5NZ4Q7NXJ4")
+    static func openCodeProgram(_ home: URL, model: String) -> HookProgram {
+        HookProgram(path: "/opt/fake/opencode", arguments: CLI.openCodeArguments(model: model),
+                    environment: CLI.openCodeEnvironment(agentHome: agent(home)), identity: opencode, eventOnStdin: false,
+                    instructions: .opencode)
+    }
+
+    private func connectOpenCode(_ home: URL, config: String, mac: FakeOpenCodeMac, answers: [String],
+                                 extra: [String] = []) -> Connected {
+        var script = answers
+        let interaction = Interaction(
+            ask: { _ in script.isEmpty ? nil : script.removeFirst() }, createFile: CLI.createFile,
+            identify: { $0 == "/opt/fake/opencode" ? Self.opencode : nil }, fileExists: { FileManager.default.fileExists(atPath: $0) },
+            home: home.path, version: nil)
+        let out = Recorder<String>(), err = Recorder<String>()
+        let status = CLI.run(["agent", "connect", "opencode", "--config", config] + extra, stdout: { out.append($0) },
+                             stderr: { err.append($0) }, system: Loading(), interaction: interaction, agents: mac.machine)
+        return Connected(status: status, stdout: out.items, stderr: err.items)
+    }
+
+    /// opencode: the provider picked from the list, its sign-in in a HOME of its own, a rule for that
+    /// provider's hosts and no other, and a program hook with no event on stdin.
+    @Test func connectsOpenCodeWithTheProviderPicked() throws {
+        let (home, config) = try setUp("mode = \"accept-all\"\ntimeout_seconds = 60\n")
+        defer { removeTree(home) }
+        let mac = FakeOpenCodeMac(printed: "com.microsoft.VSCode -> update.code.visualstudio.com: its update server\napprove 12h\n")
+        // 9 is not on the list; 4 is the MiniMax Token Plan; then no to ask mode.
+        let result = connectOpenCode(home, config: config, mac: mac, answers: ["9", "4", "n"])
+        #expect(result.status == 0, "\(result.stderr)")
+
+        let agent = Self.agent(home)
+        #expect(mac.logins == [["auth", "login", "--standalone", "minimax-coding-plan"]])
+        #expect(mac.environments.first?["HOME"] == agent + "/.opencode" && mac.environments.first?["XDG_CONFIG_HOME"] == ".")
+        for folder in [agent, agent + "/.opencode"] { #expect(try permissions(URL(fileURLWithPath: folder)) == 0o700) }
+        let program = Self.openCodeProgram(home, model: "minimax-coding-plan/MiniMax-M3.1-Flash")
+        #expect(mac.hookRuns == [Hook(program: program, line: 0)])
+        let written = try String(contentsOfFile: config, encoding: .utf8)
+        let loaded = try BlackiceConfig(data: Data(written.utf8))
+        #expect(loaded.hooks.map(\.program) == [program] && loaded.answers == nil)
+        #expect(written.contains("hosts = [\"api.minimax.io\"]") && loaded.allowRule(for: Self.opencode, host: "api.z.ai") == nil)
+        #expect(written.contains("stdin = \"none\"\ninstructions = \"opencode\"\n"))
+
+        #expect(result.stdout.contains("  Which provider should opencode decide with? Its rule lets it reach that"))
+        #expect(result.stdout.contains("    4  MiniMax Token Plan (minimax-coding-plan/MiniMax-M3.1-Flash)"))
+        #expect(result.stdout.contains("    Type a number from 1 to \(AgentProvider.openCode.count)."))
+        #expect(result.stdout.contains("  ✓ MiniMax Token Plan, through api.minimax.io"))
+        #expect(result.stdout.contains("  It decides with minimax-coding-plan/MiniMax-M3.1-Flash; --model PROVIDER/MODEL picks another."))
+        #expect(result.stdout.contains("  ✓ Its hook lets it read the event's directory and nothing else: no shell, no edits, no web, no MCP servers"))
+    }
+
+    /// `--model PROVIDER/MODEL` picks the provider without the list. A key in the shell's
+    /// environment is not a sign-in, and a hook that finds none says how to sign opencode in.
+    @Test func openCodeProviderFromTheModel() throws {
+        let text = "mode = \"accept-all\"\ntimeout_seconds = 60\n"
+        let (home, config) = try setUp(text)
+        defer { removeTree(home) }
+        let mac = FakeOpenCodeMac(printed: "")
+        mac.status = 1
+        let refused = connectOpenCode(home, config: config, mac: mac, answers: [], extra: ["--model", "zai-coding-plan/glm-5.3"])
+        #expect(refused.status == ExitCode.software)
+        #expect(!refused.stdout.contains { $0.contains("Which provider") })
+        #expect(mac.logins == [["auth", "login", "--standalone", "zai-coding-plan"]])
+        #expect(mac.hookRuns.first?.program == Self.openCodeProgram(home, model: "zai-coding-plan/glm-5.3"))
+        #expect(refused.stderr.contains("  HOME=~/.config/blackice/agent/.opencode opencode auth login --standalone zai-coding-plan"))
+        #expect(refused.stderr.contains { $0.hasPrefix("  To retry: blackice agent connect opencode --config ") && $0.hasSuffix(" --model zai-coding-plan/glm-5.3") })
+        #expect(try String(contentsOfFile: config, encoding: .utf8) == text)
+
+        for model in ["glm-5.3-flash", "gemini/flash"] {
+            let wrong = connectOpenCode(home, config: config, mac: FakeOpenCodeMac(printed: ""), answers: [], extra: ["--model", model])
+            #expect(wrong.status == ExitCode.usage, "\(model)")
+            #expect(wrong.stderr.first == "agent connect: opencode's --model is PROVIDER/MODEL, such as zai-coding-plan/glm-5.3-flash, with one of")
+        }
+        // The end of input at the list: nothing changes.
+        let none = connectOpenCode(home, config: config, mac: FakeOpenCodeMac(printed: ""), answers: [])
+        #expect(none.status == ExitCode.usage && none.stderr == ["  No provider chosen, so nothing changed."])
+    }
+
+    @Test func openCodePieces() throws {
+        let stored = "[{\"id\":\"zai-coding-plan\",\"name\":\"Z.AI Coding Plan\",\"connections\":[{\"type\":\"api\"}]}]"
+        #expect(CLI.openCodeSignedIn("A notice first\n" + stored + "\n", provider: "zai-coding-plan"))
+        #expect(!CLI.openCodeSignedIn(stored, provider: "openai") && !CLI.openCodeSignedIn("[]", provider: "openai"))
+        #expect(!CLI.openCodeSignedIn("[{\"id\":\"zai-coding-plan\",\"connections\":[{\"type\":\"env\",\"name\":\"ZHIPU_API_KEY\"}]}]",
+                                      provider: "zai-coding-plan"))
+        #expect(!CLI.openCodeSignedIn("No authenticated integrations\n", provider: "zai-coding-plan"))
+
+        // The instructions as the agent's whole prompt; read, and nothing else, for it and for all.
+        let object = try #require(try JSONSerialization.jsonObject(with: Data(CLI.openCodeConfiguration.utf8)) as? [String: Any])
+        let agent = try #require((object["agent"] as? [String: Any])?["blackice"] as? [String: Any])
+        #expect(agent["prompt"] as? String == "{file:./instructions.md}" && agent["mode"] as? String == "primary")
+        for rules in [object["permission"], agent["permission"]] {
+            let rules = try #require(rules as? [String: String])
+            #expect(rules["*"] == "deny" && rules.filter { $0.value != "deny" } == ["read": "allow"] && rules.count == 15)
+        }
+        // The last rule that matches wins: "*" comes first.
+        #expect(CLI.openCodeConfiguration.contains("\"permission\":{\"*\":\"deny\",\"read\":\"allow\","))
+        #expect(object["autoupdate"] as? Bool == false && object["share"] as? String == "disabled")
+
+        let environment = CLI.openCodeEnvironment(agentHome: "/Users/me/.config/blackice/agent")
+        #expect(environment["HOME"] == "/Users/me/.config/blackice/agent/.opencode" && environment["XDG_CONFIG_HOME"] == ".")
+        for flag in ["OPENCODE_DISABLE_PROJECT_CONFIG", "OPENCODE_DISABLE_CLAUDE_CODE", "OPENCODE_DISABLE_AUTOUPDATE",
+                     "OPENCODE_DISABLE_MODELS_FETCH"] {
+            #expect(environment[flag] == "1", "\(flag)")
+        }
+        #expect(CLI.openCodeArguments(model: "zai-coding-plan/glm-5.3-flash")
+                == ["run", "--standalone", "--agent", "blackice", "--model", "zai-coding-plan/glm-5.3-flash", CLI.openCodePrompt])
+
+        // The hook goes into blackice.toml and back as it was.
+        let program = CLI.agentHook(.opencode, executable: "/Users/me/.opencode/bin/opencode", agentHome: "/Users/me/.config/blackice/agent",
+                                    identity: Self.opencode, model: AgentProfile.opencode.defaultModel)
+        let text = "mode = \"ask\"\n" + CLI.agentAddition("opencode", identity: Self.opencode, hosts: AgentProfile.opencode.hosts, hook: program)
+        let config = try BlackiceConfig(data: Data(text.utf8))
+        #expect(config.hooks.first?.program == program && CLI.agentRunning(config.hooks[0])?.name == "opencode")
+
+        // Each provider: its own id, hosts, a model --model takes.
+        let providers = AgentProvider.openCode
+        #expect(Set(providers.map(\.id)).count == providers.count && providers.allSatisfy { !$0.hosts.isEmpty })
+        for provider in providers {
+            let profile = AgentProfile.openCode(provider)
+            #expect(CLI.validModel(profile.defaultModel) && profile.hosts == provider.hosts && profile.provider == provider)
+            #expect(profile.loginArguments == ["auth", "login", "--standalone", provider.id])
+        }
+        #expect(AgentProfile.opencode.defaultModel == "zai-coding-plan/glm-5.3-flash" && AgentProfile.opencode.hosts == ["api.z.ai"])
+
+        // The eval runs opencode with the hook's environment, its home put where the agent home is.
+        let script = repository.appendingPathComponent("integrations/eval/agents/opencode.sh").path
+        let bash = Process()
+        bash.executableURL = URL(fileURLWithPath: "/bin/bash")
+        bash.arguments = ["-c", "repo=/r; . \"$1\"; agent_configure; printf '%s\\n' \"${agent_env[@]}\"", "bash", script]
+        bash.environment = ["HOME": "/Users/me", "PATH": "/usr/bin:/bin"]
+        let pipe = Pipe()
+        bash.standardOutput = pipe
+        try bash.run()
+        let printed = String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        bash.waitUntilExit()
+        #expect(Set(printed.split(separator: "\n").map(String.init)) == Set(environment.map { "\($0.key)=\($0.value)" }))
+    }
+
+    /// The repository's root, from this file's path.
+    private let repository = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        .deletingLastPathComponent().deletingLastPathComponent()
+
     @Test func claudeCodePieces() throws {
         #expect(CLI.claudeCodeSignedIn("{\n  \"loggedIn\": true,\n  \"authMethod\": \"claude.ai\"\n}"))
         #expect(CLI.claudeCodeSignedIn("A notice first\n{\"loggedIn\": true}\n"))
@@ -500,7 +684,7 @@ struct AgentConnectTests {
         let config = try BlackiceConfig(data: Data(text.utf8))
         #expect(config.hooks.first?.program == program && program.eventOnStdin == false)
         #expect(CLI.agentRunning(config.hooks[0])?.name == "claude-code")
-        #expect(AgentProfile.known.map(\.name) == ["fx", "claude-code", "codex"])
+        #expect(AgentProfile.known.map(\.name) == ["fx", "claude-code", "codex", "opencode"])
         #expect(try adapter("claude-code").contains("agent_stdin=none"))
     }
 
@@ -1082,7 +1266,7 @@ struct AgentConnectTests {
         let mac = FakeAgentMac(signedIn: true, answer: Self.approve)
         let other = connect(home, config: config, mac: mac, system: Loading(), arguments: ["agent", "connect", "claude"])
         #expect(other.status == ExitCode.usage
-            && other.stderr.first == "blackice agent connect knows fx, claude-code and codex: blackice agent connect fx")
+            && other.stderr.first == "blackice agent connect knows fx, claude-code, codex and opencode: blackice agent connect fx")
 
         let missing = connect(home, config: home.path + "/none.toml", mac: mac, system: Loading())
         #expect(missing.status == ExitCode.unreadable)

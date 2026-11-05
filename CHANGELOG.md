@@ -12,6 +12,11 @@
   the menu changes the configuration blackice holds and not the file, as `blackice mode` does. `blackice status`
   says who answers when there is a choice. An agent hook that names no `instructions` (from 0.3 or 0.4.0) is still
   replaced or removed by `agent connect`, since it would run whoever `answers` names.
+- opencode can be the agent: `blackice agent connect opencode` asks which provider it decides with (Z.AI Coding
+  Plan, OpenAI, OpenCode Go, MiniMax Token Plan, OpenRouter or Anthropic), signs it in to that provider in a home of
+  its own, and adds a rule for that provider's hosts only. `--model PROVIDER/MODEL` skips the list. Its hook gives it
+  the read tool and no other, in the event's directory, with blackice's instructions as its whole prompt, and no
+  configuration, plugin or skill from a folder of yours. It is in the first start's list and in the menu's Mode.
 
 ## 0.4.1 (5 November 2026)
 

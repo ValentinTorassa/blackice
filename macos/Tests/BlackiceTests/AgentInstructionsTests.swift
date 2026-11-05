@@ -14,6 +14,7 @@ struct AgentInstructionsTests {
             .fx: "integrations/fx/skills/blackice/SKILL.md",
             .claudeCode: "integrations/claude-code/blackice/instructions.md",
             .codex: "integrations/codex/instructions.md",
+            .opencode: "integrations/opencode/instructions.md",
         ]
         #expect(Set(sources.keys) == Set(AgentInstructions.allCases))
         for (set, source) in sources {
@@ -24,6 +25,7 @@ struct AgentInstructionsTests {
         #expect(AgentInstructions.fx.files.map(\.path) == ["skills/blackice/SKILL.md"])
         #expect(AgentInstructions.claudeCode.files.map(\.path) == ["instructions.md"])
         #expect(AgentInstructions.codex.files.map(\.path) == ["instructions.md"])
+        #expect(AgentInstructions.opencode.files.map(\.path) == ["instructions.md"])
     }
 
     @Test func aProgramHookNamesItsInstructions() throws {
@@ -40,7 +42,7 @@ struct AgentInstructionsTests {
         #expect(try BlackiceConfig(text: text).hooks.first?.program?.instructions == .claudeCode)
         #expect(try BlackiceConfig(text: text.replacingOccurrences(of: "instructions = \"claude-code\"\n", with: ""))
             .hooks.first?.program?.instructions == nil)
-        #expect(throws: ConfigError(line: 7, "instructions must be \"fx\", \"claude-code\" or \"codex\", not \"mine\"")) {
+        #expect(throws: ConfigError(line: 7, "instructions must be \"fx\", \"claude-code\", \"codex\" or \"opencode\", not \"mine\"")) {
             try BlackiceConfig(text: text.replacingOccurrences(of: "\"claude-code\"\n", with: "\"mine\"\n"))
         }
         #expect(throws: ConfigError(line: 4, "instructions goes with program, not run")) {

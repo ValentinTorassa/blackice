@@ -110,13 +110,16 @@ struct WizardTests {
         #expect(said.items.contains("    ✓ Slack may reach any host (com.tinyspeck.slackmacgap)"))
         #expect(said.items.allSatisfy { $0.count <= 78 })
 
-        // ask, Claude Code answers; ask, Codex answers; ask, answered by the person, no apps.
+        // ask, Claude Code answers; ask, Codex answers; ask, opencode answers; ask, answered by the
+        // person, no apps.
         let agents = Recorder<Choice>()
         #expect(pickedAnswers([[1], [1], []], choices: agents) == ConfigWizard.Answers(mode: .ask, agent: "claude-code"))
-        #expect(agents.items[1].options.count == 4 && agents.items[1].options[1].hasPrefix("Claude Code: "))
-        #expect(agents.items[1].options[2].hasPrefix("Codex, ") && agents.items[1].options.allSatisfy { $0.count <= 74 })
+        #expect(agents.items[1].options.count == 5 && agents.items[1].options[1].hasPrefix("Claude Code: "))
+        #expect(agents.items[1].options[2].hasPrefix("Codex, ") && agents.items[1].options[3].hasPrefix("opencode, "))
+        #expect(agents.items[1].options.allSatisfy { $0.count <= 74 })
         #expect(pickedAnswers([[1], [2], []]) == ConfigWizard.Answers(mode: .ask, agent: "codex"))
-        #expect(pickedAnswers([[1], [3], []]) == ConfigWizard.Answers(mode: .ask))
+        #expect(pickedAnswers([[1], [3], []]) == ConfigWizard.Answers(mode: .ask, agent: "opencode"))
+        #expect(pickedAnswers([[1], [4], []]) == ConfigWizard.Answers(mode: .ask))
 
         // block-all with another app, typed.
         let other = pickedAnswers([[2], [0]], script: ["/usr/bin/curl", "pypi.org", ""], paths: ["/usr/bin/curl"],
