@@ -263,10 +263,12 @@ connections wait, their number is next to it. The menu has:
 - Mode, to switch between accept-all, ask and block-all, with Touch ID, as `blackice mode` does, while the filter
   answers;
 - the hooks in the configuration and whether the daemon runs them;
+- Stop Filtering, with Touch ID, as `blackice stop` does: the filter and its network extension go, and `blackice
+  start` turns them on again;
 - Open blackice.toml, Show Event Log in Finder, Documentation, Open at Login, and Quit Menu.
 
-Quitting the menu leaves the filter and the daemon running. Starting and stopping blackice, rules, agents and the
-daemon stay in the CLI. The menu has not run as the signed app yet: Touch ID from the menu, Open at Login and its reads
+Quitting the menu leaves the filter and the daemon running; Stop Filtering is what turns the filter off. Starting
+blackice, rules, agents and the daemon stay in the CLI. The menu has not run as the signed app yet: Touch ID from the menu, Open at Login and its reads
 of the filter are untested on a Mac.
 
 ## Uninstall

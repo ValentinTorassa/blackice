@@ -58,6 +58,10 @@ public struct AgentProfile: Sendable {
     var limits: String?
     /// Whether its hook gets the event on stdin (`stdin = "none"` in blackice.toml when not).
     var eventOnStdin = true
+    /// The environment that makes `installer` put it in this folder and change nothing else, for
+    /// when the copy on PATH cannot be named by a rule (a development build, unsigned or ad hoc
+    /// signed); nil when its installer cannot do that.
+    var privateInstall: (@Sendable (_ folder: String) -> [String: String])?
 
     public static let fx = AgentProfile(
         name: "fx", executable: "fx", hosts: ["ai-gateway.vercel.sh", "vercel.com", "api.vercel.com"],
@@ -91,7 +95,11 @@ public struct AgentProfile: Sendable {
                         "(https://vercel.com/dashboard, then AI Gateway), then run this again."]
             }
             return []
-        })
+        },
+        // fx's setup.sh installs into FX_INSTALL_DIR, and adds that folder to the shell's startup
+        // file unless it is on PATH already: with it on PATH, the file stays as it is, and the
+        // person's own fx (`fx upgrade --channel dev` builds are ad hoc signed) stays first on PATH.
+        privateInstall: { folder in ["FX_INSTALL_DIR": folder, "PATH": folder + ":/usr/bin:/bin:/usr/sbin:/sbin"] })
 
     /// Claude Code in print mode. Its configuration directory in the agent home holds its own
     /// sign-in, and nothing of yours.
@@ -179,6 +187,8 @@ struct AgentPaths {
     }
 
     var settings: String? { profile.settingsFile.map { home + "/" + $0 } }
+    /// Where blackice installs the agent for itself when the copy on PATH is not signed.
+    var bin: String { home + "/bin" }
     var test: String { home + "/test" }
     /// The folders to create, outermost first.
     var folders: [String] {
@@ -198,8 +208,9 @@ struct AgentPaths {
 
 /// What connecting an agent needs from the Mac, passed in so tests can fake it.
 public struct AgentMachine {
-    /// The first executable with this name on PATH or in the usual install folders.
-    public let findExecutable: (String) -> String?
+    /// The executables with this name on PATH, in the usual install folders and then in the
+    /// folders given, in that order, each file once.
+    public let findExecutables: (_ name: String, _ alsoIn: [String]) -> [String]
     /// Runs a program with this terminal attached, for a sign-in; its exit status.
     public let runAttached: (_ path: String, _ arguments: [String], _ environment: [String: String]) -> Int32
     /// Runs a program and returns its exit status and output.
@@ -214,13 +225,13 @@ public struct AgentMachine {
     /// Whether one of them came since.
     public let interrupted: () -> Bool
 
-    public init(findExecutable: @escaping (String) -> String?,
+    public init(findExecutables: @escaping (String, [String]) -> [String],
                 runAttached: @escaping (String, [String], [String: String]) -> Int32,
                 runCaptured: @escaping (String, [String], [String: String]) -> (status: Int32, output: String),
                 runHook: @escaping (Hook, HookEvent, String?, String, Int) -> HookResult,
                 catchInterrupts: @escaping () -> () -> Void = { {} },
                 interrupted: @escaping () -> Bool = { false }) {
-        self.findExecutable = findExecutable
+        self.findExecutables = findExecutables
         self.runAttached = runAttached
         self.runCaptured = runCaptured
         self.runHook = runHook
@@ -230,7 +241,7 @@ public struct AgentMachine {
 
     /// Nothing found, nothing run.
     public static var none: AgentMachine {
-        AgentMachine(findExecutable: { _ in nil }, runAttached: { _, _, _ in 127 }, runCaptured: { _, _, _ in (127, "") },
+        AgentMachine(findExecutables: { _, _ in [] }, runAttached: { _, _, _ in 127 }, runCaptured: { _, _, _ in (127, "") },
                      runHook: { _, _, _, _, _ in HookResult(hookLine: 0, outcome: .failedToStart("no hook runner"), stderr: "",
                                                             stderrTruncated: false, duration: 0) })
     }
@@ -238,20 +249,24 @@ public struct AgentMachine {
     /// This Mac: PATH and the usual folders, Process and HookRunner.
     public static func real() -> AgentMachine {
         AgentMachine(
-            findExecutable: { name in
+            findExecutables: { name, alsoIn in
                 let home = NSHomeDirectory()
                 let path = ProcessInfo.processInfo.environment["PATH"] ?? ""
                 let folders = path.split(separator: ":").map(String.init)
-                    + ["/opt/homebrew/bin", "/usr/local/bin", home + "/.local/bin", home + "/bin"]
+                    + ["/opt/homebrew/bin", "/usr/local/bin", home + "/.local/bin", home + "/bin"] + alsoIn
+                var found: [String] = [], files = Set<String>()
                 for folder in folders where folder.hasPrefix("/") {
                     let candidate = folder + "/" + name
                     var isDirectory: ObjCBool = false
+                    // A symlink counts as the file it leads to: ~/.local/bin/claude is one into
+                    // ~/.local/share/claude/versions.
                     if FileManager.default.fileExists(atPath: candidate, isDirectory: &isDirectory), !isDirectory.boolValue,
-                       FileManager.default.isExecutableFile(atPath: candidate) {
-                        return candidate
+                       FileManager.default.isExecutableFile(atPath: candidate),
+                       files.insert((candidate as NSString).resolvingSymlinksInPath).inserted {
+                        found.append(candidate)
                     }
                 }
-                return nil
+                return found
             },
             runAttached: Self.runAttached,
             runCaptured: { path, arguments, environment in
@@ -709,13 +724,24 @@ extension CLI {
             if let stop = interruption() { return stop }
         }
 
-        // 1. Find it and read its signature.
+        // 1. Find it and read its signature. A development build first on PATH may be unsigned or
+        // ad hoc signed, which no rule can name: the first signed copy is the one used, and
+        // blackice can install one for itself where the agent's installer allows it.
         step("Find \(name)")
-        var found = machine.findExecutable(profile.executable)
-        if found == nil, let installer = profile.installer {
+        let paths = AgentPaths(userHome: interaction.home, profile: profile)
+        let binShown = Describe.path(paths.bin, home: interaction.home)
+        func lookUp() -> [String] { machine.findExecutables(profile.executable, [paths.bin]) }
+        func firstSigned(_ candidates: [String]) -> (path: String, identity: SigningIdentity)? {
+            for path in candidates {
+                if let identity = interaction.identify((path as NSString).resolvingSymlinksInPath) { return (path, identity) }
+            }
+            return nil
+        }
+        var found = lookUp()
+        if found.isEmpty, let installer = profile.installer {
             stdout("  \(name) is not installed. Its installer, from \(profile.installHint):")
             stdout("    " + Style.command(installer))
-            while found == nil {
+            while found.isEmpty {
                 guard let line = ask("  Install \(name) now? [Y/n]: ") else { break }
                 let answer = line.trimmingCharacters(in: .whitespaces).lowercased()
                 if ["n", "no"].contains(answer) { break }
@@ -725,31 +751,67 @@ extension CLI {
                 let status = machine.runAttached("/bin/bash", ["-o", "pipefail", "-c", installer], [:])
                 stdout("")
                 if let stop = interruption() { return stop }
-                found = machine.findExecutable(profile.executable)
-                if found == nil {
+                found = lookUp()
+                if found.isEmpty {
                     return fail(ExitCode.unavailable, "\(name)'s installer exited with status \(status), and \(name) is still not",
                                 "on PATH or in ~/.local/bin. Install it (\(profile.installHint)), then: \(retry)")
                 }
             }
         }
         if let stop = interruption() { return stop }
-        guard let executable = found else {
+        guard let first = found.first else {
             return fail(ExitCode.unavailable, "\(name) is not installed. Install it (\(profile.installHint)),",
                         "then: \(retry)")
+        }
+        let shownFirst = Describe.terminalSafe(Describe.path(first, home: interaction.home))
+        var signed = firstSigned(found)
+        if signed == nil, let installer = profile.installer, let privateInstall = profile.privateInstall {
+            stdout("  \(shownFirst) is unsigned or ad hoc signed, as development builds are, so a rule")
+            stdout("  cannot name it. blackice can install \(name)'s signed release for itself only, in")
+            stdout("  \(binShown). Yours stays as it is, and so does your PATH.")
+            while signed == nil {
+                guard let line = ask("  Install it there? [Y/n]: ") else { break }
+                let answer = line.trimmingCharacters(in: .whitespaces).lowercased()
+                if ["n", "no"].contains(answer) { break }
+                guard ["", "y", "yes"].contains(answer) else { stdout("    Type y or n."); continue }
+                do {
+                    let parent = (paths.home as NSString).deletingLastPathComponent
+                    if !FileManager.default.fileExists(atPath: parent) {
+                        try FileManager.default.createDirectory(atPath: parent, withIntermediateDirectories: true,
+                                                                attributes: [.posixPermissions: 0o700])
+                    }
+                    try privateFolder(paths.home)
+                    try privateFolder(paths.bin)
+                } catch {
+                    return fail(ExitCode.cannotCreate, "Cannot set up \(binShown): \(describe(error))")
+                }
+                stdout("")
+                let status = machine.runAttached("/bin/bash", ["-o", "pipefail", "-c", installer], privateInstall(paths.bin))
+                stdout("")
+                if let stop = interruption() { return stop }
+                signed = firstSigned(lookUp())
+                if signed == nil {
+                    return fail(ExitCode.unavailable, "\(name)'s installer exited with status \(status), and no signed \(name) is in",
+                                "\(binShown) either. Install \(name)'s release (\(profile.installHint)), then: \(retry)")
+                }
+            }
+        }
+        if let stop = interruption() { return stop }
+        guard let (executable, identity) = signed else {
+            return fail(ExitCode.unavailable, "\(shownFirst) is unsigned or ad hoc signed, so a rule cannot name it.")
         }
         let shownExecutable = Describe.terminalSafe(Describe.path(executable, home: interaction.home))
         guard fitsConfig(executable) else {
             return fail(ExitCode.unavailable, "\(shownExecutable) has a control character in its path, which blackice.toml cannot hold.")
         }
-        guard let identity = interaction.identify((executable as NSString).resolvingSymlinksInPath) else {
-            return fail(ExitCode.unavailable, "\(shownExecutable) is unsigned or ad hoc signed, so a rule cannot name it.")
+        if executable != first {
+            stdout("  \(shownFirst) is unsigned or ad hoc signed, so blackice uses \(shownExecutable).")
         }
         stdout("  " + Style.done("\(shownExecutable) is \(ConfigWizard.describe(identity))"))
 
         // 2. Its own home: a sign-in, and the rules. The instructions are not there: the daemon
         // writes them, from blackice itself, into each event's directory.
         step("Give \(name) a home of its own")
-        let paths = AgentPaths(userHome: interaction.home, profile: profile)
         let homeShown = Describe.path(paths.home, home: interaction.home)
         guard fitsConfig(paths.home) else {
             return fail(ExitCode.unavailable, "\(homeShown) has a control character in its path, which blackice.toml cannot hold.")

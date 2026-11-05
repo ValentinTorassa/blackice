@@ -24,6 +24,15 @@ agent's own home, where any program running as you could rewrite it. Now the hoo
 and for each event the daemon writes the skill from blackice itself as `skills/blackice/SKILL.md` in the event's
 directory, which is fx's workspace. `agent connect` removes the old copy in `~/.fx/skills` of the agent home.
 
+## A development build
+
+A rule and a program hook name fx by its signature. fx's releases are signed by Vercel (`com.vercel.fx`, team
+`JW6Y669B67`); builds from `fx upgrade --channel dev` are ad hoc signed, so nothing can name them. When the first fx
+on PATH is one of those, `agent connect fx` uses a signed fx further on PATH, or offers to install fx's release for
+blackice only, in `~/.config/blackice/agent/bin`, with fx's `setup.sh`. It sets `FX_INSTALL_DIR` to that folder and
+puts the folder on the script's PATH, since otherwise the script adds it to your shell's startup file. Your fx and
+your PATH stay as they are, and the hook starts the copy in that folder.
+
 ## The hook
 
 fx v0.0.16 runs one request with `fx ask`; it has no `-p` flag. The hook in

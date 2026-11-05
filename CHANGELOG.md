@@ -27,6 +27,8 @@ New:
   `would=drop:no_host`. Connections still go through at once; nothing is held, looked up or asked.
 - `blackice report [--last 1h]` sums the filter's log up: drops by reason and app, connections paused to ask by app,
   and in accept-all what ask mode would have asked about, by app. It reads `log show` and needs no Touch ID.
+- The menu has Stop Filtering, with Touch ID, as `blackice stop` does. Until now its only way out was Quit Menu,
+  which leaves the filter running.
 
 Changed:
 - Ask mode costs less. `agent connect` writes a small model into the hook: fx asks for Claude Haiku 5.5
@@ -61,6 +63,10 @@ Fixed:
   like. Until now all of them were dropped (`configuration_changed`), so switching from ask mode to accept-all cut
   what waited. The rest is still dropped, and an answer given under the old configuration still lets nothing
   through under the new one.
+- `agent connect fx` works beside a development build of fx. When the first fx on PATH is unsigned or ad hoc
+  signed, as `fx upgrade --channel dev` builds are, it uses a signed fx further on PATH, or offers to install fx's
+  release for blackice only, in `~/.config/blackice/agent/bin`, leaving yours and your PATH as they are. Until now it
+  stopped at "Find fx": no rule can name such a build.
 
 Upgrading from 0.4.0: `brew upgrade --cask blackice` or the install script with `--force`, then `blackice
 start`. Then run `blackice agent connect fx` (or `claude-code`, or `codex`) again to get the small model and the

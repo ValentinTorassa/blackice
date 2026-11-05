@@ -152,10 +152,11 @@ struct MenuPresentationTests {
         #expect(titles(entries) == [
             "Ask mode", "blackice 0.3.2 (build 15)",
             "Waiting", "Safari → example.com:443", "com.microsoft.VSCode → update.code.visualstudio.com:443",
-            "Mode", "Hooks: 1, run by the daemon",
+            "Mode", "Hooks: 1, run by the daemon", "Stop Filtering…",
             "Open blackice.toml", "Show Event Log in Finder", "Documentation",
             "Open at Login", "Quit Menu (filtering continues)",
         ])
+        #expect(entries.first { $0.key == "stop" }.map { $0.kind == .command(.stop) && $0.enabled } == true)
         let waiting = entries.filter { $0.key.hasPrefix("waiting.ev-") }
         #expect(waiting.map(\.detail) == ["35 s left", "0 s left"])
         #expect(waiting.allSatisfy { $0.enabled })

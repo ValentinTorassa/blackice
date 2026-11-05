@@ -407,6 +407,7 @@ final class MenuController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         case .revealLog: if let logURL { NSWorkspace.shared.activateFileViewerSelecting([logURL]) }
         case .documentation: if let url = URL(string: MenuPresentation.docs) { NSWorkspace.shared.open(url) }
         case .openAtLogin: afterMenuCloses { [weak self] in self?.toggleOpenAtLogin() }
+        case .stop: afterMenuCloses { [weak self] in self?.change(failure: "blackice did not stop") { $0.stop() } }
         case .quit: NSApp.terminate(nil)
         }
     }
