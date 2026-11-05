@@ -326,6 +326,7 @@ public enum CLI {
                 guard let agent, loaded.config.mode != .acceptAll else {
                     let started = system.start(configText: loaded.text,
                                                output: SystemOutput(stdout: stdout, stderr: stderr, setup: justWritten))
+                    if started == ExitCode.success { menuBar.reopenIfOutdated(output: SystemOutput(stdout: stdout, stderr: stderr)) }
                     if justWritten, started == ExitCode.success {
                         offerMenuBar(menuBar, interaction: interaction, stdout: stdout, stderr: stderr)
                     }
@@ -337,6 +338,7 @@ public enum CLI {
                 let started = system.start(configText: settingRootKey(loaded.text, "mode", to: "\"accept-all\""),
                                            output: SystemOutput(stdout: stdout, stderr: stderr, setup: true, next: false))
                 guard started == ExitCode.success else { return started }
+                menuBar.reopenIfOutdated(output: SystemOutput(stdout: stdout, stderr: stderr))
                 stdout("  It stays in accept-all while \(agent) is set up, then switches to \(loaded.config.mode.rawValue).")
                 let connected = connectAgent(agent, configPath: configPath, readFile: readFile, system: system,
                                              interaction: interaction, machine: agents, stdout: stdout, stderr: stderr,

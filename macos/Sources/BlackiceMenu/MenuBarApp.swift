@@ -21,6 +21,31 @@ public struct MenuBar: MenuBarControlling {
 
     public var canOffer: Bool { LoginItem.state == .off }
 
+    /// A menu bar app from another build holds the lock: SIGTERM ends it (it has nothing to save,
+    /// and the filter goes on), then LaunchServices opens this build's. Menus from 0.4.1 on also do
+    /// this themselves; one from 0.4.0 cannot tell that the app under it changed.
+    public func reopenIfOutdated(output: SystemOutput) {
+        guard LoginItem.unavailableReason == nil, let url = try? MenuInstanceLock.defaultURL(),
+              MenuInstanceLock.isHeld(url: url),
+              MenuUpgrade.outdated(recorded: MenuInstanceLock.recordedBuild(url: url),
+                                   own: Bundle.main.infoDictionary?["CFBundleVersion"] as? String) else { return }
+        let menus = NSRunningApplication.runningApplications(withBundleIdentifier: BlackiceIdentifiers.host)
+            .filter { $0.processIdentifier != getpid() && $0.activationPolicy == .accessory }
+        guard !menus.isEmpty else { return }
+        menus.forEach { kill($0.processIdentifier, SIGTERM) }
+        for _ in 0..<25 where MenuInstanceLock.isHeld(url: url) { usleep(200_000) }
+        guard !MenuInstanceLock.isHeld(url: url) else {
+            output.stderr("The menu bar app runs the build from before the upgrade: quit it from its menu, then open Blackice.app.")
+            return
+        }
+        switch MenuApp.openNow() {
+        case .opened, .alreadyRunning:
+            output.stdout(Style.done("The menu bar app was from before the upgrade; it runs this build now."))
+        case .failed(let why):
+            output.stderr("The menu bar app from before the upgrade quit, and this build's did not open (\(why)). Open Blackice.app.")
+        }
+    }
+
     /// `blackice menu --login on|off`. On also opens the menu bar app now, through LaunchServices,
     /// so it runs apart from the terminal.
     public func setOpenAtLogin(_ on: Bool, output: SystemOutput) -> Int32 {
@@ -69,6 +94,7 @@ enum MenuApp {
                 return ExitCode.success
             }
             lock = taken
+            if let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String { lock.record(build: build) }
         } catch {
             output?.stderr("blackice menu: \(error)")
             return ExitCode.software
@@ -125,6 +151,10 @@ final class MenuController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     static let upgradeCheckInterval: TimeInterval = 60
 
     private let lock: MenuInstanceLock
+    /// The build this process started from: Bundle reads Info.plist once.
+    private let ownBuild = Bundle.main.infoDictionary?["CFBundleVersion"] as? String
+    /// Checks in a row that found no Blackice.app on disk.
+    private var missingChecks = 0
     private let system = SystemAdapter()
     private let menu = NSMenu()
     private var statusItem: NSStatusItem?
@@ -191,7 +221,39 @@ final class MenuController: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     // MARK: - Reading
 
-    @objc private func tick() { refresh(full: menuOpen) }
+    @objc private func tick() {
+        guard checkInstalledApp() else { return }
+        refresh(full: menuOpen)
+    }
+
+    /// Blackice.app replaced under this process, by an upgrade, or removed. Each build of the
+    /// extension listens on an XPC service of its own, so this one would stay "Not reachable": it
+    /// opens the app on disk and quits, or quits when there is none. Never while the menu is open
+    /// or Touch ID is up. false once it is going.
+    private func checkInstalledApp() -> Bool {
+        guard !menuOpen, !busy else { return true }
+        let installed = MenuUpgrade.installedBuild(Bundle.main.bundleURL)
+        missingChecks = installed == nil ? missingChecks + 1 : 0
+        switch MenuUpgrade.decide(running: ownBuild, installed: installed, missing: missingChecks) {
+        case .stay:
+            return true
+        case .quit:
+            NSApp.terminate(nil)
+            return false
+        case .reopen:
+            refreshTimer?.invalidate()
+            refreshTimer = nil
+            lock.release()
+            let configuration = NSWorkspace.OpenConfiguration()
+            configuration.activates = false
+            configuration.createsNewApplicationInstance = true
+            configuration.addsToRecentItems = false
+            NSWorkspace.shared.openApplication(at: Bundle.main.bundleURL, configuration: configuration) { _, _ in
+                DispatchQueue.main.async { MainActor.assumeIsolated { NSApp.terminate(nil) } }
+            }
+            return false
+        }
+    }
 
     private func refresh(full: Bool) {
         guard !reading, !busy else { return }
@@ -407,6 +469,7 @@ final class MenuController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         case .revealLog: if let logURL { NSWorkspace.shared.activateFileViewerSelecting([logURL]) }
         case .documentation: if let url = URL(string: MenuPresentation.docs) { NSWorkspace.shared.open(url) }
         case .openAtLogin: afterMenuCloses { [weak self] in self?.toggleOpenAtLogin() }
+        case .stop: afterMenuCloses { [weak self] in self?.change(failure: "blackice did not stop") { $0.stop() } }
         case .quit: NSApp.terminate(nil)
         }
     }

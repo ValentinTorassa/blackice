@@ -18,7 +18,7 @@
 
 set -eu
 
-VERSION=0.4.0
+VERSION=0.4.1
 REPOSITORY=ValentinTorassa/blackice
 TEAM_ID=M294LK997M
 IDENTIFIER=com.valentorassa.blackice
@@ -253,8 +253,8 @@ next_steps() {
   if [ "$replace" = 1 ]; then
     say ""
     say "You replaced an installed copy: run \`blackice start\` now to finish the upgrade. If it exits"
-    say "with 75, restart the Mac and run it again. Coming from 0.3, also run \`blackice agent connect fx\`"
-    say "(or claude-code) again: hooks now answer on their output, and a 0.3 hook gets no answer through."
+    say "with 75, restart the Mac and run it again. Then run \`blackice agent connect\` with your agent"
+    say "(fx, claude-code or codex) again, so that its hook is the one this version expects."
   fi
   say ""
   say "Install guide: $GUIDE"

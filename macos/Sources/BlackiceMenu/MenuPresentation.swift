@@ -49,7 +49,7 @@ public struct WaitingEvent: Equatable, Sendable {
 }
 
 public enum MenuCommand: Equatable, Sendable {
-    case openConfig, revealLog, documentation, openAtLogin, quit
+    case openConfig, revealLog, documentation, openAtLogin, stop, quit
 }
 
 /// An answer from a waiting connection's submenu: what `blackice approve --for` or `blackice deny`
@@ -232,6 +232,11 @@ public enum MenuPresentation {
         if let refused = context.hookRefused, now.timeIntervalSince(refused) < refusedHookWindow {
             entries.append(MenuEntry(.note, key: "hooks.refused", title: "A hook did not run: its signature did not match",
                                      detail: ago(refused, now: now)))
+        }
+        // `blackice stop`, with Touch ID: the quit item below leaves the filter running, and
+        // accept-all still has it read every connection. Off, the header says how to start it.
+        if snapshot.isOn {
+            entries.append(MenuEntry(.command(.stop), key: "stop", title: "Stop Filtering…", enabled: true))
         }
 
         entries.append(MenuEntry(.separator, key: "files.separator", title: ""))

@@ -12,6 +12,13 @@ private final class FakeAgentMac: @unchecked Sendable {
     var loginFailures = 0
     var installed = true
     var installs: [[String]] = []
+    /// The fx executables on PATH, first found first, while fx is installed.
+    var found = ["/opt/fake/fx"]
+    /// The environments of installs into a folder of blackice's own, whether one is there, and
+    /// whether such an install leaves one there.
+    var privateInstalls: [[String: String]] = []
+    var privateCopy = false
+    var privateInstallWorks = true
     var answer: ((HookEvent) -> String)?
     var logins: [[String: String]] = []
     var hookRuns: [Hook] = []
@@ -34,7 +41,10 @@ private final class FakeAgentMac: @unchecked Sendable {
 
     var machine: AgentMachine {
         AgentMachine(
-            findExecutable: { $0 == "fx" && self.installed ? "/opt/fake/fx" : nil },
+            findExecutables: { name, alsoIn in
+                guard name == "fx" else { return [] }
+                return (self.installed ? self.found : []) + (self.privateCopy ? alsoIn.map { $0 + "/fx" } : [])
+            },
             runAttached: { path, arguments, environment in
                 if arguments == ["login", "vercel"] {
                     self.logins.append(environment)
@@ -42,7 +52,15 @@ private final class FakeAgentMac: @unchecked Sendable {
                     if self.loginFailures > 0 { self.loginFailures -= 1; return 1 }
                     self.signedIn = true
                 }
-                if path == "/bin/bash" { self.installs.append(arguments); self.installed = arguments.last?.contains("fx.sh") == true }
+                if path == "/bin/bash" {
+                    self.installs.append(arguments)
+                    if environment["FX_INSTALL_DIR"] != nil {
+                        self.privateInstalls.append(environment)
+                        self.privateCopy = self.privateInstallWorks
+                    } else {
+                        self.installed = arguments.last?.contains("fx.sh") == true
+                    }
+                }
                 return 0
             },
             runCaptured: { _, arguments, _ in
@@ -82,7 +100,7 @@ private final class FakeClaudeMac: @unchecked Sendable {
 
     var machine: AgentMachine {
         AgentMachine(
-            findExecutable: { $0 == "claude" ? "/opt/fake/claude" : nil },
+            findExecutables: { name, _ in name == "claude" ? ["/opt/fake/claude"] : [] },
             runAttached: { _, arguments, environment in
                 if arguments == ["auth", "login"] { self.logins.append(environment); self.signedIn = true }
                 return 0
@@ -115,7 +133,7 @@ private final class FakeCodexMac: @unchecked Sendable {
 
     var machine: AgentMachine {
         AgentMachine(
-            findExecutable: { $0 == "codex" ? "/opt/fake/codex" : nil },
+            findExecutables: { name, _ in name == "codex" ? ["/opt/fake/codex"] : [] },
             runAttached: { _, arguments, environment in
                 if arguments == ["login"] { self.logins.append(environment); self.signedIn = true }
                 return 0
@@ -179,8 +197,13 @@ struct AgentConnectTests {
         "I read event.json.\n\nVisual Studio Code, signed by Microsoft, reaching its own update server.\n\napprove 1h\n"
     }
     static func agent(_ home: URL) -> String { home.path + "/.config/blackice/agent" }
-    static func program(_ home: URL) -> HookProgram {
-        HookProgram(path: "/opt/fake/fx", arguments: ["ask", "--no-save", "--no-color", "--model", "anthropic/claude-haiku-5.5",
+    /// fx's release signature on /opt/fake/fx and on the copy blackice installs for itself; none
+    /// on anything else, such as a development build at /opt/dev/fx.
+    static func identifyFx(_ path: String) -> SigningIdentity? {
+        path == "/opt/fake/fx" || path.hasSuffix("/.config/blackice/agent/bin/fx") ? fx : nil
+    }
+    static func program(_ home: URL, path: String = "/opt/fake/fx") -> HookProgram {
+        HookProgram(path: path, arguments: ["ask", "--no-save", "--no-color", "--model", "anthropic/claude-haiku-5.5",
                                                       AgentProfile.prompt],
                     environment: ["HOME": agent(home), "FX_DISABLE_KEYCHAIN": "1"], identity: fx, instructions: .fx)
     }
@@ -208,7 +231,7 @@ struct AgentConnectTests {
                 if answer == Self.controlC { mac.interrupted = true; return nil }
                 return answer
             }, createFile: CLI.createFile,
-            identify: { $0 == "/opt/fake/fx" ? Self.fx : nil }, fileExists: { FileManager.default.fileExists(atPath: $0) },
+            identify: Self.identifyFx, fileExists: { FileManager.default.fileExists(atPath: $0) },
             home: home.path, version: nil)
         let out = Recorder<String>(), err = Recorder<String>()
         let status = CLI.run(arguments ?? ["agent", "connect", "fx", "--config", config], stdout: { out.append($0) },
@@ -672,7 +695,7 @@ struct AgentConnectTests {
 
         // An installer that leaves no fx behind.
         let failing = FakeAgentMac(signedIn: false, answer: Self.approve)
-        let broken = AgentMachine(findExecutable: { _ in nil }, runAttached: failing.machine.runAttached,
+        let broken = AgentMachine(findExecutables: { _, _ in [] }, runAttached: failing.machine.runAttached,
                                   runCaptured: failing.machine.runCaptured, runHook: failing.machine.runHook)
         let out = Recorder<String>(), err = Recorder<String>()
         var script = ["y"]
@@ -693,6 +716,71 @@ struct AgentConnectTests {
         #expect(mac.installs == [["-o", "pipefail", "-c", installer]] && mac.logins.count == 1)
         #expect(result.stdout.contains("  ✓ /opt/fake/fx is com.vercel.fx, team JW6Y669B67"))
         #expect(try BlackiceConfig(data: Data(contentsOf: URL(fileURLWithPath: config))).mode == .ask)
+    }
+
+    /// A development build first on PATH (`fx upgrade --channel dev` builds are ad hoc signed):
+    /// a signed fx further on is used, or else blackice installs fx's release for itself, apart
+    /// from the person's own and off their PATH, and uses that.
+    @Test func usesASignedFxBesideADevelopmentBuild() throws {
+        let text = "mode = \"accept-all\"\ntimeout_seconds = 60\n"
+        let (home, config) = try setUp(text)
+        defer { removeTree(home) }
+        let installer = "curl -fsSL https://fx.sh/setup.sh | bash"
+        let bin = Self.agent(home) + "/bin"
+        func hook() throws -> HookProgram? {
+            try BlackiceConfig(data: Data(contentsOf: URL(fileURLWithPath: config))).hooks.first?.program
+        }
+
+        // A signed fx further on PATH: no question, no install.
+        let both = FakeAgentMac(signedIn: true, answer: Self.approve)
+        both.found = ["/opt/dev/fx", "/opt/fake/fx"]
+        let first = connect(home, config: config, mac: both, system: Loading(), answers: ["n"])
+        #expect(first.status == 0, "\(first.stderr)")
+        #expect(first.stdout.contains("  /opt/dev/fx is unsigned or ad hoc signed, so blackice uses /opt/fake/fx."))
+        #expect(both.installs.isEmpty)
+        #expect(try hook() == Self.program(home))
+        try Data(text.utf8).write(to: URL(fileURLWithPath: config))
+
+        // Only the development build, and no to the install: nothing runs and nothing changes.
+        let declining = FakeAgentMac(signedIn: true, answer: Self.approve)
+        declining.found = ["/opt/dev/fx"]
+        let declined = connect(home, config: config, mac: declining, system: Loading(), answers: ["n"])
+        #expect(declined.status == ExitCode.unavailable && declining.installs.isEmpty)
+        #expect(declined.stdout.contains("  /opt/dev/fx is unsigned or ad hoc signed, as development builds are, so a rule"))
+        #expect(declined.stdout.contains("  ~/.config/blackice/agent/bin. Yours stays as it is, and so does your PATH."))
+        #expect(declined.stderr == ["  /opt/dev/fx is unsigned or ad hoc signed, so a rule cannot name it."])
+        #expect(try String(contentsOfFile: config, encoding: .utf8) == text)
+
+        // An install that leaves no signed fx there.
+        let failing = FakeAgentMac(signedIn: true, answer: Self.approve)
+        failing.found = ["/opt/dev/fx"]
+        failing.privateInstallWorks = false
+        let failed = connect(home, config: config, mac: failing, system: Loading(), answers: [""])
+        #expect(failed.status == ExitCode.unavailable && failing.privateInstalls.count == 1)
+        #expect(failed.stderr.first == "  fx's installer exited with status 0, and no signed fx is in")
+        #expect(try String(contentsOfFile: config, encoding: .utf8) == text)
+
+        // Enter installs fx's release in the agent home's bin folder, with that folder on PATH so
+        // setup.sh leaves the shell's startup file alone, and the hook starts that copy.
+        let mac = FakeAgentMac(signedIn: true, answer: Self.approve)
+        mac.found = ["/opt/dev/fx"]
+        let result = connect(home, config: config, mac: mac, system: Loading(), answers: ["", "n"])
+        #expect(result.status == 0, "\(result.stderr)")
+        #expect(mac.installs == [["-o", "pipefail", "-c", installer]])
+        #expect(mac.privateInstalls == [["FX_INSTALL_DIR": bin, "PATH": bin + ":/usr/bin:/bin:/usr/sbin:/sbin"]])
+        #expect(result.stdout.contains("  /opt/dev/fx is unsigned or ad hoc signed, so blackice uses ~/.config/blackice/agent/bin/fx."))
+        #expect(try hook() == Self.program(home, path: bin + "/fx"))
+        let mode = try FileManager.default.attributesOfItem(atPath: bin)[.posixPermissions] as? Int
+        #expect(mode == 0o700)
+
+        // Connecting again finds that copy: no question, no install, the same hook.
+        let again = FakeAgentMac(signedIn: true, answer: Self.approve)
+        again.found = ["/opt/dev/fx"]
+        again.privateCopy = true
+        let second = connect(home, config: config, mac: again, system: Loading(), answers: ["n"])
+        #expect(second.status == 0 && again.installs.isEmpty)
+        #expect(second.stdout.contains { $0.hasPrefix("  A hook already starts fx (line ") && $0.hasSuffix("); it stays as it is.") })
+        #expect(try hook() == Self.program(home, path: bin + "/fx"))
     }
 
     @Test func startPicksFxAndSetsEverythingUp() throws {
@@ -983,7 +1071,7 @@ struct AgentConnectTests {
         #expect(missing.stderr.last == "Set blackice up first, then connect fx: blackice start --config ~/none.toml")
 
         var noFx = mac.machine
-        noFx = AgentMachine(findExecutable: { _ in nil }, runAttached: noFx.runAttached, runCaptured: noFx.runCaptured,
+        noFx = AgentMachine(findExecutables: { _, _ in [] }, runAttached: noFx.runAttached, runCaptured: noFx.runCaptured,
                             runHook: noFx.runHook)
         let out = Recorder<String>(), err = Recorder<String>()
         let status = CLI.run(["agent", "connect", "fx", "--config", config], stdout: { out.append($0) }, stderr: { err.append($0) },

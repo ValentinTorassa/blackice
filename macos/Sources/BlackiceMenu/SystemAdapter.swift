@@ -55,6 +55,13 @@ final class SystemAdapter {
         return Self.result(NESystemControl().setMode(mode, output: output.system), output.errors)
     }
 
+    /// `blackice stop`: Touch ID, then the filter removed and the network extension deactivated.
+    /// `blackice start` turns it on again. Called as `setMode` is.
+    func stop() -> MenuActionResult {
+        let output = CapturedOutput()
+        return Self.result(NESystemControl().stop(output: output.system), output.errors)
+    }
+
     /// `blackice approve --for` or `blackice deny`: Touch ID, then the answer over XPC. Hooks never
     /// come this way; the daemon sends theirs with the event's token. Called as `setMode` is.
     func answer(_ request: AnswerRequest) -> MenuActionResult {
