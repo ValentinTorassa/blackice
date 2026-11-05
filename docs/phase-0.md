@@ -110,7 +110,8 @@ repository at `~/Documents/Github/Personal/blackice` on `main`.
 
    Expected: four `PASS` lines. In the log, the probe's connection shows as `flow drop no_rule`, `curl`'s as
    `flow allow rule_line_4` or `flow allow rule_line_4;server_name`, and DNS as `flow allow system_resolver`.
-   The rest of each log line (app and host) is private in unified logging and shows as `<private>`.
+   Since 5 November 2026 each line also names the app in the clear (`app=apple/com.apple.curl`); the
+   host and the rest are private in unified logging and show as `<private>`.
 
 9. **Record the result** in `docs/plan.md` under phase 0: the date, the macOS version and the four result lines.
    If something fails, keep the script's output, the log lines and `systemextensionsctl list`.

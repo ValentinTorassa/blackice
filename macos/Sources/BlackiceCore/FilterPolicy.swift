@@ -10,9 +10,11 @@ import Foundation
 //   turns it off, a rule with hosts = ["*"] allows everything its app does, with no host
 //   or address check, and an address or CIDR entry allows the addresses it holds, by address;
 // - ask allows what block-all allows, plus what a current approval names (with the same address
-//   check), and pauses the rest to ask. Ad hoc signed code has no signing identity, so in ask
-//   mode it is named by its cdhash; rules never name it. A TCP flow with no name at all is
-//   asked about by its address, and an approval for that address allows it; a UDP one is not.
+//   check), and pauses the rest to ask, but drops an app and host denied in the last 10 minutes
+//   (`denied;remembered`) instead of asking again. Ad hoc signed code has no signing identity,
+//   so in ask mode it is named by its cdhash; rules never name it. A TCP flow with no name at
+//   all is asked about by its address, and an approval for that address allows it; a UDP one
+//   is not.
 // A host or address that does not check out is "no rule or approval matches", never an error.
 // In every mode, inbound flows pass (only outbound connections are filtered) and Apple's
 // resolver may reach port 53, since rules name hosts and need name lookups to work. Loopback
@@ -117,11 +119,16 @@ public struct PolicyContext {
     public let approved: (AppIdentity, String) -> Bool
     /// What is known about this host (normalized) and the flow's address.
     public let address: (String, IPAddress?) -> AddressCheck
+    /// Whether this app and host were denied a moment ago (AskState.denials). Only ask mode asks,
+    /// so only ask mode looks: such a flow is dropped instead of asked about.
+    public let denied: (AppIdentity, String) -> Bool
 
     public init(approved: @escaping (AppIdentity, String) -> Bool,
-                address: @escaping (String, IPAddress?) -> AddressCheck) {
+                address: @escaping (String, IPAddress?) -> AddressCheck,
+                denied: @escaping (AppIdentity, String) -> Bool = { _, _ in false }) {
         self.approved = approved
         self.address = address
+        self.denied = denied
     }
 }
 
@@ -137,6 +144,9 @@ public enum FilterPolicy {
     /// flow is dropped with `hold_expired` and its event stays open until the deadline, so an
     /// approval covers the app's next try.
     public static let connectedHoldSeconds: TimeInterval = 8
+    /// Ask mode's reason for a flow whose app and host were denied a moment ago: dropped with no
+    /// event, where it would have been asked about.
+    public static let rememberedDenial = "denied;remembered"
 
     /// The verdict for a new flow. With no configuration installed, nothing passes.
     public static func decide(_ flow: FlowFacts, snapshot: ProviderConfiguration?, context: PolicyContext) -> FlowVerdict {
@@ -189,7 +199,7 @@ public enum FilterPolicy {
             if reason == "sni_missing", snapshot.mode == .ask, flow.hostname == nil, flow.dnsName == nil,
                let identity = nameable(flow.identity, snapshot.mode) {
                 let verdict = byAddress(identity, flow, context)
-                if case .drop = verdict { return .drop(reason: reason) }
+                if case .drop(let why) = verdict { return .drop(reason: why == rememberedDenial ? why : reason) }
                 return verdict.adding(";sni_missing")
             }
             return .drop(reason: reason)
@@ -268,7 +278,39 @@ public enum FilterPolicy {
         guard flow.tcp, let address = flow.remoteAddress, address.isCheckable, !address.isMulticastOrBroadcast,
               flow.port != nil else { return .drop(reason: "no_host") }
         if context.approved(identity, address.description) { return .allow(reason: "approval;address") }
+        if context.denied(identity, address.description) { return .drop(reason: rememberedDenial) }
         return .ask(reason: "no_rule;address", addressMatches: true)
+    }
+
+    /// Accept-all's dry run of ask mode, for the flow log only: what ask mode, with the same rules
+    /// and the Apple services table, would decide when this flow starts. nil unless `snapshot` is
+    /// in accept-all, which still allows the flow at once and holds, reads, looks up and asks
+    /// nothing for it. The label is the reason of an allow (`rule_line_3`, `apple_service`,
+    /// `loopback`), `ask`, `drop:<reason>`, `read_server_name` or `system_resolver`.
+    ///
+    /// It is `decide` on the snapshot seen in ask mode, with what accept-all knows: no approval or
+    /// denial counts, every address is taken to match its host (nothing is looked up), and no DNS
+    /// answer is read, so a flow with no host name from the system is judged by its address. A
+    /// flow on the TLS port that names its host and that a rule or the table covers is judged as
+    /// if its hello named that host (`rule_line_3;server_name`); one with no host name would have
+    /// its hello read first, and only then be decided (`read_server_name`).
+    public static func dryRun(_ flow: FlowFacts, snapshot: ProviderConfiguration) -> String? {
+        guard snapshot.mode == .acceptAll else { return nil }
+        let ask = snapshot.viewed(in: .ask)
+        let context = PolicyContext(approved: { _, _ in false }, address: { _, _ in .match })
+        var verdict = decide(flow, snapshot: ask, context: context)
+        if verdict == .readServerName, let host = flow.hostname ?? flow.dnsName {
+            verdict = decide(flow, serverName: .serverName(host), snapshot: ask, context: context)
+        }
+        switch verdict {
+        case .allow(let reason): return reason
+        case .drop(let reason): return "drop:" + reason
+        case .ask: return "ask"
+        case .readServerName: return "read_server_name"
+        case .learnNames: return "system_resolver"
+        // Not with every address taken to match; kept for completeness.
+        case .resolveHost: return "resolve_host"
+        }
     }
 
     /// The host an event names for a flow that ask mode pauses: the server name read from its
@@ -304,7 +346,8 @@ public enum FilterPolicy {
             let reason = line.map { "rule_line_\($0)" } ?? (service ? "apple_service" : "approval")
             return .allow(reason: reason + ";dns_name")
         }
-        return ask ? .ask(reason: "no_rule", addressMatches: true) : nil
+        guard ask else { return nil }
+        return context.denied(identity, name) ? .drop(reason: rememberedDenial) : .ask(reason: "no_rule", addressMatches: true)
     }
 
     /// Whether a rule, the Apple services table, or in ask mode a current approval, names this app
@@ -331,12 +374,33 @@ public enum FilterPolicy {
     }
 
     /// Whether a flow decided with the configuration of `generation` may still start to wait, for
-    /// a lookup or an event, or be let through by an answer. Installing a configuration drops
-    /// every paused flow (`configuration_changed`), but a flow callback that read the snapshot
+    /// a lookup or an event, or be let through by an answer. Installing a configuration ends
+    /// every paused flow (`afterChange`), but a flow callback that read the snapshot
     /// before the change can reach the pending list after that drop, and an answer taken just
     /// before the change can be applied after it. Such a flow is dropped the same way.
     public static func isCurrent(_ generation: UInt64, installed: ProviderConfiguration?) -> Bool {
         installed.map { $0.generation == generation } ?? false
+    }
+
+    /// A flow that waits, paused or held, when another configuration is installed. The new one
+    /// decides it again, with no approval (an answer given under the old configuration never lets
+    /// a flow through under the new one) and the host answers cached now, looking nothing up. A
+    /// verdict that allows it outright lets it go, with that verdict's reason and
+    /// `;configuration_changed` (`accept_all;configuration_changed`): accept-all, a rule, the Apple
+    /// services table, loopback. Anything else drops it, as every such flow was before
+    /// (`configuration_changed`): a verdict that would ask, look the host up or read the server
+    /// name first. `serverName` is the one read from a flow paused after its hello.
+    public static func afterChange(_ flow: FlowFacts, serverName: String?, echPresent: Bool,
+                                   snapshot: ProviderConfiguration?,
+                                   address: @escaping (String, IPAddress?) -> AddressCheck) -> FlowVerdict {
+        let dropped = FlowVerdict.drop(reason: "configuration_changed")
+        guard let snapshot else { return dropped }
+        let context = PolicyContext(approved: { _, _ in false }, address: address)
+        let verdict = serverName.map {
+            decide(flow, serverName: .serverName($0, echPresent: echPresent), snapshot: snapshot, context: context)
+        } ?? decide(flow, snapshot: snapshot, context: context)
+        guard case .allow = verdict else { return dropped }
+        return verdict.adding(";configuration_changed")
     }
 
     /// The releases of an answer or a deadline as they apply now: an allow for a flow decided
@@ -370,6 +434,11 @@ public enum FilterPolicy {
         let approved = ask && context.approved(identity, host)
         // Block-all with no rule or service by name: nothing to check.
         if !ask && line == nil && !service { return .drop(reason: "no_rule") }
+        // Ask mode, a pair denied a moment ago that nothing else covers: dropped now, with no
+        // lookup and no event.
+        if ask && line == nil && !service && !approved && context.denied(identity, host) {
+            return .drop(reason: rememberedDenial)
+        }
         guard flow.remoteAddress != nil else { return .drop(reason: "no_address") }
         // An answer the resolver gave for this host and address counts like a lookup that found it.
         switch flow.dnsNames.contains(host) ? AddressCheck.match : context.address(host, flow.remoteAddress) {
@@ -405,8 +474,9 @@ public enum FilterPolicy {
     }
 }
 
-/// One line of the extension's flow log, as JSON. The fields come from the flow, so they are
-/// encoded, never pasted into the text.
+/// One line of the extension's flow log: `publicText` in the clear, then the JSON, which unified
+/// logging keeps private. The JSON's fields come from the flow, so they are encoded, never pasted
+/// into the text.
 public struct FlowLogLine: Encodable, Sendable {
     public let event = "flow"
     public let verdict: String
@@ -416,8 +486,11 @@ public struct FlowLogLine: Encodable, Sendable {
     public let port: UInt16?
     public let mode: String
     public let generation: UInt64
+    /// In accept-all, what ask mode would decide (`FilterPolicy.dryRun`); public, not in the JSON.
+    public let would: String?
 
-    public init(flow: FlowFacts, verdict: FlowVerdict, snapshot: ProviderConfiguration?, serverName: String? = nil) {
+    public init(flow: FlowFacts, verdict: FlowVerdict, snapshot: ProviderConfiguration?, serverName: String? = nil,
+                would: String? = nil) {
         switch verdict {
         case .allow: self.verdict = "allow"
         case .drop: self.verdict = "drop"
@@ -432,9 +505,20 @@ public struct FlowLogLine: Encodable, Sendable {
         port = flow.port
         mode = snapshot?.mode.rawValue ?? "none"
         generation = snapshot?.generation ?? 0
+        self.would = would
     }
 
     enum CodingKeys: String, CodingKey { case event, verdict, reason, app, host, port, mode, generation }
+
+    /// What the line shows after "flow" to anyone who reads the log: the verdict, the reason and
+    /// the app, as in `drop tls_unparsed app=ABCDE12345/com.example.tool`, so `log show` and
+    /// `blackice report` can count drops by app, and in accept-all what ask mode would decide, as
+    /// in `allow accept_all app=apple/com.apple.geod would=apple_service;server_name`. The app is
+    /// the label `blackice pending` uses: `apple/<id>`, `<team>/<id>`, `cdhash/<hex>`, `unknown` or
+    /// `invalid_signature`. CodeIdentity accepts only letters, digits, '-', '.' and '_' in a
+    /// signing identifier, and reasons are fixed codes, so no field holds a space. The host, the
+    /// port and the rest stay private.
+    public var publicText: String { "\(verdict) \(reason) app=\(app)" + (would.map { " would=" + $0 } ?? "") }
 
     public func json() -> String {
         let encoder = JSONEncoder()

@@ -128,13 +128,13 @@ The app sees the connection fail with "Bad file descriptor" (EBADF) when it conn
 
 ## macOS's own services
 
-With `apple_services = true`, the default, a built-in list lets macOS's own services through in ask and block-all without a rule. Flows it allows are logged as `apple_service`. It covers iCloud (including iCloud calendars and contacts), Apple Account sign-in, push notifications, iMessage and FaceTime identities, Software Update and system downloads, the App Store, Maps and location, network time, Gatekeeper's notarization check, captive portal detection, iCloud Private Relay's configuration, and certificate checks.
+With `apple_services = true`, the default, a built-in list lets macOS's own services through in ask and block-all without a rule. Flows it allows are logged as `apple_service`. It covers iCloud (including iCloud calendars and contacts, settings, storage and Keychain escrow), Apple Account sign-in, push notifications, iMessage and FaceTime identities and key transparency, Find My, Software Update and system downloads, the App Store and Apple Media Services (Music's library and artwork among them), Siri and Spotlight suggestions, Private Cloud Compute's gateway, Maps and location, network time, Gatekeeper's notarization check, captive portal detection, iCloud Private Relay's configuration, Safari's Safe Browsing service (not Safari itself), aerial wallpapers, Help, content cache discovery, diagnostics submission, and certificate checks.
 
 - Each entry is one Apple program, by its signing identifier, and the Apple domains it uses, such as `*.icloud.com` for `com.apple.cloudd`. It matches only code Apple signed as part of macOS. The same identifier with a Team ID is someone else's code and gets nothing.
 - The address check applies as for a rule.
 - Tools that run commands or fetch whatever they are given are never on the list: curl, nscurl, python3, perl, ruby, the shells, ssh, scp, nc, git, osascript, Safari, WebKit's networking process, and nsurlsessiond, which downloads for any app. An agent that uses them still needs a rule or an approval.
 - trustd and ocspd check certificates, fetching revocation data and missing intermediate certificates from URLs written in the certificate itself. They may reach Apple's hosts and those of the authorities behind most public certificates (DigiCert, Entrust, Let's Encrypt, Sectigo, GlobalSign, GoDaddy, Google, Amazon and Microsoft), not any host: since a certificate names its own URLs, any app could otherwise send data to a host of its choosing through trustd. A lookup for another authority is asked about in ask mode and dropped in block-all.
-- The list comes from the first ask-mode run on a Mac and from well-known macOS services. A service that is not on it is asked about, or dropped in block-all. So is an account added for another provider, such as a Google calendar synced by `com.apple.dataaccess.dataaccessd`, which needs its own rule.
+- The list comes from the ask-mode runs on a Mac (3 and 4 November 2026) and from well-known macOS services. Most services seen there get only the hosts they reached. A service that is not on it is asked about, or dropped in block-all. So is an account added for another provider, such as a Google calendar synced by `com.apple.dataaccess.dataaccessd`, which needs its own rule; `com.apple.accountsd`, which signs in to such accounts, is not on the list.
 
 `apple_services = false` turns the list off, and those services then need rules like any other app. In block-all that stops iCloud, updates and push notifications until rules for them are added.
 
@@ -192,11 +192,13 @@ A hook answers on its stdout. When it exits with status 0 before the deadline, t
 
 | Line | Answer |
 | --- | --- |
-| `deny` | Drop the waiting connections. |
+| `deny` | Drop the waiting connections, and for 10 minutes the app's new ones to that host. |
 | `approve <N>m` | Approve for N minutes, from 1 to 1440. |
 | `approve <N>h` | Approve for N hours, from 1 to 24. |
 
 The daemon answers for the event's app and host, which it takes from the event, never from the hook's output, and sends the answer to the extension with the event's token. Before that line the hook can print anything, such as its reasons.
+
+A deny is remembered for 10 minutes, whoever gave it (a hook, `blackice deny` or the menu): the app's new connections to that host, on any port, are dropped at once as `denied;remembered`, with no event and no hook, so a tool that retries is not asked about again and again. A rule still allows what it names. An approval of that app and host replaces the denial, and a configuration change forgets them all. No answer in time is not a deny and is not remembered. `blackice pending` lists the denials under "Denied recently".
 
 Anything else is no answer, and the connection waits until its deadline and is dropped:
 

@@ -29,6 +29,8 @@ public enum Command: Equatable, Sendable {
     /// `blackice agent connect NAME`: set an agent up to answer what waits in ask mode.
     case connectAgent(name: String, configPath: String?)
     case menu(MenuRequest)
+    /// `blackice report [--last 1h]`: the filter's flow log over the last `minutes`, summed up.
+    case report(minutes: Int)
 
     public var name: String {
         switch self {
@@ -46,6 +48,7 @@ public enum Command: Equatable, Sendable {
         case .daemon: return "daemon"
         case .agent, .connectAgent: return "agent"
         case .menu: return "menu"
+        case .report: return "report"
         }
     }
 }
@@ -91,6 +94,9 @@ public struct UsageError: Error, Equatable, CustomStringConvertible, Sendable {
 public enum CLI {
     public static let defaultApprovalSeconds = 3600
     public static let maximumApprovalSeconds = ApprovalTable.maximumSeconds
+    public static let defaultReportMinutes = 60
+    /// A week: about as far back as unified logging keeps the filter's lines on a busy Mac.
+    public static let maximumReportMinutes = 7 * 24 * 60
 
     public static let usage = """
     blackice: an application firewall for macOS that you run from the command line.
@@ -113,6 +119,8 @@ public enum CLI {
                                 Refuse it and drop its waiting connections (Touch ID)
                                 (--cdhash HEX in place of --app names ad hoc signed code;
                                 HOST may be an IP address, for connections with no name)
+      report [--last 1h]        What the filter dropped, by reason and app, and in
+                                accept-all what ask mode would have asked (m or h)
 
     Setup
       validate PATH             Check a blackice.toml without loading it
@@ -186,6 +194,13 @@ public enum CLI {
             guard let value = options["login"] else { return .menu(.run) }
             guard let on = ["on": true, "off": false][value] else { throw UsageError("menu: --login takes on or off") }
             return .menu(.login(on))
+        case "report":
+            let options = try parseOptions(rest, allowed: ["last"], command: first)
+            guard let text = options["last"] else { return .report(minutes: defaultReportMinutes) }
+            guard let minutes = parseReportSpan(text) else {
+                throw UsageError("report: --last takes minutes or hours, such as 30m or 2h, at most 168h")
+            }
+            return .report(minutes: minutes)
         case "approve":
             try noToken(rest, command: first)
             let options = try parseOptions(rest, allowed: ["app", "team", "cdhash", "host", "for"], command: first)
@@ -337,6 +352,16 @@ public enum CLI {
             return system.answer(approval.request, output: SystemOutput(stdout: stdout, stderr: stderr))
         case .deny(let denial):
             return system.answer(denial.request, output: SystemOutput(stdout: stdout, stderr: stderr))
+        case .report(let minutes):
+            let result = system.flowLog(minutes: minutes)
+            guard result.status == 0 else {
+                let last = result.output.split(separator: "\n").last.map { String($0.prefix(200)) } ?? "no output"
+                stderr("blackice report: \(FlowLog.program) show exited with status \(result.status): " +
+                       Describe.terminalSafe(last))
+                return result.status == 127 ? ExitCode.unavailable : ExitCode.software
+            }
+            FlowReport(logText: result.output).summary(last: reportSpan(minutes)).forEach(stdout)
+            return ExitCode.success
         }
     }
 
@@ -471,6 +496,13 @@ public enum CLI {
                 lines.append("  \(approval.app.identity?.label ?? "unknown") -> \(approval.host), \(approval.secondsLeft) s left")
             }
         }
+        // Listed only when there are some: their connections are dropped without asking.
+        if !reply.denials.isEmpty {
+            lines.append("Denied recently (dropped without asking):")
+            for denial in reply.denials {
+                lines.append("  \(denial.app.identity?.label ?? "unknown") -> \(denial.host), \(denial.secondsLeft) s left")
+            }
+        }
         return lines
     }
 
@@ -489,6 +521,21 @@ public enum CLI {
     /// takes the same durations, in minutes and hours (`ApprovalDuration`).
     public static func parseDuration(_ text: String) -> Int? {
         ApprovalDuration.seconds(text)
+    }
+
+    /// `report --last`: "30m" or "2h", a positive whole number with no leading zero and one unit,
+    /// at most a week. Returns minutes.
+    public static func parseReportSpan(_ text: String) -> Int? {
+        guard let unit = text.last, let factor = ["m": 1, "h": 60][unit] else { return nil }
+        let digits = text.dropLast()
+        guard !digits.isEmpty, digits.count <= 6, digits.utf8.allSatisfy({ (48...57).contains($0) }), digits.first != "0",
+              let value = Int(digits), value * factor <= maximumReportMinutes else { return nil }
+        return value * factor
+    }
+
+    /// Minutes as `report` says them back: "2h", or "90m" when they are not whole hours.
+    static func reportSpan(_ minutes: Int) -> String {
+        minutes % 60 == 0 ? "\(minutes / 60)h" : "\(minutes)m"
     }
 
     /// Reads at most one byte past the size limit, so a huge file is refused without loading it.

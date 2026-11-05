@@ -9,8 +9,9 @@
 #      waiting for a slot, those left when too little time remains logged as dropped
 #      (deadline_near), and the Mac keeps working;
 #   4. restart: the daemon is killed, launchd starts it again and it registers; then a
-#      configuration change while connections wait drops them and cancels their events. That
-#      change is the switch back to accept-all at the end.
+#      configuration change while connections wait cancels their events, and lets the connections
+#      go since the new configuration allows them (`accept_all;configuration_changed`). That change
+#      is the switch back to accept-all at the end.
 # The hook is a program hook: /bin/sh with the test script, which the daemon starts only after
 # checking that it is Apple's sh (com.apple.sh). It prints nothing, so it never answers.
 # Touch ID twice: `blackice start` with the test configuration at the beginning, and
@@ -621,7 +622,8 @@ cat "$OUT/4-pending.txt"
 echo "Touch ID now: switching back to accept-all is the configuration change this case tests."
 "$BIN" mode accept-all && restored=1
 change_s=$(($(date +%s) - t0))
-# In accept-all nscurl's retry may now go through; that is not part of the check.
+# In accept-all the waiting nscurl requests go on; whether they then get an answer is not part of
+# the check.
 while (( $(date +%s) < t0 + change_s + 10 )) && [[ -n "$(jobs -pr)" ]]; do sleep 1; done
 stop_jobs
 settle "$off" "$OUT/4-events.jsonl" "${RESTART_HOSTS[1]}" 10
@@ -636,13 +638,14 @@ for host in "${RESTART_HOSTS[@]}"; do
     if listed "$OUT/4-pending.txt" "$host"; then waited=$((waited + 1)); fi
     seen="$seen $host:$verdicts"
 done
-dropped=$(count_in 'flow drop configuration_changed' "$OUT/4-filter.log")
+released=$(count_in 'flow allow accept_all;configuration_changed' "$OUT/4-filter.log")
 installed=$(count_in 'control configuration_installed mode accept-all' "$OUT/4-filter.log")
 verdict "4. the new daemon received both events and ran the hook ($received of 2)" "$(( received == 2 ))"
 verdict "4. both connections were waiting before the change ($waited of 2 in the pending list; change $change_s s in)" \
     "$(( waited == 2 ))"
 verdict "4. the filter installed the change ('control configuration_installed mode accept-all')" "$(( installed >= 1 ))"
-verdict "4. paused connections were dropped ('flow drop configuration_changed': $dropped)" "$(( dropped >= 1 ))"
+verdict "4. accept-all let the paused connections go ('flow allow accept_all;configuration_changed': $released)" \
+    "$(( released >= 1 ))"
 verdict "4. their events were cancelled ($cancelled of 2:$seen)" "$(( cancelled == 2 ))"
 
 step "Result"

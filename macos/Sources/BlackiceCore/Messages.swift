@@ -35,8 +35,8 @@ extension CheckedMessage {
 public enum Messages {
     /// Bumped on any change to a message; both ends must agree. 2: the register reply carries the
     /// configuration, and events carry its generation. 3: the pending reply names the
-    /// configuration the extension decides with.
-    public static let version = 3
+    /// configuration the extension decides with. 4: the pending reply lists the remembered denials.
+    public static let version = 4
     /// The limit of a message that sets none of its own. The pending reply and the register reply
     /// set theirs from the largest content their checks accept.
     public static let maximumBytes = 262_144
@@ -274,6 +274,7 @@ public struct PendingSummary: Codable, Equatable, Sendable {
     }
 }
 
+/// An approval, or a remembered denial, with the seconds it has left.
 public struct ApprovalSummary: Codable, Equatable, Sendable {
     public let app: AppReference
     public let host: String
@@ -327,33 +328,40 @@ public struct ActiveConfiguration: Codable, Equatable, Sendable {
 public struct PendingReply: CheckedMessage, Equatable {
     public static let maximumEntries = 1024
     /// The largest reply `validate` accepts, encoded: each event at most 1 KiB plus its escaped
-    /// path, each approval at most 1 KiB, and 1 KiB for the rest. A signing identifier takes at
-    /// most 255 bytes, a host name 253 and an address 45, and none of them needs escaping.
+    /// path, each approval and each denial at most 1 KiB, and 1 KiB for the rest. A signing
+    /// identifier takes at most 255 bytes, a host name 253 and an address 45, and none of them
+    /// needs escaping.
     public static let maximumBytes = 1024
         + AskLimits.events * (1024 + Messages.jsonStringBytes(HookEvent.maximumPathBytes))
-        + ApprovalTable.maximumEntries * 1024
+        + 2 * ApprovalTable.maximumEntries * 1024
 
     public let version: Int
     public let events: [PendingSummary]
     public let approvals: [ApprovalSummary]
+    /// The app and host pairs denied a moment ago, whose connections are dropped without asking.
+    public let denials: [ApprovalSummary]
     /// The configuration the extension decides with now; nil when it holds none.
     public let active: ActiveConfiguration?
 
-    public init(events: [PendingSummary], approvals: [ApprovalSummary], active: ActiveConfiguration? = nil) {
+    public init(events: [PendingSummary], approvals: [ApprovalSummary], denials: [ApprovalSummary] = [],
+                active: ActiveConfiguration? = nil) {
         version = Messages.version
         self.events = events
         self.approvals = approvals
+        self.denials = denials
         self.active = active
     }
 
     /// The same lists, naming the configuration the extension decides with.
     public func deciding(with configuration: ProviderConfiguration?) -> PendingReply {
-        PendingReply(events: events, approvals: approvals, active: configuration.map(ActiveConfiguration.init))
+        PendingReply(events: events, approvals: approvals, denials: denials, active: configuration.map(ActiveConfiguration.init))
     }
 
-    /// At most as many events and approvals as the extension holds, each in the form it writes.
+    /// At most as many events, approvals and denials as the extension holds, each in the form it
+    /// writes.
     public func validate(now: Date) throws {
-        guard events.count <= AskLimits.events, approvals.count <= ApprovalTable.maximumEntries else {
+        guard events.count <= AskLimits.events, approvals.count <= ApprovalTable.maximumEntries,
+              denials.count <= ApprovalTable.maximumEntries else {
             throw MessageError("pending", "has too many entries")
         }
         try active?.validate()
@@ -365,6 +373,10 @@ public struct PendingReply: CheckedMessage, Equatable {
         for approval in approvals {
             guard approval.app.identity != nil, isNormalDestination(approval.host),
                   approval.secondsLeft >= 0 else { throw MessageError("approvals", "has an invalid entry") }
+        }
+        for denial in denials {
+            guard denial.app.identity != nil, isNormalDestination(denial.host),
+                  denial.secondsLeft >= 0 else { throw MessageError("denials", "has an invalid entry") }
         }
     }
 }

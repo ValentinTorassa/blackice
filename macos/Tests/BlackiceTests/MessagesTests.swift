@@ -119,10 +119,12 @@ struct MessagesTests {
         #expect(try Messages.decode(AnswerReply.self, from: Messages.encode(reply)) == reply)
         let pending = PendingReply(events: [PendingSummary(id: "ev-0a1b2c3d", app: AppReference(build), path: nil, host: "example.com",
                                                           ip: "203.0.113.7", port: 443, secondsLeft: 3, connections: 1)],
-                                   approvals: [ApprovalSummary(app: AppReference(tool), host: "example.com", secondsLeft: 60)])
+                                   approvals: [ApprovalSummary(app: AppReference(tool), host: "example.com", secondsLeft: 60)],
+                                   denials: [ApprovalSummary(app: AppReference(build), host: "203.0.113.7", secondsLeft: 540)])
         #expect(try Messages.decode(PendingReply.self, from: Messages.encode(pending)) == pending)
         let deciding = pending.deciding(with: try policySnapshot(.ask, generation: 9))
         #expect(deciding.active?.generation == 9 && deciding.active?.mode == .ask && deciding.events == pending.events)
+        #expect(deciding.denials == pending.denials)
         #expect(try Messages.decode(PendingReply.self, from: Messages.encode(deciding)) == deciding)
         #expect(try Messages.decode(RegisterRequest.self, from: Messages.encode(RegisterRequest())) == RegisterRequest())
     }
@@ -213,6 +215,13 @@ struct MessagesTests {
         #expect(refused { try decodeEdited(PendingReply.self, pending) {
             $0["approvals"] = [["app": ["cdhash": "x"], "host": "example.com", "seconds_left": 1]]
         } })
+        for denial in [["app": ["cdhash": "x"], "host": "example.com", "seconds_left": 1],
+                       ["app": ["cdhash": testCDHash], "host": "*.example.com", "seconds_left": 1],
+                       ["app": ["cdhash": testCDHash], "host": "example.com", "seconds_left": -1]] as [[String: Any]] {
+            #expect(refused { try decodeEdited(PendingReply.self, pending) { $0["denials"] = [denial] } })
+        }
+        // A reply from an extension that lists no denials is another protocol version.
+        #expect(refused { try decodeEdited(PendingReply.self, pending) { $0["denials"] = nil } })
     }
 
     @Test func garbageAndOversizedDataAreRefused() {
@@ -226,7 +235,7 @@ struct MessagesTests {
     }
 
     /// The most a pending reply can hold: as many events as the extension keeps, each with the
-    /// longest path (all of it escaped), identity, host and address, and every approval.
+    /// longest path (all of it escaped), identity, host and address, and every approval and denial.
     private static func largestPendingReply() -> PendingReply {
         let signingID = String(repeating: "a", count: 255)
         let app = AppReference(signingID: signingID, teamID: "ABCDE12345", cdhash: nil)
@@ -240,7 +249,7 @@ struct MessagesTests {
         let approvals = (0..<ApprovalTable.maximumEntries).map { _ in
             ApprovalSummary(app: app, host: host, secondsLeft: .max)
         }
-        return PendingReply(events: events, approvals: approvals)
+        return PendingReply(events: events, approvals: approvals, denials: approvals)
     }
 
     @Test func theLargestPendingReplyFitsAndRoundTrips() throws {
@@ -263,6 +272,8 @@ struct MessagesTests {
         #expect(refused { try Messages.decode(PendingReply.self, from: Messages.encode(more)) })
         let tooManyApprovals = PendingReply(events: [], approvals: largest.approvals + [largest.approvals[0]])
         #expect(refused { try Messages.decode(PendingReply.self, from: Messages.encode(tooManyApprovals)) })
+        let tooManyDenials = PendingReply(events: [], approvals: [], denials: largest.denials + [largest.denials[0]])
+        #expect(refused { try Messages.decode(PendingReply.self, from: Messages.encode(tooManyDenials)) })
         // An address only as the extension writes it: a zone could make it any length.
         let event = PendingSummary(id: "ev-0a1b2c3d", app: AppReference(build), path: nil, host: "example.com",
                                    ip: "fe80::1", port: 443, secondsLeft: 3, connections: 1)

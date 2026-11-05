@@ -19,6 +19,10 @@ private let generalPurpose = [
     "com.apple.mDNSResponder",
 ]
 
+/// Apple's services that sign in to or sync the accounts a user adds for other providers. Not in
+/// the table: those need a rule.
+private let thirdPartyAccounts = ["com.apple.accountsd", "com.apple.accountsd.accountsd"]
+
 /// Apple's own domains. Only the certificate services may list others.
 private let appleDomains = ["apple.com", "icloud.com", "icloud-content.com", "apple-cloudkit.com", "cdn-apple.com",
                             "mzstatic.com", "aaplimg.com", "apple-dns.net", "ls4-apple.com.akadns.net"]
@@ -42,11 +46,28 @@ struct AppleServicesTableTests {
     }
 
     @Test func generalPurposeToolsAreNeverCovered() {
-        for id in generalPurpose {
+        for id in generalPurpose + thirdPartyAccounts {
             #expect(AppleServices.table[id] == nil, "\(id) is in the table")
             #expect(!AppleServices.covers(SigningIdentity(signingID: id, teamID: nil)), "\(id)")
         }
-        #expect(!AppleServices.entries.contains { $0.signingID.lowercased().contains("curl") })
+        let ids = AppleServices.entries.map(\.signingID)
+        #expect(!ids.contains { $0.lowercased().contains("curl") })
+        // No WebKit process; of Safari, only its Safe Browsing service, to its one host.
+        #expect(!ids.contains { $0.lowercased().hasPrefix("com.apple.webkit") })
+        #expect(ids.filter { $0.lowercased().hasPrefix("com.apple.safari") } == ["com.apple.Safari.SafeBrowsing"])
+        #expect(AppleServices.table["com.apple.Safari.SafeBrowsing"]?.map(\.source) == ["websitereview.corp.apple.com"])
+    }
+
+    /// dataaccessd and the contacts sync also sync accounts of other providers, which need a rule;
+    /// accountsd signs in to them and is not in the table at all.
+    @Test func otherProvidersAccountsNeedARule() {
+        for id in ["com.apple.dataaccess.dataaccessd", "com.apple.AddressBookSourceSync"] {
+            let sync = SigningIdentity(signingID: id, teamID: nil)
+            #expect(AppleServices.allows(sync, host: "p404-caldav.icloud.com"), "\(id)")
+            for host in ["calendar.google.com", "www.googleapis.com", "outlook.office365.com", "caldav.example.com"] {
+                #expect(!AppleServices.allows(sync, host: host), "\(id) \(host)")
+            }
+        }
     }
 
     @Test func hostsStayOnApplesDomainsExceptForCertificateChecks() {
@@ -104,6 +125,72 @@ struct AppleServicesTableTests {
         let categories = SigningIdentity(signingID: "com.apple.ctcategories.service", teamID: nil)
         #expect(AppleServices.allows(categories, host: "amp-api.apps.apple.com"))
         #expect(!AppleServices.allows(categories, host: "example.org"))
+    }
+
+    /// Seen in ask mode on the Mac on 3 and 4 November 2026, reaching only Apple's domains.
+    @Test func servicesSeenOnTheThirdAndFourthOfNovember() {
+        let seen: [(String, [String])] = [
+            ("com.apple.cloudtelemetryd", ["gateway.icloud.com"]),
+            ("com.apple.ap.adprivacyd", ["bag.itunes.apple.com", "partiality.itunes.apple.com"]),
+            ("com.apple.transparencyd", ["kt-prod.ess.apple.com"]),
+            ("com.apple.rtcreportingd", ["pancake.apple.com"]),
+            ("com.apple.amsaccountsd", ["bag.itunes.apple.com"]),
+            ("com.apple.amsondevicestoraged", ["bag.itunes.apple.com"]),
+            ("com.apple.itunescloudd", ["bag.itunes.apple.com"]),
+            ("com.apple.jetpackassetd", ["bag.itunes.apple.com"]),
+            ("com.apple.photoanalysisd", ["bag.itunes.apple.com"]),
+            ("com.apple.managedappdistributionagent", ["bag.itunes.apple.com"]),
+            ("com.apple.AMPLibraryAgent", ["init.itunes.apple.com", "bag.itunes.apple.com"]),
+            ("com.apple.AMPArtworkAgent", ["init.itunes.apple.com", "bag.itunes.apple.com"]),
+            ("com.apple.iCloudHelper", ["setup.icloud.com", "p404-quota.icloud.com"]),
+            ("com.apple.appleaccountd", ["setup.icloud.com"]),
+            ("com.apple.FeatureAccessAgent", ["p404-quota.icloud.com"]),
+            ("com.apple.icloud.searchpartyuseragent", ["gateway.icloud.com", "p404-fmipmobile.icloud.com"]),
+            ("com.apple.findmy.findmylocateagent", ["gateway.icloud.com"]),
+            ("com.apple.findmy", ["p404-fmipmobile.icloud.com"]),
+            ("com.apple.parsecd", ["api.smoot.apple.com"]),
+            ("com.apple.parsec-fbf", ["swallow.apple.com"]),
+            ("com.apple.assistantd", ["api2.smoot.apple.com"]),
+            ("com.apple.privatecloudcomputed", ["gateway-oblivious.apple.com"]),
+            ("com.apple.AssetCacheLocatorService", ["lcdn-locator.apple.com"]),
+            ("com.apple.SubmitDiagInfo", ["radarsubmissions.apple.com"]),
+            ("com.apple.sbd", ["p404-escrowproxy.icloud.com"]),
+            ("com.apple.CallHistorySyncHelper", ["init.ess.apple.com"]),
+            ("com.apple.studentd", ["www.apple.com"]),
+            ("com.apple.swcd", ["app-site-association.cdn-apple.com"]),
+            ("com.apple.ap.promotedcontentd", ["device-config.pcms.apple.com"]),
+            ("com.apple.helpd", ["cds.apple.com"]),
+            ("com.apple.wallpaper.extension.aerials", ["configuration.apple.com", "sylvan.apple.com"]),
+            ("com.apple.Spotlight-Settings.extension", ["stocks-data-service.apple.com"]),
+            ("com.apple.systempreferences.AppleIDSettings", ["gsa.apple.com"]),
+            ("com.apple.Safari.SafeBrowsing", ["websitereview.corp.apple.com"]),
+        ]
+        for (id, hosts) in seen {
+            let service = SigningIdentity(signingID: id, teamID: nil)
+            for host in hosts { #expect(AppleServices.allows(service, host: host), "\(id) \(host)") }
+            // The same identifier from anyone else, or a host outside Apple's domains, gets nothing.
+            #expect(!AppleServices.covers(SigningIdentity(signingID: id, teamID: "ABCDE12345")), "\(id)")
+            for host in ["example.org", "apple.com.example.org", "www.icloud.com.evil.example"] {
+                #expect(!AppleServices.allows(service, host: host), "\(id) \(host)")
+            }
+            // Partitioned iCloud hosts take the domain, since the partition differs between accounts;
+            // every other entry keeps to the hosts seen.
+            let exact = Set(AppleServices.table[id]?.filter { !$0.wildcard }.map(\.source) ?? [])
+            if let partitioned = hosts.first(where: { $0.hasPrefix("p404-") }) {
+                #expect(AppleServices.table[id]?.map(\.source) == ["*.icloud.com"], "\(id)")
+                let another = "p31-" + partitioned.dropFirst("p404-".count)
+                #expect(AppleServices.allows(service, host: another), "\(id) \(another)")
+            } else {
+                #expect(exact == Set(hosts) && AppleServices.table[id]?.count == hosts.count, "\(id)")
+            }
+        }
+        // Private Cloud Compute also reached a relay on a domain that is not Apple's; it is asked about.
+        let pcc = SigningIdentity(signingID: "com.apple.privatecloudcomputed", teamID: nil)
+        #expect(!AppleServices.allows(pcc, host: "apple-relay.fastly-edge.com"))
+        // Siri and the suggestion services reach their one host, not Apple's web.
+        for id in ["com.apple.assistantd", "com.apple.parsecd", "com.apple.Safari.SafeBrowsing", "com.apple.swcd"] {
+            #expect(!AppleServices.allows(SigningIdentity(signingID: id, teamID: nil), host: "www.apple.com"), "\(id)")
+        }
     }
 }
 

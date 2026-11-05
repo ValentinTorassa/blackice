@@ -348,6 +348,19 @@ struct RunTests {
             "  apple/com.apple.ssh -> 100.66.32.76, 60 s left",
         ])
 
+        // Denials remembered for a while, listed only when there are some.
+        let denied = PendingReply(events: [], approvals: [],
+                                  denials: [ApprovalSummary(app: AppReference(signingID: nil, teamID: nil, cdhash: testCDHash),
+                                                            host: "registry.example.com", secondsLeft: 540),
+                                            ApprovalSummary(app: ssh, host: "100.66.32.75", secondsLeft: 12)])
+        #expect(CLI.pendingLines(denied) == [
+            "No connection is waiting.",
+            "No approvals.",
+            "Denied recently (dropped without asking):",
+            "  cdhash/\(testCDHash) -> registry.example.com, 540 s left",
+            "  apple/com.apple.ssh -> 100.66.32.75, 12 s left",
+        ])
+
         // The path is wherever the app runs from, and may hold an escape sequence.
         let odd = PendingReply(events: [PendingSummary(id: "ev-0000002a", app: tool, path: "/tmp/x\u{9B}2J\u{202E}y",
                                                        host: "example.com", ip: "203.0.113.7", port: 443, secondsLeft: 8,

@@ -196,6 +196,44 @@ struct FilterPolicyTests {
         }
     }
 
+    /// After a deny, ask mode drops the app's new connections to that host instead of asking again.
+    @Test func aRememberedDenialDropsWhereAskModeWouldAsk() throws {
+        let ask = try policySnapshot(.ask)
+        let denied: Set<ApprovalKey> = [key(agent, "other.example.com"), key(agent, "api.example.com"), key(adHoc, "example.org"),
+                                        key(probe, "pypi.org"), key(probe, flowAddress)]
+        let context = { (check: AddressCheck) in
+            PolicyContext(approved: { _, _ in false }, address: { _, _ in check },
+                          denied: { denied.contains(ApprovalKey(identity: $0, host: $1)) })
+        }
+        let remembered = FlowVerdict.drop(reason: "denied;remembered")
+        // By name, before any lookup; by cdhash; by the one name DNS answers gave; by address.
+        for check in [AddressCheck.match, .mismatch, .unknown] {
+            #expect(FilterPolicy.decide(flow(agent, "other.example.com"), snapshot: ask, context: context(check)) == remembered)
+        }
+        #expect(FilterPolicy.decide(flow(adHoc, "example.org", port: 22), snapshot: ask, context: context(.match)) == remembered)
+        #expect(FilterPolicy.decide(flow(probe, nil, port: 22, dnsNames: ["pypi.org"]), snapshot: ask, context: context(.match))
+            == remembered)
+        #expect(FilterPolicy.decide(flow(probe, nil, port: 80), snapshot: ask, context: context(.match)) == remembered)
+        // After the hello: by its server name, or by address when it names none.
+        #expect(FilterPolicy.decide(flow(probe, nil), serverName: .serverName("pypi.org"), snapshot: ask,
+                                    context: context(.match)) == remembered)
+        #expect(FilterPolicy.decide(flow(probe, nil), serverName: .deny("sni_missing"), snapshot: ask,
+                                    context: context(.match)) == remembered)
+        // A rule still allows: a denial only takes the place of asking.
+        #expect(FilterPolicy.decide(flow(agent, "api.example.com", port: 8443), snapshot: ask, context: context(.match))
+            == .allow(reason: "rule_line_3"))
+        // Another host, another app, another build: asked about as before.
+        #expect(FilterPolicy.decide(flow(agent, "else.example.com"), snapshot: ask, context: context(.match))
+            == .ask(reason: "no_rule", addressMatches: true))
+        #expect(FilterPolicy.decide(flow(probe, "other.example.com"), snapshot: ask, context: context(.match))
+            == .ask(reason: "no_rule", addressMatches: true))
+        #expect(FilterPolicy.decide(flow(.adHoc(cdhash: String(repeating: "e", count: 40)), "example.org"), snapshot: ask,
+                                    context: context(.match)) == .ask(reason: "no_rule", addressMatches: true))
+        // Block-all asks nothing, so it is unchanged.
+        #expect(FilterPolicy.decide(flow(agent, "other.example.com"), snapshot: try policySnapshot(.blockAll),
+                                    context: context(.match)) == .drop(reason: "no_rule"))
+    }
+
     @Test func acceptAllAllowsEveryOutboundFlow() throws {
         let snapshot = try policySnapshot(.acceptAll)
         for (facts, verdict) in blockAllCases {
@@ -431,6 +469,63 @@ struct FilterPolicyTests {
     }
 }
 
+/// Accept-all's dry run of ask mode: the same `decide`, on the snapshot seen in ask mode, with
+/// every address taken to match and no approval.
+struct DryRunTests {
+    @Test func labelsWhatAskModeWouldDecide() throws {
+        let acceptAll = try policySnapshot(.acceptAll)
+        let cloudd = signed("com.apple.cloudd", nil)
+        let cases: [(FlowFacts, String)] = [
+            // A rule or the Apple services table, judged as if the hello named the host on the TLS port.
+            (flow(agent, "api.example.com"), "rule_line_3;server_name"),
+            (flow(agent, "api.example.com", port: 8443), "rule_line_3"),
+            (flow(cloudd, "p01-ckdatabase.icloud.com"), "apple_service;server_name"),
+            (flow(cloudd, "p01-ckdatabase.icloud.com", tcp: false), "apple_service"),
+            (flow(agent, "other.example.com"), "ask"),
+            (flow(adHoc, "example.org"), "ask"),
+            // No host name: the hello would be read first on the TLS port; elsewhere TCP is asked
+            // about by its address and UDP dropped.
+            (flow(curl, nil), "read_server_name"),
+            (flow(probe, nil, port: 22), "ask"),
+            (flow(probe, nil, port: 22, tcp: false), "drop:no_host"),
+            (flow(.unresolved, "example.org"), "drop:unknown_identity"),
+            (flow(.invalidSignature, "example.org"), "drop:invalid_signature"),
+            (flow(probe, "bad host"), "drop:hostname_invalid"),
+            (flow(probe, "example.org", address: "127.0.0.1"), "loopback"),
+            (flow(resolver, nil, port: 53, tcp: false), "system_resolver"),
+            (flow(probe, "example.org", direction: .inbound), "inbound_not_filtered"),
+        ]
+        for (facts, label) in cases {
+            #expect(FilterPolicy.dryRun(facts, snapshot: acceptAll) == label, "\(facts)")
+        }
+        // Only accept-all runs it; the other modes decide for real.
+        for mode in [Mode.ask, .blockAll] {
+            #expect(FilterPolicy.dryRun(flow(agent, "other.example.com"), snapshot: try policySnapshot(mode)) == nil)
+        }
+    }
+
+    @Test func itIsAskModesOwnDecision() throws {
+        let acceptAll = try policySnapshot(.acceptAll)
+        let ask = try policySnapshot(.ask)
+        for (facts, _) in blockAllCases {
+            let label: String
+            switch FilterPolicy.decide(facts, snapshot: ask, context: matching) {
+            case .allow(let reason): label = reason
+            case .drop(let reason): label = "drop:" + reason
+            case .ask: label = "ask"
+            case .learnNames: label = "system_resolver"
+            case .readServerName, .resolveHost: continue
+            }
+            #expect(FilterPolicy.dryRun(facts, snapshot: acceptAll) == label, "\(facts)")
+        }
+        // A configuration that turns the Apple services table and loopback off counts as written.
+        let off = try ProviderConfiguration(generation: 2, mode: .acceptAll,
+                                            configText: "mode = \"accept-all\"\napple_services = false\nloopback = false\n")
+        #expect(FilterPolicy.dryRun(flow(signed("com.apple.cloudd", nil), "p01-ckdatabase.icloud.com"), snapshot: off) == "ask")
+        #expect(FilterPolicy.dryRun(flow(probe, "example.org", address: "127.0.0.1"), snapshot: off) == "ask")
+    }
+}
+
 struct FlowLogLineTests {
     private func object(_ line: FlowLogLine) throws -> [String: Any] {
         let json = line.json()
@@ -455,6 +550,30 @@ struct FlowLogLineTests {
         #expect(hold["host"] == nil && hold["port"] == nil)
         let adHocLine = try object(FlowLogLine(flow: flow(adHoc, nil), verdict: .drop(reason: "adhoc_code"), snapshot: nil))
         #expect(adHocLine["app"] as? String == "cdhash/" + testCDHash && adHocLine["verdict"] as? String == "drop")
+    }
+
+    /// The part `log show` prints in the clear: verdict, reason and the app's label, never the host.
+    @Test func publicTextNamesTheAppAndNotTheHost() throws {
+        let snapshot = try policySnapshot(.ask)
+        let cases: [(IdentityResolution, FlowVerdict, String)] = [
+            (agent, .drop(reason: "tls_unparsed"), "drop tls_unparsed app=ABCDE12345/com.example.agent"),
+            (curl, .allow(reason: "rule_line_8;server_name"), "allow rule_line_8;server_name app=apple/com.apple.curl"),
+            (adHoc, .ask(reason: "no_rule", addressMatches: true), "ask no_rule app=cdhash/" + testCDHash),
+            (.unresolved, .drop(reason: "unknown_identity"), "drop unknown_identity app=unknown"),
+            (.invalidSignature, .readServerName, "hold reading_server_name app=invalid_signature"),
+        ]
+        for (identity, verdict, expected) in cases {
+            let line = FlowLogLine(flow: flow(identity, "secret.example.com"), verdict: verdict, snapshot: snapshot,
+                                   serverName: "other.example.com")
+            #expect(line.publicText == expected)
+            #expect(!line.publicText.contains("example.com") && !line.publicText.contains("443"))
+            #expect(line.json().contains("other.example.com"))
+        }
+        // In accept-all the dry run follows, in the clear; it is not in the JSON.
+        let dry = FlowLogLine(flow: flow(agent, "other.example.com"), verdict: .allow(reason: "accept_all"),
+                              snapshot: try policySnapshot(.acceptAll), would: "ask")
+        #expect(dry.publicText == "allow accept_all app=ABCDE12345/com.example.agent would=ask")
+        #expect(!dry.json().contains("would"))
     }
 
     @Test func askAndResolveVerdicts() throws {

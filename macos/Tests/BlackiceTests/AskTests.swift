@@ -267,6 +267,59 @@ struct AskStateTests {
         #expect(!ask.approvals.covers(ApprovalKey(identity: tool, host: "other.example.com"), now: 4))
     }
 
+    @Test func aDenialIsRememberedForTenMinutes() throws {
+        var (ask, _, events) = state()
+        let key = ApprovalKey(identity: tool, host: "example.com")
+        // A hook's deny, sent with the event's token.
+        let outcome = ask.answer(request(.deny, token: try #require(events["a1"]?.token)), now: 2)
+        #expect(outcome.reply.message.hasPrefix("denied ABCDE12345/com.example.tool -> example.com for 600 s;"))
+        #expect(ask.denials.covers(key, now: 601.9) && !ask.denials.covers(key, now: 602))
+        #expect(ask.denials.summaries(now: 2) == [ApprovalSummary(app: AppReference(tool), host: "example.com", secondsLeft: 600)])
+        // Only that app and that host.
+        #expect(!ask.denials.covers(ApprovalKey(identity: tool, host: "other.example.com"), now: 3))
+        #expect(!ask.denials.covers(ApprovalKey(identity: other, host: "example.com"), now: 3))
+        // A person's deny (Touch ID) starts the 10 minutes again.
+        _ = ask.answer(request(.deny), now: 300)
+        #expect(ask.denials.covers(key, now: 899))
+        _ = ask.expire(now: 900)
+        #expect(ask.denials.count == 0)
+    }
+
+    @Test func anApprovalReplacesADenial() {
+        var ask = AskState<String>()
+        let key = ApprovalKey(identity: build, host: "example.org")
+        _ = ask.answer(request(.deny, build, host: "example.org"), now: 0)
+        #expect(ask.denials.covers(key, now: 1))
+        let approved = ask.answer(request(.approve, build, host: "example.org", seconds: 60), now: 1)
+        #expect(approved.reply.message.contains("its denial was removed"))
+        #expect(!ask.denials.covers(key, now: 2) && ask.approvals.covers(key, now: 2))
+        // A deny replaces the approval, as before, and is remembered again.
+        let denied = ask.answer(request(.deny, build, host: "example.org"), now: 3)
+        #expect(denied.reply.message.contains("its approval was removed"))
+        #expect(ask.denials.covers(key, now: 4) && !ask.approvals.covers(key, now: 4))
+    }
+
+    @Test func noAnswerIsNoDenial() throws {
+        var (timedOut, _, _) = state()
+        _ = timedOut.expire(now: 10)
+        #expect(timedOut.denials.count == 0)
+        // A refused answer remembers nothing: this token belongs to another host.
+        var (refused, _, events) = state()
+        let reply = refused.answer(request(.deny, host: "example.com", token: try #require(events["host"]?.token)), now: 1)
+        #expect(reply.reply.reason == "token_mismatch" && refused.denials.count == 0)
+    }
+
+    @Test func aConfigurationChangeEndsEventsAndForgetsDenials() {
+        var (ask, _, _) = state()
+        _ = ask.answer(request(.deny, host: "other.example.com"), now: 1)
+        _ = ask.answer(request(.approve, other, host: "example.org", seconds: 600), now: 1)
+        let ended = ask.endAll()
+        #expect(ended.flatMap { $0.flows.map(\.flow) }.sorted() == ["a1", "a2", "port"])
+        #expect(ask.pending.eventCount == 0 && ask.denials.count == 0)
+        // Approvals stay as they were.
+        #expect(ask.approvals.covers(ApprovalKey(identity: other, host: "example.org"), now: 2))
+    }
+
     @Test func aPersonMayApproveWithoutAnEvent() {
         var ask = AskState<String>()
         let outcome = ask.answer(request(.approve, build, host: "example.org", seconds: 60), now: 0)

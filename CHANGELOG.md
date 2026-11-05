@@ -1,5 +1,33 @@
 # Changelog
 
+## Unreleased
+
+- The filter's log lines name the app in the clear, after the verdict and reason: `flow drop timeout
+  app=ABCDE12345/com.example.tool`, `apple/…` for Apple's own code, `cdhash/…` for ad hoc code. The host and the
+  rest stay private. Until now nobody could tell from the log which apps lost connections.
+- In accept-all, each of those lines also says what ask mode would have done with the same rules, worked out by the
+  same code: `would=ask`, `would=rule_line_3`, `would=apple_service;server_name`, `would=read_server_name`,
+  `would=drop:no_host`. Connections still go through at once; nothing is held, looked up or asked.
+- `blackice report [--last 1h]` sums the filter's log up: drops by reason and app, connections paused to ask by app,
+  and in accept-all what ask mode would have asked about, by app. It reads `log show` and needs no Touch ID.
+- A configuration change lets the connections that wait go on when the new configuration allows them outright
+  (accept-all, a rule, the Apple services table, loopback), logged as `accept_all;configuration_changed` and the
+  like. Until now all of them were dropped (`configuration_changed`), so switching from ask mode to accept-all cut
+  what waited. The rest is still dropped, and an answer given under the old configuration still lets nothing
+  through under the new one.
+- A deny is remembered for 10 minutes, from a hook, `blackice deny` or the menu: in ask mode the app's new
+  connections to that host are dropped at once as `denied;remembered`, with no event and no hook. On the Mac one
+  ad hoc binary was asked about 52 times in two days, mostly denied. No answer in time is not remembered. An
+  approval replaces the denial, a configuration change forgets it, and `blackice pending` lists them under "Denied
+  recently".
+- 34 more macOS services pass without a rule, each seen waiting in ask mode on the Mac on 3 and 4 November while
+  reaching only Apple's domains: Find My, iCloud settings, storage and Keychain escrow, Apple Media Services and
+  Music's library and artwork, Siri and Spotlight suggestions, Private Cloud Compute's gateway, key transparency,
+  call history sync, Safari's Safe Browsing service (not Safari), aerial wallpapers, Help, content cache discovery,
+  diagnostics submission and others. Most get only the hosts they reached; those on an iCloud host named after the
+  account's partition (`p404-…`) get `*.icloud.com`. accountsd, which signs in to other providers' accounts, stays
+  out.
+
 ## 0.4.0 (5 November 2026)
 
 Hooks answer on their output, Claude Code can be the agent, blackice sits in the menu bar, and upgrades no longer
