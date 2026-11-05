@@ -14,7 +14,8 @@ public struct MenuEntry: Equatable, Sendable {
         case separator
         /// A connection that waits, with Allow and Deny in its submenu.
         case waiting(WaitingEvent)
-        case recent
+        /// One line, "Recent: " and the latest decision; the last few in its submenu.
+        case recent([RecentLine])
         /// The Mode submenu: Accept All, Ask with each agent or you answering, Block All.
         case modes([ModeChoice])
         case command(MenuCommand)
@@ -58,6 +59,12 @@ public struct WaitingEvent: Equatable, Sendable {
     /// The disabled lines at the top of the submenu: the code's identity, the connections, the
     /// address and the path.
     public let lines: [String]
+}
+
+/// A decision on one line: "Denied Python → oauth2.googleapis.com", and "4m".
+public struct RecentLine: Equatable, Sendable {
+    public let title: String
+    public let detail: String?
 }
 
 public enum MenuCommand: Equatable, Sendable {
@@ -227,16 +234,15 @@ public enum MenuPresentation {
             }
         }
 
-        if !context.recent.isEmpty {
-            entries.append(MenuEntry(.separator, key: "recent.separator", title: ""))
-            entries.append(MenuEntry(.section, key: "recent.section", title: "Recent"))
-            for (index, decision) in context.recent.prefix(recentLimit).enumerated() {
-                let (title, detail) = recent(decision, now: now)
-                entries.append(MenuEntry(.recent, key: "recent.\(index)", title: title, detail: detail))
-            }
-        }
-
         entries.append(MenuEntry(.separator, key: "mode.separator", title: ""))
+        let recents = context.recent.prefix(recentLimit).map { decision -> RecentLine in
+            let (title, detail) = recent(decision, now: now)
+            return RecentLine(title: title, detail: detail)
+        }
+        if let latest = recents.first {
+            entries.append(MenuEntry(.recent(recents), key: "recent", title: "Recent: " + latest.title, detail: latest.detail,
+                                     enabled: true))
+        }
         // `blackice mode` waits until the filter names the new configuration, so it needs a filter
         // that answers.
         let modesEnabled = snapshot.isOn && snapshot.reachable

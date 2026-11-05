@@ -243,12 +243,18 @@ struct MenuPresentationTests {
         withRecent.hookRefused = now.addingTimeInterval(-600)
         let block = try saved(.blockAll)
         let entries = MenuPresentation.menu(MenuSnapshot(filter: .on(saved: block, hooks: 2), daemonRunning: false), withRecent, now: now)
-        let recent = entries.filter { $0.kind == .recent }
-        #expect(recent.map(\.title) == ["Allowed Safari → example.com", "Denied curl → pastebin.com", "Allowed git → github.com",
-                                        "Dropped curl → example.org", "Dropped nscurl → example.net"])
-        // One line each: the age after the title, no "by a hook" or reason.
-        #expect(recent.map(\.detail) == ["now", "5m", "6m", "2h", nil])
-        #expect(entries.first { $0.key == "recent.section" }?.title == "Recent")
+        // One line in the menu, the latest decision; the last five in its submenu, one line each, with
+        // the age after the title and no "by a hook" or reason.
+        let recent = try #require(entries.first { $0.key == "recent" })
+        #expect(recent.title == "Recent: Allowed Safari → example.com" && recent.detail == "now" && recent.enabled)
+        guard case .recent(let lines) = recent.kind else {
+            Issue.record("not the recent entry")
+            return
+        }
+        #expect(lines.map(\.title) == ["Allowed Safari → example.com", "Denied curl → pastebin.com", "Allowed git → github.com",
+                                       "Dropped curl → example.org", "Dropped nscurl → example.net"])
+        #expect(lines.map(\.detail) == ["now", "5m", "6m", "2h", nil])
+        #expect(!MenuPresentation.menu(MenuSnapshot(filter: .off), context).contains { $0.key == "recent" })
         #expect(entries.contains { $0.title == "Hooks won't run: blackice agent install" })
         #expect(entries.contains { $0.title == "A hook's signature did not match" && $0.detail == "10m" })
         // A filter that does not answer cannot take a new mode, which `blackice mode` waits for.
