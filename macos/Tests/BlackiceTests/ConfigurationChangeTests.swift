@@ -3,13 +3,24 @@ import Testing
 @testable import BlackiceCore
 
 // A configuration change while ask mode has connections paused. The extension installs the new
-// snapshot, then drops every paused flow and cancels its events (`configuration_changed`). A flow
-// callback that read the old snapshot can reach the pending list after that drop, and an answer
-// taken just before the change can be applied after it: FilterPolicy.isCurrent and
-// FilterPolicy.current keep either from letting a connection through under the new configuration.
-// The steps the extension takes between them are replayed here with the same types.
+// snapshot, then ends every paused and held flow and cancels its events: the new configuration
+// decides each one again (FilterPolicy.afterChange), lets go what it allows outright and drops the
+// rest (`configuration_changed`). A flow callback that read the old snapshot can reach the pending
+// list after that, and an answer taken just before the change can be applied after it:
+// FilterPolicy.isCurrent and FilterPolicy.current keep either from letting a connection through
+// under the new configuration. The steps the extension takes between them are replayed here with
+// the same types.
 
 private let tool = AppIdentity.signed(SigningIdentity(signingID: "com.example.tool", teamID: "ABCDE12345"))
+private let agent = IdentityResolution.verified(SigningIdentity(signingID: "com.example.agent", teamID: "ABCDE12345"))
+
+private func waiting(_ host: String?, identity: IdentityResolution = agent, port: UInt16 = 443,
+                     address: String = "203.0.113.7") -> FlowFacts {
+    FlowFacts(direction: .outbound, identity: identity, internetSocket: true, tcp: true, hostname: host, port: port,
+              remoteAddress: IPAddress(address))
+}
+
+private func answers(_ check: AddressCheck) -> (String, IPAddress?) -> AddressCheck { { _, _ in check } }
 
 /// A paused flow as the extension keeps it: with the generation it was decided under.
 private struct Waiting {
@@ -81,5 +92,73 @@ struct ConfigurationChangeTests {
                        Release(flow: Waiting(name: "old", generation: 7), allow: false, reason: "denied", eventID: event.id)]
         let kept = FilterPolicy.current(current, installed: blocked, generation: \.generation)
         #expect(kept.map(\.allow) == [true, false] && kept.map(\.reason) == ["approved", "denied"])
+    }
+
+    /// Switching from ask mode to accept-all dropped every connection that waited (20 at once on
+    /// the Mac). Now what the new configuration allows outright goes on.
+    @Test func whatTheNewConfigurationAllowsOutrightGoesOn() throws {
+        let acceptAll = try policySnapshot(.acceptAll, generation: 8)
+        let accepted = FlowVerdict.allow(reason: "accept_all;configuration_changed")
+        // Accept-all lets every waiting flow go: paused before or after its hello, held for it, or
+        // waiting for a lookup, whatever the cache knows of its host.
+        for check in [AddressCheck.match, .mismatch, .unknown] {
+            #expect(FilterPolicy.afterChange(waiting("other.example.com"), serverName: nil, echPresent: false,
+                                             snapshot: acceptAll, address: answers(check)) == accepted)
+            #expect(FilterPolicy.afterChange(waiting(nil), serverName: "other.example.com", echPresent: true,
+                                             snapshot: acceptAll, address: answers(check)) == accepted)
+            #expect(FilterPolicy.afterChange(waiting(nil, identity: .adHoc(cdhash: testCDHash), port: 22), serverName: nil,
+                                             echPresent: false, snapshot: acceptAll, address: answers(check)) == accepted)
+        }
+        // A rule of the new configuration: off port 443 once the address checks out, on it once the
+        // hello was read. Before the hello it would be read first, so the flow is dropped as before;
+        // nothing is looked up.
+        let blockAll = try policySnapshot(.blockAll, generation: 8)
+        let dropped = FlowVerdict.drop(reason: "configuration_changed")
+        #expect(FilterPolicy.afterChange(waiting("api.example.com", port: 8443), serverName: nil, echPresent: false,
+                                         snapshot: blockAll, address: answers(.match))
+            == .allow(reason: "rule_line_3;configuration_changed"))
+        #expect(FilterPolicy.afterChange(waiting("api.example.com"), serverName: "api.example.com", echPresent: false,
+                                         snapshot: blockAll, address: answers(.match))
+            == .allow(reason: "rule_line_3;server_name;configuration_changed"))
+        #expect(FilterPolicy.afterChange(waiting("api.example.com"), serverName: nil, echPresent: false,
+                                         snapshot: blockAll, address: answers(.match)) == dropped)
+        for check in [AddressCheck.unknown, .mismatch] {
+            #expect(FilterPolicy.afterChange(waiting("api.example.com", port: 8443), serverName: nil, echPresent: false,
+                                             snapshot: blockAll, address: answers(check)) == dropped)
+        }
+        #expect(FilterPolicy.afterChange(waiting("other.example.com", port: 8443), serverName: nil, echPresent: false,
+                                         snapshot: blockAll, address: answers(.match)) == dropped)
+        // The Apple services table and loopback count like a rule.
+        let cloudd = IdentityResolution.verified(SigningIdentity(signingID: "com.apple.cloudd", teamID: nil))
+        #expect(FilterPolicy.afterChange(waiting("p01-ckdatabase.icloud.com", identity: cloudd, port: 8443), serverName: nil,
+                                         echPresent: false, snapshot: blockAll, address: answers(.match))
+            == .allow(reason: "apple_service;configuration_changed"))
+        #expect(FilterPolicy.afterChange(waiting("other.example.com", port: 8443, address: "127.0.0.1"), serverName: nil,
+                                         echPresent: false, snapshot: blockAll, address: answers(.unknown))
+            == .allow(reason: "loopback;configuration_changed"))
+        // With nothing installed, nothing goes on.
+        #expect(FilterPolicy.afterChange(waiting("other.example.com"), serverName: nil, echPresent: false,
+                                         snapshot: nil, address: answers(.match)) == dropped)
+    }
+
+    /// Ask mode again, under a new generation: what it would ask about is dropped as before, and an
+    /// approval from the old configuration does not let it through.
+    @Test func anApprovalFromTheOldConfigurationDoesNotCarryOver() throws {
+        let ask = try policySnapshot(.ask, generation: 8)
+        var state = AskState<Waiting>()
+        let key = ApprovalKey(identity: try #require(agent.appIdentity), host: "other.example.com")
+        state.approvals.add(key, seconds: 600, now: 0)
+        let facts = waiting("other.example.com", port: 8443)
+        // A new flow under the new configuration counts the approval...
+        let approved = PolicyContext(approved: { state.approvals.covers(ApprovalKey(identity: $0, host: $1), now: 1) },
+                                     address: answers(.match))
+        #expect(FilterPolicy.decide(facts, snapshot: ask, context: approved) == .allow(reason: "approval"))
+        // ...but a flow that waited under the old one is decided with none, and dropped.
+        #expect(FilterPolicy.afterChange(facts, serverName: nil, echPresent: false, snapshot: ask, address: answers(.match))
+            == .drop(reason: "configuration_changed"))
+        // A rule in the new configuration still lets a waiting flow go in ask mode.
+        #expect(FilterPolicy.afterChange(waiting("api.example.com", port: 8443), serverName: nil, echPresent: false,
+                                         snapshot: ask, address: answers(.match))
+            == .allow(reason: "rule_line_3;configuration_changed"))
     }
 }

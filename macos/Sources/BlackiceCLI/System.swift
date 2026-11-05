@@ -41,10 +41,15 @@ public protocol SystemControlling {
     func uninstallAgent(output: SystemOutput) -> Int32
     /// The mode blackice filters in now; nil when it is not filtering (or that cannot be read).
     func runningMode() -> Mode?
+    /// `blackice report`: what `log show` prints of the filter's flow lines over the last
+    /// `minutes`. Reading the log needs neither Touch ID nor the signed app.
+    func flowLog(minutes: Int) -> LogShowResult
 }
 
 extension SystemControlling {
     public func runningMode() -> Mode? { nil }
+    /// /usr/bin/log, from any build.
+    public func flowLog(minutes: Int) -> LogShowResult { FlowLog.show(minutes: minutes) }
 }
 
 /// What every build says that is not Blackice.app signed with the Developer ID.

@@ -1,8 +1,8 @@
 import Foundation
 
 // Ask mode's state inside the extension, as plain values with tests (phase 2): the approvals,
-// the paused connections waiting for an answer, their one-time tokens, and what an answer or the
-// timeout does to them. The extension keeps one AskState behind a lock and turns the results
+// the denials remembered for a while, the paused connections waiting for an answer, their
+// one-time tokens, and what an answer or the timeout does to them. The extension keeps one AskState behind a lock and turns the results
 // into NetworkExtension calls; `Flow` is its paused flow, and a test's stand-in.
 //
 // Times are seconds on a monotonic clock (the system uptime in the extension), passed in by the
@@ -22,7 +22,8 @@ public struct ApprovalKey: Hashable, Sendable {
     }
 }
 
-/// Approvals in memory, each with an expiry. Gone when the extension stops.
+/// Approvals in memory, each with an expiry. Gone when the extension stops. AskState keeps its
+/// remembered denials in one too.
 public struct ApprovalTable: Sendable {
     public static let maximumSeconds = 86_400
     public static let maximumEntries = 1024
@@ -258,7 +259,15 @@ public struct Release<Flow> {
 }
 
 public struct AskState<Flow> {
+    /// How long a deny keeps the app and host from being asked about again.
+    public static var rememberedDenialSeconds: Int { 600 }
+
     public var approvals = ApprovalTable()
+    /// The app and host pairs denied in the last `rememberedDenialSeconds`, kept the way approvals
+    /// are: their new connections are dropped at once (`denied;remembered`), with no event and no
+    /// hook. Only an answer adds one, never a timeout or a hook with no answer; an approval of the
+    /// pair removes it, and a configuration change or a stop forgets them all (`endAll`).
+    public var denials = ApprovalTable()
     public var pending: PendingTable<Flow>
 
     public init(pending: PendingTable<Flow> = PendingTable()) {
@@ -279,9 +288,10 @@ public struct AskState<Flow> {
     /// With touch_id: the signed CLI confirmed a person, and any app and host may be named, with
     /// or without a pending event.
     ///
-    /// approve adds the approval and releases the paused flows for that app and host on every
-    /// port; a flow whose address did not match its host is dropped instead. deny drops them and
-    /// removes an approval for that app and host, if there is one.
+    /// approve adds the approval, replaces a remembered denial, and releases the paused flows for
+    /// that app and host on every port; a flow whose address did not match its host is dropped
+    /// instead. deny drops them, removes an approval for that app and host, if there is one, and
+    /// remembers the denial for `rememberedDenialSeconds`.
     public mutating func answer(_ request: AnswerRequest, now: TimeInterval) -> Outcome {
         guard let identity = request.identity, isNormalDestination(request.host) else {
             return refused("invalid_request", "the request does not name one app and one host")
@@ -307,6 +317,7 @@ public struct AskState<Flow> {
         switch request.kind {
         case .approve:
             let expires = approvals.add(key, seconds: request.seconds ?? 0, now: now)
+            let replaced = denials.remove(key)
             entries = pending.resolve(key)
             for entry in entries {
                 for paused in entry.flows {
@@ -316,15 +327,18 @@ public struct AskState<Flow> {
                 }
             }
             message = "approved \(identity.label) -> \(request.host) for \(Int((expires - now).rounded())) s"
+                + (replaced ? "; its denial was removed" : "")
         case .deny:
             let revoked = approvals.remove(key)
+            let remembered = denials.add(key, seconds: Self.rememberedDenialSeconds, now: now)
             entries = pending.resolve(key)
             for entry in entries {
                 for paused in entry.flows {
                     released.append(Release(flow: paused.flow, allow: false, reason: "denied", eventID: entry.event.id))
                 }
             }
-            message = "denied \(identity.label) -> \(request.host)" + (revoked ? "; its approval was removed" : "")
+            message = "denied \(identity.label) -> \(request.host) for \(Int((remembered - now).rounded())) s"
+                + (revoked ? "; its approval was removed" : "")
         }
         let verdict: Verdict = request.kind == .approve ? .approved : .denied
         let ids = entries.map(\.event.id)
@@ -337,10 +351,12 @@ public struct AskState<Flow> {
     }
 
     /// Drops the flows of events past their deadline, then the flows whose hold ran out while
-    /// their event stays pending (`hold_expired`), and forgets expired approvals. `timedOut`
-    /// lists only the events that ended.
+    /// their event stays pending (`hold_expired`), and forgets expired approvals and denials. An
+    /// event that times out is not remembered as a denial. `timedOut` lists only the events that
+    /// ended.
     public mutating func expire(now: TimeInterval) -> (released: [Release<Flow>], timedOut: [String]) {
         approvals.expire(now: now)
+        denials.expire(now: now)
         let entries = pending.expire(now: now)
         var released = entries.flatMap { entry in
             entry.flows.map { Release(flow: $0.flow, allow: false, reason: "timeout", eventID: entry.event.id) }
@@ -349,6 +365,13 @@ public struct AskState<Flow> {
             Release(flow: $0.flow, allow: false, reason: "hold_expired", eventID: $0.eventID)
         }
         return (released, entries.map(\.event.id))
+    }
+
+    /// A configuration change or a stop: removes and returns every pending event, and forgets
+    /// the denials, which belong to the configuration they were given under. Approvals stay.
+    public mutating func endAll() -> [PendingEntry<Flow>] {
+        denials.removeAll()
+        return pending.removeAll()
     }
 
     private func refused(_ reason: String, _ message: String) -> Outcome {

@@ -3,7 +3,8 @@
 An application firewall for macOS that you run from the command line. It sees every new outbound connection, from
 any app, and has three modes:
 
-- `accept-all` lets everything through and logs it.
+- `accept-all` lets everything through and logs it, with what ask mode would have done (`blackice report` sums it
+  up).
 - `block-all` lets through only what your rules allow.
 - `ask` pauses any connection no rule covers until someone answers. A hook can pass the question to an agent such as
   [fx](https://github.com/vercel-labs/fx), which answers with `blackice approve` or `blackice deny`.
