@@ -25,13 +25,17 @@ Changed:
   853) is dropped at once as `encrypted_dns`, where it used to be asked about or dropped as `no_host`. macOS then
   uses plain DNS, whose answers blackice reads to name the addresses apps connect to. A rule for
   `com.apple.mDNSResponder` lets an encrypted resolver through.
+- A connection the app closed before it sent a byte is logged as `closed_before_hello`, where it was `tls_unparsed`,
+  and `blackice report` lists those apart from the drops: nothing was cut. Claude Code opens two connections at once
+  (IPv6 and IPv4), uses the first one up and closes the other, and in ask mode its report read as 7 drops.
 
 Fixed:
 - An app updated while it runs keeps its identity. When an update removed the program file of a running app, as
   Homebrew does with the old version, macOS could no longer check its signature, and ask and block-all dropped all
   its connections as `unknown_identity`: on 5 November 2026 that cut off a running Claude Code the minute Homebrew
   upgraded it. blackice now keeps the identity it checked while the file was there, for as long as that process
-  runs, also across an upgrade or a stop and start of blackice in the same boot.
+  runs, also across an upgrade or a stop and start of blackice in the same boot. When its cache of identities fills
+  up, it forgets the processes that ended, where it used to forget them all.
 - `blackice start` after an upgrade loads the new configuration into the new extension. macOS starts the new build
   with the configuration saved before, and a save made while it starts could miss it: on 5 November 2026 the 0.4.1
   build came up with the old configuration and `start` said the filter "did not load the configuration just saved".
