@@ -14,7 +14,7 @@ The parts of blackice, and what happens to one connection in ask mode.
 
 - **Blackice.app** has no window and lives in `/Applications`, because macOS activates system extensions only from there. It contains the network extension and the `blackice` binary, which is also its menu bar app: opened from Finder or at login, it shows the mode and what waits, and answers by hand with Touch ID through the same code as the CLI.
 - **The extension** is an `NEFilterDataProvider`. It allows or drops each new flow, and in ask mode it pauses the flow until an answer arrives.
-- **The daemon** runs as a LaunchAgent for the user (`blackice agent install`), receives events over XPC and runs the hooks. It takes them from the extension, which holds the configuration saved with Touch ID, never from a file.
+- **The daemon** runs as a LaunchAgent for the user (`blackice agent install`), receives events over XPC and runs the hooks. It takes them from the extension, which holds the configuration saved with Touch ID, never from a file. A hook answers on its last line of output, and the daemon sends that answer to the extension with the event's one-time token, which the hook never sees.
 
 ## One connection in ask mode
 
@@ -25,6 +25,7 @@ Rules from `blackice.toml`, the built-in list of macOS services and current appr
 ## Open problems
 
 - The deciding agent needs the network to reach its model. A fixed rule for it, bound to its signature, keeps it from waiting on its own approval.
-- Host names and app names come from whoever opens the connection and end up in the model's prompt. Events carry them as structured fields, and the only answers are approve and deny.
+- Host names and app names come from whoever opens the connection and end up in the model's prompt. Events carry them as structured fields, and the only answers are a `deny` line or an `approve` line with a duration. The app and host of an answer come from the event, not from the agent.
 - A tool that connects to an address, such as `curl`, has its TCP connection open while it waits, and servers close a connection that sends nothing after 11 to 15 s. When the decision takes longer, its first try fails and only the retry after the approval gets through. Apps that connect by name, through URLSession, are paused before they connect and wait the whole timeout.
+- Any program running as you can change what a hook reads, such as the event file or the agent's skill and rules, and so steer it into approving, its own connection included. The approval still covers only the app and host of the event. A `run` hook's program can be swapped as well; a `program` hook starts only when its signature checks out.
 - After an upgrade in place, macOS 27.0.1 left the new extension without its XPC service until the Mac restarted, so an upgrade needs a restart.

@@ -125,9 +125,10 @@ export function FigAsk({ n }: { n?: number }) {
       {msg(146, 270, 450, 'event over XPC', 'warn')}
       {msg(186, 450, 630, 'run hook with the event')}
       {note(490, 202, 130, 'agent decides')}
-      {msg(256, 630, 270, 'blackice approve … --host example.com --for 1h', 'ok')}
-      {note(280, 272, 150, 'resume: allow')}
-      {msg(326, 270, 80, 'connection proceeds', 'ok')}
+      {msg(250, 630, 450, 'last line: approve 1h', 'ok')}
+      {msg(282, 450, 270, 'answer + token', 'ok')}
+      {note(280, 292, 150, 'resume: allow')}
+      {msg(336, 270, 80, 'connection proceeds', 'ok')}
       <line x1="12" y1="352" x2="708" y2="352" className="f-life" />
       <T x={708} y={346} c="f-lbl f-txt-warn" anchor="end">
         or, with no answer in N seconds
@@ -166,19 +167,23 @@ export function FigArchitecture({ n }: { n?: number }) {
       <Box x={556} y={136} w={154} h={40} title="blackice.toml" sub="mode, hooks, rules" />
       <Box x={520} y={208} w={190} h={52} title="hook: fx" sub="the agent decides" tone="warn" />
 
-      <Line p={p} tone="warn" d="M446 100 L518 100" />
-      <T x={482} y={93} c="f-lbl f-txt-warn" anchor="middle">
+      <Line p={p} tone="warn" d="M446 94 L518 94" />
+      <T x={482} y={87} c="f-lbl f-txt-warn" anchor="middle">
         events
+      </T>
+      <Line p={p} tone="ok" d="M518 108 L448 108" />
+      <T x={482} y={124} c="f-lbl f-txt-ok" anchor="middle">
+        answer
       </T>
       <line x1="633" y1="136" x2="633" y2="112" className="f-life" />
       <Line p={p} d="M532 112 L532 206" />
-      <Line p={p} tone="ok" d="M520 244 L448 244" />
-      <T x={484} y={236} c="f-lbl f-txt-ok" anchor="middle">
-        approve
+      <Line p={p} tone="ok" d="M546 206 L546 114" />
+      <T x={554} y={196} c="f-lbl f-txt-ok">
+        last line
       </T>
       <Line p={p} tone="ok" d="M330 212 L330 154" />
       <T x={338} y={188} c="f-lbl f-txt-ok">
-        XPC + token
+        XPC, Touch ID
       </T>
     </Fig>
   )

@@ -156,7 +156,7 @@ struct DNSNamePolicyTests {
         #expect(try decide(shared, serverName: "c.example.com", .ask) == .resolveHost("c.example.com"))
         // A host name from the system counts the same way, even when blackice's own lookup got
         // other answers (round robin).
-        let named = bare(agent, ["api.example.com"], host: "api.example.com")
+        let named = bare(agent, ["api.example.com"], port: 8443, host: "api.example.com")
         #expect(try decide(named, .blockAll) == .allow(reason: "rule_line_3"))
         #expect(try decide(named, .blockAll, context(answers: ["api.example.com": ["198.51.100.9"]])) == .allow(reason: "rule_line_3"))
         // A host name from the system wins over a DNS name.
@@ -186,7 +186,8 @@ struct DNSNamePolicyTests {
 
         #expect(FilterPolicy.needsServerName(bare(probe, ["example.org"])))
         #expect(!FilterPolicy.needsServerName(bare(probe, ["example.org"], port: 22)))
-        #expect(!FilterPolicy.needsServerName(bare(probe, [], host: "example.org")))
+        // A host name from the system: still held to its server name once allowed.
+        #expect(FilterPolicy.needsServerName(bare(probe, [], host: "example.org")))
         #expect(!FilterPolicy.needsServerName(bare(probe, [], tcp: false)))
     }
 

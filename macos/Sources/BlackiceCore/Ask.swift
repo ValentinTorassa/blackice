@@ -107,6 +107,13 @@ public struct PendingEntry<Flow> {
     public fileprivate(set) var tokenSpent = false
 }
 
+/// What the extension's pending table holds at most. `PendingReply` takes its limits from here.
+public enum AskLimits {
+    public static let events = 256
+    public static let flows = 1024
+    public static let flowsPerEvent = 64
+}
+
 /// The paused connections waiting for an answer, at most one event per app, host and port.
 public struct PendingTable<Flow> {
     public let maximumEvents: Int
@@ -117,7 +124,8 @@ public struct PendingTable<Flow> {
     private var idsByKey: [PendingKey: String] = [:]
     public private(set) var flowCount = 0
 
-    public init(maximumEvents: Int = 256, maximumFlows: Int = 1024, maximumFlowsPerEvent: Int = 64) {
+    public init(maximumEvents: Int = AskLimits.events, maximumFlows: Int = AskLimits.flows,
+                maximumFlowsPerEvent: Int = AskLimits.flowsPerEvent) {
         self.maximumEvents = maximumEvents
         self.maximumFlows = maximumFlows
         self.maximumFlowsPerEvent = maximumFlowsPerEvent

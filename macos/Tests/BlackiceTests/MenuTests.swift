@@ -17,6 +17,16 @@ private func summary(_ id: String = "ev-0a1b2c3d", app: AppReference = safari,
 
 private let context = MenuContext(version: "0.3.2 (build 15)", login: .off, configExists: true, logExists: true)
 
+/// The configuration saved, as the filter names it.
+private func saved(_ mode: Mode, generation: UInt64 = 3) throws -> ActiveConfiguration {
+    ActiveConfiguration(try ProviderConfiguration(generation: generation, mode: mode, configText: "mode = \"ask\"\n"))
+}
+
+/// The filter's answer to pending, deciding with `active`.
+private func answering(_ active: ActiveConfiguration, _ events: [PendingSummary] = []) -> PendingReply {
+    PendingReply(events: events, approvals: [], active: active)
+}
+
 private func titles(_ entries: [MenuEntry]) -> [String] {
     entries.compactMap { $0.kind == .separator ? nil : $0.title }
 }
@@ -85,46 +95,59 @@ struct MenuTextTests {
 }
 
 struct MenuPresentationTests {
-    @Test func theStatusItemIsFullOnlyWhileFiltering() {
-        let ask = MenuSnapshot(filter: .on(.ask, hooks: 1), pending: PendingReply(events: [summary(), summary("ev-0a1b2c3e")], approvals: []))
-        #expect(MenuPresentation.statusItem(ask) == StatusItemLook(dimmed: false, count: "2", toolTip: "blackice: Ask mode, 2 waiting"))
-        let block = MenuSnapshot(filter: .on(.blockAll, hooks: 0), pending: PendingReply(events: [], approvals: []))
-        #expect(MenuPresentation.statusItem(block) == StatusItemLook(dimmed: false, count: "", toolTip: "blackice: Block all"))
-        let accept = MenuSnapshot(filter: .on(.acceptAll, hooks: 0), pending: PendingReply(events: [], approvals: []))
-        #expect(MenuPresentation.statusItem(accept).dimmed)
-        let unreachable = MenuSnapshot(filter: .on(.ask, hooks: 1))
+    @Test func theStatusItemIsFullOnlyWhileFiltering() throws {
+        let ask = try saved(.ask), block = try saved(.blockAll), accept = try saved(.acceptAll)
+        let waiting = MenuSnapshot(filter: .on(saved: ask, hooks: 1), pending: answering(ask, [summary(), summary("ev-0a1b2c3e")]))
+        #expect(MenuPresentation.statusItem(waiting) == StatusItemLook(dimmed: false, count: "2", toolTip: "blackice: Ask mode, 2 waiting"))
+        #expect(MenuPresentation.statusItem(MenuSnapshot(filter: .on(saved: block, hooks: 0), pending: answering(block))) ==
+                StatusItemLook(dimmed: false, count: "", toolTip: "blackice: Block all"))
+        #expect(MenuPresentation.statusItem(MenuSnapshot(filter: .on(saved: accept, hooks: 0), pending: answering(accept))).dimmed)
+        // The mode the filter reports counts, not the one saved.
+        #expect(MenuPresentation.statusItem(MenuSnapshot(filter: .on(saved: ask, hooks: 0), pending: answering(accept))).dimmed)
+        #expect(!MenuPresentation.statusItem(MenuSnapshot(filter: .on(saved: accept, hooks: 0), pending: answering(block))).dimmed)
+        // A filter that holds no configuration lets nothing new through.
+        let empty = PendingReply(events: [], approvals: [])
+        #expect(!MenuPresentation.statusItem(MenuSnapshot(filter: .on(saved: accept, hooks: 0), pending: empty)).dimmed)
+        let unreachable = MenuSnapshot(filter: .on(saved: ask, hooks: 1))
         #expect(MenuPresentation.statusItem(unreachable) == StatusItemLook(dimmed: true, count: "", toolTip: "blackice: Not reachable"))
         for filter in [MenuSnapshot.Filter.off, .unsignedBuild, .foreign, .unreadable, .unknown] {
             #expect(MenuPresentation.statusItem(MenuSnapshot(filter: filter)).dimmed)
         }
     }
 
-    @Test func theHeaderSaysTheModeOrWhy() {
+    @Test func theHeaderSaysTheModeOrWhy() throws {
         func header(_ snapshot: MenuSnapshot) -> [String] {
             let (title, notes) = MenuPresentation.header(snapshot)
             return [title] + notes
         }
-        let answering = PendingReply(events: [], approvals: [])
-        #expect(header(MenuSnapshot(filter: .on(.ask, hooks: 1), pending: answering)) == ["Ask mode"])
-        #expect(header(MenuSnapshot(filter: .on(.blockAll, hooks: 1), pending: answering)) == ["Block all"])
-        #expect(header(MenuSnapshot(filter: .on(.acceptAll, hooks: 1), pending: answering)) == ["Accept all"])
+        let ask = try saved(.ask), block = try saved(.blockAll), accept = try saved(.acceptAll)
+        #expect(header(MenuSnapshot(filter: .on(saved: ask, hooks: 1), pending: answering(ask))) == ["Ask mode"])
+        #expect(header(MenuSnapshot(filter: .on(saved: block, hooks: 1), pending: answering(block))) == ["Block all"])
+        #expect(header(MenuSnapshot(filter: .on(saved: accept, hooks: 1), pending: answering(accept))) == ["Accept all"])
         #expect(header(MenuSnapshot(filter: .off)) == ["Off", "Turn it on with: blackice start"])
         #expect(header(MenuSnapshot(filter: .unsignedBuild)) == ["Not reachable", "This build is not the signed Blackice.app"])
-        #expect(header(MenuSnapshot(filter: .on(.blockAll, hooks: 0))) ==
+        #expect(header(MenuSnapshot(filter: .on(saved: block, hooks: 0))) ==
                 ["Not reachable", "Set to block all, but the filter does not answer", "If blackice was just upgraded, restart the Mac"])
-        #expect(header(MenuSnapshot(filter: .on(.ask, hooks: 0), upgradeUnfinished: true)) ==
-                ["Not reachable", "Set to ask mode, but the filter does not answer", "Upgrade not finished: run blackice start"])
-        #expect(header(MenuSnapshot(filter: .on(.ask, hooks: 0), pending: answering, upgradeUnfinished: true)) ==
-                ["Ask mode", "Upgrade not finished: run blackice start"])
+        let upgrade = try #require(UnfinishedUpgrade(app: "15", running: ["14"]))
+        #expect(header(MenuSnapshot(filter: .on(saved: ask, hooks: 0), upgrade: upgrade)) ==
+                ["Upgrade not finished: run blackice start", "The filter is still build 14; this app is build 15"])
+        #expect(header(MenuSnapshot(filter: .on(saved: ask, hooks: 0), pending: answering(ask), upgrade: upgrade)) == ["Ask mode"])
+        // As blackice status: a filter that kept another configuration, or holds none.
+        #expect(header(MenuSnapshot(filter: .on(saved: try saved(.blockAll, generation: 4), hooks: 0), pending: answering(ask))) ==
+                ["Ask mode", "The filter did not take the saved settings (block all)", "Load them again with: blackice start"])
+        #expect(header(MenuSnapshot(filter: .on(saved: try saved(.ask, generation: 4), hooks: 0), pending: answering(ask))) ==
+                ["Ask mode", "The filter did not take the saved settings", "Load them again with: blackice start"])
+        #expect(header(MenuSnapshot(filter: .on(saved: ask, hooks: 0), pending: PendingReply(events: [], approvals: []))) ==
+                ["No configuration", "The filter lets no new connection through", "Load yours again with: blackice start"])
     }
 
     @Test func waitingConnectionsCountDownAndOfferTheHandAnswers() throws {
         let readAt = Date(timeIntervalSince1970: 1_000_000)
-        let pending = PendingReply(events: [summary(secondsLeft: 40, connections: 2),
-                                            summary("ev-0a1b2c3e", app: vscode, path: nil, host: "update.code.visualstudio.com",
-                                                    secondsLeft: 3, connections: 0)],
-                                   approvals: [])
-        let snapshot = MenuSnapshot(filter: .on(.ask, hooks: 1), pending: pending, daemonRunning: true, readAt: readAt)
+        let ask = try saved(.ask)
+        let pending = answering(ask, [summary(secondsLeft: 40, connections: 2),
+                                      summary("ev-0a1b2c3e", app: vscode, path: nil, host: "update.code.visualstudio.com",
+                                              secondsLeft: 3, connections: 0)])
+        let snapshot = MenuSnapshot(filter: .on(saved: ask, hooks: 1), pending: pending, daemonRunning: true, readAt: readAt)
         let entries = MenuPresentation.menu(snapshot, context, now: readAt.addingTimeInterval(5))
         #expect(titles(entries) == [
             "Ask mode", "blackice 0.3.2 (build 15)",
@@ -143,7 +166,7 @@ struct MenuPresentationTests {
         #expect(first.lines == ["apple/com.apple.Safari", "2 connections wait", "example.com:443 (203.0.113.7)",
                                 "/Applications/Safari.app/Contents/MacOS/Safari"])
         #expect(second.lines[1] == "No connection left; an approval covers the next try")
-        // The same requests as blackice approve --for 10m / 1h and deny, without a token: Touch ID.
+        // The same requests as blackice approve --for 10m / 1h and deny: Touch ID, no token.
         #expect(MenuAnswer.all.map(\.title) == ["Allow for 10 Minutes", "Allow for 1 Hour", "Deny"])
         let requests = MenuAnswer.all.map { $0.request(for: first) }
         #expect(requests.map(\.kind) == [.approve, .approve, .deny])
@@ -154,17 +177,15 @@ struct MenuPresentationTests {
         #expect(entries.contains { $0.kind == .modes(current: .ask) && $0.enabled })
     }
 
-    @Test func manyWaitingConnectionsAreCut() {
+    @Test func manyWaitingConnectionsAreCut() throws {
+        let ask = try saved(.ask), block = try saved(.blockAll)
         let events = (0..<20).map { summary(String(format: "ev-%08x", $0), host: "h\($0).example.com") }
-        let entries = MenuPresentation.menu(MenuSnapshot(filter: .on(.ask, hooks: 0), pending: PendingReply(events: events, approvals: [])),
-                                            context)
+        let entries = MenuPresentation.menu(MenuSnapshot(filter: .on(saved: ask, hooks: 0), pending: answering(ask, events)), context)
         #expect(entries.filter { $0.key.hasPrefix("waiting.ev-") }.count == MenuPresentation.waitingLimit)
         #expect(entries.contains { $0.title == "8 more: blackice pending" })
-        let quiet = MenuPresentation.menu(MenuSnapshot(filter: .on(.ask, hooks: 0), pending: PendingReply(events: [], approvals: [])),
-                                          context)
+        let quiet = MenuPresentation.menu(MenuSnapshot(filter: .on(saved: ask, hooks: 0), pending: answering(ask)), context)
         #expect(quiet.contains { $0.title == "Nothing waits for an answer" })
-        let blocking = MenuPresentation.menu(MenuSnapshot(filter: .on(.blockAll, hooks: 0), pending: PendingReply(events: [], approvals: [])),
-                                             context)
+        let blocking = MenuPresentation.menu(MenuSnapshot(filter: .on(saved: block, hooks: 0), pending: answering(block)), context)
         #expect(!blocking.contains { $0.key == "waiting.section" })
     }
 
@@ -181,35 +202,47 @@ struct MenuPresentationTests {
         #expect(enabled == ["Documentation", "Quit Menu (filtering continues)"])
     }
 
-    @Test func recentDecisionsAndTheOtherLines() {
+    @Test func recentDecisionsAndTheOtherLines() throws {
         let now = Date(timeIntervalSince1970: 2_000_000)
         var withRecent = context
         withRecent.recent = [
-            RecentDecision(verdict: .approved, app: "Safari", host: "example.com", date: now.addingTimeInterval(-30)),
-            RecentDecision(verdict: .denied, app: "curl", host: "pastebin.com", date: now.addingTimeInterval(-300)),
+            RecentDecision(verdict: .approved, app: "Safari", host: "example.com", date: now.addingTimeInterval(-30), by: .hand),
+            RecentDecision(verdict: .denied, app: "curl", host: "pastebin.com", date: now.addingTimeInterval(-300), by: .hook),
+            RecentDecision(verdict: .approved, app: "git", host: "github.com", date: now.addingTimeInterval(-400)),
             RecentDecision(verdict: .timedOut, app: "curl", host: "example.org", date: now.addingTimeInterval(-7200)),
             RecentDecision(verdict: .cancelled, app: "nscurl", host: "example.net", date: nil),
         ]
+        withRecent.hookRefused = now.addingTimeInterval(-600)
         withRecent.login = .on
-        let entries = MenuPresentation.menu(MenuSnapshot(filter: .on(.blockAll, hooks: 2), daemonRunning: false), withRecent, now: now)
+        let block = try saved(.blockAll)
+        let entries = MenuPresentation.menu(MenuSnapshot(filter: .on(saved: block, hooks: 2), daemonRunning: false), withRecent, now: now)
         let recent = entries.filter { $0.kind == .recent }
-        #expect(recent.map(\.title) == ["Allowed Safari → example.com", "Denied curl → pastebin.com",
+        #expect(recent.map(\.title) == ["Allowed Safari → example.com", "Denied curl → pastebin.com", "Allowed git → github.com",
                                         "Dropped curl → example.org", "Dropped nscurl → example.net"])
-        #expect(recent.map(\.detail) == ["just now", "5 min ago", "no answer in time, 2 h ago", "settings changed"])
+        #expect(recent.map(\.detail) == ["by hand, just now", "by a hook, 5 min ago", "6 min ago", "no answer in time, 2 h ago",
+                                         "settings changed"])
         #expect(entries.contains { $0.title == "Hooks: 2, but the daemon is not running" })
         #expect(entries.contains { $0.title == "Start it with: blackice agent install" })
+        #expect(entries.contains { $0.title == "A hook did not run: its signature did not match" && $0.detail == "10 min ago" })
         #expect(entries.contains { $0.key == "login" && $0.checked && $0.enabled })
+        // A filter that does not answer cannot take a new mode, which `blackice mode` waits for.
+        #expect(entries.contains { $0.kind == .modes(current: .blockAll) && !$0.enabled })
         #expect(MenuPresentation.hooksLine(hooks: 0, daemonRunning: true).0 == "Hooks: none, daemon running")
         #expect(MenuPresentation.hooksLine(hooks: 1, daemonRunning: nil).0 == "Hooks: 1")
+        // A refused hook stays in the menu for an hour.
+        withRecent.hookRefused = now.addingTimeInterval(-MenuPresentation.refusedHookWindow)
+        #expect(!MenuPresentation.menu(MenuSnapshot(filter: .on(saved: block, hooks: 2)), withRecent, now: now)
+            .contains { $0.key == "hooks.refused" })
         // An off filter has no mode to switch from.
         let off = MenuPresentation.menu(MenuSnapshot(filter: .off), context)
         #expect(off.contains { $0.kind == .modes(current: nil) && !$0.enabled })
         #expect(!off.contains { $0.key == "hooks" })
     }
 
-    @Test func keysStayWhileTheLinesMeanTheSame() {
+    @Test func keysStayWhileTheLinesMeanTheSame() throws {
         let readAt = Date()
-        let snapshot = MenuSnapshot(filter: .on(.ask, hooks: 1), pending: PendingReply(events: [summary()], approvals: []), readAt: readAt)
+        let ask = try saved(.ask)
+        let snapshot = MenuSnapshot(filter: .on(saved: ask, hooks: 1), pending: answering(ask, [summary()]), readAt: readAt)
         let now = MenuPresentation.menu(snapshot, context, now: readAt)
         let later = MenuPresentation.menu(snapshot, context, now: readAt.addingTimeInterval(3))
         #expect(now.map(\.key) == later.map(\.key))
@@ -229,17 +262,16 @@ struct MenuStateTests {
         #expect(MenuSnapshot.Filter(SavedFilter(providerBundleID: BlackiceIdentifiers.filter, enabled: true,
                                                 configuration: nil)) == .unreadable)
         #expect(MenuSnapshot.Filter(SavedFilter(providerBundleID: BlackiceIdentifiers.filter, enabled: true,
-                                                configuration: configuration)) == .on(.ask, hooks: 0))
+                                                configuration: configuration)) ==
+                .on(saved: ActiveConfiguration(configuration), hooks: 0))
     }
 
-    @Test func anUpgradeIsUnfinishedWhileAnOlderExtensionRuns() {
-        #expect(UpgradeCheck.unfinished(appBuild: "15", runningBuilds: ["14"]))
-        #expect(UpgradeCheck.unfinished(appBuild: "15", runningBuilds: ["13", "14"]))
-        #expect(!UpgradeCheck.unfinished(appBuild: "15", runningBuilds: ["14", "15"]))
-        #expect(!UpgradeCheck.unfinished(appBuild: "15", runningBuilds: ["15.0"]))
-        #expect(!UpgradeCheck.unfinished(appBuild: "15", runningBuilds: []))
-        #expect(!UpgradeCheck.unfinished(appBuild: nil, runningBuilds: ["14"]))
-        #expect(!UpgradeCheck.unfinished(appBuild: "15", runningBuilds: ["fourteen"]))
+    @Test func theModeIsTheOneTheFilterDecidesIn() throws {
+        let ask = try saved(.ask), block = try saved(.blockAll, generation: 4)
+        #expect(MenuSnapshot(filter: .on(saved: block, hooks: 0), pending: answering(ask)).mode == .ask)
+        #expect(MenuSnapshot(filter: .on(saved: block, hooks: 0)).mode == .blockAll)
+        #expect(MenuSnapshot(filter: .on(saved: block, hooks: 0), pending: PendingReply(events: [], approvals: [])).mode == nil)
+        #expect(MenuSnapshot(filter: .off, pending: answering(ask)).mode == nil)
     }
 
     @Test func onlyTheSignedAppInApplicationsOpensAtLogin() {
@@ -259,6 +291,10 @@ struct MenuStateTests {
         #expect(SystemAdapter.result(ExitCode.noPermission, ["blackice approve: the event is gone"]) ==
                 .failed("blackice approve: the event is gone"))
         #expect(SystemAdapter.result(ExitCode.unavailable, []) == .failed("blackice stopped with status 69."))
+        // A mode the filter did not take: the lines `blackice mode` prints, exit 70.
+        let saved = try? ProviderConfiguration(generation: 5, mode: .blockAll, configText: "mode = \"ask\"\n")
+        let lines = saved.map { CLI.notActiveLines($0, .other(nil)) } ?? []
+        #expect(SystemAdapter.result(CLI.activationStatus(.other(nil)), lines) == .failed(lines.joined(separator: "\n")))
     }
 
     @Test func theMarkIsTheLogosPath() {
@@ -287,11 +323,11 @@ struct RecentDecisionsTests {
         try log.append(.verdict(eventID: "ev-00000002", .denied), at: start.addingTimeInterval(9))
         try log.append(.verdict(eventID: "ev-0000ffff", .timedOut), at: start.addingTimeInterval(10))
         let recent = RecentDecisions(url: url)
-        #expect(recent.latest(limit: 5) == [
-            RecentDecision(verdict: .denied, app: "Tool", host: "pastebin.com", date: start.addingTimeInterval(9)),
-            RecentDecision(verdict: .approved, app: "Tool", host: "example.com", date: start.addingTimeInterval(5)),
-        ])
-        #expect(recent.latest(limit: 1).count == 1)
+        #expect(recent.latest(limit: 5) == EventLogSummary(decisions: [
+            RecentDecision(verdict: .denied, app: "Tool", host: "pastebin.com", date: start.addingTimeInterval(9), by: .hand),
+            RecentDecision(verdict: .approved, app: "Tool", host: "example.com", date: start.addingTimeInterval(5), by: .hand),
+        ]))
+        #expect(recent.latest(limit: 1).decisions.count == 1)
 
         // A line someone else wrote into the log is cleaned like the rest; junk is skipped.
         let handle = try FileHandle(forWritingTo: url)
@@ -299,8 +335,70 @@ struct RecentDecisionsTests {
         let forged = #"{"type":"event_received","event":"ev-00000003","app_path":"/x/Evil‮ppa.app/y","host":"a‮b.example","ip":"203.0.113.9","port":443}"#
         try handle.write(contentsOf: Data((forged + "\nnot json\n" + #"{"type":"verdict","event":"ev-00000003","verdict":"approved","ts":"2027-01-15T08:00:00.123Z"}"# + "\n").utf8))
         try handle.close()
-        let latest = recent.latest(limit: 1)
+        let latest = recent.latest(limit: 1).decisions
         #expect(latest.first?.app == "Evilppa" && latest.first?.host == "ab.example" && latest.first?.date != nil)
+    }
+
+    /// A hook's answer that the extension took, a person's, and the last refused hook, from the
+    /// records the daemon writes.
+    @Test func whoAnswered() throws {
+        let directory = try makePrivateDirectory()
+        defer { removeTree(directory) }
+        let url = directory.appendingPathComponent("events.jsonl")
+        let log = try EventLog(url: url)
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        func finished(_ id: String, _ outcome: HookResult.Outcome) throws {
+            try log.append(.hookFinished(eventID: id, HookResult(hookLine: 7, outcome: outcome, stderr: "", stderrTruncated: false,
+                                                                 duration: 1)), at: start)
+        }
+        // A hook answered and the extension took it.
+        try log.append(.eventReceived(testEvent(host: "a.example", id: "ev-00000001")), at: start)
+        try log.append(.hookStarted(eventID: "ev-00000001", hookLine: 7, pid: 42), at: start)
+        try finished("ev-00000001", .exited(status: 0))
+        try log.append(.hookAnswered(eventID: "ev-00000001", hookLine: 7, .approve(seconds: 600)), at: start)
+        try log.append(.verdict(eventID: "ev-00000001", .approved), at: start.addingTimeInterval(1))
+        // A person denied first, so the hook's late answer was refused.
+        try log.append(.eventReceived(testEvent(host: "b.example", id: "ev-00000002")), at: start)
+        try log.append(.hookStarted(eventID: "ev-00000002", hookLine: 7, pid: 43), at: start)
+        try log.append(.verdict(eventID: "ev-00000002", .denied), at: start.addingTimeInterval(2))
+        try finished("ev-00000002", .exited(status: 0))
+        try log.append(.hookAnswered(eventID: "ev-00000002", hookLine: 7, .approve(seconds: 600)), at: start)
+        try log.append(.answerRefused(eventID: "ev-00000002", hookLine: 7, reason: "token_spent"), at: start.addingTimeInterval(3))
+        // The hook gave no answer and a person approved.
+        try log.append(.eventReceived(testEvent(host: "c.example", id: "ev-00000003")), at: start)
+        try log.append(.hookStarted(eventID: "ev-00000003", hookLine: 7, pid: 44), at: start)
+        try finished("ev-00000003", .exited(status: 1))
+        try log.append(.hookNoAnswer(eventID: "ev-00000003", hookLine: 7, .exitStatus(1)), at: start)
+        try log.append(.verdict(eventID: "ev-00000003", .approved), at: start.addingTimeInterval(4))
+        // A person approved while the hook still ran: not known yet.
+        try log.append(.eventReceived(testEvent(host: "d.example", id: "ev-00000004")), at: start)
+        try log.append(.hookStarted(eventID: "ev-00000004", hookLine: 7, pid: 45), at: start)
+        try log.append(.verdict(eventID: "ev-00000004", .approved), at: start.addingTimeInterval(5))
+        // The hook program's signature did not match, so it never ran.
+        try log.append(.eventReceived(testEvent(host: "e.example", id: "ev-00000005")), at: start)
+        try finished("ev-00000005", .refused(found: "invalid_signature"))
+        try log.append(.verdict(eventID: "ev-00000005", .timedOut), at: start.addingTimeInterval(30))
+        // One hook's answer closes every event of the same app and host, while their own hooks wait.
+        let later = start.addingTimeInterval(60)
+        for id in ["ev-00000006", "ev-00000007"] {
+            try log.append(.eventReceived(testEvent(host: "f.example", id: id)), at: later)
+            try log.append(.hookQueued(eventID: id, hookLine: 7, waiting: 1), at: later)
+        }
+        try log.append(.hookAnswered(eventID: "ev-00000006", hookLine: 7, .deny), at: later)
+        try log.append(.verdict(eventID: "ev-00000006", .denied), at: later)
+        try log.append(.verdict(eventID: "ev-00000007", .denied), at: later.addingTimeInterval(0.1))
+        let summary = RecentDecisions(url: url).latest(limit: 10)
+        #expect(summary.decisions.map(\.host) == ["f.example", "f.example", "e.example", "d.example", "c.example", "b.example",
+                                                  "a.example"])
+        #expect(summary.decisions.map(\.by) == [.hook, .hook, nil, nil, .hand, .hand, .hook])
+        #expect(summary.hookRefused == start)
+
+        // A log from before hooks answered on their output: the hook ran, and nothing says more.
+        let old = #"{"type":"event_received","event":"ev-00000008","app_signing_id":"com.apple.curl","host":"pypi.org","ip":"203.0.113.1","port":443}"# + "\n" +
+            #"{"type":"hook_started","event":"ev-00000008","hook_line":3,"pid":7}"# + "\n" +
+            #"{"type":"hook_exited","event":"ev-00000008","hook_line":3,"status":0}"# + "\n" +
+            #"{"type":"verdict","event":"ev-00000008","verdict":"approved"}"#
+        #expect(RecentDecisions.parse(Data(old.utf8), partialFirstLine: false, limit: 5).decisions.map(\.by) == [nil])
     }
 
     @Test func aStretchThatStartsMidRecordSkipsThatPiece() {
@@ -308,8 +406,9 @@ struct RecentDecisionsTests {
             #"{"type":"event_received","event":"ev-00000002","app_signing_id":"com.apple.curl","host":"pypi.org","ip":"203.0.113.1","port":443}"# + "\n" +
             #"{"type":"verdict","event":"ev-00000002","verdict":"timed_out"}"#
         let parsed = RecentDecisions.parse(Data(text.utf8), partialFirstLine: true, limit: 5)
-        #expect(parsed == [RecentDecision(verdict: .timedOut, app: "com.apple.curl", host: "pypi.org", date: nil)])
-        #expect(RecentDecisions(url: URL(fileURLWithPath: "/nonexistent/events.jsonl")).latest(limit: 5).isEmpty)
+        #expect(parsed == EventLogSummary(decisions: [RecentDecision(verdict: .timedOut, app: "com.apple.curl", host: "pypi.org",
+                                                                     date: nil)]))
+        #expect(RecentDecisions(url: URL(fileURLWithPath: "/nonexistent/events.jsonl")).latest(limit: 5) == EventLogSummary())
     }
 }
 

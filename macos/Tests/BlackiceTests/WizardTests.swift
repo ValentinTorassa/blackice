@@ -124,6 +124,19 @@ struct WizardTests {
         #expect(pickedAnswers([[1], [0], nil]) == nil)
     }
 
+    /// An app named with escape sequences could clear its row and draw another app's name over it,
+    /// so the one picked to reach any host is not the one the person saw. Its name is escaped.
+    @Test func appNamesCannotRedrawTheList() {
+        let bundle = "/Users/test/Applications/Evil\u{1B}[2K\rSlack.app"
+        let evil = SigningIdentity(signingID: "com.example.evil", teamID: "ABCDE12345")
+        let choices = Recorder<Choice>(), said = Recorder<String>()
+        let picked = pickedAnswers([[2], [0]], running: [bundle], identities: [bundle: evil], choices: choices, said: said)
+        #expect(picked?.rules == [.init(identity: evil, hosts: ["*"])])
+        #expect(choices.items[1].options.first == "Evil\\u{1b}[2K\\u{d}Slack")
+        #expect(said.items.contains("    ✓ Evil\\u{1b}[2K\\u{d}Slack may reach any host (com.example.evil)"))
+        #expect(!said.items.joined().unicodeScalars.contains("\u{1B}"))
+    }
+
     @Test func runningAppsAreTheirBundles() {
         let home = "/Users/test"
         #expect(Interaction.appBundle("/Applications/Slack.app/Contents/Frameworks/Slack Helper.app/Contents/MacOS/Slack Helper",
@@ -335,19 +348,25 @@ struct ReportTests {
             == ["blackice is off. Start it with: blackice start"])
         #expect(CLI.statusLines(StatusReport(filter: .disabled, daemonRunning: false, pending: nil)).count == 2)
 
-        let empty = PendingReply(events: [], approvals: [])
+        let empty = PendingReply(events: [], approvals: []).deciding(with: try snapshot(.acceptAll))
         #expect(CLI.statusLines(StatusReport(filter: .on(try snapshot(.acceptAll)), daemonRunning: false, pending: empty)) == [
             "blackice is on, in accept-all mode: every connection goes through and is logged.",
             "  rules      none",
             "  hooks      none",
+            "  next       blackice agent connect fx, or blackice mode ask to answer by hand",
             "  waiting    nothing",
         ])
+        // With a hook, accept-all is a choice made after an agent was connected: no hint.
+        let hooked = try snapshot(.acceptAll, withHook)
+        #expect(!CLI.statusLines(StatusReport(filter: .on(hooked), daemonRunning: true,
+                                              pending: PendingReply(events: [], approvals: []).deciding(with: hooked)))
+            .contains { $0.hasPrefix("  next") })
 
         let tool = AppReference(signingID: "com.apple.curl", teamID: nil, cdhash: nil)
         let busy = PendingReply(
             events: [PendingSummary(id: "ev-0000002a", app: tool, path: nil, host: "example.com", ip: "203.0.113.7",
                                     port: 443, secondsLeft: 8, connections: 3)],
-            approvals: [ApprovalSummary(app: tool, host: "pypi.org", secondsLeft: 60)])
+            approvals: [ApprovalSummary(app: tool, host: "pypi.org", secondsLeft: 60)]).deciding(with: try snapshot(.ask, withHook))
         #expect(CLI.statusLines(StatusReport(filter: .on(try snapshot(.ask, withHook)), daemonRunning: false, pending: busy)) == [
             "blackice is on, in ask mode: connections no rule covers wait until you, or a hook, answers.",
             "  rules      1 app allowed in every mode",
@@ -359,6 +378,65 @@ struct ReportTests {
         let unreachable = CLI.statusLines(StatusReport(filter: .on(try snapshot(.ask, withHook)), daemonRunning: true, pending: nil))
         #expect(unreachable[2] == "  hooks      1, run by the daemon")
         #expect(unreachable.last == "  filter     not answering. If blackice was just upgraded, restart the Mac.")
+        let upgraded = CLI.statusLines(StatusReport(filter: .on(try snapshot(.ask, withHook)), daemonRunning: true, pending: nil,
+                                                    upgrade: UnfinishedUpgrade(app: "16", running: ["15"])))
+        #expect(upgraded.last == "  filter     still build 15, and this app is build 16: run blackice start to finish the upgrade")
+    }
+
+    /// The app was replaced and start has not activated its extension: macOS still runs another build.
+    @Test func anUnfinishedUpgradeIsTold() throws {
+        let upgrade = try #require(UnfinishedUpgrade(app: "16", running: ["15"]))
+        #expect(upgrade.running == "15")
+        #expect(upgrade.hint == "blackice was upgraded to build 16, but macOS still runs the network extension of build 15. " +
+                "Run blackice start to finish the upgrade.")
+        #expect(UnfinishedUpgrade(app: "10", running: ["9"])?.running == "9")
+        // The app's build runs (also next to an older one), a newer one runs (start would refuse it), none runs,
+        // or a build is unknown.
+        #expect(UnfinishedUpgrade(app: "16", running: ["16"]) == nil)
+        #expect(UnfinishedUpgrade(app: "16", running: ["15", "16"]) == nil)
+        #expect(UnfinishedUpgrade(app: "16", running: ["16.0"]) == nil)
+        #expect(UnfinishedUpgrade(app: "16", running: ["17"]) == nil)
+        #expect(UnfinishedUpgrade(app: "16", running: []) == nil)
+        #expect(UnfinishedUpgrade(app: "16", running: ["x"]) == nil)
+        #expect(UnfinishedUpgrade(app: nil, running: ["15"]) == nil)
+        #expect(UnfinishedUpgrade(app: "x", running: ["15"]) == nil)
+    }
+
+    /// The saved configuration is not always the one the filter decides with: it keeps its own when
+    /// it refuses the saved one, and status says so instead of naming the saved mode.
+    @Test func statusSaysWhenTheFilterHoldsAnotherConfiguration() throws {
+        let saved = try ProviderConfiguration(generation: 6, mode: .blockAll, configText: "mode = \"block-all\"\n")
+        let held = try ProviderConfiguration(generation: 5, mode: .acceptAll, configText: "mode = \"block-all\"\n")
+        let other = PendingReply(events: [], approvals: []).deciding(with: held)
+        #expect(CLI.statusLines(StatusReport(filter: .on(saved), daemonRunning: false, pending: other)).prefix(2) == [
+            "blackice is on, but its filter decides in accept-all mode (generation 5), not with the saved block-all mode (generation 6).",
+            "  Load yours again with: blackice start",
+        ])
+        let none = CLI.statusLines(StatusReport(filter: .on(saved), daemonRunning: false, pending: PendingReply(events: [], approvals: [])))
+        #expect(none.first == "blackice is on, but its filter holds no configuration.")
+    }
+
+    /// What start and mode make of the filter's answer after they saved a configuration.
+    @Test func startAndModeCheckThatTheFilterTookIt() throws {
+        let saved = try ProviderConfiguration(generation: 6, mode: .blockAll, configText: "mode = \"block-all\"\n")
+        #expect(Activation(PendingReply(events: [], approvals: []).deciding(with: saved), saved: saved) == .active)
+        #expect(Activation(nil, saved: saved) == .noAnswer)
+        #expect(Activation(PendingReply(events: [], approvals: []), saved: saved) == .other(nil))
+        // Same generation and mode, other text: not the one saved.
+        let edited = try ProviderConfiguration(generation: 6, mode: .blockAll, configText: "mode = \"block-all\"\n# edited\n")
+        #expect(Activation(PendingReply(events: [], approvals: []).deciding(with: edited), saved: saved) == .other(ActiveConfiguration(edited)))
+        let previous = try ProviderConfiguration(generation: 5, mode: .acceptAll, configText: "mode = \"block-all\"\n")
+        let refusedOne = Activation(PendingReply(events: [], approvals: []).deciding(with: previous), saved: saved)
+
+        #expect(CLI.notActiveLines(saved, .active).isEmpty && CLI.activationStatus(.active) == 0)
+        #expect(CLI.notActiveLines(saved, refusedOne).first
+            == "blackice's filter did not load the configuration just saved (generation 6): it decides in accept-all mode (generation 5). Its log says why:")
+        #expect(CLI.notActiveLines(saved, refusedOne).last?.contains("subsystem == \"com.valentorassa.blackice.filter\"") == true)
+        #expect(CLI.activationStatus(refusedOne) == ExitCode.software)
+        #expect(CLI.notActiveLines(saved, .noAnswer).first
+            == "block-all mode is saved, but blackice's filter did not answer, so whether it is in force is not known.")
+        #expect(CLI.activationStatus(.noAnswer) == ExitCode.unavailable)
+        #expect(CLI.notActiveLines(saved, .other(nil)).first?.hasPrefix("blackice's filter holds no configuration") == true)
     }
 
     @Test func modeAndFirstStartHints() throws {
@@ -417,6 +495,20 @@ struct ReportTests {
         #expect(Style.wrap("Done", "1", enabled: false) == "Done")
         #expect(Style.wrap("Done", "1", enabled: true) == "\u{1B}[1mDone\u{1B}[0m")
         #expect(Style.done("Saved") == "✓ Saved")
+    }
+
+    @Test func textAppsChoseIsEscapedForTheTerminal() {
+        #expect(Describe.terminalSafe("Slack") == "Slack")
+        #expect(Describe.terminalSafe("Café · 日本語 · 👩‍💻") == "Café · 日本語 · 👩‍💻")
+        #expect(Describe.terminalSafe("a\u{1B}[31mb") == "a\\u{1b}[31mb")
+        #expect(Describe.terminalSafe("a\u{9B}2Kb\u{7F}\u{0}\t\n") == "a\\u{9b}2Kb\\u{7f}\\u{0}\\u{9}\\u{a}")
+        // Bidirectional controls reorder what follows; separators break the line.
+        #expect(Describe.terminalSafe("tool\u{202E}gpj.exe") == "tool\\u{202e}gpj.exe")
+        #expect(Describe.terminalSafe("\u{2066}x\u{2069}\u{200F}\u{061C}\u{2028}\u{2029}")
+            == "\\u{2066}x\\u{2069}\\u{200f}\\u{61c}\\u{2028}\\u{2029}")
+        // Escaping twice changes nothing more.
+        let once = Describe.terminalSafe("a\u{1B}b")
+        #expect(Describe.terminalSafe(once) == once)
     }
 
     @Test func describe() {

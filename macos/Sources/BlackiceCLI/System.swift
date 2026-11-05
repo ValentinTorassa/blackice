@@ -30,7 +30,7 @@ public protocol SystemControlling {
     func setMode(_ mode: Mode, output: SystemOutput) -> Int32
     /// `blackice pending`: the paused connections and the approvals.
     func pending(output: SystemOutput) -> Int32
-    /// `blackice approve` and `deny`. Without a token, confirms a person with Touch ID first.
+    /// `blackice approve` and `deny`. Confirms a person with Touch ID first.
     func answer(_ request: AnswerRequest, output: SystemOutput) -> Int32
     /// `blackice daemon`: registers with the extension, takes the configuration it holds, and runs
     /// that configuration's hooks for each event until the connection ends.

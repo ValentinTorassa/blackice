@@ -16,7 +16,7 @@ private func event(app: HookEvent.App = .init(tool, path: "/Applications/Tool.ap
 }
 
 /// Encodes `message`, swaps in raw JSON fields, and decodes as `type`.
-private func decodeEdited<Message: CheckedMessage>(_ type: Message.Type, _ message: some Encodable,
+private func decodeEdited<Message: CheckedMessage>(_ type: Message.Type, _ message: some CheckedMessage,
                                                    _ edit: (inout [String: Any]) -> Void) throws -> Message {
     var object = try #require(JSONSerialization.jsonObject(with: Messages.encode(message)) as? [String: Any])
     edit(&object)
@@ -121,7 +121,33 @@ struct MessagesTests {
                                                           ip: "203.0.113.7", port: 443, secondsLeft: 3, connections: 1)],
                                    approvals: [ApprovalSummary(app: AppReference(tool), host: "example.com", secondsLeft: 60)])
         #expect(try Messages.decode(PendingReply.self, from: Messages.encode(pending)) == pending)
+        let deciding = pending.deciding(with: try policySnapshot(.ask, generation: 9))
+        #expect(deciding.active?.generation == 9 && deciding.active?.mode == .ask && deciding.events == pending.events)
+        #expect(try Messages.decode(PendingReply.self, from: Messages.encode(deciding)) == deciding)
         #expect(try Messages.decode(RegisterRequest.self, from: Messages.encode(RegisterRequest())) == RegisterRequest())
+    }
+
+    @Test func thePendingReplyNamesTheConfigurationInForce() throws {
+        let configuration = try policySnapshot(.blockAll, generation: 4)
+        let active = ActiveConfiguration(configuration)
+        #expect(active.configSHA256.count == 64 && active.matches(configuration))
+        #expect(!active.matches(try configuration.with(mode: .ask)))
+        #expect(!active.matches(try ProviderConfiguration(generation: 4, mode: .blockAll, configText: policyRules + "# more\n")))
+        let reply = PendingReply(events: [], approvals: [], active: active)
+        let json = String(decoding: try Messages.encode(reply), as: UTF8.self)
+        #expect(json.contains(#""active":{"config_sha256":"\#(active.configSHA256)","generation":4,"mode":"block-all"}"#))
+        let edits: [(inout [String: Any]) -> Void] = [
+            { $0["active"] = ["config_sha256": active.configSHA256, "generation": 0, "mode": "block-all"] },
+            { $0["active"] = ["config_sha256": "x", "generation": 4, "mode": "block-all"] },
+            { $0["active"] = ["config_sha256": active.configSHA256.uppercased(), "generation": 4, "mode": "block-all"] },
+            { $0["active"] = ["config_sha256": active.configSHA256, "generation": 4, "mode": "allow-all"] },
+            { $0["active"] = ["generation": 4, "mode": "block-all"] },
+        ]
+        for edit in edits {
+            #expect(refused { try decodeEdited(PendingReply.self, reply, edit) })
+        }
+        // A reply with no configuration says the extension holds none.
+        #expect(try decodeEdited(PendingReply.self, reply) { $0["active"] = nil }.active == nil)
     }
 
     @Test func answersOutsideTheirFormAreRefused() {
@@ -194,16 +220,125 @@ struct MessagesTests {
         #expect(refused { try Messages.decode(PendingRequest.self, from: Data("not json".utf8)) })
         #expect(refused { try Messages.decode(PendingRequest.self, from: Data(count: Messages.maximumBytes + 1)) })
         #expect(refused { try Messages.decode(PendingRequest.self, from: Data(#"{"version":0}"#.utf8)) })
+        // The sender holds to the same limit.
+        let long = AnswerReply(status: .done, reason: "approved", message: String(repeating: "a", count: Messages.maximumBytes))
+        #expect(refused { try Messages.encode(long) })
+    }
+
+    /// The most a pending reply can hold: as many events as the extension keeps, each with the
+    /// longest path (all of it escaped), identity, host and address, and every approval.
+    private static func largestPendingReply() -> PendingReply {
+        let signingID = String(repeating: "a", count: 255)
+        let app = AppReference(signingID: signingID, teamID: "ABCDE12345", cdhash: nil)
+        let label = String(repeating: "h", count: 63)
+        let host = [label, label, label, String(repeating: "h", count: 61)].joined(separator: ".")
+        let path = String(repeating: "\"\\", count: HookEvent.maximumPathBytes / 2)
+        let events = (0..<AskLimits.events).map { index in
+            PendingSummary(id: String(format: "ev-%08x", index), app: app, path: path, host: host,
+                           ip: "ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff", port: .max, secondsLeft: .max, connections: .max)
+        }
+        let approvals = (0..<ApprovalTable.maximumEntries).map { _ in
+            ApprovalSummary(app: app, host: host, secondsLeft: .max)
+        }
+        return PendingReply(events: events, approvals: approvals)
+    }
+
+    @Test func theLargestPendingReplyFitsAndRoundTrips() throws {
+        let largest = Self.largestPendingReply()
+        try largest.validate(now: Date())
+        #expect(largest.events[0].host.utf8.count == 253 && largest.events[0].path?.utf8.count == HookEvent.maximumPathBytes)
+        let data = try Messages.encode(largest)
+        #expect(data.count <= PendingReply.maximumBytes)
+        #expect(data.count > Messages.maximumBytes, "the old limit refused this reply")
+        #expect(try Messages.decode(PendingReply.self, from: data) == largest)
+        // Up to the limit, padded with spaces, it is read; one byte more and it is not.
+        let padded = data + Data(repeating: 0x20, count: PendingReply.maximumBytes - data.count)
+        #expect(try Messages.decode(PendingReply.self, from: padded) == largest)
+        #expect(refused { try Messages.decode(PendingReply.self, from: padded + Data([0x20])) })
+    }
+
+    @Test func aPendingReplyBeyondTheExtensionsLimitsIsRefused() throws {
+        let largest = Self.largestPendingReply()
+        let more = PendingReply(events: largest.events + [largest.events[0]], approvals: [])
+        #expect(refused { try Messages.decode(PendingReply.self, from: Messages.encode(more)) })
+        let tooManyApprovals = PendingReply(events: [], approvals: largest.approvals + [largest.approvals[0]])
+        #expect(refused { try Messages.decode(PendingReply.self, from: Messages.encode(tooManyApprovals)) })
+        // An address only as the extension writes it: a zone could make it any length.
+        let event = PendingSummary(id: "ev-0a1b2c3d", app: AppReference(build), path: nil, host: "example.com",
+                                   ip: "fe80::1", port: 443, secondsLeft: 3, connections: 1)
+        let zoned = PendingReply(events: [event], approvals: [])
+        #expect(try Messages.decode(PendingReply.self, from: Messages.encode(zoned)) == zoned)
+        #expect(refused { try decodeEdited(PendingReply.self, zoned) {
+            $0["events"] = [["id": "ev-0a1b2c3d", "app": ["cdhash": testCDHash], "host": "example.com",
+                             "ip": "fe80::1%" + String(repeating: "x", count: 4096), "port": 443, "seconds_left": 3,
+                             "connections": 1]]
+        } })
     }
 
     @Test func peersAreNamedByTeam() {
-        #expect(Peers.machServiceName(teamID: "ABCDE12345") == "ABCDE12345.com.valentorassa.blackice.filter")
+        #expect(Peers.machServiceName(teamID: "ABCDE12345", build: "16") == "ABCDE12345.com.valentorassa.blackice.filter.16")
         #expect(Peers.clientRequirement(teamID: "ABCDE12345")
             == #"anchor apple generic and identifier "com.valentorassa.blackice" and certificate leaf[subject.OU] = "ABCDE12345""#)
         #expect(Peers.filterRequirement(teamID: "ABCDE12345")
             == #"anchor apple generic and identifier "com.valentorassa.blackice.filter" and certificate leaf[subject.OU] = "ABCDE12345""#)
-        #expect(Peers.machServiceName(teamID: "abc") == nil)
+        #expect(Peers.machServiceName(teamID: "abc", build: "16") == nil)
         #expect(Peers.clientRequirement(teamID: "ABCDE1234\"") == nil)
+    }
+
+    /// Each build has its own Mach service, under the app group, so a new build's launchd job never
+    /// asks for the name the replaced build's job still holds.
+    @Test func eachBuildHasItsOwnMachService() {
+        let fifteen = Peers.machServiceName(teamID: "ABCDE12345", build: "15")
+        #expect(fifteen != nil && fifteen != Peers.machServiceName(teamID: "ABCDE12345", build: "16"))
+        #expect(fifteen?.hasPrefix("ABCDE12345." + BlackiceIdentifiers.host + ".") == true)
+        #expect(Peers.machServiceName(teamID: "ABCDE12345", build: "999999999") == "ABCDE12345.com.valentorassa.blackice.filter.999999999")
+        for build in ["", "0", "016", "1.2", "1a", "-1", "1000000000", "16\""] {
+            #expect(Peers.machServiceName(teamID: "ABCDE12345", build: build) == nil, "build \(build)")
+        }
+    }
+
+    /// The extension's Info.plist as sign.sh leaves it, and what each side accepts from it.
+    @Test func theNameComesFromTheExtensionInfoPlist() {
+        func info(_ build: Any?, _ service: Any?) -> [String: Any] {
+            var info: [String: Any] = ["CFBundleIdentifier": BlackiceIdentifiers.filter]
+            if let build { info["CFBundleVersion"] = build }
+            if let service { info["NetworkExtension"] = ["NEMachServiceName": service] }
+            return info
+        }
+        let signed = "ABCDE12345.com.valentorassa.blackice.filter.16"
+        #expect(Peers.machServiceName(teamID: "ABCDE12345", extensionInfo: info("16", signed)) == signed)
+        // 0.3.2 and earlier: one name for every build.
+        #expect(Peers.machServiceName(teamID: "ABCDE12345", extensionInfo: info("15", "ABCDE12345.com.valentorassa.blackice.filter")) == nil)
+        // Another build's name, another team's, the unsigned template, or parts missing.
+        #expect(Peers.machServiceName(teamID: "ABCDE12345", extensionInfo: info("17", signed)) == nil)
+        #expect(Peers.machServiceName(teamID: "VWXYZ67890", extensionInfo: info("16", signed)) == nil)
+        #expect(Peers.machServiceName(teamID: "ABCDE12345",
+                                      extensionInfo: info("1", "TEAM_ID.com.valentorassa.blackice.filter.BUILD")) == nil)
+        #expect(Peers.machServiceName(teamID: "ABCDE12345", extensionInfo: info(nil, signed)) == nil)
+        #expect(Peers.machServiceName(teamID: "ABCDE12345", extensionInfo: info(16, signed)) == nil)
+        #expect(Peers.machServiceName(teamID: "ABCDE12345", extensionInfo: info("16", nil)) == nil)
+    }
+
+    /// The CLI and the daemon read the Info.plist of the extension inside their app.
+    @Test func theClientReadsTheEmbeddedExtension() throws {
+        let app = try makePrivateDirectory().appendingPathComponent("Blackice.app", isDirectory: true)
+        defer { removeTree(app.deletingLastPathComponent()) }
+        #expect(Peers.machServiceName(teamID: "ABCDE12345", app: app) == nil)
+        #expect(Peers.extensionBuild(app: app) == nil)
+
+        let plist = app.appendingPathComponent(Peers.embeddedExtensionInfo)
+        #expect(plist.path.hasSuffix("Blackice.app/Contents/Library/SystemExtensions/" +
+                                     "com.valentorassa.blackice.filter.systemextension/Contents/Info.plist"))
+        try FileManager.default.createDirectory(at: plist.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let info: [String: Any] = ["CFBundleVersion": "16",
+                                   "NetworkExtension": ["NEMachServiceName": "ABCDE12345.com.valentorassa.blackice.filter.16"]]
+        try PropertyListSerialization.data(fromPropertyList: info, format: .xml, options: 0).write(to: plist)
+        #expect(Peers.machServiceName(teamID: "ABCDE12345", app: app) == "ABCDE12345.com.valentorassa.blackice.filter.16")
+        #expect(Peers.extensionBuild(app: app) == "16")
+
+        try Data("not a plist".utf8).write(to: plist)
+        #expect(Peers.machServiceName(teamID: "ABCDE12345", app: app) == nil)
+        #expect(Peers.extensionBuild(app: app) == nil)
     }
 }
 
@@ -272,7 +407,7 @@ struct RegisterReplyTests {
         let text = header + String(repeating: "\"\\", count: (BlackiceConfig.maximumBytes - header.utf8.count) / 2)
         #expect(text.utf8.count <= BlackiceConfig.maximumBytes)
         let data = try Messages.encode(RegisterReply(generation: UInt64.max, configText: text))
-        #expect(data.count <= Messages.maximumBytes)
+        #expect(data.count <= RegisterReply.maximumBytes && RegisterReply.maximumBytes <= Messages.maximumBytes)
         #expect(try RegisterReply.configuration(from: data).generation == UInt64.max)
     }
 }

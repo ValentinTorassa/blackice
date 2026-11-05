@@ -12,6 +12,7 @@ public enum ExitCode {
     public static let software: Int32 = 70    // EX_SOFTWARE: a system request failed
     public static let tempFail: Int32 = 75    // EX_TEMPFAIL: the saved configuration changed meanwhile; retry
     public static let noPermission: Int32 = 77 // EX_NOPERM: Touch ID cancelled or failed
+    public static let interrupted: Int32 = 130 // 128 + SIGINT, as shells report it: a setup stopped by Control-C
 }
 
 public enum Command: Equatable, Sendable {
@@ -65,21 +66,19 @@ public struct Approval: Equatable, Sendable {
     public let identity: AppIdentity
     public let host: String
     public let seconds: Int
-    /// The event's one-time token; without it the command asks for Touch ID.
-    public let token: String?
 
+    /// A person's answer: the command asks for Touch ID. Hooks answer on their stdout instead.
     public var request: AnswerRequest {
-        AnswerRequest(kind: .approve, app: identity, host: host, seconds: seconds, token: token)
+        AnswerRequest(kind: .approve, app: identity, host: host, seconds: seconds, token: nil)
     }
 }
 
 public struct Denial: Equatable, Sendable {
     public let identity: AppIdentity
     public let host: String
-    public let token: String?
 
     public var request: AnswerRequest {
-        AnswerRequest(kind: .deny, app: identity, host: host, seconds: nil, token: token)
+        AnswerRequest(kind: .deny, app: identity, host: host, seconds: nil, token: nil)
     }
 }
 
@@ -91,7 +90,7 @@ public struct UsageError: Error, Equatable, CustomStringConvertible, Sendable {
 
 public enum CLI {
     public static let defaultApprovalSeconds = 3600
-    public static let maximumApprovalSeconds = 86_400
+    public static let maximumApprovalSeconds = ApprovalTable.maximumSeconds
 
     public static let usage = """
     blackice: an application firewall for macOS that you run from the command line.
@@ -108,10 +107,10 @@ public enum CLI {
       mode accept-all|ask|block-all
                                 Change how new connections are treated (Touch ID)
       pending                   Connections waiting for an answer, and the approvals
-      approve --app ID [--team TEAM] --host HOST [--for 1h] [--token TOKEN]
-                                Let one app reach one host for a while (Touch ID without --token)
-      deny --app ID [--team TEAM] --host HOST [--token TOKEN]
-                                Refuse it and drop its waiting connections
+      approve --app ID [--team TEAM] --host HOST [--for 1h]
+                                Let one app reach one host for a while (Touch ID)
+      deny --app ID [--team TEAM] --host HOST
+                                Refuse it and drop its waiting connections (Touch ID)
                                 (--cdhash HEX in place of --app names ad hoc signed code)
 
     Setup
@@ -187,21 +186,22 @@ public enum CLI {
             guard let on = ["on": true, "off": false][value] else { throw UsageError("menu: --login takes on or off") }
             return .menu(.login(on))
         case "approve":
-            let options = try parseOptions(rest, allowed: ["app", "team", "cdhash", "host", "for", "token"], command: first)
+            try noToken(rest, command: first)
+            let options = try parseOptions(rest, allowed: ["app", "team", "cdhash", "host", "for"], command: first)
             let target = try target(options, command: first)
             var seconds = defaultApprovalSeconds
             if let text = options["for"] {
-                guard let parsed = parseDuration(text), parsed <= maximumApprovalSeconds else {
+                guard let parsed = parseDuration(text) else {
                     throw UsageError("--for takes a duration such as 30s, 10m or 1h, at most 24h")
                 }
                 seconds = parsed
             }
-            return .approve(Approval(identity: target.identity, host: target.host, seconds: seconds,
-                                     token: try token(options)))
+            return .approve(Approval(identity: target.identity, host: target.host, seconds: seconds))
         case "deny":
-            let options = try parseOptions(rest, allowed: ["app", "team", "cdhash", "host", "token"], command: first)
+            try noToken(rest, command: first)
+            let options = try parseOptions(rest, allowed: ["app", "team", "cdhash", "host"], command: first)
             let target = try target(options, command: first)
-            return .deny(Denial(identity: target.identity, host: target.host, token: try token(options)))
+            return .deny(Denial(identity: target.identity, host: target.host))
         default:
             throw UsageError("unknown command '\(printable(first))'")
         }
@@ -310,14 +310,15 @@ public enum CLI {
                     return started
                 }
                 // The agent's installer, sign-in and test need the network: start in accept-all, set
-                // the agent up, and let its last step load the file in the mode picked.
+                // the agent up, and let its last step load the file in the mode picked. Nothing was
+                // filtered before, so a setup that does not get there stays in accept-all and says so.
                 let started = system.start(configText: settingRootKey(loaded.text, "mode", to: "\"accept-all\""),
                                            output: SystemOutput(stdout: stdout, stderr: stderr, setup: true, next: false))
                 guard started == ExitCode.success else { return started }
                 stdout("  It stays in accept-all while \(agent) is set up, then switches to \(loaded.config.mode.rawValue).")
                 let connected = connectAgent(agent, configPath: configPath, readFile: readFile, system: system,
                                              interaction: interaction, machine: agents, stdout: stdout, stderr: stderr,
-                                             firstStep: 4)
+                                             firstStep: 4, fromFirstStart: true)
                 if connected == ExitCode.success {
                     offerMenuBar(menuBar, interaction: interaction, stdout: stdout, stderr: stderr)
                 }
@@ -444,7 +445,7 @@ public enum CLI {
     }
 
     /// What `blackice pending` prints. The fields came from the extension, already checked;
-    /// none of them is a token.
+    /// none of them is a token. The path is wherever the app runs from, so it is escaped.
     public static func pendingLines(_ reply: PendingReply) -> [String] {
         var lines: [String] = []
         if reply.events.isEmpty {
@@ -459,7 +460,7 @@ public enum CLI {
                     : event.connections == 1 ? "1 connection" : "\(event.connections) connections"
                 lines.append("  \(event.id)  \(label) -> \(event.host):\(event.port) (\(event.ip)), \(count), " +
                              "\(event.secondsLeft) s left")
-                if let path = event.path { lines.append("      " + path) }
+                if let path = event.path { lines.append("      " + Describe.terminalSafe(path)) }
             }
         }
         if reply.approvals.isEmpty {
@@ -473,7 +474,7 @@ public enum CLI {
         return lines
     }
 
-    /// The exit status for an answer: 0 when done, 77 when the token was refused, 64 for a
+    /// The exit status for an answer: 0 when done, 77 when the extension refused it, 64 for a
     /// request the extension found invalid, 69 when it could not answer.
     public static func answerStatus(_ reply: AnswerReply) -> Int32 {
         switch (reply.status, reply.reason) {
@@ -484,13 +485,10 @@ public enum CLI {
         }
     }
 
-    /// "30s", "10m", "1h": a positive whole number and one unit.
+    /// "30s", "10m", "1h": a positive whole number and one unit, at most 24 h. A hook's answer
+    /// takes the same durations, in minutes and hours (`ApprovalDuration`).
     public static func parseDuration(_ text: String) -> Int? {
-        guard let unit = text.last, let factor = ["s": 1, "m": 60, "h": 3600][unit] else { return nil }
-        let digits = text.dropLast()
-        guard !digits.isEmpty, digits.count <= 6, digits.utf8.allSatisfy({ (48...57).contains($0) }),
-              digits.first != "0", let value = Int(digits) else { return nil }
-        return value * factor
+        ApprovalDuration.seconds(text)
     }
 
     /// Reads at most one byte past the size limit, so a huge file is refused without loading it.
@@ -561,10 +559,12 @@ public enum CLI {
         return (identity, host)
     }
 
-    private static func token(_ options: [String: String]) throws -> String? {
-        guard let token = options["token"] else { return nil }
-        guard validEventToken(token) else { throw UsageError("--token must be the token from the event") }
-        return token
+    /// `--token` went in 0.4.0: hooks answer on their stdout, and the daemon answers for them.
+    private static func noToken(_ arguments: [String], command: String) throws {
+        if arguments.contains(where: { $0 == "--token" || $0.hasPrefix("--token=") }) {
+            throw UsageError("\(command) no longer takes --token: a hook answers by printing approve or deny as its " +
+                             "last line, and the daemon passes that on. By hand, \(command) asks for Touch ID")
+        }
     }
 
     /// Arguments echoed back in errors: printable ASCII only, cut at 64 characters.

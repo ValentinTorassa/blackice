@@ -1,4 +1,5 @@
 import Foundation
+import BlackiceCLI
 import BlackiceCore
 
 /// What the menu knows about blackice at one moment. SystemAdapter reads it; MenuPresentation
@@ -16,8 +17,9 @@ public struct MenuSnapshot: Equatable, Sendable {
         case foreign
         /// The filter settings cannot be read, or the configuration in them cannot.
         case unreadable
-        /// On, in this mode, with this many hooks in the saved configuration.
-        case on(Mode, hooks: Int)
+        /// On, with this configuration saved (its generation, mode and digest) and this many hooks
+        /// in it.
+        case on(saved: ActiveConfiguration, hooks: Int)
     }
 
     public var filter: Filter
@@ -25,25 +27,33 @@ public struct MenuSnapshot: Equatable, Sendable {
     public var pending: PendingReply?
     /// Whether launchd has the daemon's LaunchAgent loaded; nil when not checked yet.
     public var daemonRunning: Bool?
-    /// The app is a newer build than the extension that runs: `blackice start` has not run since
-    /// the app was upgraded in place.
-    public var upgradeUnfinished: Bool
+    /// Set when the extension does not answer because macOS still runs an older build of it than
+    /// this app's: the app was replaced and `blackice start` has not run since.
+    public var upgrade: UnfinishedUpgrade?
     /// When `pending` was read: the seconds left count down from there.
     public var readAt: Date
 
     public init(filter: Filter, pending: PendingReply? = nil, daemonRunning: Bool? = nil,
-                upgradeUnfinished: Bool = false, readAt: Date = Date()) {
+                upgrade: UnfinishedUpgrade? = nil, readAt: Date = Date()) {
         self.filter = filter
         self.pending = pending
         self.daemonRunning = daemonRunning
-        self.upgradeUnfinished = upgradeUnfinished
+        self.upgrade = upgrade
         self.readAt = readAt
     }
 
-    /// The mode it filters in; nil when it is not on.
+    /// A blackice filter is saved and turned on.
+    public var isOn: Bool {
+        if case .on = filter { return true }
+        return false
+    }
+
+    /// The mode the filter decides in: the one the extension reports as active when it answers,
+    /// else the saved one. nil when it is not on, or answers that it holds no configuration.
     public var mode: Mode? {
-        if case .on(let mode, _) = filter { return mode }
-        return nil
+        guard case .on(let saved, _) = filter else { return nil }
+        guard let pending else { return saved.mode }
+        return pending.active?.mode
     }
 
     /// The extension answered over XPC.
@@ -58,7 +68,7 @@ extension MenuSnapshot.Filter {
         } else if saved.providerBundleID == nil || !saved.enabled {
             self = .off
         } else if let configuration = saved.configuration {
-            self = .on(configuration.mode, hooks: configuration.config.hooks.count)
+            self = .on(saved: ActiveConfiguration(configuration), hooks: configuration.config.hooks.count)
         } else {
             self = .unreadable
         }
@@ -72,17 +82,6 @@ public enum MenuActionResult: Equatable, Sendable {
     case cancelled
     /// What the command printed to stderr, to show in an alert.
     case failed(String)
-}
-
-/// Whether the app is a newer build than the extension that runs. Builds compare as
-/// CFBundleVersion does (ExtensionReplacement.version); an unparseable one compares as nothing.
-public enum UpgradeCheck {
-    public static func unfinished(appBuild: String?, runningBuilds: [String]) -> Bool {
-        guard let appBuild, let app = ExtensionReplacement.version(appBuild) else { return false }
-        let running = runningBuilds.compactMap(ExtensionReplacement.version)
-        guard let newest = running.max(by: { $0.lexicographicallyPrecedes($1) }) else { return false }
-        return newest.lexicographicallyPrecedes(app)
-    }
 }
 
 /// Why this copy of blackice cannot open at login, or nil when it can. SMAppService.mainApp

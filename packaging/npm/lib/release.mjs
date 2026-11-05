@@ -9,8 +9,11 @@ export const APPLICATIONS = '/Applications'
 export const INSTALLED_APP = `${APPLICATIONS}/${APP_NAME}`
 export const INSTALLED_BINARY = `${INSTALLED_APP}/Contents/MacOS/blackice`
 export const INSTALL_GUIDE = `https://github.com/${REPOSITORY}/blob/main/docs/install.md`
+/** The network extension inside the app, relative to the app. */
+export const EXTENSION_PATH = 'Contents/Library/SystemExtensions/com.valentorassa.blackice.filter.systemextension'
 
 const VERSION = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/
+const BUILD = /^[1-9]\d*$/
 
 /** The release's zip and checksum file, as macos/scripts/package.sh names them, and their URLs. */
 export function releaseAssets(version) {
@@ -84,4 +87,30 @@ export function gatekeeperProblems(text, { teamId = TEAM_ID } = {}) {
   const origin = /^origin=(.*)$/m.exec(output)?.[1]
   if (origin !== undefined && !origin.endsWith(`(${teamId})`)) problems.push(`Gatekeeper names another origin: ${origin}`)
   return problems
+}
+
+/**
+ * Problems with the versions in the Info.plist of the app and of its extension, each
+ * `{ version, build }` with CFBundleShortVersionString and CFBundleVersion, compared with the
+ * release `version`: the app must be that version, with a build number that is a positive whole
+ * number, and the extension the same version and build, as macos/scripts/package.sh builds them.
+ * Empty when they match.
+ */
+export function versionProblems({ app, extension }, version) {
+  const problems = []
+  if (app.version !== version) problems.push(`the app is version ${app.version ?? 'none'}, not ${version}`)
+  if (!BUILD.test(app.build ?? '')) problems.push(`the app's build number is ${app.build || 'missing'}, not a positive whole number`)
+  if (extension.version !== app.version || extension.build !== app.build) {
+    problems.push(`the network extension is version ${extension.version ?? 'none'}, build ${extension.build ?? 'none'}, not the app's`)
+  }
+  return problems
+}
+
+/**
+ * Whether putting build `build` over an installed app of build `installedBuild` would go back to
+ * an older build. False when either is not a whole number.
+ */
+export function isOlderBuild(build, installedBuild) {
+  if (!/^\d+$/.test(build ?? '') || !/^\d+$/.test(installedBuild ?? '')) return false
+  return BigInt(build) < BigInt(installedBuild)
 }

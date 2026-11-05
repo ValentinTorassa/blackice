@@ -120,6 +120,9 @@ private struct AnswerChoice {
 final class MenuController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// How often the status item reads blackice's state, over XPC, while the menu is closed.
     static let refreshInterval: TimeInterval = 5
+    /// How often macOS is asked which build of the extension runs, while the extension does not
+    /// answer.
+    static let upgradeCheckInterval: TimeInterval = 60
 
     private let lock: MenuInstanceLock
     private let system = SystemAdapter()
@@ -134,6 +137,9 @@ final class MenuController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var countdownTimer: Timer?
     private var reading = false
     private var busy = false
+    /// The last answer to SystemAdapter.unfinishedUpgrade, kept while the extension does not answer.
+    private var upgrade: UnfinishedUpgrade?
+    private var upgradeCheckedAt: Date?
     private var menuOpen = false
     private var queued: (() -> Void)?
     private let configURL = URL(fileURLWithPath: CLI.defaultConfigPath)
@@ -194,19 +200,41 @@ final class MenuController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             guard let self else { return }
             self.reading = false
             var fresh = fresh
-            if !full {
-                fresh.daemonRunning = self.snapshot.daemonRunning
-                fresh.upgradeUnfinished = self.snapshot.upgradeUnfinished
+            if !full { fresh.daemonRunning = self.snapshot.daemonRunning }
+            let unanswered = fresh.isOn && !fresh.reachable
+            if !unanswered {
+                self.upgrade = nil
+                self.upgradeCheckedAt = nil
             }
+            fresh.upgrade = self.upgrade
             self.snapshot = fresh
             self.apply()
             if self.menuOpen { self.render(rebuild: false) }
+            if unanswered, self.upgradeCheckedAt.map({ Date().timeIntervalSince($0) >= Self.upgradeCheckInterval }) ?? true {
+                self.upgradeCheckedAt = Date()
+                // A run loop timer in the default mode: it fires once the menu is closed, and not
+                // inside this block from the main queue (see checkUpgrade).
+                self.perform(#selector(self.checkUpgrade), with: nil, afterDelay: 0)
+            }
             // A build that is not the signed app reads nothing, so there is nothing to poll.
             if fresh.filter == .unsignedBuild {
                 self.refreshTimer?.invalidate()
                 self.refreshTimer = nil
             }
         }
+    }
+
+    /// Asks macOS which build of the extension runs. NESystemControl waits for the answer in a
+    /// nested run loop, which drains the main queue only when it is not itself running a block
+    /// from it, so this runs from a run loop timer.
+    @objc private func checkUpgrade() {
+        guard !busy, !menuOpen, snapshot.isOn, !snapshot.reachable else { return }
+        let found = system.unfinishedUpgrade()
+        // A read that came back meanwhile may have reached the extension.
+        guard snapshot.isOn, !snapshot.reachable else { return }
+        upgrade = found
+        snapshot.upgrade = found
+        apply()
     }
 
     /// The status item, changed only when what it shows changes.
@@ -225,7 +253,8 @@ final class MenuController: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func menuNeedsUpdate(_ menu: NSMenu) {
         guard menu === self.menu else { return }
-        context = MenuContext(version: Self.version, recent: recent?.latest(limit: MenuPresentation.recentLimit) ?? [],
+        let log = recent?.latest(limit: MenuPresentation.recentLimit) ?? EventLogSummary()
+        context = MenuContext(version: Self.version, recent: log.decisions, hookRefused: log.hookRefused,
                               login: LoginItem.state, configExists: FileManager.default.fileExists(atPath: configURL.path),
                               logExists: logURL.map { FileManager.default.fileExists(atPath: $0.path) } ?? false)
         render(rebuild: true)

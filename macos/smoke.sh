@@ -1,8 +1,9 @@
 #!/bin/bash
 # Runs the built blackice binary: validate works, a bad file fails with its line, the
 # commands that need the signed app or the extension refuse with status 69, start checks its
-# configuration before refusing, daemon refuses --config, agent install refuses a binary
-# outside Blackice.app, no arguments print the usage, and menu --login refuses outside the app. Also lints the LaunchAgent template and the app's Info.plists and
+# configuration before refusing, daemon refuses --config, approve refuses --token, agent
+# install refuses a binary outside Blackice.app, no arguments print the usage, and menu --login
+# refuses outside the app. Also lints the LaunchAgent template and the app's Info.plists and
 # entitlements, and checks the app icon.
 set -euo pipefail
 cd -- "$(dirname -- "${BASH_SOURCE[0]}")"
@@ -22,6 +23,8 @@ set +e
 "$BIN" status; status_cmd=$?
 "$BIN" mode block-all; mode=$?
 "$BIN" approve --app com.example.tool --team ABCDE12345 --host example.com --for 10m; approve=$?
+# Hooks answer on their stdout since 0.4.0: approve no longer takes a token.
+"$BIN" approve --app com.example.tool --host example.com --token q8Zr0d3XyB1mVt5LkS9wJpQa2NcEf7HgUi4Ko6Rl0Ys; token=$?
 "$BIN" mode sometimes; usage=$?
 "$BIN" daemon; daemon=$?
 "$BIN" daemon --config Examples/blackice.toml; daemon_config=$?
@@ -36,10 +39,10 @@ set +e
 "$BIN" menu --login sometimes; login_usage=$?
 set -e
 [[ $status -eq 65 && $start -eq 69 && $start_bad -eq 65 && $stop -eq 69 && $status_cmd -eq 69 && $mode -eq 69 &&
-   $approve -eq 69 && $usage -eq 64 && $daemon -eq 69 && $daemon_config -eq 64 && $agent -eq 69 &&
+   $approve -eq 69 && $token -eq 64 && $usage -eq 64 && $daemon -eq 69 && $daemon_config -eq 64 && $agent -eq 69 &&
    $bare -eq 64 && $login -eq 69 && $login_usage -eq 64 ]] || {
     echo "unexpected exit statuses: validate=$status start=$start start_bad=$start_bad stop=$stop" \
-        "status=$status_cmd mode=$mode approve=$approve usage=$usage daemon=$daemon daemon_config=$daemon_config" \
+        "status=$status_cmd mode=$mode approve=$approve token=$token usage=$usage daemon=$daemon daemon_config=$daemon_config" \
         "agent=$agent bare=$bare login=$login login_usage=$login_usage" >&2
     exit 1
 }

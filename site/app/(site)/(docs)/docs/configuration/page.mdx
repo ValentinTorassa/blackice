@@ -4,7 +4,7 @@ export const metadata = getDocsMetadata('/docs/configuration')
 
 # Configuration
 
-blackice.toml and the event a hook receives. The format can still change.
+blackice.toml, the event a hook receives and how it answers. The format can still change.
 
 <Status />
 
@@ -22,9 +22,14 @@ app = "com.example.agent"      # signing identifier
 team = "ABCDE12345"            # Team ID
 hosts = ["api.example.com"]
 
+# Asked about each connection that waits. It answers on its last line of output.
 [[hook]]
 on = "connection"
-run = 'fx ask "Use the blackice skill to decide whether to approve the pending connection"'
+program = "/Users/me/.local/bin/fx"
+app = "com.vercel.fx"
+team = "JW6Y669B67"
+args = ["ask", "--no-save", "--no-color", "Use the blackice skill to decide whether to approve the pending connection"]
+env = ["HOME=/Users/me/.config/blackice/agent", "FX_DISABLE_KEYCHAIN=1"]
 ```
 
 The parser is strict: an unknown key or a value of the wrong type stops blackice from starting instead of being guessed at.
@@ -39,6 +44,8 @@ Each `[[allow]]` rule names one app and the hosts it may reach, in every mode.
 - `hosts` lists exact host names (`api.example.com`) and `*.domain` patterns. `*.example.com` covers every subdomain of `example.com` but not `example.com` itself.
 - A host counts only when the address the app connects to is among the host's answers from the system resolver. Otherwise ask mode asks and block-all drops, and the log says `address_mismatch`.
 - Rules say nothing about ports.
+- On port 443 a rule or an approval also needs the TLS server name the app sends to match: it must be the same host, or another host the app may reach. Otherwise the connection is dropped and the log says `server_name_mismatch`. A `*` rule skips this check.
+- With Encrypted Client Hello, blackice sees only the server name in the clear, which is the provider's front end, such as `cloudflare-ech.com`. A rule or an approval for such a name lets the app reach every site behind it.
 
 `codesign -dv` shows an app's identity. Apple's own programs show `TeamIdentifier=not set`. Apple's developer tools, installed with the Command Line Tools or Xcode, show `TeamIdentifier=59GAB85EFG`, and a rule names them with that Team ID; git over HTTPS connects as `com.apple.git-remote-http`. Mac App Store apps show their developer's Team ID.
 
@@ -83,6 +90,21 @@ With `apple_services = true`, the default, a built-in list lets macOS's own serv
 
 `apple_services = false` turns the list off, and those services then need rules like any other app. In block-all that stops iCloud, updates and push notifications until rules for them are added.
 
+## Hooks
+
+In ask mode the daemon runs each `[[hook]]` with `on = "connection"` for a connection that waits. A hook starts a program in one of two ways.
+
+**`program`, checked.** The daemon starts the program directly, with no shell, and only when its code signature names `app` and `team`:
+
+- `program` is an absolute path.
+- `app` and `team` are the signing identifier and Team ID, as in an `[[allow]]` rule, and `codesign -dv` shows them. Leave `team` out only for Apple's own programs.
+- `args` lists the arguments, as strings. Nothing from the event is ever put in them.
+- `env` lists `NAME=value` strings added to the [environment](#the-hooks-environment). A name may not start with `BLACKICE_`.
+
+The daemon starts the program suspended, checks the signature of the process it started, and kills it before it runs if the signature does not name both. The log says `hook_refused`, with the identity it found. So a program that something else put at that path never runs, and an update of the program that keeps its identity needs no change.
+
+**`run`, unchecked.** `run = '…'` is a line for `/bin/sh -c`, as before 0.4.0. Nothing checks what it starts, so any program running as you can put something else in its place, for example earlier in `PATH`. Only `program` hooks are protected that way. `run` takes no `app`, `team`, `args` or `env`.
+
 ## The hook's environment
 
 The daemon builds the environment a hook starts with instead of passing on its own:
@@ -95,23 +117,16 @@ The daemon builds the environment a hook starts with instead of passing on its o
 | `LANG` | `en_US.UTF-8` |
 | `BLACKICE_EVENT_FILE`, `BLACKICE_EVENT_ID` | The event's file and ID. |
 
-A hook that needs anything else sets it in its `run` line. Here `PATH` finds `fx` and the `blackice` it calls to answer, and `HOME` gives fx a home of its own:
-
-```toml
-[[hook]]
-on = "connection"
-run = 'PATH="/Applications/Blackice.app/Contents/MacOS:/opt/homebrew/bin:$PATH" HOME="$HOME/.config/blackice/agent" fx ask "Use the blackice skill to decide whether to approve the pending connection"'
-```
+A `program` hook's `env` is added on top and may replace any of these but the last two. In the example above, `HOME` gives fx a home of its own, with its own login, skill and rules.
 
 ## The event a hook receives
 
-The hook gets the event as JSON on stdin. The daemon also writes it to a file named in `BLACKICE_EVENT_FILE`, because `fx ask` does not read stdin when the prompt is on the command line. The token is good for one answer to that event.
+The hook gets the event as JSON on stdin. The daemon also writes it to `event.json`, in a private directory that is the hook's working directory and is deleted afterwards, and names the file in `BLACKICE_EVENT_FILE`, because `fx ask` does not read stdin when the prompt is on the command line.
 
 ```json
 {
   "event": "connection",
   "id": "ev-7f3a91c2",
-  "token": "<one-time token>",
   "app": { "signing_id": "com.example.tool", "team_id": "ABCDE12345", "path": "/Applications/Tool.app" },
   "host": "example.com",
   "ip": "203.0.113.7",
@@ -119,3 +134,25 @@ The hook gets the event as JSON on stdin. The daemon also writes it to a file na
   "deadline": "2026-11-02T14:36:11Z"
 }
 ```
+
+Ad hoc signed code has `"cdhash"` in `app` instead of `signing_id` and `team_id`. The event carries no token: the token that answers it stays in the extension and the daemon.
+
+## How a hook answers
+
+A hook answers on its stdout. When it exits with status 0 before the deadline, the daemon reads its last non-empty line, trimmed. That line must be exactly one of these, in lowercase:
+
+| Line | Answer |
+| --- | --- |
+| `deny` | Drop the waiting connections. |
+| `approve <N>m` | Approve for N minutes, from 1 to 1440. |
+| `approve <N>h` | Approve for N hours, from 1 to 24. |
+
+The daemon answers for the event's app and host, which it takes from the event, never from the hook's output, and sends the answer to the extension with the event's token. Before that line the hook can print anything, such as its reasons.
+
+Anything else is no answer, and the connection waits until its deadline and is dropped:
+
+- a last line that is not exactly one of those, such as `approve 1h.`, `**deny**` or `Approve 10m`;
+- more than 64 KiB on stdout;
+- an exit status other than 0, or a hook still running at the deadline.
+
+The event log, `~/Library/Logs/blackice/events.jsonl`, records `hook_answer` with the answer and its seconds, or `hook_no_answer` with the reason (`exit_status`, `signaled`, `deadline`, `no_line`, `unrecognized_line` or `output_too_long`). Of an unrecognized line it keeps only the first 24 characters, printable ASCII only. It never records the rest of a hook's stdout. When the extension does not take an answer, for example because a person answered first, the log says `answer_refused` with the reason.

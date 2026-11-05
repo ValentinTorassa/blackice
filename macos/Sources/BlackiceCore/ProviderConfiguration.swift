@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 // What the CLI saves in the filter's provider configuration and the extension reads back:
@@ -14,8 +15,9 @@ public struct ProviderConfigurationError: Error, Equatable, CustomStringConverti
 public struct ProviderConfiguration: Equatable, Sendable {
     public static let vendorKey = "blackice.configuration"
     public static let format = "blackice.provider/v1"
-    /// The TOML text plus a little JSON around it.
-    public static let maximumBytes = BlackiceConfig.maximumBytes + 4096
+    /// The largest TOML text once escaped as JSON, which can double it, plus a little JSON around
+    /// it. `encoded` and `init(data:)` both hold to it.
+    public static let maximumBytes = Messages.jsonStringBytes(BlackiceConfig.maximumBytes) + 4096
 
     public let generation: UInt64
     public let mode: Mode
@@ -70,11 +72,14 @@ public struct ProviderConfiguration: Equatable, Sendable {
         }
     }
 
+    /// Never more than the extension reads back.
     public func encoded() throws -> Data {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
-        return try encoder.encode(Document(format: Self.format, generation: generation, mode: mode.rawValue,
-                                           config: configText))
+        let data = try encoder.encode(Document(format: Self.format, generation: generation, mode: mode.rawValue,
+                                               config: configText))
+        guard data.count <= Self.maximumBytes else { throw ProviderConfigurationError("provider configuration too large") }
+        return data
     }
 
     /// Strict: exactly the four keys, the known format, a valid mode and a blackice.toml that parses.
@@ -108,6 +113,12 @@ public struct ProviderConfiguration: Equatable, Sendable {
             throw ProviderConfigurationError("missing provider configuration")
         }
         try self.init(data: data)
+    }
+
+    /// The SHA-256 of the blackice.toml text, in lower-case hex, so the extension can say which
+    /// text it holds without sending it.
+    public var configSHA256: String {
+        SHA256.hash(data: Data(configText.utf8)).map { String(format: "%02x", $0) }.joined()
     }
 
     public var summary: String {

@@ -53,7 +53,7 @@ public enum MenuCommand: Equatable, Sendable {
 }
 
 /// An answer from a waiting connection's submenu: what `blackice approve --for` or `blackice deny`
-/// sends without a token, after Touch ID.
+/// sends after Touch ID.
 public struct MenuAnswer: Equatable, Sendable {
     public let title: String
     public let kind: AnswerRequest.Kind
@@ -85,14 +85,17 @@ public struct MenuContext: Equatable, Sendable {
     /// "0.3.2 (build 15)", from Blackice.app's Info.plist; nil for a build outside the app.
     public var version: String?
     public var recent: [RecentDecision]
+    /// When the daemon last refused a hook program whose signature did not match.
+    public var hookRefused: Date?
     public var login: LoginState
     public var configExists: Bool
     public var logExists: Bool
 
-    public init(version: String?, recent: [RecentDecision] = [], login: LoginState, configExists: Bool,
-                logExists: Bool) {
+    public init(version: String?, recent: [RecentDecision] = [], hookRefused: Date? = nil, login: LoginState,
+                configExists: Bool, logExists: Bool) {
         self.version = version
         self.recent = recent
+        self.hookRefused = hookRefused
         self.login = login
         self.configExists = configExists
         self.logExists = logExists
@@ -112,12 +115,15 @@ public enum MenuPresentation {
     /// Waiting connections listed in the menu; `blackice pending` shows the rest.
     public static let waitingLimit = 12
     public static let recentLimit = 5
+    /// How long a refused hook stays in the menu.
+    public static let refusedHookWindow: TimeInterval = 3600
     public static let docs = "https://blackice-macos.vercel.app/docs"
 
-    /// Full in ask and block-all while the filter answers; dimmed when blackice is off, lets
-    /// everything through, or cannot be reached.
+    /// Full in ask and block-all while the filter answers, and when it answers that it holds no
+    /// configuration, since then nothing new passes; dimmed when blackice is off, lets everything
+    /// through, or cannot be reached.
     public static func statusItem(_ snapshot: MenuSnapshot) -> StatusItemLook {
-        let filtering = snapshot.reachable && snapshot.mode.map { $0 != .acceptAll } == true
+        let filtering = snapshot.isOn && snapshot.reachable && snapshot.mode != .acceptAll
         let waiting = snapshot.reachable ? snapshot.pending?.events.count ?? 0 : 0
         let title = header(snapshot).title
         return StatusItemLook(dimmed: !filtering, count: waiting > 0 ? "\(waiting)" : "",
@@ -137,11 +143,24 @@ public enum MenuPresentation {
             return ("Off", ["Another product has this Mac's content filter"])
         case .unreadable:
             return ("Not reachable", ["Its saved settings cannot be read", "Load them again with: blackice start"])
-        case .on(let mode, _):
-            let upgrade = snapshot.upgradeUnfinished ? ["Upgrade not finished: run blackice start"] : []
-            if snapshot.reachable { return (modeTitle(mode), upgrade) }
-            return ("Not reachable", ["Set to \(modeWords(mode)), but the filter does not answer"]
-                    + (upgrade.isEmpty ? ["If blackice was just upgraded, restart the Mac"] : upgrade))
+        case .on(let saved, _):
+            // As `blackice status`: what the filter says it decides with, checked against what is saved.
+            guard let pending = snapshot.pending else {
+                if let upgrade = snapshot.upgrade {
+                    return ("Upgrade not finished: run blackice start",
+                            ["The filter is still build \(upgrade.running); this app is build \(upgrade.app)"])
+                }
+                return ("Not reachable", ["Set to \(modeWords(saved.mode)), but the filter does not answer",
+                                          "If blackice was just upgraded, restart the Mac"])
+            }
+            guard let active = pending.active else {
+                return ("No configuration", ["The filter lets no new connection through",
+                                             "Load yours again with: blackice start"])
+            }
+            if active == saved { return (modeTitle(active.mode), []) }
+            let differs = active.mode == saved.mode ? "" : " (\(modeWords(saved.mode)))"
+            return (modeTitle(active.mode), ["The filter did not take the saved settings" + differs,
+                                             "Load them again with: blackice start"])
         }
     }
 
@@ -175,7 +194,7 @@ public enum MenuPresentation {
         entries.append(MenuEntry(.note, key: "version",
                                  title: context.version.map { "blackice \($0)" } ?? "blackice, a build outside Blackice.app"))
 
-        if let pending = snapshot.pending, let mode = snapshot.mode, mode == .ask || !pending.events.isEmpty {
+        if let pending = snapshot.pending, snapshot.mode == .ask || !pending.events.isEmpty {
             entries.append(MenuEntry(.separator, key: "waiting.separator", title: ""))
             entries.append(MenuEntry(.section, key: "waiting.section", title: "Waiting"))
             if pending.events.isEmpty {
@@ -201,12 +220,18 @@ public enum MenuPresentation {
         }
 
         entries.append(MenuEntry(.separator, key: "mode.separator", title: ""))
-        let mode = snapshot.mode
-        entries.append(MenuEntry(.modes(current: mode), key: "mode", title: "Mode", enabled: mode != nil))
+        // `blackice mode` waits until the filter names the new configuration, so it needs a filter
+        // that answers.
+        entries.append(MenuEntry(.modes(current: snapshot.mode), key: "mode", title: "Mode",
+                                 enabled: snapshot.isOn && snapshot.reachable))
         if case .on(_, let hooks) = snapshot.filter {
             let (line, hint) = hooksLine(hooks: hooks, daemonRunning: snapshot.daemonRunning)
             entries.append(MenuEntry(.note, key: "hooks", title: line))
             if let hint { entries.append(MenuEntry(.note, key: "hooks.hint", title: hint)) }
+        }
+        if let refused = context.hookRefused, now.timeIntervalSince(refused) < refusedHookWindow {
+            entries.append(MenuEntry(.note, key: "hooks.refused", title: "A hook did not run: its signature did not match",
+                                     detail: ago(refused, now: now)))
         }
 
         entries.append(MenuEntry(.separator, key: "files.separator", title: ""))
@@ -256,6 +281,11 @@ public enum MenuPresentation {
         case .denied: what = "Denied"
         case .timedOut: what = "Dropped"; why = "no answer in time"
         case .cancelled: what = "Dropped"; why = "settings changed"
+        }
+        switch decision.by {
+        case .hook?: why = "by a hook"
+        case .hand?: why = "by hand"
+        case nil: break
         }
         let detail = [why, ago(decision.date, now: now)].compactMap { $0 }.joined(separator: ", ")
         return ("\(what) \(decision.app) → \(decision.host)", detail.isEmpty ? nil : detail)

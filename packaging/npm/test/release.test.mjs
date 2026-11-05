@@ -1,7 +1,14 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { gatekeeperProblems, parseChecksum, releaseAssets, signatureProblems } from '../lib/release.mjs'
+import {
+  gatekeeperProblems,
+  isOlderBuild,
+  parseChecksum,
+  releaseAssets,
+  signatureProblems,
+  versionProblems,
+} from '../lib/release.mjs'
 
 test('release assets follow package.sh names and the v<version> tag', () => {
   assert.deepEqual(releaseAssets('0.1.0'), {
@@ -95,4 +102,36 @@ test('gatekeeper: rejected, not notarized or another origin fails', () => {
   assert.match(gatekeeperProblems(accepted.replace('Notarized Developer ID', 'Developer ID')).join(), /notarized/)
   assert.match(gatekeeperProblems(accepted.replace('(M294LK997M)', '(ABCDE12345)')).join(), /another origin/)
   assert.equal(gatekeeperProblems('/tmp/x/Blackice.app: rejected\nsource=no usable signature\n').length, 2)
+})
+
+const release = { app: { version: '0.3.2', build: '15' }, extension: { version: '0.3.2', build: '15' } }
+
+test('version: the app and its extension of the release version and one build pass', () => {
+  assert.deepEqual(versionProblems(release, '0.3.2'), [])
+})
+
+test('version: another version, a build that is not a whole number or an extension of another build fails', () => {
+  const older = { app: { version: '0.3.1', build: '14' }, extension: { version: '0.3.1', build: '14' } }
+  assert.match(versionProblems(older, '0.3.2').join(), /the app is version 0.3.1, not 0.3.2/)
+  assert.match(versionProblems({ ...release, app: { version: '0.3.2', build: '15a' } }, '0.3.2').join(), /build number is 15a/)
+  for (const build of [undefined, '', '0', '015', '1.2']) {
+    const app = { version: '0.3.2', build }
+    assert.match(versionProblems({ app, extension: app }, '0.3.2').join(), /not a positive whole number/, String(build))
+  }
+  assert.match(
+    versionProblems({ ...release, extension: { version: '0.3.2', build: '14' } }, '0.3.2').join(),
+    /network extension is version 0.3.2, build 14, not the app's/,
+  )
+  assert.match(versionProblems({ ...release, extension: {} }, '0.3.2').join(), /version none, build none/)
+  assert.equal(versionProblems({ app: {}, extension: {} }, '0.3.2').length, 2)
+})
+
+test('older build: only a lower whole number than the installed one', () => {
+  assert.equal(isOlderBuild('14', '15'), true)
+  assert.equal(isOlderBuild('9', '10'), true)
+  assert.equal(isOlderBuild('15', '15'), false)
+  assert.equal(isOlderBuild('16', '15'), false)
+  assert.equal(isOlderBuild('15', undefined), false)
+  assert.equal(isOlderBuild('15', '1.2'), false)
+  assert.equal(isOlderBuild('15', ''), false)
 })
