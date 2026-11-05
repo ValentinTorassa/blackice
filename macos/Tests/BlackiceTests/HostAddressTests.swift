@@ -45,15 +45,45 @@ struct IPAddressTests {
         #expect(IPAddress("2001:db8::1")?.bytes.count == 16)
     }
 
-    @Test func mappedAddressesAndZonesCompareEqual() {
+    @Test func mappedAddressesCompareEqual() {
         #expect(IPAddress("::ffff:203.0.113.7") == IPAddress("203.0.113.7"))
         #expect(IPAddress("::ffff:203.0.113.7")?.description == "203.0.113.7")
-        #expect(IPAddress("fe80::1%en0") == IPAddress("fe80::1"))
+        // A zone means nothing for an address that is not link-local.
+        #expect(IPAddress("2001:db8::1%en0") == IPAddress("2001:db8::1"))
+        #expect(IPAddress("2001:db8::1%7")?.scope == 0 && IPAddress("203.0.113.7%7")?.scope == 0)
+    }
+
+    @Test func linkLocalAddressesKeepTheirInterface() throws {
+        // The same link-local address on two links can be two hosts.
+        let loopback = if_nametoindex("lo0")
+        #expect(loopback != 0)
+        #expect(IPAddress("fe80::1%lo0")?.scope == loopback)
+        #expect(IPAddress("fe80::1%lo0") == IPAddress("fe80::1%\(loopback)"))
+        #expect(IPAddress("fe80::1%1") != IPAddress("fe80::1%2"))
+        #expect(IPAddress("fe80::1%1") != IPAddress("fe80::1"))
+        #expect(IPAddress("FE80::1%3")?.description == "fe80::1%3")
+        #expect(IPAddress("fe80::1")?.description == "fe80::1")
+        // The description reads back as the same address, as HookEvent requires.
+        let scoped = try #require(IPAddress("fe80::abcd%9"))
+        #expect(IPAddress(scoped.description) == scoped)
+        let event = try HookEvent.connection(app: .init(signingID: "com.example.tool", teamID: "ABCDE12345", path: nil),
+                                             host: "printer.example.com", ip: scoped.description, port: 443,
+                                             deadline: Date().addingTimeInterval(30))
+        try event.validate(now: Date())
+        #expect(IPAddress(bytes: scoped.bytes, scope: 9) == scoped)
+        #expect(IPAddress(bytes: [203, 0, 113, 7], scope: 9)?.scope == 0)
+        // Without a known interface it may be any host on any link.
+        #expect(IPAddress("fe80::1")?.isCheckable == false)
+        #expect(IPAddress("fe80::1%nosuchif9")?.scope == 0)
+        #expect(IPAddress("fe80::1%nosuchif9")?.isCheckable == false)
+        #expect(IPAddress("fe80::1%1")?.isCheckable == true)
+        #expect(IPAddress("2001:db8::1")?.isCheckable == true && IPAddress("203.0.113.7")?.isCheckable == true)
     }
 
     @Test func refusesEverythingElse() {
         for bad in ["", "example.com", "203.0.113", "203.0.113.256", "0x7f.1", "127.1", "1.2.3.4 ", " 1.2.3.4",
-                    "2001:db8::1::2", "%en0", String(repeating: "1", count: 100), "1.2.3.4\u{0}"] {
+                    "2001:db8::1::2", "%en0", String(repeating: "1", count: 100), "1.2.3.4\u{0}",
+                    "fe80::1%", "fe80::1%" + String(repeating: "e", count: 16), "fe80::1%en\u{0}"] {
             #expect(IPAddress(bad) == nil, "\(bad)")
         }
         #expect(IPAddress(bytes: [1, 2, 3]) == nil)
@@ -86,6 +116,18 @@ struct HostAddressCacheTests {
         #expect(cache.check(host: "api.example.com", address: nil) == .mismatch)
         // Another host's answers say nothing about this one.
         #expect(cache.check(host: "www.example.com", address: ip("198.51.100.1")) == .unknown)
+    }
+
+    @Test func linkLocalAnswersMatchOnlyTheirInterface() {
+        let cache = HostAddressCache(resolver: FakeResolver(["printer.local": ["fe80::1%1", "2001:db8::7"]]))
+        cache.lookUp("printer.local")
+        #expect(cache.check(host: "printer.local", address: ip("fe80::1%1")) == .match)
+        // The same address on another link, or on a link nobody named, is not the printer.
+        #expect(cache.check(host: "printer.local", address: ip("fe80::1%2")) == .mismatch)
+        #expect(cache.check(host: "printer.local", address: ip("fe80::1")) == .mismatch)
+        #expect(cache.check(host: "printer.local", address: ip("2001:db8::7%2")) == .match)
+        // An answer with no interface matches nothing, not even the same spelling.
+        #expect(HostAddressCache.check(ip("fe80::1"), against: [ip("fe80::1")]) == .mismatch)
     }
 
     @Test func failedLookupMismatchesEverything() {
@@ -123,6 +165,12 @@ struct HostAddressCacheTests {
     @Test func systemResolverAnswersForLocalhost() {
         let answers = Set(SystemHostResolver().resolve("localhost") ?? [])
         #expect(answers.contains(ip("127.0.0.1")) || answers.contains(ip("::1")))
+    }
+
+    @Test func systemResolverKeepsTheScopeID() {
+        // A numeric address resolves to itself, with no lookup; its zone becomes sin6_scope_id.
+        #expect(SystemHostResolver().resolve("fe80::1%lo0") == [ip("fe80::1%lo0")])
+        #expect(SystemHostResolver().resolve("fe80::1%lo0")?.first?.scope == if_nametoindex("lo0"))
     }
 }
 

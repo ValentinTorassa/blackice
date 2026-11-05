@@ -15,7 +15,9 @@
 // (HostAddressCache) and while an event waits for an answer (AskState). Answers and the pending
 // list come in over XPC (BlackiceXPC.FilterServer); events and verdicts go out to the daemon on
 // its connection. The maintenance timer drops paused flows at their deadline. A configuration
-// change or a stop drops every paused flow.
+// change or a stop drops every paused flow; a flow decided with the configuration from before a
+// change neither starts to wait nor is let through by an answer after it, and each event carries
+// the generation it was raised under.
 //
 // Names from DNS answers, also compiled only: in ask and block-all the system resolver's port-53
 // flows are filtered in both directions instead of allowed outright. DNSFlowTable reads the
@@ -79,6 +81,8 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
         let facts: FlowFacts
         /// Set when the flow was paused after its TLS server name was read.
         let serverName: String?
+        /// Whether that hello had the encrypted_client_hello extension, for its verdict's reason.
+        let echPresent: Bool
         let stage: Stage
         let generation: UInt64
     }
@@ -90,7 +94,8 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
     private enum After {
         case nothing
         case lookUp(String)
-        case send(HookEvent)
+        /// With the generation of the configuration the event was raised under.
+        case send(HookEvent, generation: UInt64)
     }
 
     private static var now: TimeInterval { ProcessInfo.processInfo.systemUptime }
@@ -224,7 +229,8 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
                               remoteAddress: address,
                               process: flow.sourceProcessAuditToken.map { CodeIdentity.resolve(auditToken: $0) },
                               dnsNames: dnsNames.names(for: address))
-        let paused = Paused(flow: flow, facts: facts, serverName: nil, stage: .newFlow, generation: snapshot?.generation ?? 0)
+        let paused = Paused(flow: flow, facts: facts, serverName: nil, echPresent: false, stage: .newFlow,
+                            generation: snapshot?.generation ?? 0)
         askLock.lock()
         let verdict = FilterPolicy.decide(facts, snapshot: snapshot, context: context(now: Self.now))
         let (step, after) = place(verdict, paused, snapshot, now: Self.now)
@@ -291,8 +297,9 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
         heldLock.unlock()
 
         var serverName: String?
-        if case .serverName(let name, _) = result { serverName = name }
-        let paused = Paused(flow: flow, facts: entry.facts, serverName: serverName, stage: .data,
+        var echPresent = false
+        if case .serverName(let name, let ech) = result { (serverName, echPresent) = (name, ech) }
+        let paused = Paused(flow: flow, facts: entry.facts, serverName: serverName, echPresent: echPresent, stage: .data,
                             generation: entry.generation)
         askLock.lock()
         let verdict = FilterPolicy.decide(entry.facts, serverName: result, snapshot: snapshot, context: context(now: Self.now))
@@ -377,6 +384,18 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
     private func place(_ verdict: FlowVerdict, _ paused: Paused, _ snapshot: ProviderConfiguration?,
                        now: TimeInterval) -> (Step, After) {
         let facts = paused.facts
+        // A configuration change installs the new snapshot, then drops what is paused under
+        // askLock. A flow decided with the old snapshot that gets here after that drop must not
+        // start to wait: its event would outlive the configuration it was raised under.
+        switch verdict {
+        case .resolveHost, .ask:
+            guard FilterPolicy.isCurrent(paused.generation, installed: snapshots.read()) else {
+                log(facts, .drop(reason: "configuration_changed"), snapshot, serverName: paused.serverName)
+                return (.drop, .nothing)
+            }
+        default:
+            break
+        }
         switch verdict {
         case .allow:
             log(facts, verdict, snapshot, serverName: paused.serverName)
@@ -419,7 +438,7 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
             switch added {
             case .raised(let event):
                 log(facts, verdict, snapshot, serverName: paused.serverName)
-                return (.pause, .send(event))
+                return (.pause, .send(event, generation: paused.generation))
             case .joined:
                 log(facts, verdict, snapshot, serverName: paused.serverName)
                 return (.pause, .nothing)
@@ -436,10 +455,14 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
             break
         case .lookUp(let host):
             resolverQueue.async { [weak self] in self?.finishLookup(host) }
-        case .send(let event):
-            // With the generation installed now, so the daemon runs that configuration's hooks.
-            let sent = snapshots.read().map { server?.send(.event(event, generation: $0.generation)) == true } ?? false
-            if !sent { control("event_not_sent", "no_daemon") }
+        case .send(let event, let generation):
+            // With the generation it was raised under, so the daemon runs that configuration's
+            // hooks or none. A configuration installed since has dropped the event's flows.
+            guard FilterPolicy.isCurrent(generation, installed: snapshots.read()) else {
+                control("event_not_sent", "configuration_changed")
+                return
+            }
+            if server?.send(.event(event, generation: generation)) != true { control("event_not_sent", "no_daemon") }
         }
     }
 
@@ -457,7 +480,8 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
             } else {
                 let context = context(now: now, resolved: (host, answers))
                 verdict = paused.serverName.map {
-                    FilterPolicy.decide(paused.facts, serverName: .serverName($0), snapshot: snapshot, context: context)
+                    FilterPolicy.decide(paused.facts, serverName: .serverName($0, echPresent: paused.echPresent),
+                                        snapshot: snapshot, context: context)
                 } ?? FilterPolicy.decide(paused.facts, snapshot: snapshot, context: context)
             }
             let (step, after) = place(verdict, paused, snapshot, now: now)
@@ -466,8 +490,9 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
         askLock.unlock()
         for (paused, step, after) in outcomes {
             switch step {
-            case .allow, .learnNames: resume(paused, allow: true)
-            case .drop, .hold: resume(paused, allow: false)
+            // .hold comes only at the new-flow stage on the TLS port, where resume holds the flow.
+            case .allow, .learnNames, .hold: resume(paused, allow: true)
+            case .drop: resume(paused, allow: false)
             case .pause: break // waiting for an answer, or for another lookup of the same host
             }
             perform(after)
@@ -475,9 +500,9 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
     }
 
     /// Resumes a flow paused by this provider. Called outside flow callbacks. A flow paused at
-    /// the new-flow stage that still needs its server name read (named by a DNS answer, on the
-    /// TLS port) resumes into the hold: NEFilterDataProvider.h takes a new-flow verdict, such as
-    /// filterDataVerdict, for a flow paused in handleNewFlow.
+    /// the new-flow stage that still needs its server name read (TCP on the TLS port, named by
+    /// the system or by a DNS answer) resumes into the hold: NEFilterDataProvider.h takes a
+    /// new-flow verdict, such as filterDataVerdict, for a flow paused in handleNewFlow.
     private func resume(_ paused: Paused, allow: Bool) {
         let verdict: NEFilterVerdict
         switch paused.stage {
@@ -492,9 +517,10 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
         resumeFlow(paused.flow, with: verdict)
     }
 
+    /// An answer taken just before a configuration change lets nothing through after it.
     private func release(_ releases: [Release<Paused>]) {
         let snapshot = snapshots.read()
-        for release in releases {
+        for release in FilterPolicy.current(releases, installed: snapshot, generation: \.generation) {
             resume(release.flow, allow: release.allow)
             log(release.flow.facts, release.allow ? .allow(reason: release.reason) : .drop(reason: release.reason),
                 snapshot, serverName: release.flow.serverName)

@@ -39,6 +39,8 @@ Each `[[allow]]` rule names one app and the hosts it may reach, in every mode.
 - `hosts` lists exact host names (`api.example.com`) and `*.domain` patterns. `*.example.com` covers every subdomain of `example.com` but not `example.com` itself.
 - A host counts only when the address the app connects to is among the host's answers from the system resolver. Otherwise ask mode asks and block-all drops, and the log says `address_mismatch`.
 - Rules say nothing about ports.
+- On port 443 a rule or an approval also needs the TLS server name the app sends to match: it must be the same host, or another host the app may reach. Otherwise the connection is dropped and the log says `server_name_mismatch`. A `*` rule skips this check.
+- With Encrypted Client Hello, blackice sees only the server name in the clear, which is the provider's front end, such as `cloudflare-ech.com`. A rule or an approval for such a name lets the app reach every site behind it.
 
 `codesign -dv` shows an app's identity. Apple's own programs show `TeamIdentifier=not set`. Apple's developer tools, installed with the Command Line Tools or Xcode, show `TeamIdentifier=59GAB85EFG`, and a rule names them with that Team ID; git over HTTPS connects as `com.apple.git-remote-http`. Mac App Store apps show their developer's Team ID.
 
