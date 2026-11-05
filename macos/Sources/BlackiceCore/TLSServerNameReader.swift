@@ -9,6 +9,9 @@ public struct TLSServerNameReader: Sendable {
 
     public init() {}
 
+    /// How many bytes came in so far: none when the app closed the connection before writing.
+    public var received: Int { bytes.count }
+
     public mutating func receive(_ data: Data, offset: Int) -> TLSHelloResult {
         guard offset >= 0, offset <= bytes.count, data.count <= TLSClientHello.maximumBytes - offset else {
             return .deny("tls_unparsed")

@@ -476,9 +476,11 @@ struct FilterPolicyTests {
     @Test func serverNameReaderFeedsThePolicy() throws {
         let hello = clientHello("pypi.org")
         var reader = TLSServerNameReader()
+        #expect(reader.received == 0)
         // The extension peeks the 5-byte record header first, then the whole record.
         let first = reader.receive(hello.prefix(5), offset: 0)
         #expect(first == .needMore(hello.count))
+        #expect(reader.received == 5)
         let second = reader.receive(hello, offset: 0)
         #expect(second == .serverName("pypi.org"))
         #expect(FilterPolicy.decide(flow(curl, nil), serverName: second, snapshot: try policySnapshot(.blockAll), context: matching)
