@@ -18,7 +18,7 @@
 
 set -eu
 
-VERSION=0.3.2
+VERSION=0.4.0
 REPOSITORY=ValentinTorassa/blackice
 TEAM_ID=M294LK997M
 IDENTIFIER=com.valentorassa.blackice
@@ -252,8 +252,9 @@ next_steps() {
   say "Before removing the app, run \`blackice agent uninstall\` and \`blackice stop\`."
   if [ "$replace" = 1 ]; then
     say ""
-    say "You replaced an installed copy: run \`blackice start\`, then restart the Mac, then run"
-    say "\`blackice agent uninstall\` and \`blackice agent install\` so that the daemon runs the new binary."
+    say "You replaced an installed copy: run \`blackice start\` now to finish the upgrade. If it exits"
+    say "with 75, restart the Mac and run it again. Coming from 0.3, also run \`blackice agent connect fx\`"
+    say "(or claude-code) again: hooks now answer on their output, and a 0.3 hook gets no answer through."
   fi
   say ""
   say "Install guide: $GUIDE"
@@ -287,7 +288,7 @@ main() {
       exit 0
     fi
     [ "$force" = 1 ] || fail "$APP ${installed:-(unknown version)} is already there. To replace it with $VERSION, run" \
-      "\`curl -fsSL $SCRIPT_URL | sh -s -- --force\`, then \`blackice start\`, and restart the Mac."
+      "\`curl -fsSL $SCRIPT_URL | sh -s -- --force\`, then \`blackice start\`."
     replace=1
     installed_build=$(plist "$APP" CFBundleVersion)
   fi
