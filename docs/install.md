@@ -97,7 +97,7 @@ full path, and a script that runs the full path, worked.
 `blackice start` reads `~/.config/blackice/blackice.toml` unless you pass `--config PATH`. If the file is not there,
 `start` asks a few questions and writes it. You pick the answers from lists with the arrow keys:
 - the mode;
-- in ask mode, who answers: fx, Claude Code, Codex, or you;
+- in ask mode, who answers: fx, Claude Code, Codex, opencode, or you;
 - apps to trust, from the apps and system extensions running now (a VPN client's network extension, such as
   Tailscale's, is one). Each may reach any host, and "Another app" takes a path such as
   `/Applications/Slack.app` or a signing identifier.
@@ -207,9 +207,23 @@ install --cask codex`). Its home is a `CODEX_HOME` of its own, `~/.config/blacki
 own files, write nothing and reach no network, and keeps the event off its stdin. Its rule covers `chatgpt.com` and
 `auth.openai.com`. [`integrations/codex/README.md`](../integrations/codex/README.md) has the details.
 
+`blackice agent connect opencode` does the same for opencode, with a provider you pick from a list: Z.AI Coding
+Plan, OpenAI (a ChatGPT plan or an API key), OpenCode Go, MiniMax Token Plan, OpenRouter or Anthropic.
+`--model PROVIDER/MODEL`, such as `--model zai-coding-plan/glm-5.3-flash`, picks one without the list. If
+opencode is not installed, it offers opencode's installer (`curl -fsSL https://opencode.ai/install | bash`).
+Its home is a `HOME` of its own, `~/.config/blackice/agent/.opencode`, signed in to that provider with
+`opencode auth login`. Its hook gives it one tool, reading the event's directory, with blackice's instructions as
+its whole prompt, loads no opencode configuration, plugin or skill from a folder of yours, and keeps the event
+off its stdin. Its rule covers that provider's hosts only, such as `api.z.ai` for Z.AI. Connecting it again with
+another provider adds that provider's hosts and leaves the old provider's in the rule; remove those by hand if
+you want the rule narrow. Not verified yet: the eval has not been run with a model that answers, and the hosts
+of OpenAI's ChatGPT sign-in, `chatgpt.com` and `auth.openai.com`, have not been seen under the hook.
+[`integrations/opencode/README.md`](../integrations/opencode/README.md) has the details.
+
 Each agent decides with a small model, since a decision is a short read and a two-line answer: fx with Claude
 Haiku 5.5 through AI Gateway (`anthropic/claude-haiku-5.5`, billed to the Vercel team fx signed in with), Claude Code
-with `haiku` (counted against its subscription), Codex with `gpt-6-luna` (counted against the ChatGPT plan).
+with `haiku` (counted against its subscription), Codex with `gpt-6-luna` (counted against the ChatGPT plan),
+opencode with the provider's small one, such as `glm-5.3-flash` on the Z.AI Coding Plan.
 `--model NAME` writes another into the hook, such as
 `blackice agent connect claude-code --model sonnet`; running `agent connect` again with another model replaces the
 hook's. The agents approve clearly ordinary developer and vendor traffic for 8 to 24 hours and anything less plain
@@ -217,9 +231,10 @@ for 10 minutes to an hour.
 
 One agent answers at a time, and you choose which. Each agent you connect keeps its hook in `blackice.toml`, and
 `answers` in its `[agent]` table names the one that answers: connecting a second agent adds its hook, keeps the
-first one's and sets `answers` to the new one. `blackice mode ask --agent fx` (or `claude-code`, `codex`, or `you`
-to answer yourself) switches, with Touch ID; the menu's Mode does the same. That switch changes the configuration
-blackice holds, not the file, as `blackice mode` does, so `blackice start` loads the file's own `answers` again.
+first one's and sets `answers` to the new one. `blackice mode ask --agent fx` (or `claude-code`, `codex`, `opencode`,
+or `you` to answer yourself) switches, with Touch ID; the menu's Mode does the same. That switch changes the
+configuration blackice holds, not the file, as `blackice mode` does, so `blackice start` loads the file's own
+`answers` again.
 A hook that runs an agent but names no `instructions`, such as one from 0.3 or 0.4.0, would run whoever `answers`
 names: `agent connect` replaces it with the agent's own hook, or removes it when it ran another agent.
 

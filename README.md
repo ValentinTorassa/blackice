@@ -105,11 +105,16 @@ under `~/.config/blackice/agent`, one test on a sample connection, a rule that l
 - `codex`: [Codex](https://developers.openai.com/codex/cli) with `codex exec`, signed in with a ChatGPT plan, its
   commands able to read only the event's directory ([`integrations/codex/`](integrations/codex/)). On 5 November
   2026, with `gpt-6-luna`, it decided the 23 eval cases as expected, in 4.6 s at the median.
+- `opencode`: [opencode](https://opencode.ai/docs) with `opencode run`, signed in to a provider you pick when you
+  connect it (Z.AI Coding Plan, OpenAI, OpenCode Go, MiniMax Token Plan, OpenRouter or Anthropic), with reading the
+  event's directory as its only tool and a rule for that provider's hosts ([`integrations/opencode/`](integrations/opencode/)).
+  The eval has not been run with it yet.
 
 Each agent decides with a small model unless `--model NAME` names another: a decision is a short read and a
 two-line answer. The instructions approve clearly ordinary developer and vendor traffic for 8 to 24 hours and
 anything less plain for 10 minutes to an hour, so ordinary traffic is asked about once a day at most. One agent
-answers at a time: connecting one replaces another's hook.
+answers at a time: each one you connect keeps its hook, `answers` in `[agent]` names the one that runs, and
+`blackice mode ask --agent NAME` or the menu's Mode switches.
 [`integrations/eval/run.sh`](integrations/eval/run.sh) runs any of them over the same 23 cases.
 
 ## Development
@@ -122,7 +127,7 @@ $ cd site && npm ci && npm run dev
 
 [`macos/`](macos/) is the Swift package: the CLI, the network extension and the daemon. [`integrations/fx/`](integrations/fx/)
 has a draft fx skill, [`integrations/claude-code/`](integrations/claude-code/) Claude Code's instructions,
-[`integrations/eval/`](integrations/eval/) the eval for both, [`packaging/npm/`](packaging/npm/) an npm installer that isn't published yet, and
+[`integrations/eval/`](integrations/eval/) the eval for every agent, [`packaging/npm/`](packaging/npm/) an npm installer that isn't published yet, and
 [`site/`](site/) the project page.
 
 ## Who

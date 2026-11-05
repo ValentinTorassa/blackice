@@ -15,7 +15,9 @@ a terminal, `opencode run` prints its reply there; its progress and errors go to
 ## The provider
 
 `agent connect opencode` asks which provider opencode decides with, and the rule it adds names that provider's
-hosts and no other. `--model PROVIDER/MODEL` picks one without the list.
+hosts and no other. `--model PROVIDER/MODEL` picks one without the list. Connecting it again with another provider
+adds that provider's hosts and leaves the old provider's in the rule; remove those by hand if you want the rule
+narrow.
 
 | Provider | `--model` it writes | Hosts in the rule |
 | --- | --- | --- |
