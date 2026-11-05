@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+Changed:
+- For now the menu's Mode and the first `start`'s list leave Codex and opencode out: Mode lists Accept All, Ask
+  with fx, Claude Code and you, and Block All, and shows Codex or opencode once it is connected. Nothing else
+  changes: `blackice agent connect codex|opencode` sets them up and `blackice mode ask --agent` switches to them.
+
 ## 0.4.3 (5 November 2026)
 
 opencode can be the agent, `blackice start` keeps the mode and the answerer you switched to, and a connection

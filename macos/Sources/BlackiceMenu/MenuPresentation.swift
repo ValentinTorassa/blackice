@@ -184,16 +184,21 @@ public enum MenuPresentation {
     }
 
     /// The Mode submenu: Accept All; Ask with each agent blackice knows, enabled when its hook is
-    /// in the configuration, then with you answering; Block All. The check mark is on the mode the
-    /// filter decides in, and in ask mode on who answers. Choosing an item is `blackice mode`, or
-    /// `blackice mode ask --agent NAME`, with Touch ID.
+    /// in the configuration, then with you answering; Block All. An agent that is not listed before
+    /// connecting (`AgentInstructions.listedBeforeConnecting`: Codex, opencode) shows only once it is
+    /// connected. The check mark is on the mode the filter decides in, and in ask mode on who
+    /// answers. Choosing an item is `blackice mode`, or `blackice mode ask --agent NAME`, with Touch ID.
     public static func modeChoices(_ snapshot: MenuSnapshot, enabled: Bool) -> [ModeChoice] {
         let current = snapshot.mode
         let agents = snapshot.answering?.agents ?? []
         func plain(_ mode: Mode, _ title: String) -> ModeChoice {
             ModeChoice(mode: mode, answerer: nil, title: title, detail: nil, enabled: enabled, checked: current == mode)
         }
-        let asks = Answerer.all.map { answerer -> ModeChoice in
+        let shown = Answerer.all.filter { answerer in
+            guard case .agent(let instructions) = answerer else { return true }
+            return instructions.listedBeforeConnecting || agents.contains(instructions)
+        }
+        let asks = shown.map { answerer -> ModeChoice in
             var connected = true
             if case .agent(let instructions) = answerer { connected = agents.contains(instructions) }
             let title = answerer == .you ? "Ask: You (Manual)" : "Ask: \(answerer.title)"

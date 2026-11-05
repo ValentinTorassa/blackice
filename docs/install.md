@@ -97,7 +97,8 @@ full path, and a script that runs the full path, worked.
 `blackice start` reads `~/.config/blackice/blackice.toml` unless you pass `--config PATH`. If the file is not there,
 `start` asks a few questions and writes it. You pick the answers from lists with the arrow keys:
 - the mode;
-- in ask mode, who answers: fx, Claude Code, Codex, opencode, or you;
+- in ask mode, who answers: fx, Claude Code, or you (for now Codex and opencode are set up with
+  `blackice agent connect codex` or `opencode` instead);
 - apps to trust, from the apps and system extensions running now (a VPN client's network extension, such as
   Tailscale's, is one). Each may reach any host, and "Another app" takes a path such as
   `/Applications/Slack.app` or a signing identifier.
@@ -290,8 +291,9 @@ connections wait, their number is next to it. The menu has:
   Allow for 1 Hour and Deny: the same as `blackice approve --for` and `blackice deny`, with Touch ID;
 - Recent: the latest verdict from the event log on one line, with how long ago, and the last five in its submenu;
   for an hour, a warning when the daemon refused a hook program whose signature did not match;
-- Mode, to switch between Accept All, Ask with an agent answering (one item per agent; those not connected are
-  greyed out with the command that connects them), Ask: You (Manual) and Block All, with Touch ID, as `blackice
+- Mode, to switch between Accept All, Ask with an agent answering (one item per agent; fx and Claude Code are
+  greyed out with the command that connects them until they are connected, and for now Codex and opencode show only
+  once connected), Ask: You (Manual) and Block All, with Touch ID, as `blackice
   mode` and `blackice mode ask --agent` do, while the filter answers;
 - a warning when there are hooks and the daemon that runs them is not running;
 - Stop Filtering, with Touch ID, as `blackice stop` does: the filter and its network extension go, and `blackice
