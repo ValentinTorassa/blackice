@@ -1,13 +1,5 @@
 # Changelog
 
-## Unreleased
-
-- `blackice start` after an upgrade loads the new configuration into the new extension. macOS starts the new build
-  with the configuration saved before, and a save made while it starts could miss it: on 5 November 2026 the 0.4.1
-  build came up with the old configuration and `start` said the filter "did not load the configuration just saved".
-  `start` now waits for the new build to answer before it saves, and if the new build still has the old configuration,
-  it turns the filter off and on once.
-
 ## 0.4.1 (5 November 2026)
 
 Codex can be the agent, the agent reads your notes, its instructions ship inside blackice, ask mode asks
