@@ -662,10 +662,91 @@ struct AgentAnswersTests {
         let saved = try ProviderConfiguration(generation: 3, mode: .acceptAll, configText: text)
         let codex = try saved.with(mode: .ask, answerer: .agent(.codex))
         #expect(codex.generation == 4 && codex.mode == .ask && codex.config.answers == .agent(.codex))
-        #expect(codex.configText == text.replacingOccurrences(of: "answers = 'fx'", with: "answers = \"codex\""))
+        #expect(codex.configText == text.replacingOccurrences(
+            of: "answers = 'fx'", with: "answers = \"codex\"  # set by blackice mode; blackice.toml has \"fx\""))
         // Who answers already: only the mode changes, and the text stays.
         let same = try saved.with(mode: .ask, answerer: .agent(.fx))
         #expect(same.configText == text && same.generation == 4)
         #expect(throws: ConfigError.self) { try saved.with(mode: .ask, answerer: .agent(.claudeCode)) }
+    }
+
+    /// A switch writes what the file has in a comment on the `answers` line, and keeps it there
+    /// through later switches; the file's own `settingAnswers` writes none.
+    @Test func switchingAnswersKeepsWhatTheFileHas() throws {
+        let base = "mode = 'ask'\n" + Self.fxHook + Self.codexHook
+        let file = base + "[agent]\nanswers = 'fx' # mine\n"
+        let codex = try BlackiceConfig.switchingAnswers(.agent(.codex), in: file)
+        #expect(codex == base + "[agent]\nanswers = \"codex\"  # set by blackice mode; blackice.toml has \"fx\"\n")
+        #expect(try BlackiceConfig(text: codex).answers == .agent(.codex))
+        #expect(try BlackiceConfig.switchedAnswers(in: codex) == BlackiceConfig.SwitchedAnswers(fileHas: .agent(.fx)))
+        // A second switch keeps the file's value, not the first switch's.
+        let you = try BlackiceConfig.switchingAnswers(.you, in: codex)
+        #expect(you == base + "[agent]\nanswers = \"you\"  # set by blackice mode; blackice.toml has \"fx\"\n")
+        // A file that names no one, with CRLF line ends.
+        let crlfFile = "mode = 'ask'\r\n" + Self.fxHook.replacingOccurrences(of: "\n", with: "\r\n")
+        let crlf = try BlackiceConfig.switchingAnswers(.agent(.fx), in: crlfFile)
+        #expect(crlf.hasSuffix("[agent]\r\nanswers = \"fx\"  # set by blackice mode; blackice.toml has none\r\n"))
+        #expect(try BlackiceConfig.switchedAnswers(in: crlf) == BlackiceConfig.SwitchedAnswers(fileHas: nil))
+        // The file's own text has none, and neither has a line that only looks like one.
+        #expect(try BlackiceConfig.switchedAnswers(in: file) == nil)
+        #expect(try BlackiceConfig.settingAnswers(.agent(.codex), in: file) == base + "[agent]\nanswers = \"codex\"\n")
+        for comment in ["has \"gemini\"", "has \"\"", "has fx", "has \"fx\" too"] {
+            let odd = base + "[agent]\nanswers = \"codex\"  # set by blackice mode; blackice.toml " + comment + "\n"
+            #expect(try BlackiceConfig.switchedAnswers(in: odd) == nil)
+        }
+    }
+
+    /// `blackice start` keeps a mode switched since the last start while the file's own mode is
+    /// what it was then; a change in the file wins, and so does starting the file as written.
+    @Test func startKeepsAModeSwitchUntilTheFileChanges() throws {
+        let file = "mode = 'ask'\n" + Self.fxHook
+        let first = try ProviderConfiguration.starting(configText: file, after: nil, keepingSwitches: true)
+        #expect(first.mode == .ask && first.generation == 1)
+        let switched = try first.with(mode: .acceptAll)
+        let kept = try ProviderConfiguration.starting(configText: file, after: switched, keepingSwitches: true)
+        #expect(kept.mode == .acceptAll && kept.configText == file && kept.generation == 3)
+        // Kept again on the next start, since the file still says ask.
+        #expect(try ProviderConfiguration.starting(configText: file, after: kept, keepingSwitches: true).mode == .acceptAll)
+        let edited = file.replacingOccurrences(of: "mode = 'ask'", with: "mode = 'block-all'")
+        #expect(try ProviderConfiguration.starting(configText: edited, after: switched, keepingSwitches: true).mode == .blockAll)
+        #expect(try ProviderConfiguration.starting(configText: file, after: switched).mode == .ask)
+        // Nothing switched: the file's mode.
+        #expect(try ProviderConfiguration.starting(configText: edited, after: first, keepingSwitches: true).mode == .blockAll)
+    }
+
+    /// The same for who answers, read from the switch's comment, from a text 0.4.2 switched, and
+    /// never for an agent whose hook the file no longer has.
+    @Test func startKeepsAnAnswererSwitchUntilTheFileChanges() throws {
+        let file = "mode = 'ask'\n" + Self.fxHook + Self.codexHook + "[agent]\nanswers = 'fx'\n"
+        let first = try ProviderConfiguration.starting(configText: file, after: nil, keepingSwitches: true)
+        let codex = try first.with(mode: .ask, answerer: .agent(.codex))
+        let kept = try ProviderConfiguration.starting(configText: file, after: codex, keepingSwitches: true)
+        #expect(kept.config.answers == .agent(.codex) && kept.mode == .ask)
+        #expect(kept.configText == (try BlackiceConfig.switchingAnswers(.agent(.codex), in: file)))
+        // The file's answers changed: the file wins.
+        let you = file.replacingOccurrences(of: "answers = 'fx'", with: "answers = 'you'")
+        #expect(try ProviderConfiguration.starting(configText: you, after: codex, keepingSwitches: true).configText == you)
+        // Codex's hook is gone from the file: fx, as the file says.
+        let noCodex = "mode = 'ask'\n" + Self.fxHook + "[agent]\nanswers = 'fx'\n"
+        let fallback = try ProviderConfiguration.starting(configText: noCodex, after: codex, keepingSwitches: true)
+        #expect(fallback.configText == noCodex && fallback.config.answers == .agent(.fx))
+        // Switched again, back to what the file has: the next start loads the file's text.
+        let back = try kept.with(mode: .ask, answerer: .agent(.fx))
+        #expect(try BlackiceConfig.switchedAnswers(in: back.configText) == BlackiceConfig.SwitchedAnswers(fileHas: .agent(.fx)))
+        #expect(try ProviderConfiguration.starting(configText: file, after: back, keepingSwitches: true).configText == file)
+        // As written: the file's answers.
+        #expect(try ProviderConfiguration.starting(configText: file, after: codex).configText == file)
+
+        // 0.4.2 switched with no comment: the text in force is the file with only its answers line set.
+        let legacy = try ProviderConfiguration(generation: 7, mode: .ask,
+                                               configText: try BlackiceConfig.settingAnswers(.agent(.codex), in: file))
+        #expect(legacy.answersSwitched(from: file) == BlackiceConfig.SwitchedAnswers(fileHas: .agent(.fx)))
+        #expect(try ProviderConfiguration.starting(configText: file, after: legacy, keepingSwitches: true).config.answers
+                == .agent(.codex))
+        // ...unless the file changed elsewhere since: then it is the file's.
+        let more = file + "[[allow]]\napp = 'com.vercel.fx'\nteam = 'JW6Y669B67'\nhosts = ['example.com']\n"
+        #expect(legacy.answersSwitched(from: more) == nil)
+        #expect(try ProviderConfiguration.starting(configText: more, after: legacy, keepingSwitches: true).configText == more)
+        #expect(first.answersSwitched(from: file) == nil)
     }
 }

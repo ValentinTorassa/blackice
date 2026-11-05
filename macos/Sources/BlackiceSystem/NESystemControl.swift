@@ -33,11 +33,13 @@ public final class NESystemControl: SystemControlling {
         if let owner = saved.foreignOwner { return refuseForeign(owner, output) }
         let candidate: ProviderConfiguration
         do {
-            candidate = try ProviderConfiguration.starting(configText: configText, after: saved.configuration)
+            candidate = try ProviderConfiguration.starting(configText: configText, after: saved.configuration,
+                                                           keepingSwitches: !output.asWritten)
         } catch {
             output.stderr("blackice start: \(error)")
             return ExitCode.invalidConfig
         }
+        if let file = try? BlackiceConfig(text: configText) { CLI.keptLines(candidate, file: file).forEach(output.stdout) }
         if output.setup { output.stdout(""); output.stdout(Style.heading("2 · Confirm with Touch ID")); output.stdout("") }
         guard confirm(.start(candidate), output) else { return ExitCode.noPermission }
 

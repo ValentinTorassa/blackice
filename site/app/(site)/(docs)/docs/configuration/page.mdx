@@ -40,7 +40,7 @@ instructions = "fx"            # the daemon writes fx's skill from blackice into
 
 The parser is strict: an unknown key or a value of the wrong type stops blackice from starting instead of being guessed at.
 
-`blackice start` reads the file once and, after Touch ID, saves its text in the extension's configuration. The daemon reads no file: it takes the hooks and `timeout_seconds` from the extension when it registers, and asks again when the extension's configuration changes. Editing `blackice.toml` changes nothing until the next `blackice start`.
+`blackice start` reads the file once and, after Touch ID, saves its text in the extension's configuration. The daemon reads no file: it takes the hooks and `timeout_seconds` from the extension when it registers, and asks again when the extension's configuration changes. Editing `blackice.toml` changes nothing until the next `blackice start`. `blackice mode` and the menu's Mode change the mode, and who answers in ask mode, in the configuration blackice holds and not in the file. `start` keeps such a switch, and says so before Touch ID, as long as the file still has what it had at the last start: once the file's own `mode` or `answers` changes, the file wins. `agent connect`, and the first `start` right after its questions, load the file as written.
 
 ## Rules
 

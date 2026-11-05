@@ -9,13 +9,19 @@ public struct SystemOutput {
     public let setup: Bool
     /// Whether the first start ends with the "Next" commands; not when more setup follows.
     public let next: Bool
+    /// Start loads the file as written, mode and `answers` included. Otherwise (`blackice start`) a
+    /// mode or an answerer switched with `blackice mode` or the menu since the last start stays
+    /// while the file has what it had then (`ProviderConfiguration.starting`). `agent connect` and
+    /// the first start, right after the questions, load the file as written.
+    public let asWritten: Bool
 
     public init(stdout: @escaping (String) -> Void, stderr: @escaping (String) -> Void, setup: Bool = false,
-                next: Bool = true) {
+                next: Bool = true, asWritten: Bool = false) {
         self.stdout = stdout
         self.stderr = stderr
         self.setup = setup
         self.next = next
+        self.asWritten = asWritten
     }
 }
 

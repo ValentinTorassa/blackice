@@ -335,8 +335,11 @@ public enum CLI {
             case .success(let loaded):
                 if !justWritten { stdout("Using \(shown): \(loaded.config.overview).") }
                 guard let agent, loaded.config.mode != .acceptAll else {
+                    // A file just written by the questions is loaded as written; otherwise a switch
+                    // made with blackice mode or the menu stays while the file leaves it as it was.
                     let started = system.start(configText: loaded.text,
-                                               output: SystemOutput(stdout: stdout, stderr: stderr, setup: justWritten))
+                                               output: SystemOutput(stdout: stdout, stderr: stderr, setup: justWritten,
+                                                                    asWritten: justWritten))
                     if started == ExitCode.success { menuBar.reopenIfOutdated(output: SystemOutput(stdout: stdout, stderr: stderr)) }
                     if justWritten, started == ExitCode.success {
                         offerMenuBar(menuBar, interaction: interaction, stdout: stdout, stderr: stderr)
@@ -347,7 +350,8 @@ public enum CLI {
                 // the agent up, and let its last step load the file in the mode picked. Nothing was
                 // filtered before, so a setup that does not get there stays in accept-all and says so.
                 let started = system.start(configText: settingRootKey(loaded.text, "mode", to: "\"accept-all\""),
-                                           output: SystemOutput(stdout: stdout, stderr: stderr, setup: true, next: false))
+                                           output: SystemOutput(stdout: stdout, stderr: stderr, setup: true, next: false,
+                                                                asWritten: true))
                 guard started == ExitCode.success else { return started }
                 menuBar.reopenIfOutdated(output: SystemOutput(stdout: stdout, stderr: stderr))
                 stdout("  It stays in accept-all while \(agent) is set up, then switches to \(loaded.config.mode.rawValue).")

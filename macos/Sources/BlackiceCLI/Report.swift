@@ -193,6 +193,23 @@ extension CLI {
         }
     }
 
+    /// Before start's Touch ID: what it keeps from a switch made with `blackice mode` or the menu,
+    /// where `candidate` differs from the file it was started with. Empty when it keeps nothing.
+    public static func keptLines(_ candidate: ProviderConfiguration, file: BlackiceConfig) -> [String] {
+        var lines: [String] = []
+        if candidate.mode != file.mode {
+            lines.append("Keeping \(candidate.mode.rawValue) mode, switched with blackice mode or the menu; the file says " +
+                         "\(file.mode.rawValue). blackice mode \(file.mode.rawValue) switches to it.")
+        }
+        if let kept = candidate.config.answers, kept != file.answers {
+            let who = kept == .you ? "you answering" : "\(kept.title) answering"
+            let fileSays = file.answers.map { "the file says \($0.name)" } ?? "the file names no one"
+            let back = file.answers.map { " blackice mode ask --agent \($0.name) switches to it." } ?? ""
+            lines.append("Keeping \(who), picked with blackice mode or the menu; \(fileSays).\(back)")
+        }
+        return lines
+    }
+
     /// After a successful start: the mode, and what it does on a line of its own.
     public static func onLines(_ configuration: ProviderConfiguration) -> [String] {
         let explanation = configuration.mode.explanation

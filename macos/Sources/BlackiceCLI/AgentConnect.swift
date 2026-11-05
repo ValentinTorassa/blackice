@@ -1241,7 +1241,8 @@ extension CLI {
         }
         stdout("")
         if let stop = interruption() { return stop }
-        let started = system.start(configText: loaded, output: SystemOutput(stdout: stdout, stderr: stderr))
+        // The file as written: the hook and `answers` just written win over any earlier switch.
+        let started = system.start(configText: loaded, output: SystemOutput(stdout: stdout, stderr: stderr, asWritten: true))
         guard started == ExitCode.success else { return started }
         loadedFile = true
         // The hook loaded now names its instructions, so the copies made up to 0.4.0 are read by

@@ -199,13 +199,14 @@ private final class FakeOpenCodeMac: @unchecked Sendable {
 private final class Loading: SystemControlling {
     var texts: [String] = []
     var nexts: [Bool] = []
+    var asWritten: [Bool] = []
     var agentInstalls = 0
     var running: Mode?
     var modes: [Mode] = []
     var startStatuses: [Int32] = []
     var modeStatuses: [Int32] = []
     func start(configText: String, output: SystemOutput) -> Int32 {
-        texts.append(configText); nexts.append(output.next)
+        texts.append(configText); nexts.append(output.next); asWritten.append(output.asWritten)
         let status = startStatuses.isEmpty ? 0 : startStatuses.removeFirst()
         guard status == 0 else { return status }
         running = try? BlackiceConfig(text: configText).mode
@@ -1007,6 +1008,8 @@ struct AgentConnectTests {
 
         // First in accept-all with no Next list, then the file as written: ask mode, fx's rule and hook.
         #expect(system.texts.count == 2 && system.nexts == [false, true])
+        // Both as written: what the questions and agent connect wrote wins over an earlier switch.
+        #expect(system.asWritten == [true, true])
         #expect(try BlackiceConfig(data: Data(system.texts[0].utf8)).mode == .acceptAll)
         let final = try BlackiceConfig(data: Data(system.texts[1].utf8))
         #expect(final.mode == .ask && final.hooks.count == 1 && final.allowRule(for: Self.fx, host: "ai-gateway.vercel.sh") != nil)

@@ -11,6 +11,12 @@ New:
   On 5 November 2026 it decided the 23 eval cases as expected with `openai/gpt-6-luna` on a ChatGPT plan, and 22
   with Z.AI's `glm-5.3-flash`, which approved Slack on port 6667, so OpenAI is first in the list.
 
+Changed:
+- `blackice start` keeps a mode, and who answers in ask mode, switched with `blackice mode` or the menu since the last
+  start, as long as the file still has what it had then, and says so before Touch ID. A change in the file wins, and
+  `agent connect` loads the file it wrote. Until now every `start`, an upgrade's included, went back to the file's
+  mode: an upgrade switched a Mac in accept-all back to the file's ask mode.
+
 Fixed:
 - A connection held for its TLS hello in ask or block-all is no longer cut 10 s after it opens when the app has
   written nothing yet: it may stay quiet for 2 minutes, and has 10 s from its first byte for the hello. fx and
