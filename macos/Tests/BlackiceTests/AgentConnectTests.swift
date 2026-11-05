@@ -243,6 +243,21 @@ struct AgentConnectTests {
         #expect(refused.stderr.last == "  To retry: blackice agent connect fx --config ~/.config/blackice/blackice.toml")
         #expect(try String(contentsOfFile: config, encoding: .utf8) == text && system.texts.isEmpty)
 
+        // A team with no credits left (4 November 2026): fx exits with status 1 and prints nothing.
+        let broke = FakeAgentMac(signedIn: true, resources: resources, answer: nil)
+        broke.hookOutcome = .exited(status: 1)
+        broke.hookStderr = "fx ask: API request failed · HTTP 502 · insufficient_funds: A positive credit balance is required"
+        let unfunded = connect(home, config: config, mac: broke, system: system)
+        #expect(unfunded.status == ExitCode.software)
+        #expect(unfunded.stderr.first == "  fx exited with status 1 and gave no answer, so blackice.toml was left as it was.")
+        #expect(unfunded.stderr.suffix(4) == [
+            "  Vercel's AI Gateway has no credits left for the team fx signed in with. Add",
+            "  credits on that team's AI Gateway page in the Vercel dashboard",
+            "  (https://vercel.com/dashboard, then AI Gateway), then run this again.",
+            "  To retry: blackice agent connect fx --config ~/.config/blackice/blackice.toml",
+        ])
+        #expect(try String(contentsOfFile: config, encoding: .utf8) == text && system.texts.isEmpty)
+
         // The old way of answering, or anything else that is not an answer line, is no answer.
         let commandLine = connect(home, config: config, mac: FakeAgentMac(signedIn: true, resources: resources,
                                                                          answer: { _ in "blackice approve --app x --for 1h" }),

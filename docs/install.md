@@ -176,6 +176,8 @@ when their timeout passes.
 3. It runs the hook once on a sample connection and checks that fx's last line is an answer, `deny` or
    `approve 10m`. That answer is only read, so nothing is let through. AI Gateway needs a card on file for the
    Vercel team fx signed in with; without one, the test fails with HTTP 403 `customer_verification_required`.
+   With no credits left on that team, it fails with HTTP 502 `insufficient_funds`; add credits on the team's AI
+   Gateway page in the Vercel dashboard.
 4. Only then does it add to `blackice.toml` a rule that lets fx reach its model (Vercel's AI Gateway) in every mode,
    and the hook, and raise `timeout_seconds` to at least 60. The hook starts fx directly, and only when fx's
    signature names the signing identifier and Team ID read in step 1. A hook from 0.3 that runs the skill with

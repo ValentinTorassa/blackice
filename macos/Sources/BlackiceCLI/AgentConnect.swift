@@ -61,11 +61,18 @@ public struct AgentProfile: Sendable {
         // the answer.
         askArguments: ["ask", "--no-save", "--no-color", prompt],
         // Seen on 3 November 2026: a Vercel team with no card on file gets HTTP 403 from AI Gateway.
+        // Seen on 4 November 2026: a team with no credits left gets HTTP 502, insufficient_funds.
         advice: { stderr in
-            stderr.contains("customer_verification_required")
-                ? ["Vercel's AI Gateway needs a card on file for the team fx signed in with. Add one",
-                   "in that team's billing settings on vercel.com, then run this again."]
-                : []
+            if stderr.contains("customer_verification_required") {
+                return ["Vercel's AI Gateway needs a card on file for the team fx signed in with. Add one",
+                        "in that team's billing settings on vercel.com, then run this again."]
+            }
+            if stderr.contains("insufficient_funds") {
+                return ["Vercel's AI Gateway has no credits left for the team fx signed in with. Add",
+                        "credits on that team's AI Gateway page in the Vercel dashboard",
+                        "(https://vercel.com/dashboard, then AI Gateway), then run this again."]
+            }
+            return []
         })
 
     public static let known = [fx]
