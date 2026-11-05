@@ -9,6 +9,13 @@ public protocol MenuBarControlling {
     func setOpenAtLogin(_ on: Bool, output: SystemOutput) -> Int32
     /// Whether the first start asks about the menu bar: the app can open at login and does not yet.
     var canOffer: Bool { get }
+    /// After `blackice start`: a menu bar app running another build (one from before an upgrade)
+    /// is closed and opened again from this one.
+    func reopenIfOutdated(output: SystemOutput)
+}
+
+extension MenuBarControlling {
+    public func reopenIfOutdated(output: SystemOutput) {}
 }
 
 /// No menu bar app.
