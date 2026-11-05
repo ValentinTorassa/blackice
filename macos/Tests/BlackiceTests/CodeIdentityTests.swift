@@ -108,6 +108,27 @@ struct CodeIdentityTests {
         #expect(small.count <= 2)
     }
 
+    /// A full cache forgets the processes that ended, and keeps the one still running: a
+    /// long-running app needs its entry once an update removes its program file.
+    @Test func aFullCacheKeepsTheProcessesThatStillRun() throws {
+        let alive = Data([1]), cdhash = IdentityResolution.adHoc(cdhash: String(repeating: "a", count: 40))
+        let cache = IdentityCache(limit: 3, running: { $0 == alive })
+        for byte in UInt8(1)...4 { cache.store(Data([byte]), cdhash) }
+        #expect(cache.count == 2)
+        #expect(cache.read(alive) == cdhash)
+        #expect(cache.read(Data([4])) == cdhash)
+        #expect(cache.read(Data([2])) == nil)
+
+        // The real check: this test runner runs, a made-up token names no process.
+        let own = try #require(ownAuditToken())
+        let real = IdentityCache(limit: 2)
+        real.store(own, cdhash)
+        real.store(Data(repeating: 9, count: own.count), cdhash)
+        real.store(Data(repeating: 8, count: own.count), cdhash)
+        #expect(real.read(own) == cdhash)
+        #expect(real.count == 2)
+    }
+
     @Test func missingOrShortTokenIsUnresolved() {
         #expect(CodeIdentity.resolve(auditToken: nil) == .unresolved)
         #expect(CodeIdentity.resolve(auditToken: Data([1, 2, 3])) == .unresolved)
