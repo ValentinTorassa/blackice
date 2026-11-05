@@ -1,6 +1,9 @@
 # Changelog
 
-## Unreleased
+## 0.4.3 (5 November 2026)
+
+opencode can be the agent, `blackice start` keeps the mode and the answerer you switched to, and a connection
+that waits before its first byte is no longer cut after 10 s.
 
 New:
 - opencode can be the agent: `blackice agent connect opencode` asks which provider it decides with (OpenAI, Z.AI
@@ -22,6 +25,10 @@ Fixed:
   written nothing yet: it may stay quiet for 2 minutes, and has 10 s from its first byte for the hello. fx and
   Claude Code lost 175 connections in two days to the old deadline. A quiet one dropped at 2 minutes is logged
   `idle_before_hello`, apart from `server_name_timeout`.
+
+Upgrading from 0.4.2: `brew upgrade --cask blackice` or the install script with `--force`, then `blackice
+start`, which keeps a mode or an answerer you switched to with 0.4.2's menu. The agents' hooks need nothing;
+`blackice agent connect opencode` sets opencode up.
 
 ## 0.4.2 (5 November 2026)
 
