@@ -50,7 +50,10 @@ private struct Outcome {
 private final class Started: SystemControlling {
     var texts: [String] = []
     var setups: [Bool] = []
-    func start(configText: String, output: SystemOutput) -> Int32 { texts.append(configText); setups.append(output.setup); return 0 }
+    var asWritten: [Bool] = []
+    func start(configText: String, output: SystemOutput) -> Int32 {
+        texts.append(configText); setups.append(output.setup); asWritten.append(output.asWritten); return 0
+    }
     func stop(output: SystemOutput) -> Int32 { 0 }
     func status(output: SystemOutput) -> Int32 { 0 }
     func setMode(_ mode: Mode, output: SystemOutput) -> Int32 { 0 }
@@ -236,6 +239,8 @@ struct WizardTests {
         let written = try #require(terminal.files[CLI.defaultConfigPath])
         #expect(system.texts == [String(decoding: written, as: UTF8.self)])
         #expect(system.setups == [true])
+        // The file just written is loaded as written, mode and answers included.
+        #expect(system.asWritten == [true])
         #expect(Array(result.stdout.prefix(5)) == [
             "Setting up blackice: pick a mode, confirm with Touch ID, then allow its",
             "network extension if macOS asks.",
@@ -254,6 +259,8 @@ struct WizardTests {
         // With a file already there: no steps.
         let again = run(["start"], terminal, system: system)
         #expect(again.status == 0 && system.setups == [true, false])
+        // A later start keeps a switch made with blackice mode or the menu.
+        #expect(system.asWritten == [true, false])
         #expect(again.stdout == ["Using ~/.config/blackice/blackice.toml: accept-all mode, no rules, no hooks."])
 
         // Control-D: nothing written, nothing started.
@@ -442,6 +449,24 @@ struct ReportTests {
             == "block-all mode is saved, but blackice's filter did not answer, so whether it is in force is not known.")
         #expect(CLI.activationStatus(.noAnswer) == ExitCode.unavailable)
         #expect(CLI.notActiveLines(saved, .other(nil)).first?.hasPrefix("blackice's filter holds no configuration") == true)
+    }
+
+    /// What start says it keeps from a switch, before Touch ID.
+    @Test func startSaysWhatItKeeps() throws {
+        let fx = "[[hook]]\non = 'connection'\nprogram = '/opt/fx'\napp = 'com.vercel.fx'\nteam = 'JW6Y669B67'\ninstructions = 'fx'\n"
+        let codex = "[[hook]]\non = 'connection'\nprogram = '/opt/codex'\napp = 'codex'\nteam = '2DC432GLL2'\ninstructions = 'codex'\n"
+        let text = "mode = 'ask'\n" + fx + codex + "[agent]\nanswers = 'fx'\n"
+        let file = try BlackiceConfig(text: text)
+        let switched = try ProviderConfiguration(generation: 4, mode: .ask, configText: text).with(mode: .acceptAll, answerer: .agent(.codex))
+        let kept = try ProviderConfiguration.starting(configText: text, after: switched, keepingSwitches: true)
+        #expect(CLI.keptLines(kept, file: file) == [
+            "Keeping accept-all mode, switched with blackice mode or the menu; the file says ask. blackice mode ask switches to it.",
+            "Keeping Codex answering, picked with blackice mode or the menu; the file says fx. blackice mode ask --agent fx switches to it.",
+        ])
+        let none = try BlackiceConfig(text: "mode = 'ask'\n" + fx + codex)
+        let you = try ProviderConfiguration(generation: 2, mode: .ask, configText: try BlackiceConfig.switchingAnswers(.you, in: "mode = 'ask'\n" + fx + codex))
+        #expect(CLI.keptLines(you, file: none) == ["Keeping you answering, picked with blackice mode or the menu; the file names no one."])
+        #expect(CLI.keptLines(try ProviderConfiguration.starting(configText: text, after: nil), file: file).isEmpty)
     }
 
     @Test func modeAndFirstStartHints() throws {

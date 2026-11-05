@@ -154,6 +154,13 @@ says which mode blackice is in, whether the daemon runs your hooks, and how many
 At the end, the first `start` asks whether to show blackice in the menu bar and open it at login (see "The menu bar"
 under step 6).
 
+A later `start` keeps a mode switched with `blackice mode` or the menu since the last start, and who answers in ask
+mode when that was switched too, as long as the file still has what it had then. It says what it keeps before Touch
+ID, for example `Keeping accept-all mode, switched with blackice mode or the menu; the file says ask.` A change in the
+file wins: edit `mode` or `answers` there and `start` loads the file's. So does `agent connect`, which loads the file
+it just wrote, and the first `start` right after its questions. An upgrade's `start` keeps the switch the same way.
+`blackice mode` or the menu switches again at any time.
+
 ## 5. Start the daemon
 
 The daemon runs the hooks for connections that wait in ask mode. It runs as a LaunchAgent for your user and takes
@@ -219,7 +226,8 @@ One agent answers at a time, and you choose which. Each agent you connect keeps 
 `answers` in its `[agent]` table names the one that answers: connecting a second agent adds its hook, keeps the
 first one's and sets `answers` to the new one. `blackice mode ask --agent fx` (or `claude-code`, `codex`, or `you`
 to answer yourself) switches, with Touch ID; the menu's Mode does the same. That switch changes the configuration
-blackice holds, not the file, as `blackice mode` does, so `blackice start` loads the file's own `answers` again.
+blackice holds, not the file, as `blackice mode` does. `blackice start` keeps it, and says so before Touch ID, as long
+as the file's own `answers` is still what it was at the last start; a change in the file wins (see step 4).
 A hook that runs an agent but names no `instructions`, such as one from 0.3 or 0.4.0, would run whoever `answers`
 names: `agent connect` replaces it with the agent's own hook, or removes it when it ran another agent.
 

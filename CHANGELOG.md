@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+Changed:
+- `blackice start` keeps a mode, and who answers in ask mode, switched with `blackice mode` or the menu since the last
+  start, as long as the file still has what it had then, and says so before Touch ID. A change in the file wins, and
+  `agent connect` loads the file it wrote. Until now every `start`, an upgrade's included, went back to the file's
+  mode: an upgrade switched a Mac in accept-all back to the file's ask mode.
+
 ## 0.4.2 (5 November 2026)
 
 You choose who answers in ask mode from a smaller menu, an app updated while it runs keeps its connections, an

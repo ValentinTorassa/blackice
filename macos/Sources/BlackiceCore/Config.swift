@@ -294,11 +294,58 @@ extension BlackiceConfig {
     /// added under `[agent]` when it is not, and the table added at the end when there is none.
     /// The rest of the text stays as it is. Throws when `text`, or the result, does not parse.
     public static func settingAnswers(_ answerer: Answerer, in text: String) throws -> String {
+        try replacingAnswers(answerer, in: text, comment: "")
+    }
+
+    /// What `switchingAnswers` ends the `answers` line with, before what the file itself has.
+    static let switchComment = "  # set by blackice mode; blackice.toml has "
+
+    /// What the file had for `answers` before `blackice mode --agent` or the menu switched it in
+    /// the text blackice holds. `fileHas` is nil when the file named no one.
+    public struct SwitchedAnswers: Equatable, Sendable {
+        public let fileHas: Answerer?
+        public init(fileHas: Answerer?) { self.fileHas = fileHas }
+    }
+
+    /// `text` with `answers = "NAME"` as a switch sets it in the text blackice holds, never in the
+    /// file: as `settingAnswers` does, with a comment at the end of that line that keeps what the
+    /// file itself has, such as `answers = "codex"  # set by blackice mode; blackice.toml has "fx"`
+    /// (or `has none`). `blackice start` reads the comment to tell a switch from a change in the
+    /// file. A text switched before keeps the value its comment names, not the earlier switch.
+    public static func switchingAnswers(_ answerer: Answerer, in text: String) throws -> String {
+        let fileHas = try switchedAnswers(in: text)?.fileHas ?? BlackiceConfig(text: text).answers
+        let named = fileHas.map { "\"\($0.name)\"" } ?? "none"
+        return try replacingAnswers(answerer, in: text, comment: switchComment + named)
+    }
+
+    /// The comment `switchingAnswers` left on the `answers` line of `text`, read strictly: the
+    /// whole line is `answers = "NAME"` followed by that comment, and it names a valid value. nil
+    /// when there is none, so the text holds the file's own `answers`.
+    public static func switchedAnswers(in text: String) throws -> SwitchedAnswers? {
+        var parser = Parser(bytes: Array(text.utf8))
+        let document = try parser.parse()
+        guard let agent = document.tables.first(where: { $0.kind == .agent }),
+              let entry = agent.entries["answers"],
+              let answers = try BlackiceConfig(text: text).answers else { return nil }
+        let lines = text.components(separatedBy: "\n")
+        guard entry.line - 1 < lines.count else { return nil }
+        var line = lines[entry.line - 1]
+        if line.hasSuffix("\r") { line.removeLast() }
+        let prefix = "answers = \"\(answers.name)\"" + switchComment
+        guard line.hasPrefix(prefix) else { return nil }
+        let named = String(line.dropFirst(prefix.count))
+        if named == "none" { return SwitchedAnswers(fileHas: nil) }
+        guard named.count > 2, named.hasPrefix("\""), named.hasSuffix("\""),
+              let fileHas = Answerer(name: String(named.dropFirst().dropLast())) else { return nil }
+        return SwitchedAnswers(fileHas: fileHas)
+    }
+
+    private static func replacingAnswers(_ answerer: Answerer, in text: String, comment: String) throws -> String {
         var parser = Parser(bytes: Array(text.utf8))
         let document = try parser.parse()
         // A file with CRLF line ends keeps them.
         let end = text.contains("\r\n") ? "\r" : ""
-        let line = "answers = \"\(answerer.name)\"" + end
+        let line = "answers = \"\(answerer.name)\"" + comment + end
         var result: String
         if let agent = document.tables.first(where: { $0.kind == .agent }) {
             var lines = text.components(separatedBy: "\n")
