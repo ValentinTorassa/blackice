@@ -1,12 +1,5 @@
 # Changelog
 
-## Unreleased
-
-- In ask and block-all, macOS's encrypted DNS (DNS over HTTPS or TLS from `com.apple.mDNSResponder`, on port 443 or
-  853) is dropped at once as `encrypted_dns`, where it used to be asked about or dropped as `no_host`. macOS then
-  uses plain DNS, whose answers blackice reads to name the addresses apps connect to. A rule for
-  `com.apple.mDNSResponder` lets an encrypted resolver through.
-
 ## 0.4.1 (5 November 2026)
 
 Codex can be the agent, the agent reads your notes, its instructions ship inside blackice, ask mode asks
