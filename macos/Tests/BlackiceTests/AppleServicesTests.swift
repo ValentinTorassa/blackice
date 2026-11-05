@@ -286,7 +286,9 @@ struct AppleServicesPolicyTests {
             #expect(decide(facts, blockAll) == expected, "\(facts)")
         }
         for id in generalPurpose {
-            #expect(decide(flow(signed(id, nil), "gateway.icloud.com"), blockAll) == .drop(reason: "no_rule"), "\(id)")
+            // The resolver on port 443 is its encrypted DNS, dropped as such.
+            let reason = id == FilterPolicy.systemResolver.signingID ? "encrypted_dns" : "no_rule"
+            #expect(decide(flow(signed(id, nil), "gateway.icloud.com"), blockAll) == .drop(reason: reason), "\(id)")
         }
     }
 
