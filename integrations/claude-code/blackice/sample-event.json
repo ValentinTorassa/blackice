@@ -1,12 +1,13 @@
 {
   "event": "connection",
-  "id": "ev-05",
+  "id": "ev-7f3a91c2",
   "app": {
     "signing_id": "com.microsoft.VSCode",
     "team_id": "UBF8T346G9",
     "path": "/Applications/Visual Studio Code.app/Contents/MacOS/Electron"
   },
-  "ip": "203.0.113.9",
+  "host": "update.code.visualstudio.com",
+  "ip": "13.107.246.40",
   "port": 443,
-  "host": "githuh.com"
+  "deadline": "2026-11-04T14:36:11Z"
 }

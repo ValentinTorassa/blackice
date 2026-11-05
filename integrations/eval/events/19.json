@@ -1,0 +1,12 @@
+{
+  "event": "connection",
+  "id": "ev-00000013",
+  "app": {
+    "signing_id": "com.example.helper",
+    "team_id": "ABCDE12345",
+    "path": "/Users/me/Downloads/invoice-viewer"
+  },
+  "ip": "140.82.112.6",
+  "port": 443,
+  "host": "api.github.com"
+}

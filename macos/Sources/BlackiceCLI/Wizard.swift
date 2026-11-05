@@ -177,14 +177,14 @@ struct ConfigWizard {
         }
         if mode == .ask {
             say("")
-            say("  To have fx answer for you: blackice agent connect fx")
+            say("  To have an agent answer for you: blackice agent connect fx, or claude-code")
         }
         return answers
     }
 
     static let modes: [(Mode, String)] = [
         (.acceptAll, "accept-all   Let everything through and log it"),
-        (.ask, "ask          Hold what no rule allows until fx or you answer"),
+        (.ask, "ask          Hold what no rule allows until an agent or you answer"),
         (.blockAll, "block-all    Let through only what your rules allow"),
     ]
 
@@ -200,10 +200,11 @@ struct ConfigWizard {
             say("")
             say("  Who answers the connections that wait?")
             say("")
-            let agents = ["fx, a coding agent: blackice installs it if needed and sets it up",
-                          "Me, with blackice pending, approve and deny"]
-            guard let who = choose(Choice(options: agents, multiple: false))?.first else { return nil }
-            answers.agent = who == 0 ? "fx" : nil
+            let agents = [("fx", "fx, a coding agent: blackice installs it if needed and sets it up"),
+                          ("claude-code", "Claude Code: blackice installs it if needed and sets it up")]
+            let options = agents.map(\.1) + ["Me, with blackice pending, approve and deny"]
+            guard let who = choose(Choice(options: options, multiple: false))?.first else { return nil }
+            answers.agent = who < agents.count ? agents[who].0 : nil
         }
         if answers.mode != .acceptAll {
             guard let rules = pickApps(choose) else { return nil }

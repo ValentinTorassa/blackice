@@ -10,7 +10,7 @@ import Foundation
 // before it runs a single instruction (`refused`). A `run` line has no such check.
 //
 // The event, without its token, reaches the hook in exactly two ways:
-//   - as JSON on stdin;
+//   - as JSON on stdin, unless its hook says `stdin = "none"` (programs only), when stdin is empty;
 //   - as the same bytes in a 0600 file inside a private 0700 directory, named in
 //     BLACKICE_EVENT_FILE (BLACKICE_EVENT_ID holds the event ID). The hook also runs in
 //     that directory, and the directory is deleted once the hook is done.
@@ -355,7 +355,8 @@ public final class HookRunner: @unchecked Sendable {
         collector.start(reading: child.stderr)
         let answer = OutputCollector(limit: options.stdoutLimit)
         answer.start(reading: child.stdout)
-        feed(json, to: child.stdin)
+        // `stdin = "none"`: stdin ends at once, and the event is only in the file.
+        feed(hook.program?.eventOnStdin == false ? Data() : json, to: child.stdin)
 
         let killAt = started + budget
         var lastSignal: Int32?

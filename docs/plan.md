@@ -25,7 +25,7 @@ and each run on a Mac is recorded in [`evidence/`](../evidence/).
 | Approval storage | In memory, inside the extension. Permanent rules live in `blackice.toml`. |
 | Who can approve | A person, with `blackice approve` or `deny` and Touch ID, or a hook, through the daemon (decided on 4 November 2026, for 0.4.0). The event's one-time token never leaves the extension and the daemon: a hook gets the event without it and answers on its stdout, and the daemon sends that answer to the extension with the token. The extension takes an answer with a token only on the connection of the daemon it registered. `approve` and `deny` take no `--token`. |
 | Hook answers | A hook answers only when it exits with status 0 before its deadline. The last non-empty line of its stdout, trimmed, must then be exactly `deny`, `approve <N>m` (N from 1 to 1440) or `approve <N>h` (N from 1 to 24), the limits of `approve --for`. The daemon reads at most 64 KiB of stdout; more than that, any other line, another exit status or the deadline is no answer, and the connection is denied at its deadline. The answer names no app and no host: the daemon takes both from the event. The event log records `hook_answer` (the answer and its seconds) or `hook_no_answer` (a reason, and at most the first 24 characters of an unrecognized line, printable ASCII only), and `answer_refused` when the extension refuses the answer. |
-| Hook programs | `program = "/abs/path"` with `app` and `team`, the identity pair of `[[allow]]`, plus optional `args` and `env`. The daemon starts the program directly, suspended, checks the code signature of the process it started, as for an `[[allow]]` rule, against `app` and `team`, and only then lets it run. Checking the process rather than the file means the code checked is the code that runs. On a mismatch it kills the process before it runs and logs `hook_refused`. `run = '…'` still runs through `/bin/sh -c` with no check. Only `program` hooks are protected against a program swapped by another program of the user; `blackice agent connect` writes one, with the identity read from the agent's binary. |
+| Hook programs | `program = "/abs/path"` with `app` and `team`, the identity pair of `[[allow]]`, plus optional `args`, `env` and `stdin` (`"none"` keeps the event off stdin, for Claude Code; the default is `"event"`). The daemon starts the program directly, suspended, checks the code signature of the process it started, as for an `[[allow]]` rule, against `app` and `team`, and only then lets it run. Checking the process rather than the file means the code checked is the code that runs. On a mismatch it kills the process before it runs and logs `hook_refused`. `run = '…'` still runs through `/bin/sh -c` with no check. Only `program` hooks are protected against a program swapped by another program of the user; `blackice agent connect` writes one, with the identity read from the agent's binary. |
 | Daemon | `blackice daemon` takes no options and reads no file (decided on 3 November 2026). The extension's reply to its registration carries the configuration the extension holds, the `blackice.toml` text that `start` or `mode` saved after Touch ID plus its generation, and the daemon takes its hooks and timeout from it, parsed with the same strict parser. Each event carries the generation of the configuration it was raised under, and is not sent once another one is installed; a daemon holding another one registers again on the same connection to get the current configuration, and runs no hook for an event whose configuration is gone. Hooks get an environment the daemon builds: `HOME`, `USER` and `LOGNAME` from the user database, `TMPDIR` from confstr, a fixed `PATH` and `LANG`, a `program` hook's `env` on top (which may set `HOME` but no `BLACKICE_` variable), and the event's file and ID. `blackice agent install` and `uninstall` write and load, or unload and remove, the LaunchAgent, without Touch ID. |
 | Configuration | `blackice.toml`, read by a small strict parser for the subset the file uses. No third-party dependency. |
 | Apple account | Individual Developer Program membership. |
@@ -158,6 +158,15 @@ and each run on a Mac is recorded in [`evidence/`](../evidence/).
    ID read from fx's binary, and its test reads fx's last line. The eval reads the same line with the daemon's
    rules. Neither has run with a model yet: on 4 November 2026 the one run against the sample event stopped at AI
    Gateway, whose team had no credits left (HTTP 502, `insufficient_funds`), with nothing on stdout.
+   A second decider, written on 4 November 2026 and not yet run under the daemon: Claude Code in print mode
+   ([`integrations/claude-code/`](../integrations/claude-code/README.md)), with reading the event as its only tool,
+   a sign-in of its own (its own `CLAUDE_CONFIG_DIR`, kept in the login keychain, so the hook keeps `HOME`) and a
+   rule for `api.anthropic.com` and `platform.claude.com`. `blackice agent connect claude-code` writes its
+   `program` hook as `connect fx` does, with `stdin = "none"`: `claude -p` adds stdin to its prompt, and the event
+   should reach it only as the file it reads. One agent answers at a time: connecting one replaces another's hook.
+   [`integrations/eval/run.sh`](../integrations/eval/run.sh) runs any decider over the same 20 events the way the
+   daemon runs a program hook; Claude Code 2.1.317 with Sonnet decided all 20 as expected, twice (as a `run` line,
+   then as a program hook), in 3 to 8 s each.
 5. **Hardening and evidence.** Fault tests (daemon down, hook hung, bursts of connections, restart), evidence
    entries in the style of blackice-poc, notarization and an installer. *Done when* `macos/scripts/fault-test.sh`
    passes on a Mac and the run is recorded in [`evidence/`](../evidence/), and a `Blackice-<version>.zip` from
@@ -257,8 +266,8 @@ and each run on a Mac is recorded in [`evidence/`](../evidence/).
   also the only connection whose answers with a token the extension takes, and a copy that registers instead only
   sends what those hooks print. What remains: such a program can keep the LaunchAgent's daemon from getting events,
   by registering again and again or by stopping it, and connections then wait and are denied at their timeout. And
-  the programs a hook runs read files that any program of the user can change, such as fx's rules and skill in the
-  agent's home.
+  the programs a hook runs read files that any program of the user can change, such as fx's rules and skill, or
+  Claude Code's instructions, in the agent's home.
 - **Prompt injection.** Host names, app names and TLS server names are chosen by whoever opens the connection, and
   they reach the model's prompt. Events carry them as structured fields. A hook's only accepted answers are a
   `deny` line or an `approve` line with a duration of at most 24 h, and the app and host come from the event, not

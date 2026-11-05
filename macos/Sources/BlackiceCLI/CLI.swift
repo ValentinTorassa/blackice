@@ -107,9 +107,9 @@ public enum CLI {
 
     Setup
       validate PATH             Check a blackice.toml without loading it
-      agent connect fx [--config PATH]
-                                Let fx answer what waits in ask mode: its own home, a
-                                test, its rule and hook, then ask mode if you want
+      agent connect fx|claude-code [--config PATH]
+                                Let fx or Claude Code answer what waits in ask mode: its
+                                own home, a test, its rule and hook, then ask mode if you want
       agent install|uninstall   Run hooks for waiting connections, now and at each login
       stop                      Stop filtering and remove the network extension (Touch ID)
       version                   The installed version

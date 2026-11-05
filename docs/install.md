@@ -97,17 +97,17 @@ full path, and a script that runs the full path, worked.
 `blackice start` reads `~/.config/blackice/blackice.toml` unless you pass `--config PATH`. If the file is not there,
 `start` asks a few questions and writes it. You pick the answers from lists with the arrow keys:
 - the mode;
-- in ask mode, who answers: fx, or you;
+- in ask mode, who answers: fx, Claude Code, or you;
 - apps to trust, from the apps and system extensions running now (a VPN client's network extension, such as
   Tailscale's, is one). Each may reach any host, and "Another app" takes a path such as
   `/Applications/Slack.app` or a signing identifier.
 
-If you pick fx, `start` also sets fx up, as `blackice agent connect fx` does (see "Let an agent answer"). It stays in
-accept-all until fx is installed, signed in and tested, and loads ask mode at the end, so nothing waits on an answer
-before fx can give it. If fx cannot be set up, or you stop the setup with Control-C, blackice stays on in accept-all,
-filtering nothing, as before that first start, and says so. Finish it later with `blackice agent connect fx`, or
-filter without an agent with `blackice mode ask` (you answer with `blackice approve` and `deny`) or
-`blackice mode block-all`; until then `blackice status` says the same. `blackice init` asks the same questions without
+If you pick an agent, `start` also sets it up, as `blackice agent connect fx` or `claude-code` does (see "Let an agent
+answer"). It stays in accept-all until the agent is installed, signed in and tested, and loads ask mode at the end, so
+nothing waits on an answer before the agent can give it. If the agent cannot be set up, or you stop the setup with
+Control-C, blackice stays on in accept-all, filtering nothing, as before that first start, and says so. Finish it
+later with `blackice agent connect` and its name, or filter without an agent with `blackice mode ask` (you answer
+with `blackice approve` and `deny`) or `blackice mode block-all`; until then `blackice status` says the same. `blackice init` asks the same questions without
 starting anything. Or write the file yourself, starting in accept-all, which lets everything through and only logs:
 
 ```toml
@@ -188,8 +188,17 @@ when their timeout passes.
 In ask or block-all it switches to accept-all while fx is set up (Touch ID), since fx's own connections would wait
 until its rule is loaded, and the last step loads your file again. If the setup stops before that step, because a
 step failed or you pressed Control-C, it switches back to the mode it was in (Touch ID). Control-C while fx signs in
-goes to fx, and the setup stops once fx has quit. It knows fx only, so far.
+goes to fx, and the setup stops once fx has quit.
 [`integrations/fx/README.md`](../integrations/fx/README.md) has the same steps by hand.
+
+`blackice agent connect claude-code` does the same for Claude Code. Its home is a Claude Code configuration
+directory of its own, `~/.config/blackice/agent/.claude`, signed in with `claude auth login`; the sign-in stays in
+the login keychain, apart from yours. Its hook gives it one tool, reading the event, and keeps the event off its
+stdin (`stdin = "none"`), since `claude -p` would add it to the prompt. Its rule covers `api.anthropic.com` and
+`platform.claude.com`. [`integrations/claude-code/README.md`](../integrations/claude-code/README.md) has the details.
+
+One agent answers at a time. Connecting one replaces the hook of another (with two, the first answer would win)
+and says so.
 
 ## 6. Use it
 

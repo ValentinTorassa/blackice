@@ -87,11 +87,11 @@ struct HookEventValidationTests {
         #expect(try HookEvent.decode(built.jsonData()).app.identity == build)
     }
 
-    /// The cdhash event in the fx eval must stay in the format the daemon sends.
-    @Test func fxEvalCDHashEventDecodes() throws {
+    /// The cdhash event in the eval must stay in the format the daemon sends.
+    @Test func evalCDHashEventDecodes() throws {
         let url = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
-            .appendingPathComponent("integrations/fx/eval/events/11.json")
+            .appendingPathComponent("integrations/eval/events/11.json")
         var object = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
         // run.sh adds these two.
         object["token"] = testToken
