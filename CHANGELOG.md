@@ -20,6 +20,13 @@
   ad hoc binary was asked about 52 times in two days, mostly denied. No answer in time is not remembered. An
   approval replaces the denial, a configuration change forgets it, and `blackice pending` lists them under "Denied
   recently".
+- 34 more macOS services pass without a rule, each seen waiting in ask mode on the Mac on 3 and 4 November while
+  reaching only Apple's domains: Find My, iCloud settings, storage and Keychain escrow, Apple Media Services and
+  Music's library and artwork, Siri and Spotlight suggestions, Private Cloud Compute's gateway, key transparency,
+  call history sync, Safari's Safe Browsing service (not Safari), aerial wallpapers, Help, content cache discovery,
+  diagnostics submission and others. Most get only the hosts they reached; those on an iCloud host named after the
+  account's partition (`p404-…`) get `*.icloud.com`. accountsd, which signs in to other providers' accounts, stays
+  out.
 
 ## 0.4.0 (5 November 2026)
 
