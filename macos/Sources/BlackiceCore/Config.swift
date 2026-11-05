@@ -20,8 +20,11 @@ public struct AllowRule: Equatable, Sendable {
     public let app: String
     /// The Team ID. nil means Apple platform code, which is signed without one.
     public let team: String?
-    /// Empty when `anyHost` is set.
+    /// The host name entries. Empty when `anyHost` is set.
     public let hosts: [DomainPattern]
+    /// The address and CIDR entries. A flow whose remote address is in one is allowed by that
+    /// address, with or without a host name, and no host, address or server name check applies.
+    public let addresses: [AddressRange]
     /// `hosts = ["*"]`: the app may reach any destination, including flows with only an address
     /// and no host name. No host or address check applies.
     public let anyHost: Bool
@@ -36,6 +39,11 @@ public struct AllowRule: Equatable, Sendable {
     /// see `BlackiceConfig.anyHostRule(for:)`. `host` must already be normalized.
     public func matches(_ identity: SigningIdentity, host: String) -> Bool {
         names(identity) && hosts.contains { $0.matches(host) }
+    }
+
+    /// Whether the rule names this app and an address entry holds this address.
+    public func matches(_ identity: SigningIdentity, address: IPAddress) -> Bool {
+        names(identity) && addresses.contains { $0.contains(address) }
     }
 }
 
@@ -126,6 +134,9 @@ public struct BlackiceConfig: Equatable, Sendable {
     /// Whether the built-in allowance for macOS's own services applies (see `AppleServices`).
     /// `apple_services = false` turns it off; it is on by default.
     public let appleServices: Bool
+    /// Whether connections to 127.0.0.0/8 and ::1 pass in every mode, before any rule.
+    /// `loopback = false` filters them like any other; it is on by default.
+    public let loopback: Bool
     public let allow: [AllowRule]
     public let hooks: [Hook]
 
@@ -143,10 +154,11 @@ public struct BlackiceConfig: Equatable, Sendable {
 
     public init(text: String) throws { try self.init(data: Data(text.utf8)) }
 
-    private init(mode: Mode, timeoutSeconds: Int, appleServices: Bool, allow: [AllowRule], hooks: [Hook]) {
+    private init(mode: Mode, timeoutSeconds: Int, appleServices: Bool, loopback: Bool, allow: [AllowRule], hooks: [Hook]) {
         self.mode = mode
         self.timeoutSeconds = timeoutSeconds
         self.appleServices = appleServices
+        self.loopback = loopback
         self.allow = allow
         self.hooks = hooks
     }
@@ -163,11 +175,16 @@ public struct BlackiceConfig: Equatable, Sendable {
         allow.first { $0.anyHost && $0.names(identity) }
     }
 
+    /// The first rule that names this app and has an address entry that holds this address.
+    public func addressRule(for identity: SigningIdentity, address: IPAddress) -> AllowRule? {
+        allow.first { $0.matches(identity, address: address) }
+    }
+
     public var summary: String {
         let rules = allow.count == 1 ? "1 allow rule" : "\(allow.count) allow rules"
         let hookCount = hooks.count == 1 ? "1 hook" : "\(hooks.count) hooks"
         return "mode \(mode.rawValue), timeout \(timeoutSeconds) s, \(rules), \(hookCount)"
-            + (appleServices ? "" : ", apple_services off")
+            + (appleServices ? "" : ", apple_services off") + (loopback ? "" : ", loopback off")
     }
 }
 
@@ -192,6 +209,10 @@ extension BlackiceConfig {
         if let entry = root.entries["apple_services"] {
             appleServices = try entry.bool("apple_services")
         }
+        var loopback = true
+        if let entry = root.entries["loopback"] {
+            loopback = try entry.bool("loopback")
+        }
         let allowTables = document.tables.filter { $0.kind == .allow }
         let hookTables = document.tables.filter { $0.kind == .hook }
         if allowTables.count > maximumAllowRules {
@@ -200,7 +221,7 @@ extension BlackiceConfig {
         if hookTables.count > maximumHooks {
             throw ConfigError(line: hookTables[maximumHooks].line, "more than \(maximumHooks) [[hook]] tables")
         }
-        return BlackiceConfig(mode: mode, timeoutSeconds: timeout, appleServices: appleServices,
+        return BlackiceConfig(mode: mode, timeoutSeconds: timeout, appleServices: appleServices, loopback: loopback,
                                allow: try allowTables.map(allowRule), hooks: try hookTables.map(hook))
     }
 
@@ -239,23 +260,54 @@ extension BlackiceConfig {
             guard items.count == 1 else {
                 throw ConfigError(line: hostsEntry.line, "\"*\" must be the only entry in hosts")
             }
-            return AllowRule(app: app, team: team, hosts: [], anyHost: true, line: table.line)
+            return AllowRule(app: app, team: team, hosts: [], addresses: [], anyHost: true, line: table.line)
         }
         var patterns: [DomainPattern] = []
+        var addresses: [AddressRange] = []
         var seen = Set<String>()
         for item in items {
             guard case .string(let text) = item else {
                 throw ConfigError(line: hostsEntry.line, "hosts must be an array of strings, but it holds \(item.typeName)")
             }
-            guard let pattern = DomainPattern(text) else {
-                throw ConfigError(line: hostsEntry.line, "\(quoted(text)) is not a host name or a *.domain pattern")
+            let key: String
+            if AddressRange.looksLikeAddress(text) {
+                let range = try addressRange(text, line: hostsEntry.line)
+                key = range.canonical
+                addresses.append(range)
+            } else {
+                guard let pattern = DomainPattern(text) else {
+                    throw ConfigError(line: hostsEntry.line, "\(quoted(text)) is not a host name, a *.domain pattern, " +
+                                      "an IP address or a CIDR range")
+                }
+                key = (pattern.wildcard ? "*" : "") + pattern.suffix
+                patterns.append(pattern)
             }
-            guard seen.insert((pattern.wildcard ? "*" : "") + pattern.suffix).inserted else {
+            guard seen.insert(key).inserted else {
                 throw ConfigError(line: hostsEntry.line, "\(quoted(text)) appears twice in hosts")
             }
-            patterns.append(pattern)
         }
-        return AllowRule(app: app, team: team, hosts: patterns, anyHost: false, line: table.line)
+        return AllowRule(app: app, team: team, hosts: patterns, addresses: addresses, anyHost: false, line: table.line)
+    }
+
+    /// An address or CIDR entry in hosts, or an error that says how to write it.
+    private static func addressRange(_ text: String, line: Int) throws -> AddressRange {
+        switch AddressRange.parse(text) {
+        case .success(let range):
+            return range
+        case .failure(.notAnAddress):
+            throw ConfigError(line: line, "\(quoted(text)) is not an IP address or a CIDR range; IPv4 is four numbers " +
+                              "from 0 to 255 with no leading zeros, such as \"10.0.0.5\" or \"100.64.0.0/10\"")
+        case .failure(.zone):
+            throw ConfigError(line: line, "\(quoted(text)) names an interface; write the address without %")
+        case .failure(.mapped):
+            throw ConfigError(line: line, "\(quoted(text)) is an IPv4-mapped IPv6 address; write the IPv4 address")
+        case .failure(.prefix(let maximum)):
+            throw ConfigError(line: line, "the prefix of \(quoted(text)) must be a number from 1 to \(maximum)")
+        case .failure(.hostBits(let network)):
+            throw ConfigError(line: line, "\(quoted(text)) has bits set after its prefix; write \(quoted(network))")
+        case .failure(.everything):
+            throw ConfigError(line: line, "\(quoted(text)) covers every address; write hosts = [\"*\"] for any destination")
+        }
     }
 
     private static func hook(_ table: Table) throws -> Hook {
@@ -405,7 +457,7 @@ private enum TableKind: String {
 
     var keys: Set<String> {
         switch self {
-        case .root: return ["mode", "timeout_seconds", "apple_services"]
+        case .root: return ["mode", "timeout_seconds", "apple_services", "loopback"]
         case .allow: return ["app", "team", "hosts"]
         case .hook: return ["on", "run", "program", "args", "env", "app", "team"]
         }

@@ -7,14 +7,16 @@ import Foundation
 // - block-all allows a flow only when an [[allow]] rule names its verified signing identity and
 //   its host, and the flow's address is among the host's answers from the system resolver. The
 //   built-in table of macOS services (AppleServices) counts like a rule unless blackice.toml
-//   turns it off, and a rule with hosts = ["*"] allows everything its app does, with no host
-//   or address check;
+//   turns it off, a rule with hosts = ["*"] allows everything its app does, with no host
+//   or address check, and an address or CIDR entry allows the addresses it holds, by address;
 // - ask allows what block-all allows, plus what a current approval names (with the same address
 //   check), and pauses the rest to ask. Ad hoc signed code has no signing identity, so in ask
-//   mode it is named by its cdhash; rules never name it.
+//   mode it is named by its cdhash; rules never name it. A flow with no name at all is asked
+//   about by its address, and an approval for that address allows it.
 // A host or address that does not check out is "no rule or approval matches", never an error.
 // In every mode, inbound flows pass (only outbound connections are filtered) and Apple's
-// resolver may reach port 53, since rules name hosts and need name lookups to work.
+// resolver may reach port 53, since rules name hosts and need name lookups to work. Loopback
+// destinations pass too, unless blackice.toml says loopback = false.
 // In ask and block-all the extension also reads the resolver's DNS responses, passing every
 // byte, to learn which names each address was given for (DNSMessage.swift). A flow with no host
 // name whose address was given for exactly one name is decided on that name.
@@ -35,7 +37,8 @@ public struct FlowFacts: Equatable, Sendable {
     public let internetSocket: Bool
     public let tcp: Bool
     /// The host name the system attached to the flow, if any. Chosen by the app, so it counts
-    /// only once the remote address checks out against it.
+    /// only once the remote address checks out against it. nil also when that name is only the
+    /// remote address written out, as for an app that opened https://100.66.32.75/.
     public let hostname: String?
     public let port: UInt16?
     /// The address the flow connects to.
@@ -56,7 +59,11 @@ public struct FlowFacts: Equatable, Sendable {
         self.process = process
         self.internetSocket = internetSocket
         self.tcp = tcp
-        self.hostname = hostname
+        if let remoteAddress, let hostname, IPAddress(hostname) == remoteAddress {
+            self.hostname = nil
+        } else {
+            self.hostname = hostname
+        }
         self.port = port
         self.remoteAddress = remoteAddress
         self.dnsNames = dnsNames
@@ -139,10 +146,13 @@ public enum FilterPolicy {
            flow.identity == .verified(systemResolver) || flow.process == .verified(systemResolver) {
             return snapshot.mode == .acceptAll ? .allow(reason: "system_resolver") : .learnNames
         }
+        // Loopback, before the app is identified or any host is looked at: what listens there is
+        // on this Mac, and its own connections out are filtered under its own identity.
+        if snapshot.config.loopback, flow.remoteAddress?.isLoopback == true { return .allow(reason: "loopback") }
         if snapshot.mode == .acceptAll { return .allow(reason: "accept_all") }
         guard let identity = nameable(flow.identity, snapshot.mode) else { return .drop(reason: identityReason(flow.identity)) }
         guard flow.internetSocket else { return .drop(reason: "unsupported_socket") }
-        if let verdict = anyHost(flow, snapshot) { return verdict }
+        if let verdict = anyHost(flow, snapshot) ?? byAddressRule(flow, snapshot) { return verdict }
         let tls = flow.tcp && flow.port == tlsPort
         if let raw = flow.hostname {
             guard let host = normalizeHost(raw) else { return .drop(reason: "hostname_invalid") }
@@ -153,12 +163,13 @@ public enum FilterPolicy {
             return verdict
         }
         // No host name from the system. Ask mode reads the TLS server name to have a host to ask
-        // about; block-all reads it only when a rule or the Apple services table could match this app.
+        // about, and asks about the address when there is none to read; block-all reads it only
+        // when a rule or the Apple services table could match this app.
         // The system resolver gave the address for exactly one name: decide on that name now.
         if let name = flow.dnsName, let verdict = dnsNamed(identity, name: name, tls: tls, snapshot, context) {
             return verdict
         }
-        if snapshot.mode == .ask { return tls ? .readServerName : .drop(reason: "no_host") }
+        if snapshot.mode == .ask { return tls ? .readServerName : byAddress(identity, flow, context) }
         let hasRule = flow.identity.verifiedIdentity.map { hasRuleOrService($0, snapshot.config) } ?? false
         if hasRule && tls { return .readServerName }
         return .drop(reason: hasRule ? "no_host" : "no_rule")
@@ -172,11 +183,20 @@ public enum FilterPolicy {
         case .needMore:
             return .readServerName
         case .deny(let reason):
+            // A hello with no server name, on a flow with no name before it either: ask mode asks
+            // about the address, as off port 443. A client that connects to an address sends no
+            // server name (RFC 6066 has no place for one), as `curl https://100.66.32.75/` does.
+            if reason == "sni_missing", snapshot.mode == .ask, flow.hostname == nil, flow.dnsName == nil,
+               let identity = nameable(flow.identity, snapshot.mode) {
+                let verdict = byAddress(identity, flow, context)
+                if case .drop = verdict { return .drop(reason: reason) }
+                return verdict.adding(";sni_missing")
+            }
             return .drop(reason: reason)
         case .serverName(let name, let encrypted):
             if snapshot.mode == .acceptAll { return .allow(reason: "accept_all") }
             guard let identity = nameable(flow.identity, snapshot.mode) else { return .drop(reason: identityReason(flow.identity)) }
-            if let verdict = anyHost(flow, snapshot) { return verdict }
+            if let verdict = anyHost(flow, snapshot) ?? byAddressRule(flow, snapshot) { return verdict }
             // Encrypted Client Hello (ECH): the server name in the clear is then the provider's
             // public front end (cloudflare-ech.com, say), and the site the connection reaches is
             // in the encrypted inner hello, which blackice cannot read. The outer name is judged
@@ -225,6 +245,38 @@ public enum FilterPolicy {
         guard let signing = flow.identity.verifiedIdentity,
               let rule = snapshot.config.anyHostRule(for: signing) else { return nil }
         return .allow(reason: "rule_line_\(rule.line)")
+    }
+
+    /// A rule whose address or CIDR entry holds the flow's remote address allows it by that
+    /// address, with or without a host name. The rule names the destination itself, so no lookup
+    /// applies, and on the TLS port the server name is not read: like `*`, it covers whatever site
+    /// the app reaches at that address.
+    private static func byAddressRule(_ flow: FlowFacts, _ snapshot: ProviderConfiguration) -> FlowVerdict? {
+        guard let signing = flow.identity.verifiedIdentity, let address = flow.remoteAddress,
+              let rule = snapshot.config.addressRule(for: signing, address: address) else { return nil }
+        return .allow(reason: "rule_line_\(rule.line);address")
+    }
+
+    /// Ask mode, a flow with no name: no host name from the system, not exactly one name from
+    /// DNS answers, and no server name to read. It is asked about by its address, which is its
+    /// destination, so no lookup applies and an approval for that address allows it. Not asked
+    /// about, and dropped as before: QUIC (UDP on port 443), whose name blackice cannot read and
+    /// which apps retry over TCP, where the server name is read; a link-local address whose
+    /// interface is not known, which could be any host on any link; and a flow with no port.
+    private static func byAddress(_ identity: AppIdentity, _ flow: FlowFacts, _ context: PolicyContext) -> FlowVerdict {
+        guard let address = flow.remoteAddress, address.isCheckable, flow.port != nil,
+              flow.tcp || flow.port != tlsPort else { return .drop(reason: "no_host") }
+        if context.approved(identity, address.description) { return .allow(reason: "approval;address") }
+        return .ask(reason: "no_rule;address", addressMatches: true)
+    }
+
+    /// The host an event names for a flow that ask mode pauses: the server name read from its
+    /// hello, else the host name from the system, else the one name DNS answers gave its address,
+    /// else the address itself as `IPAddress.description` prints it. nil when none can name it.
+    public static func eventHost(_ flow: FlowFacts, serverName: String?) -> String? {
+        if let name = serverName ?? flow.hostname ?? flow.dnsName { return normalizeHost(name) }
+        guard let address = flow.remoteAddress, address.isCheckable else { return nil }
+        return address.description
     }
 
     /// Whether a rule names this app (for any host), or the Apple services table covers it.

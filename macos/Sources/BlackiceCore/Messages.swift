@@ -344,12 +344,12 @@ public struct PendingReply: CheckedMessage, Equatable {
         }
         try active?.validate()
         for event in events {
-            guard validEventID(event.id), event.app.identity != nil, normalizeHost(event.host) == event.host,
-                  IPAddress(event.ip)?.description == event.ip, event.secondsLeft >= 0, event.connections >= 0,
+            guard validEventID(event.id), event.app.identity != nil, IPAddress(event.ip)?.description == event.ip,
+                  validEventHost(event.host, ip: event.ip), event.secondsLeft >= 0, event.connections >= 0,
                   event.path.map(validPath) ?? true else { throw MessageError("events", "has an invalid entry") }
         }
         for approval in approvals {
-            guard approval.app.identity != nil, normalizeHost(approval.host) == approval.host,
+            guard approval.app.identity != nil, isNormalDestination(approval.host),
                   approval.secondsLeft >= 0 else { throw MessageError("approvals", "has an invalid entry") }
         }
     }
@@ -389,7 +389,9 @@ public struct AnswerRequest: CheckedMessage, Equatable {
 
     public func validate(now: Date) throws {
         guard app.identity != nil else { throw MessageError("app", "needs a valid signing_id (and team_id) or a cdhash, not both") }
-        guard normalizeHost(host) == host else { throw MessageError("host", "must be a normalized host name") }
+        guard isNormalDestination(host) else {
+            throw MessageError("host", "must be a normalized host name or IP address")
+        }
         switch kind {
         case .approve:
             guard let seconds, (1...ApprovalTable.maximumSeconds).contains(seconds) else {

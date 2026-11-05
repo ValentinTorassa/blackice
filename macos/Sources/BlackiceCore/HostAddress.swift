@@ -56,6 +56,43 @@ public struct IPAddress: Hashable, Sendable, CustomStringConvertible {
         self.scope = Self.isLinkLocal(self.bytes) ? scope : 0
     }
 
+    /// An address as a person writes it in a rule or after `--host`. Stricter than init(_:):
+    /// IPv4, alone or at the end of an IPv6 address, is four decimal numbers from 0 to 255 with no
+    /// leading zeros, since "010.0.0.1", "10.1" and "0x0a.0.0.1" mean other addresses to other
+    /// parsers (inet_pton takes the first as 10.0.0.1). A zone ("%en0") goes only with a
+    /// link-local IPv6 address. Any IPv6 spelling inet_pton takes is accepted otherwise.
+    /// A static function, so `IPAddress.init` stays unambiguous.
+    public static func strict(_ text: String) -> IPAddress? {
+        let parts = text.split(separator: "%", maxSplits: 1, omittingEmptySubsequences: false)
+        let address = parts[0]
+        if address.contains(":") {
+            // Hex digits, ':' and '.'.
+            guard address.utf8.allSatisfy({
+                (48...57).contains($0) || (65...70).contains($0) || (97...102).contains($0) || $0 == 58 || $0 == 46
+            }) else { return nil }
+            if let colon = address.lastIndex(of: ":"), address[colon...].contains("."),
+               !isStrictIPv4(address[address.index(after: colon)...]) { return nil }
+        } else {
+            guard parts.count == 1, isStrictIPv4(address) else { return nil }
+        }
+        guard let parsed = IPAddress(text), parts.count == 1 || parsed.isLinkLocal else { return nil }
+        return parsed
+    }
+
+    /// Four decimal numbers from 0 to 255, separated by dots, with no leading zeros.
+    static func isStrictIPv4(_ text: Substring) -> Bool {
+        let numbers = text.split(separator: ".", omittingEmptySubsequences: false)
+        return numbers.count == 4 && numbers.allSatisfy { number in
+            (1...3).contains(number.utf8.count) && number.utf8.allSatisfy { (48...57).contains($0) }
+                && (number == "0" || !number.hasPrefix("0")) && Int(number).map { $0 <= 255 } == true
+        }
+    }
+
+    /// 127.0.0.0/8 and ::1. An IPv4-mapped loopback address is IPv4 here already.
+    public var isLoopback: Bool {
+        bytes.count == 4 ? bytes[0] == 127 : bytes == [UInt8](repeating: 0, count: 15) + [1]
+    }
+
     /// fe80::/10.
     public var isLinkLocal: Bool { Self.isLinkLocal(bytes) }
 
@@ -83,6 +120,107 @@ public struct IPAddress: Hashable, Sendable, CustomStringConvertible {
     private static func interfaceIndex(_ zone: String) -> UInt32 {
         if zone.utf8.allSatisfy({ $0 >= 0x30 && $0 <= 0x39 }) { return UInt32(zone) ?? 0 }
         return if_nametoindex(zone)
+    }
+}
+
+/// How events, pending entries and approvals name a destination: a host name as normalizeHost
+/// returns it, or an IP address as `IPAddress.description` prints it (lower case and compressed
+/// as in RFC 5952 for IPv6; a link-local address with its interface index after "%"). The address
+/// is read with `IPAddress.strict`. nil for anything else, and for a link-local address whose
+/// interface is not known, which could be any host on any link.
+public func normalizeDestination(_ raw: String) -> String? {
+    if let host = normalizeHost(raw) { return host }
+    guard let address = IPAddress.strict(raw), address.isCheckable else { return nil }
+    return address.description
+}
+
+/// Whether `text` is a destination already in the form `normalizeDestination` returns.
+public func isNormalDestination(_ text: String) -> Bool {
+    if normalizeHost(text) == text { return true }
+    guard let address = IPAddress(text) else { return false }
+    return address.isCheckable && address.description == text
+}
+
+/// An address entry in a rule's `hosts`: one IPv4 or IPv6 address, or a CIDR range of them.
+/// Written strictly (`IPAddress.strict`), with a decimal prefix and no bits set after it, so
+/// "10.0.0.5/8" is refused rather than read as 10.0.0.0/8. A rule names no interface: a
+/// link-local entry matches its addresses on every interface.
+public struct AddressRange: Equatable, Sendable {
+    public let source: String
+    /// 4 bytes for IPv4, 16 for IPv6, network order, zero after the prefix.
+    public let network: [UInt8]
+    /// 1 to 32 for IPv4, 1 to 128 for IPv6.
+    public let prefix: Int
+
+    public enum Problem: Error, Equatable {
+        /// Not an address in the strict form.
+        case notAnAddress
+        /// A zone ("%en0") after the address.
+        case zone
+        /// An IPv4-mapped IPv6 address (::ffff:a.b.c.d), which flows report as IPv4.
+        case mapped
+        /// A prefix that is not a decimal number within the family's bounds.
+        case prefix(maximum: Int)
+        /// Bits set after the prefix; the range that was probably meant.
+        case hostBits(network: String)
+        /// 0.0.0.0/0 or ::/0, which `*` says plainly.
+        case everything
+    }
+
+    /// Whether a `hosts` entry is meant as an address rather than a host name: it has ':' or '/',
+    /// or only digits and dots, none of which a host name can be (normalizeHost refuses a name
+    /// whose last label is a number).
+    public static func looksLikeAddress(_ text: String) -> Bool {
+        text.contains(":") || text.contains("/") || (!text.isEmpty && text.utf8.allSatisfy { (48...57).contains($0) || $0 == 46 })
+    }
+
+    public static func parse(_ text: String) -> Result<AddressRange, Problem> {
+        if text.contains("%") { return .failure(.zone) }
+        let parts = text.split(separator: "/", maxSplits: 1, omittingEmptySubsequences: false)
+        let written = String(parts[0])
+        guard let address = IPAddress.strict(written) else { return .failure(.notAnAddress) }
+        if written.contains(":") && address.bytes.count == 4 { return .failure(.mapped) }
+        let bits = address.bytes.count * 8
+        var prefix = bits
+        if parts.count == 2 {
+            let digits = parts[1]
+            guard (1...3).contains(digits.utf8.count), digits.utf8.allSatisfy({ (48...57).contains($0) }),
+                  digits == "0" || !digits.hasPrefix("0"), let number = Int(digits), number <= bits else {
+                return .failure(.prefix(maximum: bits))
+            }
+            prefix = number
+        }
+        if prefix == 0 { return .failure(.everything) }
+        let network = Self.masked(address.bytes, prefix)
+        guard network == address.bytes else {
+            let start = IPAddress(bytes: network).map(\.description) ?? "?"
+            return .failure(.hostBits(network: "\(start)/\(prefix)"))
+        }
+        return .success(AddressRange(source: text, network: network, prefix: prefix))
+    }
+
+    private init(source: String, network: [UInt8], prefix: Int) {
+        self.source = source
+        self.network = network
+        self.prefix = prefix
+    }
+
+    /// The range in one spelling, for finding the same range written twice.
+    public var canonical: String {
+        (IPAddress(bytes: network).map(\.description) ?? "?") + "/\(prefix)"
+    }
+
+    /// Whether `address` is in the range. The interface of a link-local address does not count.
+    public func contains(_ address: IPAddress) -> Bool {
+        address.bytes.count == network.count && Self.masked(address.bytes, prefix) == network
+    }
+
+    /// `bytes` with every bit after the first `prefix` cleared.
+    private static func masked(_ bytes: [UInt8], _ prefix: Int) -> [UInt8] {
+        bytes.enumerated().map { index, byte in
+            let kept = min(max(prefix - index * 8, 0), 8)
+            return kept == 8 ? byte : byte & ~(UInt8(0xFF) >> kept)
+        }
     }
 }
 

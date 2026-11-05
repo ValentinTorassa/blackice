@@ -96,6 +96,30 @@ struct ParseTests {
         }
     }
 
+    /// A connection with no name is asked about by its address, and `--host` takes one, in the
+    /// form the extension names it.
+    @Test func hostMayBeAnIPAddress() throws {
+        let ssh = AppIdentity.signed(SigningIdentity(signingID: "com.apple.ssh", teamID: nil))
+        let forms: [(String, String)] = [
+            ("100.66.32.75", "100.66.32.75"), ("FD7A:115C:A1E0:0:0:0:0:1", "fd7a:115c:a1e0::1"),
+            ("::ffff:100.66.32.75", "100.66.32.75"), ("fe80::1%lo0", "fe80::1%\(if_nametoindex("lo0"))"),
+        ]
+        for (raw, host) in forms {
+            #expect(try CLI.parse(["approve", "--app", "com.apple.ssh", "--host", raw, "--for", "1h"])
+                    == .approve(Approval(identity: ssh, host: host, seconds: 3600)), "\(raw)")
+            #expect(try CLI.parse(["deny", "--app", "com.apple.ssh", "--host", raw]) == .deny(Denial(identity: ssh, host: host)))
+        }
+        let ranges = "wildcards and ranges are not accepted"
+        let cases: [(String, String)] = [
+            ("010.0.0.1", "no leading zeros"), ("10.1", ranges), ("100.64.0.0/10", ranges), ("2001:db8::/32", ranges),
+            ("fe80::1", "a link-local address needs its interface"), ("2001:db8::1%en0", ranges),
+        ]
+        for (raw, fragment) in cases {
+            let message = usageError(["approve", "--app", "com.apple.ssh", "--host", raw])
+            #expect(message?.contains(fragment) == true, "\(raw): \(message ?? "parsed")")
+        }
+    }
+
     /// Hooks answer on their stdout since 0.4.0, so `--token` is gone, with a message that says so.
     @Test func approveAndDenyTakeNoToken() {
         let token = "q8Zr0d3XyB1mVt5LkS9wJpQa2NcEf7HgUi4Ko6Rl0Ys"
@@ -158,8 +182,7 @@ struct ParseTests {
             (["approve", "--app", "com.a"], "needs --host"),
             (["approve", "--app", "com.a\" or true", "--host", "example.com"], "signing identifier"),
             (["approve", "--app", "com.a", "--team", "abc", "--host", "example.com"], "Team ID"),
-            (["approve", "--app", "com.a", "--host", "*.example.com"], "wildcards and IP addresses"),
-            (["approve", "--app", "com.a", "--host", "203.0.113.7"], "wildcards and IP addresses"),
+            (["approve", "--app", "com.a", "--host", "*.example.com"], "wildcards and ranges are not accepted"),
             (["approve", "--app", "com.a", "--host", "example.com", "--for", "25h"], "at most 24h"),
             (["approve", "--app", "com.a", "--host", "example.com", "--for", "forever"], "at most 24h"),
             (["approve", "--app", "com.a", "--host", "example.com", "--for", "1441m"], "at most 24h"),
@@ -308,6 +331,22 @@ struct RunTests {
             "  ABCDE12345/com.example.tool -> api.example.com, 3599 s left",
         ])
         #expect(CLI.pendingLines(PendingReply(events: [], approvals: [])) == ["No connection is waiting.", "No approvals."])
+
+        // A connection with no name, asked about by its address.
+        let ssh = AppReference(signingID: "com.apple.ssh", teamID: nil, cdhash: nil)
+        let byAddress = PendingReply(
+            events: [PendingSummary(id: "ev-0000002c", app: ssh, path: nil, host: "100.66.32.75", ip: "100.66.32.75",
+                                    port: 22, secondsLeft: 50, connections: 1),
+                     PendingSummary(id: "ev-0000002d", app: ssh, path: nil, host: "fd7a:115c:a1e0::1",
+                                    ip: "fd7a:115c:a1e0::1", port: 22, secondsLeft: 40, connections: 1)],
+            approvals: [ApprovalSummary(app: ssh, host: "100.66.32.76", secondsLeft: 60)])
+        #expect(CLI.pendingLines(byAddress) == [
+            "Waiting:",
+            "  ev-0000002c  apple/com.apple.ssh -> 100.66.32.75:22 (no host name), 1 connection, 50 s left",
+            "  ev-0000002d  apple/com.apple.ssh -> [fd7a:115c:a1e0::1]:22 (no host name), 1 connection, 40 s left",
+            "Approvals:",
+            "  apple/com.apple.ssh -> 100.66.32.76, 60 s left",
+        ])
 
         // The path is wherever the app runs from, and may hold an escape sequence.
         let odd = PendingReply(events: [PendingSummary(id: "ev-0000002a", app: tool, path: "/tmp/x\u{9B}2J\u{202E}y",

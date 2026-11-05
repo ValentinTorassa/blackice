@@ -68,7 +68,8 @@ struct ConfigParsingTests {
             .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
             .appendingPathComponent("Examples/blackice.toml")
         let config = try BlackiceConfig(data: Data(contentsOf: url))
-        #expect(config.mode == .ask && config.allow.count == 1 && config.hooks.count == 1)
+        #expect(config.mode == .ask && config.allow.count == 2 && config.hooks.count == 1)
+        #expect(config.loopback && config.allow[1].addresses.map(\.prefix) == [10, 48])
     }
 
     @Test func minimalDocumentUsesDefaults() throws {
@@ -142,6 +143,87 @@ struct ConfigParsingTests {
         #expect(!off.appleServices)
         #expect(off.summary == "mode ask, timeout 10 s, 0 allow rules, 0 hooks, apple_services off")
         #expect(try BlackiceConfig(text: "apple_services = false\nmode = 'block-all'").appleServices == false)
+    }
+
+    @Test func loopbackIsAllowedByDefaultAndCanBeFiltered() throws {
+        #expect(try BlackiceConfig(text: "mode = 'ask'").loopback)
+        #expect(try BlackiceConfig(text: "mode = 'ask'\nloopback = true").loopback)
+        let off = try BlackiceConfig(text: "mode = 'ask'\nloopback = false")
+        #expect(!off.loopback)
+        #expect(off.summary == "mode ask, timeout 10 s, 0 allow rules, 0 hooks, loopback off")
+        #expect(try BlackiceConfig(text: "mode = 'ask'").summary == "mode ask, timeout 10 s, 0 allow rules, 0 hooks")
+        expectError("mode = 'ask'\nloopback = \"false\"", line: 2, containing: "loopback must be true or false, not a string")
+        expectError("mode = 'ask'\nloopback = 0", line: 2, containing: "loopback must be true or false, not an integer")
+        expectError("mode = 'ask'\nloopback = true\nloopback = false", line: 3,
+                    containing: "duplicate key 'loopback' at the top level (first set on line 2)")
+        expectError("mode = 'ask'\n[[allow]]\napp = 'com.a'\nhosts = ['a.example']\nloopback = false", line: 5,
+                    containing: "unknown key 'loopback' in [[allow]]; top-level keys go before the first table")
+    }
+
+    @Test func hostsTakeAddressesAndRangesNextToNames() throws {
+        let config = try BlackiceConfig(text: """
+        mode = "ask"
+        [[allow]]
+        app = "com.apple.ssh"
+        hosts = ["100.64.0.0/10", "10.0.0.5", "fd7a:115c:a1e0::/48", "*.ts.net", "2001:DB8::1"]
+        """)
+        let rule = try #require(config.allow.first)
+        #expect(rule.hosts.map(\.source) == ["*.ts.net"])
+        #expect(rule.addresses.map(\.source) == ["100.64.0.0/10", "10.0.0.5", "fd7a:115c:a1e0::/48", "2001:DB8::1"])
+        #expect(rule.addresses.map(\.prefix) == [10, 32, 48, 128])
+        #expect(!rule.anyHost)
+        let ssh = SigningIdentity(signingID: "com.apple.ssh", teamID: nil)
+        #expect(config.addressRule(for: ssh, address: IPAddress("100.66.32.75")!)?.line == 2)
+        #expect(config.addressRule(for: ssh, address: IPAddress("2001:db8::1")!)?.line == 2)
+        #expect(config.addressRule(for: ssh, address: IPAddress("10.0.0.6")!) == nil)
+        #expect(config.addressRule(for: SigningIdentity(signingID: "com.apple.ssh", teamID: "ABCDE12345"),
+                                   address: IPAddress("100.66.32.75")!) == nil)
+        // Address entries name no host, and name entries no address.
+        #expect(config.allowRule(for: ssh, host: "100.66.32.75") == nil)
+        #expect(config.allowRule(for: ssh, host: "valensrv.example.ts.net")?.line == 2)
+        // Other spellings TOML and the strict reader take.
+        for entry in ["'10.0.0.0/8'", "\"255.255.255.255/32\"", "'0.0.0.0'", "'::1'", "'fe80::/10'", "'2001:db8::1/128'",
+                      "'64:ff9b::198.51.100.4'", "'1.2.3.4/32'"] {
+            #expect(throws: Never.self, "\(entry)") {
+                _ = try BlackiceConfig(text: "mode = 'ask'\n[[allow]]\napp = 'com.a'\nhosts = [\(entry)]")
+            }
+        }
+    }
+
+    @Test func addressEntriesAreReadStrictly() {
+        let head = "mode = 'ask'\n[[allow]]\napp = 'com.a'\nhosts = "
+        let cases: [(String, String)] = [
+            ("['010.0.0.1']", "no leading zeros"),
+            ("['10.1']", "is not an IP address or a CIDR range"),
+            ("['1.2.3.4.5']", "is not an IP address or a CIDR range"),
+            ("['256.1.1.1']", "is not an IP address or a CIDR range"),
+            ("['0x0a.0.0.1']", "is not a host name, a *.domain pattern, an IP address or a CIDR range"),
+            ("['10.0.0.0/33']", "the prefix of \"10.0.0.0/33\" must be a number from 1 to 32"),
+            ("['2001:db8::/129']", "must be a number from 1 to 128"),
+            ("['10.0.0.0/']", "must be a number from 1 to 32"),
+            ("['10.0.0.0/08']", "must be a number from 1 to 32"),
+            ("['10.0.0.5/8']", "\"10.0.0.5/8\" has bits set after its prefix; write \"10.0.0.0/8\""),
+            ("['fd7a:115c:a1e0::1/48']", "write \"fd7a:115c:a1e0::/48\""),
+            ("['0.0.0.0/0']", "covers every address; write hosts = [\"*\"] for any destination"),
+            ("['::/0']", "covers every address"),
+            ("['fe80::1%en0']", "names an interface"),
+            ("['::ffff:10.0.0.0/104']", "IPv4-mapped IPv6 address; write the IPv4 address"),
+            ("['10.0.0.0/8', '10.0.0.0/8']", "\"10.0.0.0/8\" appears twice in hosts"),
+            ("['10.0.0.5', '10.0.0.5/32']", "\"10.0.0.5/32\" appears twice in hosts"),
+            ("['2001:db8::1', '2001:DB8:0::1']", "appears twice in hosts"),
+            ("['*', '10.0.0.5']", "\"*\" must be the only entry in hosts"),
+            ("['10.0.0.5', '*']", "\"*\" must be the only entry in hosts"),
+        ]
+        for (hosts, fragment) in cases {
+            expectError(head + hosts, line: 4, containing: fragment)
+        }
+        // The limit on entries counts addresses too.
+        let tooMany = "[" + (0...BlackiceConfig.maximumHostsPerRule).map { "'10.0.\($0 / 256).\($0 % 256)'" }
+            .joined(separator: ",") + "]"
+        expectError(head + tooMany, line: 4, containing: "more than 256 entries")
+        let mixed = "[" + (0..<BlackiceConfig.maximumHostsPerRule).map { $0 % 2 == 0 ? "'10.0.0.\($0)'" : "'h\($0).example'" }
+            .joined(separator: ",") + "]"
+        #expect(throws: Never.self) { _ = try BlackiceConfig(text: head + mixed) }
     }
 
     @Test func starAloneAllowsAnyHost() throws {
@@ -291,7 +373,7 @@ struct ConfigRejectionTests {
         expectError(head + "app = 'com.a'\nhosts = []", line: 4, containing: "must not be empty")
         expectError(head + "app = 'com.a'\nhosts = 'a.example'", line: 4, containing: "array of strings, not a string")
         expectError(head + "app = 'com.a'\nhosts = ['a.example', 7]", line: 4, containing: "holds an integer")
-        expectError(head + "app = 'com.a'\nhosts = ['1.2.3.4']", line: 4, containing: "not a host name")
+        expectError(head + "app = 'com.a'\nhosts = ['1.2.3']", line: 4, containing: "not an IP address or a CIDR range")
         expectError(head + "app = 'com.a'\nhosts = ['*', 'a.example']", line: 4, containing: "\"*\" must be the only entry in hosts")
         expectError(head + "app = 'com.a'\nhosts = ['a.example', '*']", line: 4, containing: "\"*\" must be the only entry in hosts")
         expectError(head + "app = 'com.a'\nhosts = ['*', '*']", line: 4, containing: "\"*\" must be the only entry in hosts")

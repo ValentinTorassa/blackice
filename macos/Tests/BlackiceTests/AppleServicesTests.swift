@@ -290,19 +290,20 @@ struct AnyHostRulePolicyTests {
         let blockAll = try snapshot(.blockAll)
         let ask = try snapshot(.ask)
         let dns = { (identity: IdentityResolution) in flow(identity, nil, port: 53, tcp: false, address: "100.100.100.100") }
-        // Same signing identifier, another team or none.
+        // Same signing identifier, another team or none. Ask mode asks about the address.
+        let byAddress = FlowVerdict.ask(reason: "no_rule;address", addressMatches: true)
         for impostor in [signed("io.tailscale.ipn.macsys.network-extension", "ZZZZZ99999"),
                          signed("io.tailscale.ipn.macsys.network-extension", nil)] {
             #expect(decide(dns(impostor), blockAll) == .drop(reason: "no_rule"))
-            #expect(decide(dns(impostor), ask) == .drop(reason: "no_host"))
+            #expect(decide(dns(impostor), ask) == byAddress)
             #expect(decide(flow(impostor, "derp11e.tailscale.com"), blockAll) == .drop(reason: "no_rule"))
         }
         // Other apps keep their own rules and checks.
         #expect(decide(dns(agent), blockAll) == .drop(reason: "no_host"))
         #expect(decide(dns(probe), blockAll) == .drop(reason: "no_rule"))
-        #expect(decide(dns(probe), ask) == .drop(reason: "no_host"))
+        #expect(decide(dns(probe), ask) == byAddress)
         #expect(decide(flow(agent, "api.example.com"), blockAll, mismatching) == .drop(reason: "address_mismatch"))
-        #expect(decide(flow(.adHoc(cdhash: testCDHash), nil, port: 53, tcp: false), ask) == .drop(reason: "no_host"))
+        #expect(decide(flow(.adHoc(cdhash: testCDHash), nil, port: 53, tcp: false), ask) == byAddress)
     }
 
     @Test func aStarRuleDoesNotDependOnAppleServices() throws {
