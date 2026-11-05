@@ -1,6 +1,6 @@
 {
   "event": "connection",
-  "id": "ev-06",
+  "id": "ev-00000006",
   "app": {
     "signing_id": "com.microsoft.VSCode",
     "team_id": "UBF8T346G9",

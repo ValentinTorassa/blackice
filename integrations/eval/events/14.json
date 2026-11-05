@@ -1,0 +1,12 @@
+{
+  "event": "connection",
+  "id": "ev-0000000e",
+  "app": {
+    "signing_id": "com.example.sync",
+    "team_id": "ABCDE12345",
+    "path": "/Applications/Sync.app/Contents/MacOS/Sync"
+  },
+  "ip": "45.155.205.233",
+  "port": 443,
+  "host": "45.155.205.233"
+}

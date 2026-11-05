@@ -1,6 +1,6 @@
 {
   "event": "connection",
-  "id": "ev-03",
+  "id": "ev-00000003",
   "app": {
     "signing_id": "com.docker.docker",
     "team_id": "9BNSXJN65R",

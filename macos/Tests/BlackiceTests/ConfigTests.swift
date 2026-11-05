@@ -334,6 +334,7 @@ struct ConfigRejectionTests {
         on = "connection"
         program = "/bin/sh"
         app = "com.apple.sh"
+        stdin = "none"
         """)
         #expect(config.hooks == [
             Hook(program: HookProgram(
@@ -342,10 +343,11 @@ struct ConfigRejectionTests {
                 environment: ["HOME": "/Users/Jane Doe/.config/blackice/agent", "FX_DISABLE_KEYCHAIN": "1", "EMPTY": "", "A": "b=c"],
                 identity: SigningIdentity(signingID: "com.vercel.fx", teamID: "JW6Y669B67")), line: 3),
             // No team: Apple platform code, as in [[allow]].
-            Hook(program: HookProgram(path: "/bin/sh", identity: SigningIdentity(signingID: "com.apple.sh", teamID: nil)),
-                 line: 12),
+            Hook(program: HookProgram(path: "/bin/sh", identity: SigningIdentity(signingID: "com.apple.sh", teamID: nil),
+                                      eventOnStdin: false), line: 12),
         ])
         #expect(config.hooks[0].run == nil && config.hooks[1].commandText == "/bin/sh")
+        #expect(config.hooks[0].program?.eventOnStdin == true)
         #expect(config.hooks[0].commandText.hasPrefix("/Users/Jane Doe/.local/bin/fx ask --no-save Use the blackice skill"))
     }
 
@@ -369,7 +371,9 @@ struct ConfigRejectionTests {
         expectError(fx + "env = ['A B=x']", line: 6, containing: "not a variable name")
         expectError(fx + "env = ['BLACKICE_EVENT_FILE=/tmp/x']", line: 6, containing: "BLACKICE_ is the daemon's")
         expectError(fx + "env = ['A=1', 'A=2']", line: 6, containing: "A is set twice")
-        for key in ["args = ['x']", "env = ['A=1']", "app = 'com.a'", "team = 'ABCDE12345'"] {
+        expectError(fx + "stdin = 'file'", line: 6, containing: "stdin must be \"event\" or \"none\"")
+        expectError(fx + "stdin = false", line: 6, containing: "stdin")
+        for key in ["args = ['x']", "env = ['A=1']", "app = 'com.a'", "team = 'ABCDE12345'", "stdin = 'none'"] {
             expectError(head + "run = 'x'\n" + key, line: 5, containing: "goes with program, not run")
         }
     }

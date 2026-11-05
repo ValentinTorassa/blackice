@@ -1,6 +1,6 @@
 {
   "event": "connection",
-  "id": "ev-04",
+  "id": "ev-00000004",
   "app": {
     "signing_id": "com.example.helper",
     "team_id": "ABCDE12345",

@@ -100,10 +100,11 @@ In ask mode the daemon runs each `[[hook]]` with `on = "connection"` for a conne
 - `app` and `team` are the signing identifier and Team ID, as in an `[[allow]]` rule, and `codesign -dv` shows them. Leave `team` out only for Apple's own programs.
 - `args` lists the arguments, as strings. Nothing from the event is ever put in them.
 - `env` lists `NAME=value` strings added to the [environment](#the-hooks-environment). A name may not start with `BLACKICE_`.
+- `stdin = "none"` gives the program an empty stdin, so the event is only in its file. The default, `"event"`, sends the event on stdin too. Claude Code's hook says `"none"`: `claude -p` adds whatever comes on stdin to its prompt, and the event should reach it only as a file it reads.
 
 The daemon starts the program suspended, checks the signature of the process it started, and kills it before it runs if the signature does not name both. The log says `hook_refused`, with the identity it found. So a program that something else put at that path never runs, and an update of the program that keeps its identity needs no change.
 
-**`run`, unchecked.** `run = '…'` is a line for `/bin/sh -c`, as before 0.4.0. Nothing checks what it starts, so any program running as you can put something else in its place, for example earlier in `PATH`. Only `program` hooks are protected that way. `run` takes no `app`, `team`, `args` or `env`.
+**`run`, unchecked.** `run = '…'` is a line for `/bin/sh -c`, as before 0.4.0. Nothing checks what it starts, so any program running as you can put something else in its place, for example earlier in `PATH`. Only `program` hooks are protected that way. `run` takes no `app`, `team`, `args`, `env` or `stdin`.
 
 ## The hook's environment
 
@@ -121,7 +122,7 @@ A `program` hook's `env` is added on top and may replace any of these but the la
 
 ## The event a hook receives
 
-The hook gets the event as JSON on stdin. The daemon also writes it to `event.json`, in a private directory that is the hook's working directory and is deleted afterwards, and names the file in `BLACKICE_EVENT_FILE`, because `fx ask` does not read stdin when the prompt is on the command line.
+The hook gets the event as JSON on stdin, unless its hook says `stdin = "none"`. The daemon also writes it to `event.json`, in a private directory that is the hook's working directory and is deleted afterwards, and names the file in `BLACKICE_EVENT_FILE`, because `fx ask` does not read stdin when the prompt is on the command line.
 
 ```json
 {

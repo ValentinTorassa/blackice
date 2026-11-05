@@ -89,6 +89,19 @@ app and host. A hook never sees the event's one-time token. An approval covers o
 hand, `blackice approve` needs Touch ID. Rules you want to keep go in the file. The [configuration docs](https://blackice-macos.vercel.app/docs/configuration) cover every
 key.
 
+## Agents
+
+`blackice agent connect NAME` sets an agent up to answer what waits in ask mode, in one command: a home of its own
+under `~/.config/blackice/agent`, one test on a sample connection, a rule that lets it reach its model, and the hook.
+
+- `fx`: [fx](https://github.com/vercel-labs/fx) with the blackice skill ([`integrations/fx/`](integrations/fx/)).
+- `claude-code`: [Claude Code](https://code.claude.com) in print mode, with reading the event as its only tool and a
+  sign-in of its own ([`integrations/claude-code/`](integrations/claude-code/)). It ends its reply with a verdict
+  line, `approve 1h` or `deny`. On 4 November 2026 it decided 20 eval cases as expected, in 4 s at the median.
+
+One agent answers at a time: connecting one replaces the other's hook.
+[`integrations/eval/run.sh`](integrations/eval/run.sh) runs either one over the same 20 cases.
+
 ## Development
 
 ```console
@@ -98,7 +111,8 @@ $ cd site && npm ci && npm run dev
 ```
 
 [`macos/`](macos/) is the Swift package: the CLI, the network extension and the daemon. [`integrations/fx/`](integrations/fx/)
-has a draft fx skill, [`packaging/npm/`](packaging/npm/) an npm installer that isn't published yet, and
+has a draft fx skill, [`integrations/claude-code/`](integrations/claude-code/) Claude Code's instructions,
+[`integrations/eval/`](integrations/eval/) the eval for both, [`packaging/npm/`](packaging/npm/) an npm installer that isn't published yet, and
 [`site/`](site/) the project page.
 
 ## Who

@@ -383,6 +383,23 @@ struct HookRunnerTests {
         #expect(progress.items == ["started"])
     }
 
+    /// `stdin = "none"`: stdin ends at once, and the event is still in the file.
+    @Test func aProgramCanGoWithoutTheEventOnStdin() async throws {
+        let dir = try makePrivateDirectory()
+        defer { removeTree(dir) }
+        let out = { (name: String) in dir.appendingPathComponent(name) }
+        let script = "cat > \(quotedPath(out("stdin.json"))); cat \"$BLACKICE_EVENT_FILE\" > \(quotedPath(out("file.json"))); echo deny"
+        let sh = SigningIdentity(signingID: "com.apple.sh", teamID: nil)
+        let event = testEvent()
+        for (eventOnStdin, stdin) in [(false, Data()), (true, try event.input.jsonData())] {
+            let program = HookProgram(path: "/bin/sh", arguments: ["-c", script], identity: sh, eventOnStdin: eventOnStdin)
+            let results = try await testRunner(dir).run([Hook(program: program, line: 1)], for: event, timeoutSeconds: 10)
+            #expect(results.first?.answer == .success(.deny))
+            #expect(try Data(contentsOf: out("stdin.json")) == stdin)
+            #expect(try Data(contentsOf: out("file.json")) == event.input.jsonData())
+        }
+    }
+
     /// A program whose signature is not its hook's is killed before it runs: it starts suspended.
     @Test func aProgramWithAnotherSignatureNeverRuns() async throws {
         let dir = try makePrivateDirectory()
