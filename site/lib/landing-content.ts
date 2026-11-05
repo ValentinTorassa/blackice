@@ -39,7 +39,7 @@ export const modes: Mode[] = [
 export const details = [
   'An approval covers one app and one host, and it expires, for example after an hour. Rules you want to keep go in `blackice.toml`.',
   'Hooks receive metadata about the connection, not its payload, and do not run as root. You can run blackice by hand without fx.',
-  "There is no window or menu bar icon. blackice is a network extension, a background service, and a CLI, written in Swift on Apple's Network Extension framework.",
+  "There is no window: a menu bar icon shows the mode and what waits. blackice is a network extension, a background service, and a CLI, written in Swift on Apple's Network Extension framework.",
   'Blackice.app asks for macOS 14 or later on Apple silicon. It has run only on macOS 27.0.1.',
 ]
 

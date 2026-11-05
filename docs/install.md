@@ -145,6 +145,9 @@ Then macOS asks whether "Blackice" may filter network content: click Allow. `sta
 this. The macOS 27 steps are from 27.0.1; the others follow Apple's layout of those versions. `blackice status` then
 says which mode blackice is in, whether the daemon runs your hooks, and how many connections are waiting.
 
+At the end, the first `start` asks whether to show blackice in the menu bar and open it at login (see "The menu bar"
+under step 6).
+
 ## 5. Start the daemon
 
 The daemon runs the hooks for connections that wait in ask mode. It runs as a LaunchAgent for your user and takes
@@ -195,15 +198,40 @@ until its rule is loaded, and the last step loads your file again. It knows fx o
 
 After changing `blackice.toml`, run `blackice start` again to load it (Touch ID).
 
+### The menu bar
+
+Blackice.app runs in the menu bar when you open it from Finder or Spotlight, and with `blackice menu`, which runs until
+you quit it or close the terminal. `blackice menu --login on` opens it now and at each login, where System Settings →
+General → Login Items lists it as Blackice; `blackice menu --login off` stops that. Opening at login works only for the
+signed Blackice.app in `/Applications`. `blackice` with no arguments in a terminal still prints the usage: the menu
+starts only when LaunchServices opens the app, with no arguments, launchd as its parent and no terminal.
+
+The mark is full in ask and block-all, and dimmed when blackice is off, in accept-all or not reachable. When
+connections wait, their number is next to it. The menu has:
+
+- the mode, or why blackice is off or not reachable, and the version;
+- each connection that waits, as app → host:port with the seconds left, and in its submenu Allow for 10 Minutes,
+  Allow for 1 Hour and Deny: the same as `blackice approve --for` and `blackice deny`, with Touch ID;
+- the last verdicts from the event log;
+- Mode, to switch between accept-all, ask and block-all, with Touch ID, as `blackice mode` does;
+- the hooks in the configuration and whether the daemon runs them;
+- Open blackice.toml, Show Event Log in Finder, Documentation, Open at Login, and Quit Menu.
+
+Quitting the menu leaves the filter and the daemon running. Starting and stopping blackice, rules, agents and the
+daemon stay in the CLI. The menu has not run as the signed app yet: Touch ID from the menu, Open at Login and its reads
+of the filter are untested on a Mac.
+
 ## Uninstall
 
 ```console
+$ blackice menu --login off
 $ blackice agent uninstall
 $ blackice stop
 $ rm -rf /Applications/Blackice.app
 ```
 
-If you used the install script, also remove `~/.local/bin/blackice`. With Homebrew, run the first two commands, then
+If blackice is in the menu bar, choose Quit Menu in its menu first. If you used the install script, also remove
+`~/.local/bin/blackice`. With Homebrew, run the first three commands, then
 `brew uninstall --cask blackice` instead of `rm`. Homebrew cannot deactivate the extension, so run `blackice stop`
 first. `brew uninstall --zap --cask blackice` also removes `~/Library/Logs/blackice`, but not your settings in
 `~/.config/blackice`.
@@ -247,4 +275,5 @@ macOS replaces the running extension with the one with the higher build number. 
 2026, on macOS 27.0.1, an extension upgraded this way kept filtering but had no XPC service until the Mac restarted,
 so the daemon, `pending`, `approve` and `deny` could not reach it and ask mode dropped everything it paused.
 `blackice start` checks for this after an upgrade, says so and exits with status 75. After the restart, run
-`blackice agent uninstall` and `blackice agent install`, so that the daemon runs the new binary.
+`blackice agent uninstall` and `blackice agent install`, so that the daemon runs the new binary, and if blackice is in
+the menu bar, quit it from its menu and open Blackice.app again.

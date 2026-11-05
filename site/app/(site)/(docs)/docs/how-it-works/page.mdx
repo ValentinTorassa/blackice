@@ -12,7 +12,7 @@ The parts of blackice, and what happens to one connection in ask mode.
 
 <FigArchitecture n={1} />
 
-- **Blackice.app** has no UI and lives in `/Applications`, because macOS activates system extensions only from there. It contains the network extension and the `blackice` binary.
+- **Blackice.app** has no window and lives in `/Applications`, because macOS activates system extensions only from there. It contains the network extension and the `blackice` binary, which is also its menu bar app: opened from Finder or at login, it shows the mode and what waits, and answers by hand with Touch ID through the same code as the CLI.
 - **The extension** is an `NEFilterDataProvider`. It allows or drops each new flow, and in ask mode it pauses the flow until an answer arrives.
 - **The daemon** runs as a LaunchAgent for the user (`blackice agent install`), receives events over XPC and runs the hooks. It takes them from the extension, which holds the configuration saved with Touch ID, never from a file.
 

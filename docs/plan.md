@@ -25,12 +25,28 @@ and each run on a Mac is recorded in [`evidence/`](../evidence/).
 | Who can approve | The hook, with the event's one-time token, or a person with Touch ID. |
 | Daemon | `blackice daemon` takes no options and reads no file (decided on 3 November 2026). The extension's reply to its registration carries the configuration the extension holds, the `blackice.toml` text that `start` or `mode` saved after Touch ID plus its generation, and the daemon takes its hooks and timeout from it, parsed with the same strict parser. Each event carries the generation the extension held when it sent it; a daemon holding another one registers again on the same connection to get the current configuration, and runs no hook for an event whose configuration is gone. Hooks get an environment the daemon builds: `HOME`, `USER` and `LOGNAME` from the user database, `TMPDIR` from confstr, a fixed `PATH` and `LANG`, and the event's file and ID. `blackice agent install` and `uninstall` write and load, or unload and remove, the LaunchAgent, without Touch ID. |
 | Configuration | `blackice.toml`, read by a small strict parser for the subset the file uses. No third-party dependency. |
+| Menu bar | Blackice.app opened as an app, or `blackice menu`, runs in the menu bar (4 November 2026). It shows the state and answers by hand through the same code as the CLI, Touch ID included, and adds no privileged path. Starting, stopping, rules, agents and the daemon stay in the CLI. Quitting it leaves filtering as it was. |
 | Apple account | Individual Developer Program membership. |
 
 ## Architecture
 
-- **Blackice.app**, with no UI, installed in `/Applications`. It contains the network extension and the
-  `blackice` binary. macOS activates system extensions only from an app in `/Applications`.
+- **Blackice.app**, installed in `/Applications`, with no window. It contains the network extension and the
+  `blackice` binary, which is also its menu bar app. macOS activates system extensions only from an app in
+  `/Applications`.
+- **The menu bar app** runs when LaunchServices opens Blackice.app (Finder, Spotlight, `open`, or at login) or with
+  `blackice menu`. LaunchServices starts an app as a child of launchd with no arguments and no terminal; anything else,
+  `blackice` with no arguments in a terminal included, is the CLI. One copy runs at a time (a lock file in the user's
+  temporary directory). The mark is full in ask and block-all and dimmed when blackice is off, in accept-all or not
+  reachable, with the number of waiting connections next to it. Its menu shows the mode, the waiting connections with
+  Allow for 10 minutes, Allow for 1 hour and Deny, the last verdicts from the event log, a mode switch, the hooks and
+  the daemon, and Open at Login (`SMAppService.mainApp`, for the signed app in `/Applications`). It reads the filter
+  preference and the extension's pending list every 5 s, without Touch ID; answers and mode changes go through
+  `NESystemControl`, the code behind `blackice approve`, `deny` and `mode`, and ask for Touch ID each time. It cannot
+  start or stop blackice, change rules, connect an agent or install the daemon, and quitting it leaves the filter and
+  the daemon running. App names and hosts come from whoever opens the connection, so the menu drops control and
+  format characters (bidi overrides among them) and cuts long names. The model is in plain Swift with unit tests;
+  `macos/Sources/BlackiceMenu/SystemAdapter.swift` holds every call into status, pending, mode, approve and deny.
+  Not yet run as the signed app: Touch ID from the menu, Open at Login and the XPC reads.
 - **The extension** (`NEFilterDataProvider`) decides right away in accept-all and block-all. In ask mode it pauses
   the flow, sends an event to the daemon over XPC, and resumes the flow when an answer arrives or the timeout passes.
 - **`blackice daemon`** runs as a LaunchAgent for the user, receives events and runs the hooks. The extension
