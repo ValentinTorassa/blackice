@@ -26,9 +26,12 @@ struct HookRunnerTests {
         let results = await runner.run([hook(command)], for: event, timeoutSeconds: 10)
         #expect(results.map(\.outcome) == [.exited(status: 0)])
 
-        let json = try event.jsonData()
+        // The event without its token, the same bytes both ways.
+        let json = try event.input.jsonData()
         #expect(try Data(contentsOf: out("stdin.json")) == json)
         #expect(try Data(contentsOf: out("file.json")) == json)
+        let given = try read(out("file.json"))
+        #expect(!given.contains(testToken) && !given.contains("token"))
         #expect(try read(out("id.txt")) == event.id)
         #expect(try read(out("file-mode.txt")).trimmingCharacters(in: .whitespacesAndNewlines) == "600")
         #expect(try read(out("dir-mode.txt")).trimmingCharacters(in: .whitespacesAndNewlines) == "700")
@@ -65,8 +68,8 @@ struct HookRunnerTests {
         let results = try await testRunner(dir).run([hook(command)], for: event, timeoutSeconds: 10)
         #expect(results.map(\.outcome) == [.exited(status: 0)])
         #expect(!fileExists(marker), "the event's text ran as a command")
-        #expect(try Data(contentsOf: stdin) == event.jsonData())
-        #expect(try HookEvent.decode(Data(contentsOf: stdin)).host == host)
+        #expect(try Data(contentsOf: stdin) == event.input.jsonData())
+        #expect(try HookEvent.Input.decode(Data(contentsOf: stdin)).host == host)
         #expect(!(try read(environment)).contains("touch"))
     }
 
@@ -283,8 +286,9 @@ struct HookRunnerTests {
     }
 
     /// A burst waits without a thread per hook, and every hook in it runs once slots free. Other suites
-    /// run alongside and start threads of their own, so the bound leaves room for them: a thread per
-    /// waiting hook would add at least 100.
+    /// run alongside and start threads of their own (each hook they run has a reader for its stdout and
+    /// one for its stderr), so the bound leaves room for them: a thread per waiting hook would add at
+    /// least 200.
     @Test func aBurstWaitsWithoutAThreadEach() async throws {
         let dir = try makePrivateDirectory()
         defer { removeTree(dir) }
@@ -299,13 +303,13 @@ struct HookRunnerTests {
         }
         #expect(await eventually { runner.runningCount == 2 })
         let before = threads()
-        let burst = (1...100).map { index in
+        let burst = (1...200).map { index in
             Task { await runner.run([hook("true")], for: testEvent(id: "ev-\(index)", app: "com.example.app\(index % 3)"),
                                     timeoutSeconds: 10) }
         }
-        #expect(await eventually { runner.waitingCount == 100 })
+        #expect(await eventually { runner.waitingCount == 200 })
         let during = threads()
-        #expect(before > 0 && during - before < 60, "\(before) threads before the burst, \(during) while 100 hooks wait")
+        #expect(before > 0 && during - before < 120, "\(before) threads before the burst, \(during) while 200 hooks wait")
         for task in busy + burst { #expect(await task.value.map(\.outcome) == [.exited(status: 0)]) }
         #expect(runner.waitingCount == 0 && runner.runningCount == 0)
     }
@@ -339,34 +343,102 @@ struct HookRunnerTests {
         #expect(result.stderrTruncated)
     }
 
-    @Test func theTokenNeverLeavesInStderr() async throws {
+    @Test func stdoutIsKeptForTheAnswerAndBounded() async throws {
         let dir = try makePrivateDirectory()
         defer { removeTree(dir) }
-        // What fx printed on a real Mac: the full command, and once a copy cut short.
-        let command = """
-        printf "Running blackice deny --host 'pastebin.com' --token '%s'\\n" "\(testToken)" >&2; \
-        printf "Running blackice approve --for 10m --token '%s...\\n" "\(testToken.prefix(32))" >&2
-        """
-        let results = try await testRunner(dir).run([hook(command)], for: testEvent(), timeoutSeconds: 10)
-        let result = try #require(results.first)
-        #expect(result.outcome == .exited(status: 0))
-        #expect(result.stderr == """
-        Running blackice deny --host 'pastebin.com' --token '[token]'
-        Running blackice approve --for 10m --token '[token]...
+        let answered = try await testRunner(dir).run([hook("echo 'It is the editor.'; echo; echo 'approve 10m'; echo oops >&2")],
+                                                      for: testEvent(), timeoutSeconds: 10)
+        let result = try #require(answered.first)
+        #expect(String(decoding: result.stdout, as: UTF8.self) == "It is the editor.\n\napprove 10m\n")
+        #expect(!result.stdoutTruncated && result.stderr == "oops\n")
+        #expect(result.answer == .success(.approve(seconds: 600)))
 
-        """)
+        // Past the limit the rest is drained, so the hook never blocks, and the answer is not known.
+        let chatty = try await testRunner(dir).run([hook("head -c 200000 /dev/zero | tr '\\000' x; echo; echo deny")],
+                                                    for: testEvent(), timeoutSeconds: 10)
+        let long = try #require(chatty.first)
+        #expect(long.outcome == .exited(status: 0) && long.stdout.count == HookAnswer.maximumOutputBytes && long.stdoutTruncated)
+        #expect(long.answer == .failure(.output(.outputTooLong)))
     }
 
-    @Test(arguments: [
-        ("approved apple/com.apple.curl -> api.github.com for 600 s", "approved apple/com.apple.curl -> api.github.com for 600 s"),
-        ("token=\(testToken)!", "token=[token]!"),
-        ("x\(testToken)y", "[token]"),
-        ("cut \(testToken.prefix(8)) and \(testToken.dropFirst(35))", "cut [token] and [token]"),
-        ("too short to matter: \(testToken.prefix(7))", "too short to matter: \(testToken.prefix(7))"),
-        ("", ""),
-    ])
-    func redactionHidesOnlyTheToken(text: String, expected: String) {
-        #expect(HookRunner.redactToken(testToken, in: text) == expected)
+    @Test func aProgramRunsDirectlyWithItsArgumentsAndEnvironment() async throws {
+        let dir = try makePrivateDirectory()
+        defer { removeTree(dir) }
+        let marker = dir.appendingPathComponent("pwned")
+        let output = dir.appendingPathComponent("out.txt")
+        // /bin/sh is Apple platform code signed as com.apple.sh, so the real signature check passes.
+        // Its arguments reach it as they are: the shell metacharacters in them are never parsed again.
+        let script = "printf '%s|%s|%s|%s\\n' \"$1\" \"$HOME\" \"$EXTRA\" \"$BLACKICE_EVENT_ID\" > \(quotedPath(output)); echo deny"
+        let program = HookProgram(path: "/bin/sh", arguments: ["-c", script, "sh", "$(touch \(marker.path)); `x`"],
+                                  environment: ["HOME": "/agent/home", "EXTRA": "a b"],
+                                  identity: SigningIdentity(signingID: "com.apple.sh", teamID: nil))
+        let progress = Recorder<String>()
+        let results = try await testRunner(dir).run([Hook(program: program, line: 3)], for: testEvent(), timeoutSeconds: 10) { update in
+            if case .started = update { progress.append("started") }
+        }
+        let result = try #require(results.first)
+        #expect(result.outcome == .exited(status: 0) && result.answer == .success(.deny))
+        #expect(try read(output) == "$(touch \(marker.path)); `x`|/agent/home|a b|ev-0a1b2c3d\n")
+        #expect(!fileExists(marker))
+        #expect(progress.items == ["started"])
+    }
+
+    /// A program whose signature is not its hook's is killed before it runs: it starts suspended.
+    @Test func aProgramWithAnotherSignatureNeverRuns() async throws {
+        let dir = try makePrivateDirectory()
+        defer { removeTree(dir) }
+        let marker = dir.appendingPathComponent("ran")
+        for expected in [SigningIdentity(signingID: "com.apple.bash", teamID: nil),
+                         SigningIdentity(signingID: "com.apple.sh", teamID: "ABCDE12345")] {
+            let program = HookProgram(path: "/bin/sh", arguments: ["-c", "touch \(quotedPath(marker)); echo 'approve 24h'"],
+                                      identity: expected)
+            let progress = Recorder<String>()
+            let results = try await testRunner(dir).run([Hook(program: program, line: 3)], for: testEvent(),
+                                                         timeoutSeconds: 10) { update in
+                if case .started = update { progress.append("started") }
+            }
+            let result = try #require(results.first)
+            #expect(result.outcome == .refused(found: "apple/com.apple.sh"), "\(expected)")
+            #expect(result.answer == nil && result.stdout.isEmpty)
+            #expect(progress.items.isEmpty)
+        }
+        #expect(!fileExists(marker))
+        #expect(try FileManager.default.contentsOfDirectory(atPath: dir.appendingPathComponent("work").path).isEmpty)
+    }
+
+    /// The check looks at the child that was started, which waits, suspended, until it passes: what
+    /// is checked is what runs, and a file swapped in meanwhile changes nothing.
+    @Test func theCheckedChildWaitsSuspended() async throws {
+        let dir = try makePrivateDirectory()
+        defer { removeTree(dir) }
+        let marker = dir.appendingPathComponent("ran")
+        let seen = Recorder<pid_t>()
+        let runner = try HookRunner(options: .init(
+            workDirectory: dir.appendingPathComponent("work"), environment: HookRunner.environment(for: try UserAccount.current()),
+            identify: { pid in
+                seen.append(pid)
+                usleep(300_000)   // time enough for the child to touch the marker, were it running
+                return .verified(SigningIdentity(signingID: "com.apple.bash", teamID: nil))
+            }))
+        let program = HookProgram(path: "/bin/sh", arguments: ["-c", "touch \(quotedPath(marker))"],
+                                  identity: SigningIdentity(signingID: "com.apple.sh", teamID: nil))
+        let results = await runner.run([Hook(program: program, line: 1)], for: testEvent(), timeoutSeconds: 10)
+        #expect(results.map(\.outcome) == [.refused(found: "apple/com.apple.bash")])
+        #expect(seen.items.count == 1 && seen.items[0] > 0)
+        #expect(processGone(seen.items[0]))
+        #expect(!fileExists(marker))
+    }
+
+    @Test func aMissingProgramFailsToStart() async throws {
+        let dir = try makePrivateDirectory()
+        defer { removeTree(dir) }
+        let program = HookProgram(path: dir.appendingPathComponent("none").path,
+                                  identity: SigningIdentity(signingID: "com.example.none", teamID: "ABCDE12345"))
+        let results = try await testRunner(dir).run([Hook(program: program, line: 1)], for: testEvent(), timeoutSeconds: 10)
+        guard case .failedToStart = results.first?.outcome else {
+            Issue.record("\(results)")
+            return
+        }
     }
 
     @Test func progressReportsStartAndFinish() async throws {

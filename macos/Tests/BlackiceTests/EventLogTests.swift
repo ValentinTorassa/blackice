@@ -108,6 +108,7 @@ struct EventLogTests {
             (.dropped(.eventEnded), "hook_dropped", "reason", "event_ended"),
             (.dropped(.queueFull), "hook_dropped", "reason", "queue_full"),
             (.failedToStart("no shell"), "hook_failed", "error", "no shell"),
+            (.refused(found: "invalid_signature"), "hook_refused", "found", "invalid_signature"),
         ]
         for (outcome, type, key, value) in cases {
             let data = try EventLog.encode(.hookFinished(eventID: "ev-1", result(outcome)), at: Date())
@@ -157,6 +158,46 @@ struct EventLogTests {
             with: EventLog.encode(.hooksSkipped(eventID: "ev-1", reason: "configuration_changed"), at: Date())) as? [String: Any])
         #expect(skipped["type"] as? String == "hooks_skipped")
         #expect(skipped["event"] as? String == "ev-1" && skipped["reason"] as? String == "configuration_changed")
+    }
+
+    /// What a hook answered, why it gave no answer, and when the extension did not take it. Never
+    /// the hook's output itself, beyond a short prefix of a line that is not an answer.
+    @Test func answersAndMissingAnswersHaveTheirRecords() throws {
+        func record(_ entry: LogRecord) throws -> [String: Any] {
+            try #require(try JSONSerialization.jsonObject(with: EventLog.encode(entry, at: Date())) as? [String: Any])
+        }
+        let approved = try record(.hookAnswered(eventID: "ev-1", hookLine: 9, .approve(seconds: 600)))
+        #expect(approved["type"] as? String == "hook_answer" && approved["event"] as? String == "ev-1")
+        #expect(approved["hook_line"] as? Int == 9 && approved["answer"] as? String == "approve" && approved["seconds"] as? Int == 600)
+        let denied = try record(.hookAnswered(eventID: "ev-1", hookLine: 9, .deny))
+        #expect(denied["answer"] as? String == "deny" && denied["seconds"] == nil)
+
+        let cases: [(HookResult.NoAnswer, String, String?, Any?)] = [
+            (.exitStatus(3), "exit_status", "status", 3),
+            (.signaled(SIGSEGV), "signaled", "signal", Int(SIGSEGV)),
+            (.deadline, "deadline", nil, nil),
+            (.output(.noLine), "no_line", nil, nil),
+            (.output(.outputTooLong), "output_too_long", nil, nil),
+            (.output(.unrecognized(prefix: "Approved: it is VS Code…")), "unrecognized_line", "line_prefix",
+             "Approved: it is VS Code…"),
+        ]
+        for (missing, reason, key, value) in cases {
+            let line = try record(.hookNoAnswer(eventID: "ev-2", hookLine: 4, missing))
+            #expect(line["type"] as? String == "hook_no_answer" && line["event"] as? String == "ev-2")
+            #expect(line["hook_line"] as? Int == 4 && line["reason"] as? String == reason)
+            if let key { #expect("\(line[key] ?? "missing")" == "\(value ?? "")") }
+            #expect(Set(line.keys).subtracting(["ts", "type", "event", "hook_line", "reason"]).count == (key == nil ? 0 : 1))
+        }
+
+        let refused = try record(.answerRefused(eventID: "ev-3", hookLine: 2, reason: "token_spent"))
+        #expect(refused["type"] as? String == "answer_refused" && refused["reason"] as? String == "token_spent")
+        #expect(refused["event"] as? String == "ev-3" && refused["hook_line"] as? Int == 2)
+
+        // A result's stdout is never written, only what it means.
+        let finished = try record(.hookFinished(eventID: "ev-1", HookResult(
+            hookLine: 9, outcome: .exited(status: 0), stderr: "", stderrTruncated: false, duration: 1,
+            stdout: Data("my reasons, at length\napprove 10m\n".utf8))))
+        #expect(!finished.values.contains { "\($0)".contains("reasons") || "\($0)".contains("approve") })
     }
 
     @Test func longStderrIsCut() throws {

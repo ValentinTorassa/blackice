@@ -77,25 +77,46 @@ struct ParseTests {
     }
 
     @Test func approveDefaultsAndForms() throws {
-        let approval = try CLI.parse(["approve", "--app", "com.example.tool", "--team=ABCDE12345",
-                                      "--host", "Example.COM.", "--token", "q8Zr0d3XyB1mVt5LkS9wJpQa2NcEf7HgUi4Ko6Rl0Ys"])
+        let approval = try CLI.parse(["approve", "--app", "com.example.tool", "--team=ABCDE12345", "--host", "Example.COM."])
         let tool = AppIdentity.signed(SigningIdentity(signingID: "com.example.tool", teamID: "ABCDE12345"))
-        #expect(approval == .approve(Approval(identity: tool, host: "example.com",
-                                              seconds: 3600, token: "q8Zr0d3XyB1mVt5LkS9wJpQa2NcEf7HgUi4Ko6Rl0Ys")))
+        #expect(approval == .approve(Approval(identity: tool, host: "example.com", seconds: 3600)))
         let apple = try CLI.parse(["approve", "--app", "com.apple.curl", "--host", "example.com", "--for", "10m"])
         let curl = AppIdentity.signed(SigningIdentity(signingID: "com.apple.curl", teamID: nil))
-        #expect(apple == .approve(Approval(identity: curl, host: "example.com", seconds: 600, token: nil)))
+        #expect(apple == .approve(Approval(identity: curl, host: "example.com", seconds: 600)))
         let denial = try CLI.parse(["deny", "--host", "example.com", "--app", "com.example.tool"])
         let untrusted = AppIdentity.signed(SigningIdentity(signingID: "com.example.tool", teamID: nil))
-        #expect(denial == .deny(Denial(identity: untrusted, host: "example.com", token: nil)))
+        #expect(denial == .deny(Denial(identity: untrusted, host: "example.com")))
+        // A person's answer always: the request carries no token.
+        for command in [approval, apple, denial] {
+            switch command {
+            case .approve(let parsed): #expect(parsed.request.authorization == .touchID && parsed.request.token == nil)
+            case .deny(let parsed): #expect(parsed.request.authorization == .touchID && parsed.request.token == nil)
+            default: Issue.record("\(command)")
+            }
+        }
+    }
+
+    /// Hooks answer on their stdout since 0.4.0, so `--token` is gone, with a message that says so.
+    @Test func approveAndDenyTakeNoToken() {
+        let token = "q8Zr0d3XyB1mVt5LkS9wJpQa2NcEf7HgUi4Ko6Rl0Ys"
+        for arguments in [["approve", "--app", "com.a", "--host", "example.com", "--token", token],
+                          ["approve", "--app", "com.a", "--host", "example.com", "--token=\(token)"],
+                          ["deny", "--cdhash", testCDHash, "--host", "example.com", "--token", token]] {
+            #expect(throws: UsageError.self) { try CLI.parse(arguments) }
+            do {
+                _ = try CLI.parse(arguments)
+            } catch {
+                #expect("\(error)".contains("no longer takes --token: a hook answers by printing approve or deny"))
+            }
+        }
     }
 
     @Test func cdhashNamesAdHocCode() throws {
         let upper = testCDHash.uppercased()
         let approval = try CLI.parse(["approve", "--cdhash", upper, "--host", "example.com", "--for", "30s"])
-        #expect(approval == .approve(Approval(identity: .cdhash(testCDHash), host: "example.com", seconds: 30, token: nil)))
+        #expect(approval == .approve(Approval(identity: .cdhash(testCDHash), host: "example.com", seconds: 30)))
         let denial = try CLI.parse(["deny", "--cdhash=\(testCDHash)", "--host", "example.com"])
-        #expect(denial == .deny(Denial(identity: .cdhash(testCDHash), host: "example.com", token: nil)))
+        #expect(denial == .deny(Denial(identity: .cdhash(testCDHash), host: "example.com")))
         if case .approve(let parsed) = approval {
             #expect(parsed.request.app == AppReference(signingID: nil, teamID: nil, cdhash: testCDHash))
             #expect(parsed.request.authorization == .touchID)
@@ -134,7 +155,6 @@ struct ParseTests {
             (["deny", "--cdhash", testCDHash, "--team", "ABCDE12345", "--host", "example.com"], "cannot be combined"),
             (["approve", "--cdhash", "abc", "--host", "example.com"], "40 hex digits"),
             (["approve", "--cdhash", String(repeating: "g", count: 40), "--host", "example.com"], "40 hex digits"),
-            (["approve", "--app", "com.a", "--host", "example.com", "--token", "short"], "token from the event"),
             (["approve", "--app", "com.a"], "needs --host"),
             (["approve", "--app", "com.a\" or true", "--host", "example.com"], "signing identifier"),
             (["approve", "--app", "com.a", "--team", "abc", "--host", "example.com"], "Team ID"),
@@ -142,7 +162,7 @@ struct ParseTests {
             (["approve", "--app", "com.a", "--host", "203.0.113.7"], "wildcards and IP addresses"),
             (["approve", "--app", "com.a", "--host", "example.com", "--for", "25h"], "at most 24h"),
             (["approve", "--app", "com.a", "--host", "example.com", "--for", "forever"], "at most 24h"),
-            (["approve", "--app", "com.a", "--host", "example.com", "--token", "a b"], "token from the event"),
+            (["approve", "--app", "com.a", "--host", "example.com", "--for", "1441m"], "at most 24h"),
             (["approve", "--app", "com.a", "--host", "example.com", "--app", "com.b"], "given twice"),
             (["approve", "--app", "com.a", "--host"], "needs a value"),
             (["approve", "--app=", "--host", "example.com"], "needs a value"),
@@ -250,13 +270,11 @@ struct RunTests {
     }
 
     @Test func askCommandsReachTheSystem() {
-        let token = "q8Zr0d3XyB1mVt5LkS9wJpQa2NcEf7HgUi4Ko6Rl0Ys"
         let system = FakeSystem(status: ExitCode.noPermission)
         #expect(run(["pending"], system: system).status == 77)
-        #expect(run(["approve", "--app", "com.a", "--host", "Example.com", "--for", "5m", "--token", token],
-                    system: system).status == 77)
+        #expect(run(["approve", "--app", "com.a", "--host", "Example.com", "--for", "5m"], system: system).status == 77)
         #expect(run(["deny", "--cdhash", testCDHash, "--host", "example.com"], system: system).status == 77)
-        #expect(system.calls == ["pending", "approve apple/com.a example.com 300 token",
+        #expect(system.calls == ["pending", "approve apple/com.a example.com 300 touch_id",
                                  "deny cdhash/\(testCDHash) example.com - touch_id"])
         // A usage error never reaches it.
         #expect(run(["approve", "--app", "com.a", "--host", "example.com", "--for", "2d"], system: system).status == 64)
@@ -318,7 +336,7 @@ struct RunTests {
         #expect(CLI.answerStatus(AnswerReply(status: .done, reason: "approved", message: "ok")) == 0)
         #expect(CLI.answerStatus(AnswerReply(status: .refused, reason: "invalid_request", message: "x")) == 64)
         #expect(CLI.answerStatus(AnswerReply(status: .refused, reason: "unavailable", message: "x")) == 69)
-        for reason in ["token_unknown", "token_spent", "token_expired", "token_mismatch", "touch_id_failed"] {
+        for reason in ["token_unknown", "token_spent", "token_expired", "token_mismatch", "not_the_daemon", "touch_id_failed"] {
             #expect(CLI.answerStatus(AnswerReply(status: .refused, reason: reason, message: "x")) == 77)
         }
     }

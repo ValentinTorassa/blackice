@@ -11,6 +11,8 @@
 #   4. restart: the daemon is killed, launchd starts it again and it registers; then a
 #      configuration change while connections wait drops them and cancels their events. That
 #      change is the switch back to accept-all at the end.
+# The hook is a program hook: /bin/sh with the test script, which the daemon starts only after
+# checking that it is Apple's sh (com.apple.sh). It prints nothing, so it never answers.
 # Touch ID twice: `blackice start` with the test configuration at the beginning, and
 # `blackice mode accept-all` at the end. The daemon is stopped and started with
 # `blackice agent uninstall` and `blackice agent install`.
@@ -109,7 +111,7 @@ sed -e "s|@OUT@|$OUT|g" -e "s|@NSCURL_ID@|$NSCURL_ID|g" -e "s|@HUNG_HOST@|$HUNG_
 #!/bin/sh
 # Test hook written by macos/scripts/fault-test.sh for one run. It takes the app and the host
 # from the event file and appends one line per event to hook-calls.log: event ID, case, host and
-# its own PID. It never prints the event, which holds the token, and it answers nothing.
+# its own PID. It prints nothing on stdout, so it answers nothing.
 dir='@OUT@'
 id=$BLACKICE_EVENT_ID
 case $id in '' | *[!a-z0-9-]*) id=invalid ;; esac
@@ -143,7 +145,9 @@ hosts = ["$CONTROL_HOST"]
 
 [[hook]]
 on = "connection"
-run = '/bin/sh $OUT/hook.sh'
+program = "/bin/sh"
+app = "com.apple.sh"
+args = ["$OUT/hook.sh"]
 EOF
 
 # --- Reading the results --------------------------------------------------------------------
@@ -275,12 +279,11 @@ if [[ -n "$DRY" ]]; then
     step "The test hook on sample events"
     /bin/sh -n "$OUT/hook.sh"
     mkdir -p "$OUT/dry"
-    sample_token=q8Zr0d3XyB1mVt5LkS9wJpQa2NcEf7HgUi4Ko6Rl0Ys
     run_hook() {  # ID APP-JSON HOST
-        printf '{"event":"connection","id":"%s","token":"%s","app":%s,"host":"%s","ip":"203.0.113.7","port":443,"deadline":"2026-11-03T14:36:11Z"}\n' \
-            "$1" "$sample_token" "$2" "$3" > "$OUT/dry/$1.json"
+        printf '{"event":"connection","id":"%s","app":%s,"host":"%s","ip":"203.0.113.7","port":443,"deadline":"2026-11-03T14:36:11Z"}\n' \
+            "$1" "$2" "$3" > "$OUT/dry/$1.json"
         env -i FAULT_HOOK_DRY=1 BLACKICE_EVENT_FILE="$OUT/dry/$1.json" BLACKICE_EVENT_ID="$1" PATH=/usr/bin:/bin \
-            /bin/sh "$OUT/hook.sh" < "$OUT/dry/$1.json"
+            /bin/sh "$OUT/hook.sh" < "$OUT/dry/$1.json" >> "$OUT/dry/stdout.txt"
     }
     nscurl_app="{\"signing_id\":\"$NSCURL_ID\",\"path\":\"/usr/bin/nscurl\"}"
     run_hook ev-00000001 "$nscurl_app" "$HUNG_HOST"
@@ -301,7 +304,7 @@ ev-00000005 other gateway.icloud.com
 ev-00000006 other api.github.com
 ev-00000007 plain invalid"
     verdict "the hook picks hung once, busy, plain and other as planned" "$(is test "$got" == "$want")"
-    verdict "the hook never wrote the token" "$(is test "$(count_in "$sample_token" "$OUT/hook-calls.log")" -eq 0)"
+    verdict "the hook printed nothing, so it never answers" "$(is test ! -s "$OUT/dry/stdout.txt")"
     command rm -rf -- "$OUT/hung.lock" "$OUT/hook-calls.log"
 
     step "The result checks on sample logs"
@@ -588,6 +591,9 @@ verdict "3. every burst event ran its hook or was logged as dropped ($b_missing 
     "$(( b_missing == 0 && b_failed == 0 ))"
 verdict "3. curl reached $CONTROL_HOST during the burst (HTTP $code after $curl_s s)" "$(is test "$code" == 200)"
 verdict "3. blackice status answered during the burst" "$status_ok"
+refused=$(count_in '"type":"hook_refused"' "$OUT/events.jsonl")
+verdict "3. the daemon started /bin/sh after checking its signature, and refused none ($refused hook_refused)" \
+    "$(( b_started >= 1 && refused == 0 ))"
 verdict "3. the extension is still activated and enabled" \
     "$(is awk -v id="$FILTER_ID" 'index($0, id) && /activated enabled/ {found = 1} END {exit !found}' <<<"$listed_ext")"
 echo "($b_exited busy hooks exited on their own.)"

@@ -23,7 +23,13 @@ public protocol EventIntake: Sendable {
     func messages() -> AsyncStream<IntakeMessage>
     /// Asks the extension again for the configuration it holds now.
     func configuration() async throws -> DaemonConfiguration
+    /// Sends a hook's answer, with the event's token, on the same connection. The extension takes
+    /// an answer with a token only from the daemon it registered.
+    func answer(_ request: AnswerRequest) async throws -> AnswerReply
 }
+
+/// Where the daemon sends a hook's answer: to the extension, through `EventIntake.answer`.
+public typealias AnswerSender = @Sendable (AnswerRequest) async throws -> AnswerReply
 
 /// The hooks and the timeout the daemon runs with. They come only from the configuration the
 /// extension holds, the one `blackice start` and `blackice mode` saved after Touch ID, and never
@@ -179,8 +185,9 @@ public enum DaemonPaths {
 
 /// The user-level side of blackice: takes paused connections from the intake, runs the hooks
 /// of the configuration the extension holds for each one, and records everything in the event
-/// log. It does not decide anything itself; the answers go from the hooks to the extension
-/// through `blackice approve` and `deny`.
+/// log. It does not decide anything itself. A hook answers on its stdout (`HookAnswer`), and the
+/// daemon sends that answer to the extension for the event's app and host, with the event's
+/// token, which no hook ever gets.
 public final class Daemon: Sendable {
     public let log: EventLog
     public let runner: HookRunner
@@ -207,16 +214,18 @@ public final class Daemon: Sendable {
                 case .registered(let configuration):
                     await store.offer(configuration)
                 case .event(let event, let generation):
-                    group.addTask { await self.handle(event, generation: generation, store: store) }
+                    group.addTask {
+                        await self.handle(event, generation: generation, store: store) { try await intake.answer($0) }
+                    }
                 }
             }
         }
     }
 
-    /// Logs the event, then runs the hooks of the configuration of the event's generation. When
-    /// that configuration cannot be had, no hook runs, and with no answer the extension denies the
-    /// connection at its deadline.
-    public func handle(_ event: HookEvent, generation: UInt64, store: ConfigurationStore) async {
+    /// Logs the event, then runs the hooks of the configuration of the event's generation and
+    /// sends their answers with `send`. When that configuration cannot be had, no hook runs, and
+    /// with no answer the extension denies the connection at its deadline.
+    public func handle(_ event: HookEvent, generation: UInt64, store: ConfigurationStore, send: @escaping AnswerSender) async {
         record(.eventReceived(event))
         let configuration: DaemonConfiguration
         do {
@@ -231,30 +240,76 @@ public final class Daemon: Sendable {
             record(.hooksSkipped(eventID: event.id, reason: "configuration_changed"))
             return
         }
-        await runHooks(for: event, configuration)
+        await runHooks(for: event, configuration, send: send)
     }
 
-    /// Logs the event, runs the configuration's hooks for it and logs how each one went.
-    public func handle(_ event: HookEvent, with configuration: DaemonConfiguration) async {
+    /// Logs the event, runs the configuration's hooks for it, logs how each one went and sends
+    /// their answers with `send`.
+    public func handle(_ event: HookEvent, with configuration: DaemonConfiguration, send: @escaping AnswerSender) async {
         record(.eventReceived(event))
-        await runHooks(for: event, configuration)
+        await runHooks(for: event, configuration, send: send)
     }
 
-    private func runHooks(for event: HookEvent, _ configuration: DaemonConfiguration) async {
+    private func runHooks(for event: HookEvent, _ configuration: DaemonConfiguration, send: @escaping AnswerSender) async {
         let hooks = configuration.hooks.filter { $0.on == event.event }
         guard !hooks.isEmpty else {
             record(.noHooks(eventID: event.id))
             return
         }
-        _ = await runner.run(hooks, for: event, timeoutSeconds: configuration.timeoutSeconds) { progress in
-            switch progress {
-            case .queued(let hookLine, let waiting):
-                self.record(.hookQueued(eventID: event.id, hookLine: hookLine, waiting: waiting))
-            case .started(let hookLine, let pid, let waited):
-                self.record(.hookStarted(eventID: event.id, hookLine: hookLine, pid: pid, waited: waited))
-            case .finished(let result):
-                self.record(.hookFinished(eventID: event.id, result))
+        // One task per hook, so each answer goes out as soon as its hook is done. With several
+        // hooks the first answer counts; the token is spent then, and later ones are refused.
+        await withTaskGroup(of: Void.self) { group in
+            for hook in hooks {
+                group.addTask {
+                    let results = await self.runner.run([hook], for: event, timeoutSeconds: configuration.timeoutSeconds) { progress in
+                        switch progress {
+                        case .queued(let hookLine, let waiting):
+                            self.record(.hookQueued(eventID: event.id, hookLine: hookLine, waiting: waiting))
+                        case .started(let hookLine, let pid, let waited):
+                            self.record(.hookStarted(eventID: event.id, hookLine: hookLine, pid: pid, waited: waited))
+                        case .finished(let result):
+                            self.record(.hookFinished(eventID: event.id, result))
+                        }
+                    }
+                    for result in results { await self.deliver(result, for: event, send: send) }
+                }
             }
+        }
+    }
+
+    /// Logs what a hook that ran answered, and sends the answer.
+    private func deliver(_ result: HookResult, for event: HookEvent, send: AnswerSender) async {
+        switch result.answer {
+        case nil:
+            return
+        case .failure(let missing)?:
+            record(.hookNoAnswer(eventID: event.id, hookLine: result.hookLine, missing))
+        case .success(let answer)?:
+            record(.hookAnswered(eventID: event.id, hookLine: result.hookLine, answer))
+            guard let request = Self.request(answer, for: event) else {
+                record(.answerRefused(eventID: event.id, hookLine: result.hookLine, reason: "invalid_event"))
+                return
+            }
+            do {
+                let reply = try await send(request)
+                if reply.status != .done {
+                    record(.answerRefused(eventID: event.id, hookLine: result.hookLine, reason: reply.reason))
+                }
+            } catch {
+                record(.answerRefused(eventID: event.id, hookLine: result.hookLine, reason: "unreachable"))
+            }
+        }
+    }
+
+    /// The answer as the extension takes it: for the event's app and host, never anything from the
+    /// hook, with the event's token. nil for an event with no host, which nothing can answer.
+    static func request(_ answer: HookAnswer, for event: HookEvent) -> AnswerRequest? {
+        guard let identity = event.app.identity, let host = event.host else { return nil }
+        switch answer {
+        case .approve(let seconds):
+            return AnswerRequest(kind: .approve, app: identity, host: host, seconds: seconds, token: event.token)
+        case .deny:
+            return AnswerRequest(kind: .deny, app: identity, host: host, seconds: nil, token: event.token)
         }
     }
 
