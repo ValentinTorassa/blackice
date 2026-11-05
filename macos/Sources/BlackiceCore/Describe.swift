@@ -68,13 +68,13 @@ public enum Describe {
 extension BlackiceConfig {
     /// "ask mode, 2 rules, 1 hook, 60 s to answer".
     public var overview: String {
-        Describe.overview(mode: mode, rules: allow.count, hooks: hooks.count, timeoutSeconds: timeoutSeconds)
+        Describe.overview(mode: mode, rules: allow.count, hooks: activeHooks.count, timeoutSeconds: timeoutSeconds)
     }
 }
 
 extension ProviderConfiguration {
     public var overview: String {
-        Describe.overview(mode: mode, rules: config.allow.count, hooks: config.hooks.count,
+        Describe.overview(mode: mode, rules: config.allow.count, hooks: config.activeHooks.count,
                           timeoutSeconds: config.timeoutSeconds)
     }
 }

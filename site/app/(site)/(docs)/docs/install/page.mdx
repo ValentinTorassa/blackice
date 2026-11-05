@@ -153,7 +153,7 @@ Each agent decides with a small model, since a decision is a short read and a tw
 
 [integrations/codex/README.md](https://github.com/ValentinTorassa/blackice/blob/main/integrations/codex/README.md) has the hook and what each flag does.
 
-One agent answers at a time: `agent connect` replaces another agent's hook, and says so. With two hooks, the first answer would win.
+One agent answers at a time, and you choose which. Each agent you connect keeps its hook in `blackice.toml`, and `answers` in its `[agent]` table names the one that answers: connecting a second agent adds its hook, keeps the first one's and sets `answers` to the new one. `blackice mode ask --agent fx` (or `claude-code`, `codex`, or `you` to answer yourself) switches, with Touch ID; the menu's Mode does the same. That switch changes the configuration blackice holds, not the file, as `blackice mode` does, so `blackice start` loads the file's own `answers` again. A hook that runs an agent but names no `instructions`, such as one from 0.3 or 0.4.0, would run whoever `answers` names: `agent connect` replaces it with the agent's own hook, or removes it when it ran another agent.
 
 [integrations/claude-code/README.md](https://github.com/ValentinTorassa/blackice/blob/main/integrations/claude-code/README.md) has the hook, how the sign-in works under the daemon, and the eval: the 23 cases as expected with `haiku` and with `sonnet` on 5 November 2026, 4.2 and 5.1 s at the median.
 
@@ -182,7 +182,7 @@ The mark is full in ask and block-all, and dimmed when blackice is off, in accep
 - the mode the filter decides in, or why blackice is off or not reachable, and the version. As `blackice status` does, it says when the filter did not take the saved settings and when an upgrade needs `blackice start`;
 - each connection that waits, as app → host:port with the seconds left, and in its submenu Allow for 10 Minutes, Allow for 1 Hour and Deny: the same as `blackice approve --for` and `blackice deny`, with Touch ID;
 - the last verdicts from the event log, with whether a hook or a person answered, and for an hour a warning when the daemon refused a hook program whose signature did not match;
-- Mode, to switch between accept-all, ask and block-all, with Touch ID, as `blackice mode` does, while the filter answers;
+- Mode, to switch between Accept All, Ask with an agent answering (one item per agent; those not connected are greyed out with the command that connects them), Ask: You (Manual) and Block All, with Touch ID, as `blackice mode` and `blackice mode ask --agent` do, while the filter answers;
 - the hooks in the configuration and whether the daemon runs them;
 - Stop Filtering, with Touch ID, as `blackice stop` does: the filter and its network extension go, and `blackice start` turns them on again;
 - Open blackice.toml, Show Event Log in Finder, Documentation, Open at Login, and Quit Menu.

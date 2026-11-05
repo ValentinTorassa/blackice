@@ -260,7 +260,8 @@ struct AgentConnectTests {
 
     /// Claude Code in place of fx: its own configuration directory and sign-in, no settings file,
     /// a program hook with no event on stdin that takes the place of fx's, and only the host its
-    /// earlier rule lacked. Then fx again, in place of Claude Code: one agent answers.
+    /// earlier rule lacked, in place of fx's hook from 0.4.0, which named no instructions. Then fx
+    /// again: Claude Code's hook stays, and `answers` names fx.
     @Test func connectsClaudeCodeInPlaceOfFx() throws {
         let (home, config) = try setUp("""
             mode = "ask"
@@ -317,7 +318,9 @@ struct AgentConnectTests {
         #expect(result.stdout.contains("  ✓ Its hook gives it one tool, reading the event: no shell, no web, no MCP servers"))
         #expect(result.stdout.contains("  ✓ claude-code approved it in 6 s"))
         #expect(result.stdout.contains("    platform.claude.com"))
-        #expect(result.stdout.contains("  ✓ The hook on line 9 ran fx; it now starts claude-code instead,"))
+        #expect(result.stdout.contains("  ✓ The hook on line 9 ran fx without naming its instructions;"))
+        #expect(result.stdout.contains("    it now starts claude-code instead, once its signature checks out"))
+        #expect(loaded.answers == nil && !written.contains("[agent]"))
 
         // Again: nothing changes.
         let again = connectClaude(home, config: config, mac: mac, system: system)
@@ -325,17 +328,30 @@ struct AgentConnectTests {
         #expect(try String(contentsOfFile: config, encoding: .utf8) == written && mac.logins.count == 1)
         #expect(again.stdout.contains { $0.hasPrefix("  A hook already starts claude-code (line 9)") })
 
-        // fx in place of Claude Code.
+        // fx beside Claude Code: both hooks, and fx answers.
         let back = connect(home, config: config, mac: FakeAgentMac(signedIn: true, answer: Self.approve),
                            system: system)
         #expect(back.status == 0, "\(back.stderr)")
-        let fxConfig = try BlackiceConfig(data: Data(contentsOf: URL(fileURLWithPath: config)))
-        #expect(fxConfig.hooks.map(\.program) == [Self.program(home)] && fxConfig.hooks[0].line == 9)
-        #expect(back.stdout.contains("  ✓ The hook on line 9 ran claude-code; it now starts fx instead,"))
+        let both = try String(contentsOfFile: config, encoding: .utf8)
+        let fxConfig = try BlackiceConfig(data: Data(both.utf8))
+        #expect(fxConfig.hooks.map(\.program) == [Self.claudeProgram(home), Self.program(home)] && fxConfig.hooks[0].line == 9)
+        #expect(fxConfig.answers == .agent(.fx) && fxConfig.activeHooks.map(\.program) == [Self.program(home)])
+        #expect(both.hasSuffix("\n[agent]\nanswers = \"fx\"\n"))
+        #expect(fxConfig.answering == Answering(agents: [.claudeCode, .fx], answerer: .agent(.fx)))
+        #expect(back.stdout.contains("  ✓ fx answers ([agent] answers = \"fx\"); claude-code's hook stays,"))
+        #expect(back.stdout.contains("    for: blackice mode ask --agent claude-code, or the menu's Mode"))
+
+        // Claude Code again: its hook stays as it is, and answers names it.
+        let other = connectClaude(home, config: config, mac: mac, system: system)
+        #expect(other.status == 0, "\(other.stderr)")
+        let swapped = try BlackiceConfig(data: Data(contentsOf: URL(fileURLWithPath: config)))
+        #expect(swapped.hooks.map(\.program) == fxConfig.hooks.map(\.program) && swapped.answers == .agent(.claudeCode))
+        #expect(other.stdout.contains { $0.hasPrefix("  A hook already starts claude-code (line 9)") })
     }
 
-    /// With two agents' hooks, the first becomes the agent's and the other goes.
-    @Test func aSecondAgentHookGoes() throws {
+    /// Hooks that name no instructions would run whatever `answers` says: the agent's own becomes
+    /// its new hook, and the other agent's goes.
+    @Test func hooksWithoutInstructionsGo() throws {
         let (home, config) = try setUp("""
             mode = "ask"
             timeout_seconds = 60
@@ -360,10 +376,10 @@ struct AgentConnectTests {
                                                                             printed: Self.claudeApproves), system: Loading())
         #expect(result.status == 0, "\(result.stderr)")
         let loaded = try BlackiceConfig(data: Data(contentsOf: URL(fileURLWithPath: config)))
-        #expect(loaded.hooks.map(\.program) == [Self.claudeProgram(home)] && loaded.hooks[0].line == 4)
-        #expect(loaded.allow.map(\.app) == ["com.apple.curl", "com.anthropic.claude-code"])
-        #expect(result.stdout.contains("  ✓ The hook on line 4 ran fx; it now starts claude-code instead,"))
-        #expect(result.stdout.contains("  ✓ The hook on line 12, which ran claude-code, is gone: one agent answers"))
+        #expect(loaded.hooks.map(\.program) == [Self.claudeProgram(home)] && loaded.hooks[0].line == 9)
+        #expect(loaded.allow.map(\.app) == ["com.apple.curl", "com.anthropic.claude-code"] && loaded.answers == nil)
+        #expect(result.stdout.contains("  ✓ The hook on line 12 now starts claude-code itself, once its signature checks out"))
+        #expect(result.stdout.contains("  ✓ The hook on line 4, which ran fx, is gone"))
     }
 
     @Test func claudeCodeWithoutAnAnswerLeavesTheFileAlone() throws {
@@ -401,8 +417,8 @@ struct AgentConnectTests {
     }
 
     /// Codex: its own CODEX_HOME and sign-in, no settings file, a program hook with no event on
-    /// stdin in place of Claude Code's, and a rule for chatgpt.com and auth.openai.com.
-    @Test func connectsCodexInPlaceOfClaudeCode() throws {
+    /// stdin beside Claude Code's, `answers` naming it, and a rule for chatgpt.com and auth.openai.com.
+    @Test func connectsCodexBesideClaudeCode() throws {
         let (home, config) = try setUp("""
             mode = "ask"
             timeout_seconds = 60
@@ -428,9 +444,11 @@ struct AgentConnectTests {
         #expect(mac.hookRuns == [Hook(program: Self.codexProgram(home), line: 0)])
         let written = try String(contentsOfFile: config, encoding: .utf8)
         let loaded = try BlackiceConfig(data: Data(written.utf8))
-        #expect(loaded.hooks.map(\.program) == [Self.codexProgram(home)] && loaded.hooks[0].line == 4)
+        #expect(loaded.hooks.map { $0.program?.instructions } == [.claudeCode, .codex] && loaded.hooks[0].line == 4)
+        #expect(loaded.hooks[1].program == Self.codexProgram(home) && loaded.activeHooks.map(\.program) == [Self.codexProgram(home)])
+        #expect(loaded.answers == .agent(.codex) && written.hasSuffix("\n[agent]\nanswers = \"codex\"\n"))
         #expect(written.contains("program = \"/opt/fake/codex\"\napp = \"codex\"\nteam = \"2DC432GLL2\"\n"))
-        #expect(written.contains("stdin = \"none\"\ninstructions = \"codex\"\n") && !written.contains("claude"))
+        #expect(written.contains("stdin = \"none\"\ninstructions = \"codex\"\n"))
         #expect(written.contains(#""-c", "permissions.blackice.filesystem={\":minimal\"=\"read\",\":workspace_roots\"=\"read\"}""#))
         for host in AgentProfile.codex.hosts { #expect(loaded.allowRule(for: Self.codex, host: host) != nil) }
         #expect(AgentProfile.codex.hosts == ["chatgpt.com", "auth.openai.com"])
@@ -439,7 +457,7 @@ struct AgentConnectTests {
         #expect(result.stdout.contains("  ✓ Its hook lets it read only the event's directory: no writes, no network, no web search, no MCP servers"))
         #expect(result.stdout.contains("  It decides with gpt-6-luna; --model NAME picks another."))
         #expect(result.stdout.contains("  ✓ codex approved it in 5 s"))
-        #expect(result.stdout.contains("  ✓ The hook on line 4 ran claude-code; it now starts codex instead,"))
+        #expect(result.stdout.contains("  ✓ codex answers ([agent] answers = \"codex\"); claude-code's hook stays,"))
 
         // No sign-in under the hook: what to do about it, and the file as it was.
         let unsigned = FakeCodexMac(signedIn: true, printed: "")

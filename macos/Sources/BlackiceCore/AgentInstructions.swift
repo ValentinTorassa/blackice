@@ -32,6 +32,15 @@ public enum AgentInstructions: String, CaseIterable, Sendable {
         }
     }
 
+    /// The agent's name for people: "fx", "Claude Code", "Codex".
+    public var title: String {
+        switch self {
+        case .fx: return "fx"
+        case .claudeCode: return "Claude Code"
+        case .codex: return "Codex"
+        }
+    }
+
     /// "fx", "claude-code" or …, for messages.
     public static var names: String {
         let quoted = allCases.map { "\"\($0.rawValue)\"" }
@@ -65,4 +74,62 @@ func writePrivateFile(_ url: URL, _ data: Data) throws {
     defer { close(fd) }
     guard fchmod(fd, 0o600) == 0 else { throw FileSafetyError(url.path, "cannot set mode 0600: \(errnoText(errno))") }
     try writeAll(fd, data, path: url.path)
+}
+
+/// Who answers the connections that wait in ask mode: one agent, through its hook, or you, from the
+/// menu or with `blackice approve` and `deny`. `answers` in [agent] names it ("fx", "claude-code",
+/// "codex" or "you").
+public enum Answerer: Hashable, Sendable {
+    case agent(AgentInstructions)
+    case you
+
+    public init?(name: String) {
+        if name == "you" {
+            self = .you
+        } else if let instructions = AgentInstructions(rawValue: name) {
+            self = .agent(instructions)
+        } else {
+            return nil
+        }
+    }
+
+    /// As blackice.toml and `--agent` spell it.
+    public var name: String {
+        switch self {
+        case .agent(let instructions): return instructions.rawValue
+        case .you: return "you"
+        }
+    }
+
+    /// "Claude Code", "you".
+    public var title: String {
+        switch self {
+        case .agent(let instructions): return instructions.title
+        case .you: return "you"
+        }
+    }
+
+    /// Every agent blackice knows, then you.
+    public static var all: [Answerer] { AgentInstructions.allCases.map { .agent($0) } + [.you] }
+
+    /// "fx", "claude-code", "codex" or "you", for messages.
+    public static var names: String {
+        let quoted = all.map { "\"\($0.name)\"" }
+        return quoted.dropLast().joined(separator: ", ") + " or " + quoted.last!
+    }
+}
+
+/// Who answers under one configuration, as the menu and `blackice status` show it.
+public struct Answering: Equatable, Sendable {
+    /// The agents with a hook in the configuration (one that names its `instructions`), in the
+    /// order of their hooks.
+    public let agents: [AgentInstructions]
+    /// Who answers: the one `answers` names; with no `answers`, the one agent with a hook, or you
+    /// when none has one. nil when several agents have hooks and `answers` names none: they all run.
+    public let answerer: Answerer?
+
+    public init(agents: [AgentInstructions], answerer: Answerer?) {
+        self.agents = agents
+        self.answerer = answerer
+    }
 }

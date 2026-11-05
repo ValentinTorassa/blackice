@@ -10,6 +10,8 @@ public enum ControlAction: Equatable, Sendable {
     case start(ProviderConfiguration)
     case stop
     case mode(from: Mode, to: Mode, generation: UInt64)
+    /// `blackice mode ask --agent NAME` and the menu's Ask items: ask mode, with someone else answering.
+    case answering(Answerer, mode: Mode, generation: UInt64)
     /// `blackice approve`: a person confirms.
     case approve(AppIdentity, host: String, seconds: Int)
     /// `blackice deny`: a person confirms.
@@ -25,6 +27,9 @@ public enum ControlAction: Equatable, Sendable {
             return "stop filtering and remove its network extension"
         case .mode(let from, let to, _):
             return "switch from \(from.rawValue) to \(to.rawValue) mode"
+        case .answering(let answerer, let mode, _):
+            return answerer == .you ? "switch to \(mode.rawValue) mode, with you answering"
+                : "switch to \(mode.rawValue) mode, with \(answerer.title) answering"
         case .approve(let identity, let host, let seconds):
             return "let \(identity.label) reach \(host) for \(Self.duration(seconds))"
         case .deny(let identity, let host):

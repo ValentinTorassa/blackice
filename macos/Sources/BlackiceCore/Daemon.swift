@@ -37,7 +37,8 @@ public typealias AnswerSender = @Sendable (AnswerRequest) async throws -> Answer
 /// hooks that daemon runs.
 public struct DaemonConfiguration: Equatable, Sendable {
     public let generation: UInt64
-    /// The whole blackice.toml, parsed with the strict parser. The daemon uses its hooks and timeout.
+    /// The whole blackice.toml, parsed with the strict parser. The daemon uses its hooks (those
+    /// `answers` in [agent] leaves running) and its timeout.
     public let config: BlackiceConfig
 
     public init(generation: UInt64, configText: String) throws {
@@ -46,7 +47,7 @@ public struct DaemonConfiguration: Equatable, Sendable {
         config = try BlackiceConfig(text: configText)
     }
 
-    public var hooks: [Hook] { config.hooks }
+    public var hooks: [Hook] { config.activeHooks }
     public var timeoutSeconds: Int { config.timeoutSeconds }
 
     public var summary: String {

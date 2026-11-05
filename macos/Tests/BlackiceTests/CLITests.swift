@@ -41,6 +41,12 @@ private final class FakeSystem: SystemControlling {
         return answer
     }
 
+    func setMode(_ mode: Mode, answerer: Answerer?, output: SystemOutput) -> Int32 {
+        guard let answerer else { return setMode(mode, output: output) }
+        calls.append("mode \(mode.rawValue) --agent \(answerer.name)")
+        return answer
+    }
+
     func pending(output: SystemOutput) -> Int32 { calls.append("pending"); return answer }
 
     func answer(_ request: AnswerRequest, output: SystemOutput) -> Int32 {
@@ -74,6 +80,8 @@ struct ParseTests {
         #expect(try CLI.parse(["--help"]) == .help)
         #expect(try CLI.parse(["validate", "blackice.toml"]) == .validate(path: "blackice.toml"))
         for mode in Mode.allCases { #expect(try CLI.parse(["mode", mode.rawValue]) == .mode(mode)) }
+        #expect(try CLI.parse(["mode", "ask", "--agent", "claude-code"]) == .mode(.ask, answerer: .agent(.claudeCode)))
+        #expect(try CLI.parse(["mode", "ask", "--agent=you"]) == .mode(.ask, answerer: .you))
     }
 
     @Test func approveDefaultsAndForms() throws {
@@ -170,7 +178,10 @@ struct ParseTests {
             (["status", "--verbose"], "takes no arguments"),
             (["mode"], "accept-all, ask or block-all"),
             (["mode", "allow-all"], "accept-all, ask or block-all"),
-            (["mode", "ask", "extra"], "accept-all, ask or block-all"),
+            (["mode", "ask", "extra"], "unexpected argument 'extra'"),
+            (["mode", "block-all", "--agent", "fx"], "--agent goes with ask"),
+            (["mode", "ask", "--agent", "gemini"], "--agent takes fx, claude-code, codex, you"),
+            (["mode", "ask", "--agent"], "--agent needs a value"),
             (["validate"], "one path"),
             (["validate", "a", "b"], "one path"),
             (["validate", "--help"], "one path"),
@@ -287,7 +298,8 @@ struct RunTests {
         let stop = run(["stop"], system: system)
         let status = run(["status"], system: system)
         let mode = run(["mode", "block-all"], system: system)
-        #expect(system.calls == ["stop", "status", "mode block-all"])
+        let agent = run(["mode", "ask", "--agent", "codex"], system: system)
+        #expect(system.calls == ["stop", "status", "mode block-all", "mode ask --agent codex"] && agent.status == 77)
         #expect(stop.status == 77 && status.status == 77 && mode.status == 77)
         #expect(status.stdout == "filter: enabled" && mode.stderr == "mode refused")
     }

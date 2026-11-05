@@ -99,12 +99,14 @@ extension CLI {
         }
         func row(_ label: String, _ value: String) { lines.append("  " + label.padding(toLength: 11, withPad: " ", startingAt: 0) + value) }
         row("rules", config.allow.isEmpty ? "none" : Describe.count(config.allow.count, "app") + " allowed in every mode")
-        if config.hooks.isEmpty {
+        let hooks = config.activeHooks
+        if hooks.isEmpty {
             row("hooks", report.daemonRunning ? "none (the daemon is running, with nothing to run)" : "none")
         } else {
-            row("hooks", "\(config.hooks.count), " + (report.daemonRunning ? "run by the daemon"
+            row("hooks", "\(hooks.count), " + (report.daemonRunning ? "run by the daemon"
                 : "but the daemon is not running: blackice agent install"))
         }
+        if let line = answeringLine(config) { row("answers", line) }
         // What a first start whose agent setup did not finish leaves: on, filtering nothing.
         if configuration.mode == .acceptAll, config.hooks.isEmpty {
             row("next", "blackice agent connect fx, or blackice mode ask to answer by hand")
@@ -130,11 +132,32 @@ extension CLI {
         return lines
     }
 
+    /// Who answers in ask mode, for `status`, when there is a choice: `answers` is set or several
+    /// agents have hooks. nil otherwise.
+    static func answeringLine(_ config: BlackiceConfig) -> String? {
+        let answering = config.answering
+        guard config.answers != nil || answering.agents.count > 1 else { return nil }
+        let others = answering.agents.filter { answering.answerer != .agent($0) }.map(\.title)
+        let who = answering.answerer.map { $0 == .you ? "you, with blackice approve or deny" : $0.title }
+            ?? "every agent with a hook"
+        return who + (others.isEmpty || answering.answerer == nil ? "" : "; \(listed(others)) \(others.count == 1 ? "has" : "have") a hook too")
+    }
+
+    /// Why `blackice mode ask --agent NAME` cannot switch to that agent under `config`, or nil.
+    public static func answererRefusal(_ answerer: Answerer, config: BlackiceConfig) -> String? {
+        guard case .agent(let instructions) = answerer, !config.answering.agents.contains(instructions) else { return nil }
+        return "\(instructions.title) has no hook in the configuration blackice holds. Connect it first: " +
+            "blackice agent connect \(instructions.rawValue)"
+    }
+
     /// After a mode change: what it means, and what the new mode needs.
     public static func modeChangedLines(_ configuration: ProviderConfiguration, daemonRunning: Bool) -> [String] {
         var lines = ["✓ Now in \(configuration.mode.rawValue) mode: \(configuration.mode.explanation)."]
         guard configuration.mode == .ask else { return lines }
-        if configuration.config.hooks.isEmpty {
+        if configuration.config.answers != nil, case .agent(let instructions)? = configuration.config.answering.answerer {
+            lines.append("\(instructions.title) answers them.")
+        }
+        if configuration.config.activeHooks.isEmpty {
             lines.append("See what is waiting with blackice pending, and answer with blackice approve or deny.")
         } else if !daemonRunning {
             lines.append("Your hooks need the daemon, which is not running: blackice agent install")
@@ -191,7 +214,7 @@ extension CLI {
             }
             lines.append(row("blackice pending", "connections waiting for an answer"))
         }
-        if !configuration.config.hooks.isEmpty, !daemonRunning {
+        if !configuration.config.activeHooks.isEmpty, !daemonRunning {
             lines.append(row("blackice agent install", "run your hooks for those connections"))
         }
         lines.append("  Docs: https://blackice-macos.vercel.app/docs")

@@ -185,25 +185,39 @@ public final class NESystemControl: SystemControlling {
     }
 
     public func setMode(_ mode: Mode, output: SystemOutput) -> Int32 {
-        guard Self.isSignedHost() else { return UnsignedSystem().setMode(mode, output: output) }
+        setMode(mode, answerer: nil, output: output)
+    }
+
+    /// `blackice mode`, and with `answerer` who answers in ask mode: `answers` in [agent] of the
+    /// text blackice holds, not of the file, as the mode is.
+    public func setMode(_ mode: Mode, answerer: Answerer?, output: SystemOutput) -> Int32 {
+        guard Self.isSignedHost() else { return UnsignedSystem().setMode(mode, answerer: answerer, output: output) }
         guard let (_, saved) = loadSaved(output) else { return ExitCode.software }
         if let owner = saved.foreignOwner { return refuseForeign(owner, output) }
         guard let existing = saved.configuration else {
             output.stderr("blackice is not running. Start it first: blackice start")
             return ExitCode.unavailable
         }
-        if existing.mode == mode {
-            output.stdout("Already in \(mode.rawValue) mode: \(mode.explanation).")
+        if let answerer, let refusal = CLI.answererRefusal(answerer, config: existing.config) {
+            output.stderr(refusal)
+            return ExitCode.unavailable
+        }
+        let newAnswerer = answerer.flatMap { $0 == existing.config.answering.answerer ? nil : $0 }
+        if existing.mode == mode, newAnswerer == nil {
+            output.stdout("Already in \(mode.rawValue) mode: \(mode.explanation)." +
+                          (answerer.map { $0 == .you ? " You answer." : " \($0.title) answers." } ?? ""))
             return ExitCode.success
         }
         let candidate: ProviderConfiguration
         do {
-            candidate = try existing.with(mode: mode)
+            candidate = try existing.with(mode: mode, answerer: newAnswerer)
         } catch {
             output.stderr("blackice mode: \(error)")
             return ExitCode.software
         }
-        guard confirm(.mode(from: existing.mode, to: mode, generation: candidate.generation), output) else {
+        let action: ControlAction = newAnswerer.map { .answering($0, mode: mode, generation: candidate.generation) }
+            ?? .mode(from: existing.mode, to: mode, generation: candidate.generation)
+        guard confirm(action, output) else {
             return ExitCode.noPermission
         }
         guard let (manager, current) = loadSaved(output) else { return ExitCode.software }

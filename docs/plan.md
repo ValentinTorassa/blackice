@@ -191,7 +191,9 @@ and each run on a Mac is recorded in [`evidence/`](../evidence/).
    a sign-in of its own (its own `CLAUDE_CONFIG_DIR`, kept in the login keychain, so the hook keeps `HOME`) and a
    rule for `api.anthropic.com` and `platform.claude.com`. `blackice agent connect claude-code` writes its
    `program` hook as `connect fx` does, with `stdin = "none"`: `claude -p` adds stdin to its prompt, and the event
-   should reach it only as the file it reads. One agent answers at a time: connecting one replaces another's hook.
+   should reach it only as the file it reads. One agent answers at a time: since 0.4.2 each connected agent keeps
+   its hook, and `answers` in `[agent]` names the one that runs (or `you`), switched with `blackice mode ask --agent`
+   or the menu's Mode.
    [`integrations/eval/run.sh`](../integrations/eval/run.sh) runs any decider over the same 20 events the way the
    daemon runs a program hook; Claude Code 2.1.317 with Sonnet decided all 20 as expected, twice (as a `run` line,
    then as a program hook), in 3 to 8 s each.
