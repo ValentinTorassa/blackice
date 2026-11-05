@@ -4,10 +4,11 @@ import BlackiceCore
 // `blackice agent connect NAME`: sets a coding agent up to answer the connections that wait in
 // ask mode, the way integrations/fx/README.md describes by hand. The steps are the same for every
 // agent: find it and read its signature; give it a home of its own with the blackice skill and
-// rules that let it run only `blackice approve` and `blackice deny`; let it decide one sample
-// event through the hook runner, with blackice replaced by a stand-in; add a rule that lets it
-// reach its model in every mode, and the hook; load it. What differs between agents (where its
-// settings live, how it signs in, its hook line) is in its `AgentProfile`. fx is the first.
+// rules that let it read files and nothing else, no shell included; let it decide one sample
+// event through the hook runner, reading its answer from its last line of output and passing it
+// nowhere; add a rule that lets it reach its model in every mode, and a hook that starts it
+// directly and checks its signature first; load it. What differs between agents (where its
+// settings live, how it signs in, its arguments) is in its `AgentProfile`. fx is the first.
 
 /// What blackice needs to know about one coding agent.
 public struct AgentProfile: Sendable {
@@ -29,7 +30,8 @@ public struct AgentProfile: Sendable {
     let installer: String?
     /// What signing in looks like, said before its login runs.
     let loginHint: [String]
-    /// What it runs with in its home, on top of the hook's environment.
+    /// What it runs with in its home, on top of the hook's environment: for its sign-in, its
+    /// status and the hook's `env`.
     let environment: @Sendable (_ agentHome: String) -> [String: String]
     let statusArguments: [String]
     let loginArguments: [String]
@@ -37,8 +39,8 @@ public struct AgentProfile: Sendable {
     let signedIn: @Sendable (_ statusOutput: String) -> Bool
     /// Its settings file, with the rules set and its other keys kept.
     let settings: @Sendable (_ existing: Data?) throws -> Data
-    /// The hook's run line, with blackice (or the test's stand-in) from `blackiceDirectory`.
-    let hookRun: @Sendable (_ executable: String, _ agentHome: String, _ blackiceDirectory: String) -> String
+    /// The hook's `args`: one request that ends with the answer as its last line of output.
+    let askArguments: [String]
     /// What to do about a failure the agent's output names, when the test gets no answer.
     var advice: @Sendable (_ stderr: String) -> [String] = { _ in [] }
 
@@ -55,7 +57,9 @@ public struct AgentProfile: Sendable {
         environment: { ["HOME": $0, "FX_DISABLE_KEYCHAIN": "1"] },
         statusArguments: ["status"], loginArguments: ["login", "vercel"],
         signedIn: { CLI.fxSignedIn($0) }, settings: { try CLI.fxSettings($0) },
-        hookRun: { CLI.fxHookRun(fx: $0, agentHome: $1, blackiceDirectory: $2) },
+        // With stdout not a terminal, fx prints its reply as plain Markdown; the skill ends it with
+        // the answer.
+        askArguments: ["ask", "--no-save", "--no-color", prompt],
         // Seen on 3 November 2026: a Vercel team with no card on file gets HTTP 403 from AI Gateway.
         advice: { stderr in
             stderr.contains("customer_verification_required")
@@ -104,15 +108,15 @@ public struct AgentMachine {
     public let runAttached: (_ path: String, _ arguments: [String], _ environment: [String: String]) -> Int32
     /// Runs a program and returns its exit status and output.
     public let runCaptured: (_ path: String, _ arguments: [String], _ environment: [String: String]) -> (status: Int32, output: String)
-    /// Runs one hook line for an event the way the daemon does (HookRunner).
-    public let runHook: (_ run: String, _ event: HookEvent, _ workDirectory: String, _ timeoutSeconds: Int) -> HookResult
+    /// Runs one hook for an event the way the daemon does (HookRunner), signature check included.
+    public let runHook: (_ hook: Hook, _ event: HookEvent, _ workDirectory: String, _ timeoutSeconds: Int) -> HookResult
     /// The folder inside Blackice.app with each agent's skill (agents/fx/blackice); nil outside the app.
     public let agentResources: String?
 
     public init(findExecutable: @escaping (String) -> String?,
                 runAttached: @escaping (String, [String], [String: String]) -> Int32,
                 runCaptured: @escaping (String, [String], [String: String]) -> (status: Int32, output: String),
-                runHook: @escaping (String, HookEvent, String, Int) -> HookResult,
+                runHook: @escaping (Hook, HookEvent, String, Int) -> HookResult,
                 agentResources: String?) {
         self.findExecutable = findExecutable
         self.runAttached = runAttached
@@ -177,7 +181,7 @@ public struct AgentMachine {
                 process.waitUntilExit()
                 return (process.terminationStatus, String(decoding: data, as: UTF8.self))
             },
-            runHook: { run, event, workDirectory, timeoutSeconds in
+            runHook: { hook, event, workDirectory, timeoutSeconds in
                 let failed = { (why: String) in
                     HookResult(hookLine: 0, outcome: .failedToStart(why), stderr: "", stderrTruncated: false, duration: 0)
                 }
@@ -187,7 +191,7 @@ public struct AgentMachine {
                     let box = ResultBox()
                     let done = DispatchSemaphore(value: 0)
                     Task {
-                        box.results = await runner.run([Hook(run: run, line: 0)], for: event, timeoutSeconds: timeoutSeconds)
+                        box.results = await runner.run([hook], for: event, timeoutSeconds: timeoutSeconds)
                         done.signal()
                     }
                     done.wait()
@@ -205,34 +209,65 @@ private final class ResultBox: @unchecked Sendable {
     var results: [HookResult] = []
 }
 
-/// What the stand-in for blackice recorded during the test.
+/// What the agent answered in the test, or why it did not.
 enum TestAnswer: Equatable {
-    case approved, denied
-    /// The agent ran nothing.
-    case none
-    /// More than one answer, or one without the event's token.
-    case wrong(String)
+    case answered(HookAnswer)
+    /// Why there is no answer, as the end of a sentence that starts with the agent's name.
+    case none(String)
 }
 
 extension CLI {
-    static let appBinDirectory = "/Applications/Blackice.app/Contents/MacOS"
-    static let hookPath = "/usr/bin:/bin:/usr/sbin:/sbin"
-
-    /// fx's hook line: fx in its own home, with blackice (or the test's stand-in) first on PATH.
-    /// The paths sit in double quotes inside a single-quoted TOML string; see `fitsHookLine`.
-    static func fxHookRun(fx: String, agentHome: String, blackiceDirectory: String = appBinDirectory) -> String {
-        "FX_DISABLE_KEYCHAIN=1 PATH=\"\(blackiceDirectory):\(hookPath)\" HOME=\"\(agentHome)\" \"\(fx)\" " +
-            "ask --no-save --no-color \"\(AgentProfile.prompt)\""
+    /// The agent's hook: its executable, started directly with its home in `env`, and the signature
+    /// it must have, read from the executable when it was connected.
+    static func agentHook(_ profile: AgentProfile, executable: String, agentHome: String,
+                          identity: SigningIdentity) -> HookProgram {
+        HookProgram(path: executable, arguments: profile.askArguments, environment: profile.environment(agentHome),
+                    identity: identity)
     }
 
-    /// A path that can go inside the hook line as it is: absolute, with no quote, $, backquote,
-    /// backslash or control character.
-    static func fitsHookLine(_ path: String) -> Bool {
-        path.hasPrefix("/") && !path.unicodeScalars.contains { "\"'$`\\".unicodeScalars.contains($0) || $0.value < 0x20 || $0.value == 0x7F }
+    /// A path that can go into blackice.toml: absolute, with no control character.
+    static func fitsConfig(_ path: String) -> Bool {
+        path.hasPrefix("/") && !path.unicodeScalars.contains { $0.value < 0x20 || (0x7F...0x9F).contains($0.value) }
     }
 
-    /// fx's settings in the agent home, with the rules of integrations/fx/README.md: ask mode, the
-    /// shell limited to blackice approve and deny, no edits and no web. Other keys are kept.
+    /// A TOML basic string. Callers keep control characters out (`fitsConfig`).
+    static func tomlString(_ text: String) -> String {
+        "\"" + text.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"") + "\""
+    }
+
+    /// The [[hook]] table for a program, as blackice.toml holds it.
+    static func hookTable(_ program: HookProgram) -> [String] {
+        var lines = ["[[hook]]", "on = \"connection\"", "program = " + tomlString(program.path),
+                     "app = " + tomlString(program.identity.signingID)]
+        if let team = program.identity.teamID { lines.append("team = " + tomlString(team)) }
+        if !program.arguments.isEmpty {
+            lines.append("args = [" + program.arguments.map(tomlString).joined(separator: ", ") + "]")
+        }
+        if !program.environment.isEmpty {
+            lines.append("env = [" + program.environment.sorted { $0.key < $1.key }
+                .map { tomlString($0.key + "=" + $0.value) }.joined(separator: ", ") + "]")
+        }
+        return lines
+    }
+
+    /// The text with the table whose header is on `line` (1-based) replaced: its header and keys,
+    /// up to the next table. Comments and blank lines after its last key stay.
+    static func replacingTable(at line: Int, in text: String, with replacement: [String]) -> String {
+        var lines = text.components(separatedBy: "\n")
+        let start = line - 1
+        guard lines.indices.contains(start) else { return text }
+        var end = start
+        for index in lines.indices.dropFirst(start + 1) {
+            let trimmed = lines[index].trimmingCharacters(in: .whitespaces)
+            if trimmed.hasPrefix("[") { break }
+            if !trimmed.isEmpty, !trimmed.hasPrefix("#") { end = index }
+        }
+        lines.replaceSubrange(start...end, with: replacement)
+        return lines.joined(separator: "\n")
+    }
+
+    /// fx's settings in the agent home, with the rules of integrations/fx/README.md: ask mode, no
+    /// shell at all, no edits and no web. Other keys are kept.
     static func fxSettings(_ existing: Data?) throws -> Data {
         var object: [String: Any] = [:]
         if let existing, !existing.allSatisfy({ $0 == 0x20 || $0 == 0x0A || $0 == 0x0D || $0 == 0x09 }) {
@@ -243,7 +278,7 @@ extension CLI {
         }
         object["permission_mode"] = "ask"
         object["permission"] = [
-            "bash": ["*": "deny", "blackice approve *": "allow", "blackice deny *": "allow"],
+            "bash": ["*": "deny"],
             "edit": ["*": "deny"],
             "web_fetch": ["*": "deny"],
             "web_search": ["*": "deny"],
@@ -260,34 +295,41 @@ extension CLI {
         return false
     }
 
-    /// The stand-in writes one line per call, its arguments as the shell passed them.
-    static func testAnswer(_ recorded: String, token: String) -> TestAnswer {
-        let calls = recorded.split(whereSeparator: \.isNewline).map(String.init)
-        guard !calls.isEmpty else { return .none }
-        guard calls.count == 1 else { return .wrong("answered \(calls.count) times") }
-        let words = calls[0].split(separator: " ").map(String.init)
-        guard let index = words.firstIndex(of: "--token"), index + 1 < words.count, words[index + 1] == token else {
-            return .wrong("answered without the event's token")
-        }
-        switch words.first {
-        case "approve": return .approved
-        case "deny": return .denied
-        default: return .wrong("ran blackice \(words.first ?? "")")
+    /// The test's run read the way the daemon reads a hook: an answer only from a run that exited
+    /// with status 0 in time, and only as its last line of output.
+    static func testAnswer(_ result: HookResult, seconds: Int) -> TestAnswer {
+        switch result.answer {
+        case .success(let answer)?: return .answered(answer)
+        case .failure(.output(.noLine))?: return .none("exited with status 0 and gave no answer")
+        case .failure(.output(.unrecognized(let prefix)))?:
+            return .none("ended with a line that is not an answer (\"\(prefix)\")")
+        case .failure(.output(.outputTooLong))?:
+            return .none("printed more than \(HookAnswer.maximumOutputBytes / 1024) KiB, so its last line is not known")
+        case .failure(.exitStatus(let status))?: return .none("exited with status \(status) and gave no answer")
+        case .failure(.signaled(let signal))?: return .none("died from signal \(signal)")
+        case .failure(.deadline)?: return .none("gave no answer in \(seconds) s")
+        case nil:
+            switch result.outcome {
+            case .refused(let found): return .none("is signed as \(found) and the hook would not start it")
+            case .failedToStart(let reason): return .none("did not start: \(reason)")
+            case .dropped(let reason): return .none("did not run (\(reason.rawValue))")
+            case .exited, .signaled, .timedOut: return .none("gave no answer")
+            }
         }
     }
 
     /// The rule and hook to add to blackice.toml; empty when both are there already.
-    static func agentAddition(_ name: String, identity: SigningIdentity, hosts: [String], run: String?) -> String {
-        guard !hosts.isEmpty || run != nil else { return "" }
+    static func agentAddition(_ name: String, identity: SigningIdentity, hosts: [String], hook: HookProgram?) -> String {
+        guard !hosts.isEmpty || hook != nil else { return "" }
         var lines = ["", "# \(name) answers the connections that wait in ask mode (added by blackice agent connect \(name))."]
         if !hosts.isEmpty {
             lines += ["[[allow]]", "app = \"\(identity.signingID)\""]
             if let team = identity.teamID { lines.append("team = \"\(team)\"") }
             lines.append("hosts = [" + hosts.map { "\"\($0)\"" }.joined(separator: ", ") + "]")
         }
-        if let run {
+        if let hook {
             if !hosts.isEmpty { lines.append("") }
-            lines += ["[[hook]]", "on = \"connection\"", "run = '\(run)'"]
+            lines += hookTable(hook)
         }
         return lines.joined(separator: "\n") + "\n"
     }
@@ -314,8 +356,8 @@ extension CLI {
         return lines.joined(separator: "\n")
     }
 
-    /// The sample event fx decides in the test: an app it should approve. The token and the
-    /// deadline are fresh.
+    /// The sample event fx decides in the test: an app it should approve. The token (which fx never
+    /// sees) and the deadline are fresh.
     static func sampleAgentEvent(now: Date = Date()) throws -> HookEvent {
         try HookEvent.connection(
             app: HookEvent.App(signingID: "com.microsoft.VSCode", teamID: "UBF8T346G9",
@@ -409,9 +451,8 @@ extension CLI {
                         "then: \(retry)")
         }
         let shownExecutable = Describe.path(executable, home: interaction.home)
-        guard fitsHookLine(executable) else {
-            return fail(ExitCode.unavailable,
-                        "\(shownExecutable) has a quote, $ or backslash in its path, which a hook line cannot hold.")
+        guard fitsConfig(executable) else {
+            return fail(ExitCode.unavailable, "\(shownExecutable) has a control character in its path, which blackice.toml cannot hold.")
         }
         guard let identity = interaction.identify((executable as NSString).resolvingSymlinksInPath) else {
             return fail(ExitCode.unavailable, "\(shownExecutable) is unsigned or ad hoc signed, so a rule cannot name it.")
@@ -422,8 +463,8 @@ extension CLI {
         step("Give \(name) a home of its own")
         let paths = AgentPaths(userHome: interaction.home, profile: profile)
         let homeShown = Describe.path(paths.home, home: interaction.home)
-        guard fitsHookLine(paths.home) else {
-            return fail(ExitCode.unavailable, "\(homeShown) has a quote, $ or backslash in its path, which a hook line cannot hold.")
+        guard fitsConfig(paths.home) else {
+            return fail(ExitCode.unavailable, "\(homeShown) has a control character in its path, which blackice.toml cannot hold.")
         }
         guard let resources = machine.agentResources else {
             return fail(ExitCode.unavailable, "This blackice has no agent skills inside it. Use the blackice command from Blackice.app.")
@@ -470,49 +511,32 @@ extension CLI {
         } catch {
             return fail(ExitCode.cannotCreate, "Cannot write \(Describe.path(paths.settings, home: interaction.home)): \(describe(error))")
         }
-        stdout("  " + Style.done("There, \(name) may run blackice approve and blackice deny, and nothing else"))
+        stdout("  " + Style.done("There, \(name) may read files and nothing else: no shell, no edits, no web"))
 
-        // 3. One sample event through the hook runner, with a stand-in for blackice.
+        // 3. One sample event through the hook runner. The answer is only read, never passed on.
         step("Try it on a sample connection")
         let event: HookEvent
-        let standIn = paths.test + "/bin"
         do {
             if files.fileExists(atPath: paths.test) { try files.removeItem(atPath: paths.test) }
             try PrivateDirectory.ensure(URL(fileURLWithPath: paths.test))
-            try PrivateDirectory.ensure(URL(fileURLWithPath: standIn))
-            let script = "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$(dirname \"$0\")/answers\"\necho 'ok (blackice agent connect test)'\n"
-            try writeAtomically(Data(script.utf8), to: standIn + "/blackice", mode: 0o700)
             event = try sampleAgentEvent()
         } catch {
             return fail(ExitCode.cannotCreate, "Cannot set up the test in \(homeShown): \(describe(error))")
         }
         defer { try? files.removeItem(atPath: paths.test) }
         stdout("  \(name) is deciding whether Visual Studio Code may reach")
-        stdout("  update.code.visualstudio.com. blackice is a stand-in for this test, so")
+        stdout("  update.code.visualstudio.com. Its answer is only read for this test, so")
         stdout("  nothing is let through…")
-        let result = machine.runHook(profile.hookRun(executable, paths.home, standIn), event,
-                                     paths.test + "/work", agentTestSeconds)
-        let recorded = files.contents(atPath: standIn + "/answers").map { String(decoding: $0, as: UTF8.self) } ?? ""
+        let program = agentHook(profile, executable: executable, agentHome: paths.home, identity: identity)
+        let result = machine.runHook(Hook(program: program, line: 0), event, paths.test + "/work", agentTestSeconds)
         let seconds = Int(result.duration.rounded())
-        switch testAnswer(recorded, token: event.token) {
-        case .approved:
+        switch testAnswer(result, seconds: agentTestSeconds) {
+        case .answered(.approve):
             stdout("  " + Style.done("\(name) approved it in \(seconds) s"))
-        case .denied:
+        case .answered(.deny):
             stdout("  " + Style.done("\(name) answered in \(seconds) s (it denied it; any answer shows the wiring works)"))
-        case .none, .wrong:
-            let why: String
-            switch testAnswer(recorded, token: event.token) {
-            case .wrong(let reason): why = "\(name) \(reason)"
-            default:
-                switch result.outcome {
-                case .timedOut: why = "\(name) gave no answer in \(agentTestSeconds) s"
-                case .exited(let status): why = "\(name) exited with status \(status) and gave no answer"
-                case .failedToStart(let reason): why = "\(name) did not start: \(reason)"
-                case .signaled(let signal): why = "\(name) died from signal \(signal)"
-                case .dropped(let reason): why = "the hook did not run (\(reason.rawValue))"
-                }
-            }
-            stderr("  \(why), so blackice.toml was left as it was.")
+        case .none(let why):
+            stderr("  \(name) \(why), so blackice.toml was left as it was.")
             let tail = result.stderr.split(whereSeparator: \.isNewline).suffix(8)
             if !tail.isEmpty {
                 stderr("  \(name)'s last lines:")
@@ -532,11 +556,16 @@ extension CLI {
         // 4. The rule for its model, the hook, and time enough to answer.
         step("Add \(name) to \(shown)")
         let missing = profile.hosts.filter { config.allowRule(for: identity, host: $0) == nil }
-        let existingHook = config.hooks.first { $0.run.contains(AgentProfile.prompt) }
+        // A hook that already runs the skill stays when it is this one. Otherwise it is replaced:
+        // before 0.4.0 it was a `run` line, which no signature check covers.
+        let existingHook = config.hooks.first { $0.commandText.contains(AgentProfile.prompt) }
+        let keptHook = existingHook.map { $0.program == program && $0.on == "connection" } ?? false
         var updated = text
+        if let existingHook, !keptHook {
+            updated = replacingTable(at: existingHook.line, in: updated, with: hookTable(program))
+        }
         if !updated.isEmpty, !updated.hasSuffix("\n") { updated += "\n" }
-        updated += agentAddition(name, identity: identity, hosts: missing,
-                                 run: existingHook == nil ? profile.hookRun(executable, paths.home, appBinDirectory) : nil)
+        updated += agentAddition(name, identity: identity, hosts: missing, hook: existingHook == nil ? program : nil)
         // Three times what the test took, in whole tens: 21 s on the test Mac asks for 70.
         let neededSeconds = max(60, (seconds * 3 + 9) / 10 * 10)
         var raisedTimeout = false
@@ -550,10 +579,12 @@ extension CLI {
             stdout("  " + Style.done("A rule lets \(name) reach its model in every mode:"))
             stdout("    " + listed(missing))
         }
-        if let existingHook {
+        if let existingHook, keptHook {
             stdout("  A hook already runs the blackice skill (line \(existingHook.line)); it stays as it is.")
+        } else if let existingHook {
+            stdout("  " + Style.done("The hook on line \(existingHook.line) now starts \(name) itself, once its signature checks out"))
         } else {
-            stdout("  " + Style.done("A hook runs \(name) for each connection that waits"))
+            stdout("  " + Style.done("A hook starts \(name) for each connection that waits, once its signature checks out"))
         }
         if raisedTimeout {
             stdout("  " + Style.done("timeout_seconds is now \(min(neededSeconds, BlackiceConfig.timeoutRange.upperBound)), " +

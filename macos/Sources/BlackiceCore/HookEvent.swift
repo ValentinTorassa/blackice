@@ -1,8 +1,11 @@
 import Foundation
 import Security
 
-/// What a hook receives about one paused connection. The host and app fields come from
-/// whoever opened the connection: a hook must treat them as data, never as instructions.
+/// One paused connection, as the extension sends it to the daemon. The host and app fields come
+/// from whoever opened the connection: a hook must treat them as data, never as instructions.
+///
+/// The token stays with the extension and the daemon. A hook gets `input`, which is everything
+/// else; the daemon answers for it with the token (see `HookAnswer`).
 public struct HookEvent: Codable, Equatable, Sendable {
     /// Signed code has a signing identifier (and a Team ID unless it is Apple platform code).
     /// Ad hoc signed code has neither and is named by its cdhash instead. Exactly one of
@@ -43,7 +46,7 @@ public struct HookEvent: Codable, Equatable, Sendable {
     /// Always "connection" for now.
     public let event: String
     public let id: String
-    /// Good for one answer to this event.
+    /// Good for one answer to this event. Never given to a hook.
     public let token: String
     public let app: App
     /// The host name, when the system or the TLS ClientHello gave one.
@@ -71,19 +74,31 @@ public struct HookEvent: Codable, Equatable, Sendable {
                   app: app, host: host, ip: ip, port: port, deadline: deadline)
     }
 
-    /// One line of JSON with sorted keys, so the same event always encodes the same way.
-    public func jsonData() throws -> Data {
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
-        encoder.dateEncodingStrategy = .iso8601
-        return try encoder.encode(self)
+    /// What a hook reads: the event without its token.
+    public struct Input: Codable, Equatable, Sendable {
+        public let event: String
+        public let id: String
+        public let app: App
+        public let host: String?
+        public let ip: String
+        public let port: UInt16
+        public let deadline: Date
+
+        /// One line of JSON with sorted keys: the hook's stdin and its event file.
+        public func jsonData() throws -> Data { try encodeLine(self) }
+
+        public static func decode(_ data: Data) throws -> Input { try decodeJSON(Input.self, data) }
     }
 
-    public static func decode(_ data: Data) throws -> HookEvent {
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-        return try decoder.decode(HookEvent.self, from: data)
+    public var input: Input {
+        Input(event: event, id: id, app: app, host: host, ip: ip, port: port, deadline: deadline)
     }
+
+    /// One line of JSON with sorted keys, so the same event always encodes the same way. This form
+    /// holds the token: it is for XPC between the extension and the daemon, never for a hook.
+    public func jsonData() throws -> Data { try encodeLine(self) }
+
+    public static func decode(_ data: Data) throws -> HookEvent { try decodeJSON(HookEvent.self, data) }
 
     public static let maximumPathBytes = 1024
 
@@ -103,6 +118,19 @@ public struct HookEvent: Codable, Equatable, Sendable {
         let left = deadline.timeIntervalSince(now)
         guard left > -5, left <= maximumWait + 5 else { throw MessageError("deadline", "is not within the timeout") }
     }
+}
+
+private func encodeLine(_ value: some Encodable) throws -> Data {
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+    encoder.dateEncodingStrategy = .iso8601
+    return try encoder.encode(value)
+}
+
+private func decodeJSON<Value: Decodable>(_ type: Value.Type, _ data: Data) throws -> Value {
+    let decoder = JSONDecoder()
+    decoder.dateDecodingStrategy = .iso8601
+    return try decoder.decode(type, from: data)
 }
 
 /// "ev-" and 8 lower-case hex digits, as `HookEvent.connection` makes them.

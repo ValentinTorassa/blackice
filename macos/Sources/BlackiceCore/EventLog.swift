@@ -9,7 +9,9 @@ import Foundation
 // and its directory must be a private 0700 directory. A failed write throws: callers decide
 // how to make it visible, and nothing is dropped silently.
 //
-// The event token is never written to the log. There is no rotation yet.
+// The event token is never written to the log, and neither is a hook's stdout: an answer is
+// logged as what it means, and a line that is not one only as a short printable prefix. There is
+// no rotation yet.
 
 public enum Verdict: String, Codable, Sendable {
     case approved
@@ -33,6 +35,13 @@ public enum LogRecord: Sendable {
     /// `waited` is how long it waited for a slot; 0 when one was free.
     case hookStarted(eventID: String, hookLine: Int, pid: Int32, waited: TimeInterval = 0)
     case hookFinished(eventID: String, HookResult)
+    /// A hook that ran answered on its stdout; the daemon sends the answer to the extension.
+    case hookAnswered(eventID: String, hookLine: Int, HookAnswer)
+    /// A hook that ran gave no answer. An unrecognized line is logged only as a short prefix.
+    case hookNoAnswer(eventID: String, hookLine: Int, HookResult.NoAnswer)
+    /// The extension did not take a hook's answer: `reason` is its short code (token_spent when
+    /// another hook answered first, token_expired, ...) or "unreachable".
+    case answerRefused(eventID: String, hookLine: Int, reason: String)
     /// Written when the extension reports how a paused connection ended.
     case verdict(eventID: String, Verdict)
 }
@@ -162,12 +171,43 @@ public final class EventLog: @unchecked Sendable {
             case .failedToStart(let message):
                 fields["type"] = .string("hook_failed")
                 fields["error"] = .string(message)
+            case .refused(let found):
+                fields["type"] = .string("hook_refused")
+                fields["reason"] = .string("signature")
+                fields["found"] = .string(found)
             }
             if !result.stderr.isEmpty {
                 let cut = result.stderr.count > maximumStderrCharacters
                 fields["stderr"] = .string(cut ? String(result.stderr.prefix(maximumStderrCharacters)) : result.stderr)
                 if cut || result.stderrTruncated { fields["stderr_truncated"] = .bool(true) }
             }
+        case .hookAnswered(let eventID, let hookLine, let answer):
+            fields["type"] = .string("hook_answer")
+            fields["event"] = .string(eventID)
+            fields["hook_line"] = .int(hookLine)
+            switch answer {
+            case .approve(let seconds):
+                fields["answer"] = .string("approve")
+                fields["seconds"] = .int(seconds)
+            case .deny:
+                fields["answer"] = .string("deny")
+            }
+        case .hookNoAnswer(let eventID, let hookLine, let missing):
+            fields["type"] = .string("hook_no_answer")
+            fields["event"] = .string(eventID)
+            fields["hook_line"] = .int(hookLine)
+            fields["reason"] = .string(missing.reason)
+            switch missing {
+            case .exitStatus(let status): fields["status"] = .int(Int(status))
+            case .signaled(let signal): fields["signal"] = .int(Int(signal))
+            case .output(.unrecognized(let prefix)): fields["line_prefix"] = .string(prefix)
+            case .deadline, .output: break
+            }
+        case .answerRefused(let eventID, let hookLine, let reason):
+            fields["type"] = .string("answer_refused")
+            fields["event"] = .string(eventID)
+            fields["hook_line"] = .int(hookLine)
+            fields["reason"] = .string(reason)
         case .verdict(let eventID, let verdict):
             fields["type"] = .string("verdict")
             fields["event"] = .string(eventID)

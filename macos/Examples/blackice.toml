@@ -9,6 +9,12 @@ app = "com.example.agent"      # signing identifier
 team = "ABCDE12345"            # Team ID
 hosts = ["api.example.com"]    # exact hosts or "*.domain"; ["*"] alone allows any destination
 
+# The daemon starts program directly, and only when its code signature names app and team.
+# Its last line of output answers: "deny", or "approve 10m" (1-1440m or 1-24h).
 [[hook]]
 on = "connection"
-run = 'fx ask "Use the blackice skill to decide whether to approve the pending connection"'
+program = "/Users/me/.local/bin/fx"
+app = "com.vercel.fx"
+team = "JW6Y669B67"
+args = ["ask", "--no-save", "--no-color", "Use the blackice skill to decide whether to approve the pending connection"]
+env = ["HOME=/Users/me/.config/blackice/agent", "FX_DISABLE_KEYCHAIN=1"]

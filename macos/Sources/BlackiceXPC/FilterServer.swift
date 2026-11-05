@@ -67,6 +67,12 @@ public final class FilterServer: NSObject, NSXPCListenerDelegate {
         return daemon != nil
     }
 
+    /// True when `connection` is the registered daemon's.
+    fileprivate func isDaemon(_ connection: NSXPCConnection) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        return daemon === connection
+    }
+
     /// Sends one message to the registered daemon. False when there is no daemon or the message
     /// could not be encoded; delivery itself is not confirmed.
     @discardableResult
@@ -154,8 +160,15 @@ private final class ClientEndpoint: NSObject, FilterServiceXPC {
         let answer: AnswerReply
         do {
             let checked = try Messages.decode(AnswerRequest.self, from: request)
-            answer = server?.answer(checked)
-                ?? AnswerReply(status: .refused, reason: "unavailable", message: "the filter is stopping")
+            // Only the daemon sends a token, for a hook's answer. The CLI has no way to send one, and
+            // a token is taken only on the registered daemon's connection.
+            if checked.authorization == .token, !(connection.map { server?.isDaemon($0) == true } ?? false) {
+                answer = AnswerReply(status: .refused, reason: "not_the_daemon",
+                                     message: "only the registered daemon answers with a token")
+            } else {
+                answer = server?.answer(checked)
+                    ?? AnswerReply(status: .refused, reason: "unavailable", message: "the filter is stopping")
+            }
         } catch {
             server?.refused("answer", error)
             answer = AnswerReply(status: .refused, reason: "invalid_request", message: "the request was refused: \(error)")

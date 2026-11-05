@@ -287,8 +287,10 @@ public struct PendingReply: CheckedMessage, Equatable {
     }
 }
 
-/// `blackice approve` or `deny`. With `authorization` "token" the hook presents the event's
-/// one-time token; with "touch_id" the signed CLI has just confirmed a person with Touch ID.
+/// An answer to the extension. With `authorization` "touch_id", `blackice approve` or `deny` has
+/// just confirmed a person with Touch ID. With "token", the daemon answers for a hook with the
+/// event's one-time token; only the daemon sends these, and the extension takes them only on the
+/// connection of the daemon it registered.
 public struct AnswerRequest: CheckedMessage, Equatable {
     public enum Kind: String, Codable, Sendable { case approve, deny }
     public enum Authorization: String, Codable, Sendable {
@@ -342,7 +344,8 @@ public struct AnswerReply: CheckedMessage, Equatable {
 
     public let version: Int
     public let status: Status
-    /// A short code: approved, denied, token_unknown, token_spent, token_expired, token_mismatch.
+    /// A short code: approved, denied, token_unknown, token_spent, token_expired, token_mismatch,
+    /// not_the_daemon.
     public let reason: String
     public let message: String
     /// Events this answer resolved.

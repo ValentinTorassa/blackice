@@ -176,6 +176,17 @@ public enum CodeIdentity {
         return SigningIdentity(signingID: signingID, teamID: teamID)
     }
 
+    /// The identity of a hook program the daemon started suspended and has not reaped. A PID is
+    /// safe here, unlike in the filter: until waitpid the PID cannot name another process, and a
+    /// suspended child cannot exec anything else. The check covers the code the kernel loaded and
+    /// the file on disk it came from; a file replaced after the start no longer matches.
+    public static func resolve(childPID pid: pid_t) -> IdentityResolution {
+        var code: SecCode?
+        let attributes = [kSecGuestAttributePid as String: NSNumber(value: pid)] as CFDictionary
+        guard SecCodeCopyGuestWithAttributes(nil, attributes, [], &code) == errSecSuccess, let code else { return .unresolved }
+        return resolution(of: code)
+    }
+
     public static func currentResolution() -> IdentityResolution {
         var code: SecCode?
         guard SecCodeCopySelf([], &code) == errSecSuccess, let code else { return .unresolved }

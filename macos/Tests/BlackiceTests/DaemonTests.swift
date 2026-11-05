@@ -34,6 +34,13 @@ private final class FakeIntake: EventIntake, @unchecked Sendable {
         return next
     }
 
+    let answers = Recorder<AnswerRequest>()
+
+    func answer(_ request: AnswerRequest) async throws -> AnswerReply {
+        answers.append(request)
+        return AnswerReply(status: .done, reason: request.kind == .approve ? "approved" : "denied", message: "ok")
+    }
+
     private func nextFetch() -> DaemonConfiguration? {
         lock.lock()
         defer { lock.unlock() }
@@ -67,6 +74,28 @@ private func configuration(_ generation: UInt64, writingTo dir: URL, tag: String
     """)
 }
 
+/// One configuration with these hooks, each a `run` line.
+private func hooks(_ runs: String...) throws -> DaemonConfiguration {
+    try DaemonConfiguration(generation: 1, configText: "mode = \"ask\"\ntimeout_seconds = 5\n" + runs.map {
+        "[[hook]]\non = \"connection\"\nrun = '\($0)'\n"
+    }.joined())
+}
+
+/// Records what the daemon sends, and answers with `reply`.
+private final class Answers: @unchecked Sendable {
+    let sent = Recorder<AnswerRequest>()
+    var reply: (AnswerRequest) throws -> AnswerReply = {
+        AnswerReply(status: .done, reason: $0.kind == .approve ? "approved" : "denied", message: "ok")
+    }
+
+    var send: AnswerSender {
+        { request in
+            self.sent.append(request)
+            return try self.reply(request)
+        }
+    }
+}
+
 struct DaemonTests {
     @Test func runsTheHooksOfTheConfigurationFromTheRegistration() async throws {
         let dir = try makePrivateDirectory()
@@ -79,17 +108,129 @@ struct DaemonTests {
         await daemon.run(intake)
 
         for event in events {
-            #expect(try Data(contentsOf: dir.appendingPathComponent("g4-\(event.id).json")) == event.jsonData())
+            #expect(try Data(contentsOf: dir.appendingPathComponent("g4-\(event.id).json")) == event.input.jsonData())
         }
         #expect(intake.fetched == 0)
+        // cat prints nothing, so nothing was answered.
+        #expect(intake.answers.items.isEmpty)
         let log = try records(logURL)
         #expect(log.first?["type"] as? String == "configuration_loaded")
         #expect(log.first?["generation"] as? Int == 4 && log.first?["hooks"] as? Int == 1)
         #expect(log.first?["timeout_seconds"] as? Int == 5)
         for id in ["ev-1", "ev-2"] {
-            #expect(types(log, event: id) == ["event_received", "hook_started", "hook_exited"], "\(id)")
+            #expect(types(log, event: id) == ["event_received", "hook_started", "hook_exited", "hook_no_answer"], "\(id)")
         }
+        #expect(log.last?["reason"] as? String == "no_line")
         #expect(!(try String(contentsOf: logURL, encoding: .utf8)).contains(testToken))
+    }
+
+    /// The hook's last line is the answer. The daemon sends it for the event's app and host, with
+    /// the event's token, through the intake: the hook never had the token.
+    @Test func anAnswerGoesToTheExtensionWithTheEventsToken() async throws {
+        let dir = try makePrivateDirectory()
+        defer { removeTree(dir) }
+        let logURL = dir.appendingPathComponent("events.jsonl")
+        let daemon = Daemon(log: try EventLog(url: logURL), runner: try testRunner(dir))
+        let event = testEvent(host: "api.example.com", id: "ev-3")
+        // The hook names another app and host, and reads the event: neither changes what is answered.
+        let intake = FakeIntake([.registered(try hooks(#"grep -c token "$BLACKICE_EVENT_FILE" >&2; echo "It is fine."; echo approve 10m"#)),
+                                 .event(event, generation: 1)])
+        await daemon.run(intake)
+
+        let sent = try #require(intake.answers.items.first)
+        #expect(intake.answers.items.count == 1)
+        #expect(sent == AnswerRequest(kind: .approve, app: try #require(event.app.identity), host: "api.example.com",
+                                      seconds: 600, token: testToken))
+        #expect(sent.authorization == .token)
+        let log = try records(logURL)
+        #expect(types(log, event: "ev-3") == ["event_received", "hook_started", "hook_exited", "hook_answer"])
+        let answer = try #require(log.last)
+        #expect(answer["answer"] as? String == "approve" && answer["seconds"] as? Int == 600)
+        // grep found no token in the event file, and nothing the hook printed is in the log.
+        let exited = try #require(log.first { $0["type"] as? String == "hook_exited" })
+        #expect(exited["stderr"] as? String == "0\n")
+        let text = try String(contentsOf: logURL, encoding: .utf8)
+        #expect(!text.contains(testToken) && !text.contains("It is fine"))
+    }
+
+    @Test func aDenialIsSentToo() async throws {
+        let dir = try makePrivateDirectory()
+        defer { removeTree(dir) }
+        let daemon = Daemon(log: try EventLog(url: dir.appendingPathComponent("events.jsonl")), runner: try testRunner(dir))
+        let answers = Answers()
+        await daemon.handle(testEvent(id: "ev-4"), with: try hooks("printf \"deny\\n\\n\""), send: answers.send)
+        #expect(answers.sent.items.map(\.kind) == [.deny] && answers.sent.items[0].seconds == nil)
+        #expect(answers.sent.items[0].token == testToken && answers.sent.items[0].host == "example.com")
+    }
+
+    @Test(arguments: [
+        ("echo approve 10m; exit 1", "exit_status"),
+        ("echo Approve 10m", "unrecognized_line"),
+        ("echo approve 2d", "unrecognized_line"),
+        ("echo approve 10m; echo but maybe not", "unrecognized_line"),
+        ("true", "no_line"),
+        ("echo approve 10m; kill -SEGV $$", "signaled"),
+    ])
+    func anythingElseIsNoAnswer(_ run: String, _ reason: String) async throws {
+        let dir = try makePrivateDirectory()
+        defer { removeTree(dir) }
+        let logURL = dir.appendingPathComponent("events.jsonl")
+        let daemon = Daemon(log: try EventLog(url: logURL), runner: try testRunner(dir))
+        let answers = Answers()
+        await daemon.handle(testEvent(id: "ev-5"), with: try hooks(run), send: answers.send)
+        #expect(answers.sent.items.isEmpty, "\(run)")
+        let last = try #require(try records(logURL).last)
+        #expect(last["type"] as? String == "hook_no_answer" && last["reason"] as? String == reason, "\(run)")
+    }
+
+    @Test func aHookKilledAtTheDeadlineGaveNoAnswer() async throws {
+        let dir = try makePrivateDirectory()
+        defer { removeTree(dir) }
+        let logURL = dir.appendingPathComponent("events.jsonl")
+        let daemon = Daemon(log: try EventLog(url: logURL), runner: try testRunner(dir, grace: 0.2))
+        let answers = Answers()
+        await daemon.handle(testEvent(id: "ev-6", deadlineIn: 1), with: try hooks("echo approve 1h; sleep 30"), send: answers.send)
+        #expect(answers.sent.items.isEmpty)
+        let log = try records(logURL)
+        #expect(types(log, event: "ev-6").suffix(2) == ["hook_killed", "hook_no_answer"])
+        #expect(log.last?["reason"] as? String == "deadline")
+    }
+
+    /// With two hooks the first answer counts; the extension refuses the second, and the log says so.
+    @Test func theFirstOfTwoAnswersCounts() async throws {
+        let dir = try makePrivateDirectory()
+        defer { removeTree(dir) }
+        let logURL = dir.appendingPathComponent("events.jsonl")
+        let daemon = Daemon(log: try EventLog(url: logURL), runner: try testRunner(dir))
+        let answers = Answers()
+        let spent = Recorder<Bool>()
+        answers.reply = { request in
+            defer { spent.append(true) }
+            return spent.items.isEmpty ? AnswerReply(status: .done, reason: "denied", message: "ok")
+                : AnswerReply(status: .refused, reason: "token_spent", message: "this token was already used")
+        }
+        await daemon.handle(testEvent(id: "ev-7"), with: try hooks("echo deny", "sleep 0.5; echo approve 24h"), send: answers.send)
+        #expect(answers.sent.items.map(\.kind) == [.deny, .approve])
+        let log = try records(logURL)
+        #expect(types(log, event: "ev-7").filter { $0.hasPrefix("hook_answer") || $0 == "answer_refused" }
+                == ["hook_answer", "hook_answer", "answer_refused"])
+        #expect(log.last?["reason"] as? String == "token_spent" && log.last?["hook_line"] as? Int == 6)
+
+        // An extension that cannot be reached.
+        answers.reply = { _ in throw MessageError("connection", "is gone") }
+        await daemon.handle(testEvent(id: "ev-8"), with: try hooks("echo deny"), send: answers.send)
+        #expect(try records(logURL).last?["type"] as? String == "answer_refused")
+        #expect(try records(logURL).last?["reason"] as? String == "unreachable")
+    }
+
+    @Test func aRequestNamesTheEventsAppAndHost() throws {
+        let adHoc = HookEvent(id: "ev-0a1b2c3d", token: testToken, app: .init(signingID: nil, teamID: nil, cdhash: testCDHash, path: nil),
+                              host: "api.github.com", ip: "203.0.113.7", port: 443, deadline: Date())
+        #expect(Daemon.request(.approve(seconds: 60), for: adHoc)
+                == AnswerRequest(kind: .approve, app: .cdhash(testCDHash), host: "api.github.com", seconds: 60, token: testToken))
+        #expect(Daemon.request(.deny, for: testEvent(host: nil)) == nil)
+        let request = try #require(Daemon.request(.deny, for: testEvent()))
+        #expect(throws: Never.self) { try request.validate(now: Date()) }
     }
 
     @Test func aNewGenerationIsFetchedFromTheExtension() async throws {
@@ -107,7 +248,7 @@ struct DaemonTests {
         #expect(!fileExists(dir.appendingPathComponent("old-ev-5.json")))
         let log = try records(logURL)
         #expect(log.filter { $0["type"] as? String == "configuration_loaded" }.compactMap { $0["generation"] as? Int } == [1, 2])
-        #expect(types(log, event: "ev-5") == ["event_received", "hook_started", "hook_exited"])
+        #expect(types(log, event: "ev-5") == ["event_received", "hook_started", "hook_exited", "hook_no_answer"])
     }
 
     @Test func anEventFromAConfigurationThatIsGoneRunsNoHook() async throws {
@@ -145,7 +286,7 @@ struct DaemonTests {
         defer { removeTree(dir) }
         let logURL = dir.appendingPathComponent("events.jsonl")
         let daemon = Daemon(log: try EventLog(url: logURL), runner: try testRunner(dir))
-        await daemon.handle(testEvent(id: "ev-9"), with: try DaemonConfiguration(generation: 1, configText: "mode = \"ask\"\n"))
+        await daemon.handle(testEvent(id: "ev-9"), with: try DaemonConfiguration(generation: 1, configText: "mode = \"ask\"\n"), send: Answers().send)
         #expect(try records(logURL).compactMap { $0["type"] as? String } == ["event_received", "no_hooks"])
     }
 
@@ -162,9 +303,9 @@ struct DaemonTests {
         run = 'sleep 30'
         """)
         let started = Date()
-        await daemon.handle(testEvent(id: "ev-8", deadlineIn: 30), with: configuration)
+        await daemon.handle(testEvent(id: "ev-8", deadlineIn: 30), with: configuration, send: Answers().send)
         #expect(Date().timeIntervalSince(started) < 5)
-        #expect(try records(logURL).last?["type"] as? String == "hook_killed")
+        #expect(try records(logURL).suffix(2).compactMap { $0["type"] as? String } == ["hook_killed", "hook_no_answer"])
     }
 
     @Test func logFailuresAreReportedNotDropped() async throws {
@@ -177,9 +318,9 @@ struct DaemonTests {
         let daemon = Daemon(log: log, runner: try testRunner(dir)) { error in
             failures.append("\(error)")
         }
-        await daemon.handle(testEvent(), with: configuration)
-        // event_received, hook_started and hook_exited: three records, three reports.
-        #expect(failures.items.count == 3)
+        await daemon.handle(testEvent(), with: configuration, send: Answers().send)
+        // event_received, hook_started, hook_exited and hook_no_answer: four records, four reports.
+        #expect(failures.items.count == 4)
         #expect(failures.items.allSatisfy { $0.contains("closed") })
     }
 }

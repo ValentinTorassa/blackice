@@ -181,6 +181,33 @@ public final class XPCEventIntake: NSObject, EventIntake, EventReceiverXPC, @unc
         }
     }
 
+    /// Sends a hook's answer, with the event's token, on the daemon's own connection: the extension
+    /// takes a token only there. Only the daemon sends these.
+    public func answer(_ request: AnswerRequest) async throws -> AnswerReply {
+        guard let connection = currentConnection() else { throw FilterClientError("not connected to the network extension") }
+        let data = try Messages.encode(request)
+        return try await withCheckedThrowingContinuation { continuation in
+            let once = ResumeOnce(continuation)
+            guard let proxy = connection.remoteObjectProxyWithErrorHandler({ error in
+                let error = error as NSError
+                once.resume(throwing: FilterClientError("cannot reach the network extension (\(error.domain) \(error.code))"))
+            }) as? FilterServiceXPC else {
+                once.resume(throwing: FilterClientError("cannot make the XPC proxy"))
+                return
+            }
+            proxy.answer(data) { reply in
+                do {
+                    once.resume(returning: try Messages.decode(AnswerReply.self, from: reply))
+                } catch {
+                    once.resume(throwing: FilterClientError("the network extension sent an invalid reply: \(error)"))
+                }
+            }
+            DispatchQueue.global().asyncAfter(deadline: .now() + FilterClient.replyTimeout) {
+                once.resume(throwing: FilterClientError("the network extension did not answer in time"))
+            }
+        }
+    }
+
     private func currentConnection() -> NSXPCConnection? {
         lock.lock()
         defer { lock.unlock() }

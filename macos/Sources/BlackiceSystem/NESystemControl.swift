@@ -206,21 +206,19 @@ public final class NESystemControl: SystemControlling {
         }
     }
 
-    /// With the event's token the request goes as is: the extension checks the token. Without
-    /// one, a person confirms with Touch ID first, and the extension trusts that claim only because
-    /// the connection's code signing requirement proves it comes from this signed binary.
+    /// A person confirms with Touch ID first, and the extension trusts that claim only because the
+    /// connection's code signing requirement proves it comes from this signed binary. Hooks do not
+    /// come through here: the daemon sends their answers itself, with the event's token.
     public func answer(_ request: AnswerRequest, output: SystemOutput) -> Int32 {
         guard Self.isSignedHost(), let teamID = CodeIdentity.current()?.teamID else {
             return UnsignedSystem().answer(request, output: output)
         }
         let command = "blackice \(request.kind.rawValue)"
-        if request.authorization == .touchID {
-            guard let identity = request.identity else { return ExitCode.usage }
-            let action: ControlAction = request.kind == .approve
-                ? .approve(identity, host: request.host, seconds: request.seconds ?? 0)
-                : .deny(identity, host: request.host)
-            guard confirm(action, output) else { return ExitCode.noPermission }
-        }
+        guard request.authorization == .touchID, let identity = request.identity else { return ExitCode.usage }
+        let action: ControlAction = request.kind == .approve
+            ? .approve(identity, host: request.host, seconds: request.seconds ?? 0)
+            : .deny(identity, host: request.host)
+        guard confirm(action, output) else { return ExitCode.noPermission }
         do {
             let reply = try FilterClient(teamID: teamID).answer(request)
             if reply.status == .done { output.stdout(reply.message) } else { output.stderr("\(command): \(reply.message)") }

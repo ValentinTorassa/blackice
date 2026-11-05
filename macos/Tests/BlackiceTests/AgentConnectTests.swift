@@ -4,16 +4,18 @@ import Testing
 @testable import BlackiceCore
 
 /// A Mac with fx at /opt/fake/fx: `status` says signed in once `login` ran, and the hook "decides"
-/// by writing what fx would run into the stand-in's answers file.
+/// by printing what fx would print, its answer last.
 private final class FakeAgentMac: @unchecked Sendable {
     var signedIn: Bool
     var hookStderr = "fx: done"
+    var hookOutcome = HookResult.Outcome.exited(status: 0)
     var loginFailures = 0
     var installed = true
     var installs: [[String]] = []
     var answer: ((HookEvent) -> String)?
     var logins: [[String: String]] = []
-    var hookRuns: [String] = []
+    var hookRuns: [Hook] = []
+    var events: [HookEvent] = []
     let resources: String
 
     init(signedIn: Bool, resources: String, answer: ((HookEvent) -> String)?) {
@@ -37,15 +39,11 @@ private final class FakeAgentMac: @unchecked Sendable {
             runCaptured: { _, arguments, _ in
                 (0, arguments == ["status"] ? "[status] model=x\n[status] auth=\(self.signedIn ? "vercel" : "missing")\n" : "")
             },
-            runHook: { run, event, _, _ in
-                self.hookRuns.append(run)
-                if let answer = self.answer,
-                   let start = run.range(of: "PATH=\""), let end = run[start.upperBound...].firstIndex(of: ":") {
-                    let standIn = String(run[start.upperBound..<end])
-                    try? Data((answer(event) + "\n").utf8).write(to: URL(fileURLWithPath: standIn + "/answers"))
-                }
-                return HookResult(hookLine: 0, outcome: .exited(status: 0), stderr: self.hookStderr, stderrTruncated: false,
-                                  duration: 14)
+            runHook: { hook, event, _, _ in
+                self.hookRuns.append(hook)
+                self.events.append(event)
+                return HookResult(hookLine: 0, outcome: self.hookOutcome, stderr: self.hookStderr, stderrTruncated: false,
+                                  duration: 14, stdout: Data((self.answer?(event) ?? "").utf8))
             },
             agentResources: resources)
     }
@@ -79,8 +77,13 @@ private struct Connected {
 
 struct AgentConnectTests {
     static let fx = SigningIdentity(signingID: "com.vercel.fx", teamID: "JW6Y669B67")
-    static let approve: @Sendable (HookEvent) -> String = {
-        "approve --app com.microsoft.VSCode --team UBF8T346G9 --host update.code.visualstudio.com --for 1h --token \($0.token)"
+    static let approve: @Sendable (HookEvent) -> String = { _ in
+        "I read event.json.\n\nVisual Studio Code, signed by Microsoft, reaching its own update server.\n\napprove 1h\n"
+    }
+    static func agent(_ home: URL) -> String { home.path + "/.config/blackice/agent" }
+    static func program(_ home: URL) -> HookProgram {
+        HookProgram(path: "/opt/fake/fx", arguments: ["ask", "--no-save", "--no-color", AgentProfile.prompt],
+                    environment: ["HOME": agent(home), "FX_DISABLE_KEYCHAIN": "1"], identity: fx)
     }
 
     /// A home with blackice.toml and Blackice.app's agent resources next to it.
@@ -137,20 +140,29 @@ struct AgentConnectTests {
         let settings = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: URL(fileURLWithPath: agent + "/.fx/settings.json"))) as? [String: Any])
         #expect(settings["permission_mode"] as? String == "ask")
         let bash = try #require((settings["permission"] as? [String: Any])?["bash"] as? [String: String])
-        #expect(bash == ["*": "deny", "blackice approve *": "allow", "blackice deny *": "allow"])
+        #expect(bash == ["*": "deny"])
         for folder in [agent, agent + "/.fx", agent + "/.fx/skills"] { #expect(try permissions(URL(fileURLWithPath: folder)) == 0o700) }
         #expect(!FileManager.default.fileExists(atPath: agent + "/test"))
 
-        // The test ran the hook line with the stand-in first on PATH; the real hook has the app's.
-        #expect(mac.hookRuns.count == 1 && mac.hookRuns[0].contains("PATH=\"\(agent)/test/bin:/usr/bin"))
+        // The test ran the same hook the file now holds: fx itself, with its signature, in its home.
+        #expect(mac.hookRuns.map(\.program) == [Self.program(home)])
         let written = try String(contentsOfFile: config, encoding: .utf8)
         let loaded = try BlackiceConfig(data: Data(written.utf8))
         #expect(loaded.mode == .ask && loaded.timeoutSeconds == 60)
         #expect(written.contains("mode = \"ask\"".padding(toLength: 24, withPad: " ", startingAt: 0) + "# accept-all, ask or block-all\n"))
         for host in AgentProfile.fx.hosts { #expect(loaded.allowRule(for: Self.fx, host: host) != nil) }
         #expect(loaded.allowRule(for: SigningIdentity(signingID: "com.apple.curl", teamID: nil), host: "pypi.org") != nil)
-        #expect(loaded.hooks.map(\.run) == [CLI.fxHookRun(fx: "/opt/fake/fx", agentHome: agent)])
-        #expect(loaded.hooks[0].run.hasPrefix("FX_DISABLE_KEYCHAIN=1 PATH=\"/Applications/Blackice.app/Contents/MacOS:/usr/bin"))
+        #expect(loaded.hooks.map(\.program) == [Self.program(home)] && loaded.hooks[0].run == nil)
+        #expect(written.hasSuffix("""
+            [[hook]]
+            on = "connection"
+            program = "/opt/fake/fx"
+            app = "com.vercel.fx"
+            team = "JW6Y669B67"
+            args = ["ask", "--no-save", "--no-color", "\(AgentProfile.prompt)"]
+            env = ["FX_DISABLE_KEYCHAIN=1", "HOME=\(agent)"]
+
+            """))
         #expect(system.texts == [written] && system.agentInstalls == 1)
 
         #expect(result.stdout.contains("1 · Find fx"))
@@ -191,10 +203,22 @@ struct AgentConnectTests {
         #expect(refused.stderr.last == "  To retry: blackice agent connect fx --config ~/.config/blackice/blackice.toml")
         #expect(try String(contentsOfFile: config, encoding: .utf8) == text && system.texts.isEmpty)
 
-        let tokenless = connect(home, config: config, mac: FakeAgentMac(signedIn: true, resources: resources,
-                                                                       answer: { _ in "approve --app x --token nope" }), system: system)
-        #expect(tokenless.status == ExitCode.software)
-        #expect(tokenless.stderr.first == "  fx answered without the event's token, so blackice.toml was left as it was.")
+        // The old way of answering, or anything else that is not an answer line, is no answer.
+        let commandLine = connect(home, config: config, mac: FakeAgentMac(signedIn: true, resources: resources,
+                                                                         answer: { _ in "blackice approve --app x --for 1h" }),
+                                  system: system)
+        #expect(commandLine.status == ExitCode.software)
+        #expect(commandLine.stderr.first == "  fx ended with a line that is not an answer (\"blackice approve --app x…\"), " +
+                "so blackice.toml was left as it was.")
+        let failing = FakeAgentMac(signedIn: true, resources: resources, answer: Self.approve)
+        failing.hookOutcome = .exited(status: 1)
+        #expect(connect(home, config: config, mac: failing, system: system).stderr.first
+                == "  fx exited with status 1 and gave no answer, so blackice.toml was left as it was.")
+        let replaced = FakeAgentMac(signedIn: true, resources: resources, answer: Self.approve)
+        replaced.hookOutcome = .refused(found: "invalid_signature")
+        #expect(connect(home, config: config, mac: replaced, system: system).stderr.first
+                == "  fx is signed as invalid_signature and the hook would not start it, so blackice.toml was left as it was.")
+        #expect(try String(contentsOfFile: config, encoding: .utf8) == text && system.texts.isEmpty)
 
         // Saying no to ask mode loads it as it is.
         let declined = connect(home, config: config, mac: FakeAgentMac(signedIn: true, resources: resources, answer: Self.approve),
@@ -356,9 +380,48 @@ struct AgentConnectTests {
         #expect(try CLI.parse(["agent", "connect", "fx", "--config", "/x.toml"]) == .connectAgent(name: "fx", configPath: "/x.toml"))
     }
 
+    /// A hook from 0.3, a `run` line that no signature check covers, is replaced with fx's program
+    /// hook; the rest of the file stays as it was.
+    @Test func aRunHookFromBeforeIsReplaced() throws {
+        let (home, config, resources) = try setUp("""
+            mode = "ask"
+            timeout_seconds = 60
+
+            # fx answers the connections that wait in ask mode (added by blackice agent connect fx).
+            [[allow]]
+            app = "com.vercel.fx"
+            team = "JW6Y669B67"
+            hosts = ["ai-gateway.vercel.sh", "vercel.com", "api.vercel.com"]
+
+            [[hook]]
+            on = "connection"
+            run = 'FX_DISABLE_KEYCHAIN=1 PATH="/Applications/Blackice.app/Contents/MacOS:/usr/bin:/bin:/usr/sbin:/sbin" HOME="/x" "/opt/fake/fx" ask --no-save --no-color "\(AgentProfile.prompt)"'
+            # a note about the next rule
+
+            [[allow]]
+            app = "com.apple.curl"
+            hosts = ["pypi.org"]
+            """)
+        defer { removeTree(home) }
+        let system = Loading()
+        let result = connect(home, config: config, mac: FakeAgentMac(signedIn: true, resources: resources, answer: Self.approve),
+                             system: system)
+        #expect(result.status == 0, "\(result.stderr)")
+        #expect(result.stdout.contains("  ✓ The hook on line 10 now starts fx itself, once its signature checks out"))
+        let written = try String(contentsOfFile: config, encoding: .utf8)
+        let loaded = try BlackiceConfig(data: Data(written.utf8))
+        #expect(loaded.hooks.map(\.program) == [Self.program(home)] && loaded.hooks[0].line == 10)
+        #expect(loaded.allow.count == 2 && !written.contains("run = "))
+        #expect(written.contains("env = [\"FX_DISABLE_KEYCHAIN=1\", \"HOME=\(Self.agent(home))\"]\n# a note about the next rule\n\n[[allow]]"))
+    }
+
     @Test func pieces() throws {
-        #expect(CLI.fitsHookLine("/Users/Jane Doe/.local/bin/fx"))
-        for bad in ["fx", "/a\"b", "/a$b", "/a`b", "/a\\b", "/a'b", "/a\nb"] { #expect(!CLI.fitsHookLine(bad)) }
+        #expect(CLI.fitsConfig("/Users/Jane \"Doe\" $HOME/.local/bin/fx"))
+        for bad in ["fx", "/a\nb", "/a\u{7F}b", "/a\u{85}b"] { #expect(!CLI.fitsConfig(bad)) }
+        #expect(CLI.tomlString(#"/a "b" \c"#) == #""/a \"b\" \\c""#)
+        #expect(CLI.replacingTable(at: 2, in: "a = 1\n[[hook]]\nx = 1\n\n# c\n[[allow]]\n", with: ["[[hook]]", "y = 2"])
+                == "a = 1\n[[hook]]\ny = 2\n\n# c\n[[allow]]\n")
+        #expect(CLI.replacingTable(at: 2, in: "a = 1\n[[hook]]\nx = [\n  1,\n]\n", with: ["Z"]) == "a = 1\nZ\n")
 
         let merged = try #require(JSONSerialization.jsonObject(with: CLI.fxSettings(Data(#"{"model":"m","permission_mode":"auto"}"#.utf8))) as? [String: Any])
         #expect(merged["model"] as? String == "m" && merged["permission_mode"] as? String == "ask")
@@ -368,22 +431,29 @@ struct AgentConnectTests {
         #expect(!CLI.fxSignedIn("[status] auth=missing\n") && !CLI.fxSignedIn("nothing"))
         #expect(CLI.fxSignedIn("[status] model=x\n[status] auth=vercel"))
 
-        #expect(CLI.testAnswer("", token: testToken) == .none)
-        #expect(CLI.testAnswer("deny --app a --host h --token \(testToken)\n", token: testToken) == .denied)
-        #expect(CLI.testAnswer("approve --token \(testToken)\napprove --token \(testToken)\n", token: testToken) == .wrong("answered 2 times"))
-        #expect(CLI.testAnswer("pending --token \(testToken)", token: testToken) == .wrong("ran blackice pending"))
+        func ran(_ outcome: HookResult.Outcome, _ stdout: String) -> HookResult {
+            HookResult(hookLine: 0, outcome: outcome, stderr: "", stderrTruncated: false, duration: 1, stdout: Data(stdout.utf8))
+        }
+        #expect(CLI.testAnswer(ran(.exited(status: 0), "deny\n"), seconds: 120) == .answered(.deny))
+        #expect(CLI.testAnswer(ran(.exited(status: 0), "approve 10m"), seconds: 120) == .answered(.approve(seconds: 600)))
+        #expect(CLI.testAnswer(ran(.exited(status: 0), ""), seconds: 120) == .none("exited with status 0 and gave no answer"))
+        #expect(CLI.testAnswer(ran(.timedOut(signal: 15), "deny"), seconds: 120) == .none("gave no answer in 120 s"))
+        #expect(CLI.testAnswer(ran(.dropped(.queueFull), ""), seconds: 120) == .none("did not run (queue_full)"))
 
         #expect(CLI.settingRootKey("# c\nmode = \"block-all\"\n[[allow]]\nmode = 1\n", "mode", to: "\"ask\"")
             == "# c\nmode = \"ask\"\n[[allow]]\nmode = 1\n")
         #expect(CLI.settingRootKey("# c\n\n[[allow]]\n", "timeout_seconds", to: "60") == "# c\ntimeout_seconds = 60\n\n[[allow]]\n")
         #expect(CLI.listed(["a"]) == "a" && CLI.listed(["a", "b", "c"]) == "a, b and c")
-        #expect(CLI.agentAddition("fx", identity: Self.fx, hosts: [], run: nil).isEmpty)
+        #expect(CLI.agentAddition("fx", identity: Self.fx, hosts: [], hook: nil).isEmpty)
 
         let event = try CLI.sampleAgentEvent()
         try event.validate(now: Date(), maximumWait: TimeInterval(CLI.agentTestSeconds))
-        // The hook line fits in blackice.toml as the parser reads it.
-        let run = CLI.fxHookRun(fx: "/Users/Jane Doe/.local/bin/fx", agentHome: "/Users/Jane Doe/.config/blackice/agent")
-        let config = try BlackiceConfig(data: Data(("mode = \"ask\"\n" + CLI.agentAddition("fx", identity: Self.fx, hosts: ["vercel.com"], run: run)).utf8))
-        #expect(config.hooks.first?.run == run && config.allowRule(for: Self.fx, host: "vercel.com") != nil)
+        // The hook reads back from blackice.toml as it was written, quotes and backslashes included.
+        let program = CLI.agentHook(.fx, executable: "/Users/Jane \"Doe\"/.local/bin/fx",
+                                    agentHome: "/Users/Jane \"Doe\"/back\\slash/.config/blackice/agent", identity: Self.fx)
+        let config = try BlackiceConfig(data: Data(("mode = \"ask\"\n" + CLI.agentAddition("fx", identity: Self.fx, hosts: ["vercel.com"],
+                                                                                          hook: program)).utf8))
+        #expect(config.hooks.first?.program == program && config.allowRule(for: Self.fx, host: "vercel.com") != nil)
+        #expect(program.environment == ["HOME": "/Users/Jane \"Doe\"/back\\slash/.config/blackice/agent", "FX_DISABLE_KEYCHAIN": "1"])
     }
 }
