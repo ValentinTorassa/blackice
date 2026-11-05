@@ -71,8 +71,8 @@ Approve only when the connection is clearly what this app is for. Look at:
 - **A host that is an IP address** (`host` is the same as `ip`). Suspicious by default:
   ordinary apps connect by name, and a bare address is how much malware reaches its server.
   Approve only when the app is known to connect by address, and the address fits:
-  - a VPN client or its network extension reaching its servers or its own DNS address;
-  - `ssh`, `scp`, `sftp`, `mosh` or a remote desktop app reaching a private address, the kind
+  - a VPN client or its network extension reaching its servers;
+  - `ssh`, `scp`, `sftp` or a remote desktop app reaching a private address, the kind
     on the user's own networks: `10.x.x.x`, `172.16.x.x` to `172.31.x.x`, `192.168.x.x`,
     `100.64.x.x` to `100.127.x.x` (Tailscale and other overlay networks use these) or an IPv6
     address starting with `fd`;

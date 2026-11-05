@@ -128,7 +128,7 @@ $ blackice validate ~/.config/blackice/blackice.toml
 For ask mode, add a `[[hook]]` that asks an agent and a rule that lets the agent reach its model provider, bound to its
 signature; [`integrations/fx/README.md`](../integrations/fx/README.md) has the one for fx. Before turning ask mode on,
 read the open problems in [`plan.md`](plan.md): with no rules for them, the Mac's own services wait and are dropped,
-and Tailscale's DNS stops name lookups in block-all and makes them wait for answers in ask mode.
+and Tailscale's DNS stops name lookups in ask and block-all.
 
 ## 4. Start the filter
 

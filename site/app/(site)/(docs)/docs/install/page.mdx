@@ -92,7 +92,7 @@ $ mkdir -p ~/.config/blackice
 $ blackice validate ~/.config/blackice/blackice.toml
 ```
 
-For ask mode, add a `[[hook]]` that asks an agent and a rule that lets the agent reach its model provider, bound to its signature; the repository's [fx integration](https://github.com/ValentinTorassa/blackice/blob/main/integrations/fx/README.md) has the one for fx. [Configuration](/docs/configuration) covers every key. Before turning ask mode on, read the open problems in the [plan](https://github.com/ValentinTorassa/blackice/blob/main/docs/plan.md): a service missing from the built-in list of macOS services waits and is dropped, and Tailscale's DNS stops name lookups in block-all, and makes them wait for answers in ask mode, unless a rule allows Tailscale's extension.
+For ask mode, add a `[[hook]]` that asks an agent and a rule that lets the agent reach its model provider, bound to its signature; the repository's [fx integration](https://github.com/ValentinTorassa/blackice/blob/main/integrations/fx/README.md) has the one for fx. [Configuration](/docs/configuration) covers every key. Before turning ask mode on, read the open problems in the [plan](https://github.com/ValentinTorassa/blackice/blob/main/docs/plan.md): a service missing from the built-in list of macOS services waits and is dropped, and Tailscale's DNS stops name lookups in ask and block-all unless a rule allows Tailscale's extension.
 
 ## 4. Start the filter
 

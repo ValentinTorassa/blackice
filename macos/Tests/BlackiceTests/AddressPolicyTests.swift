@@ -98,6 +98,7 @@ struct LoopbackPolicyTests {
         #expect(FilterPolicy.eventHost(cli, serverName: nil) == "127.0.0.1")
         #expect(decide(flow(probe, port: 49160, address: "::1"), ask) == asked)
         #expect(decide(cli, ask, context(approved: [key(probe, "127.0.0.1")])) == .allow(reason: "approval;address"))
+        #expect(decide(flow(probe, port: 5353, tcp: false, address: "127.0.0.1"), ask) == .drop(reason: "no_host"))
         // A host name goes through the host and address check, as for any host.
         #expect(decide(flow(probe, "localhost", port: 8080, address: "127.0.0.1"), ask) == .resolveHost("localhost"))
         // An address rule can name loopback itself.
@@ -118,13 +119,15 @@ struct LoopbackPolicyTests {
 }
 
 struct AddressOnlyPolicyTests {
-    @Test func askModeAsksAboutAFlowWithNoNameByItsAddress() throws {
+    @Test func askModeAsksAboutATCPFlowWithNoNameByItsAddress() throws {
         let ask = try snapshot(.ask)
         let cases: [(FlowFacts, FlowVerdict, String?)] = [
             // ssh to a Tailscale address, with no rule for this app.
             (flow(probe), asked, tailnet),
-            (flow(probe, port: 41641, tcp: false), asked, tailnet),
             (flow(adHoc, port: 8080, address: "198.51.100.4"), asked, "198.51.100.4"),
+            // Not multicast: just outside 224.0.0.0/4.
+            (flow(probe, address: "223.255.255.255"), asked, "223.255.255.255"),
+            (flow(probe, address: "240.0.0.1"), asked, "240.0.0.1"),
             (flow(probe, address: "FD7A:115C:A1E0:0:0:0:0:1"), asked, "fd7a:115c:a1e0::1"),
             (flow(probe, address: "::ffff:198.51.100.4"), asked, "198.51.100.4"),
             // A link-local address is asked about on its interface only.
@@ -137,8 +140,6 @@ struct AddressOnlyPolicyTests {
              "valensrv.example.ts.net"),
             // TCP on 443 still reads the server name first.
             (flow(probe, port: 443), .readServerName, tailnet),
-            // QUIC is not asked about: its name is not read, and apps retry over TCP.
-            (flow(probe, port: 443, tcp: false), .drop(reason: "no_host"), tailnet),
             (flow(probe, port: nil), .drop(reason: "no_host"), tailnet),
             (flow(probe, address: nil), .drop(reason: "no_host"), nil),
             (flow(.unresolved), .drop(reason: "unknown_identity"), tailnet),
@@ -147,10 +148,44 @@ struct AddressOnlyPolicyTests {
             #expect(decide(facts, ask) == expected, "\(facts)")
             #expect(FilterPolicy.eventHost(facts, serverName: nil) == host, "\(facts)")
         }
-        // The whole timeout for TCP off the TLS port, the short hold for UDP.
+        // The whole timeout, off the TLS port.
         #expect(FilterPolicy.holdLimit(flow(probe), afterServerName: false) == nil)
-        #expect(FilterPolicy.holdLimit(flow(probe, port: 41641, tcp: false), afterServerName: false)
-                == FilterPolicy.connectedHoldSeconds)
+    }
+
+    @Test func udpAndMulticastWithNoNameRaiseNoEvent() throws {
+        // WebRTC, games, discovery and QUIC would flood the hooks with events that get denied anyway.
+        let ask = try snapshot(.ask)
+        for (port, address) in [(UInt16(41641), tailnet), (443, "198.51.100.4"), (3478, "2001:db8::1"), (53, "100.100.100.100")] {
+            #expect(decide(flow(probe, port: port, tcp: false, address: address), ask) == .drop(reason: "no_host"),
+                    "\(address):\(port)")
+            #expect(decide(flow(adHoc, port: port, tcp: false, address: address), ask) == .drop(reason: "no_host"))
+        }
+        // Multicast and broadcast never raise one, over TCP or UDP.
+        for address in ["224.0.0.251", "239.255.255.250", "255.255.255.255", "ff02::fb", "ff05::c"] {
+            for tcp in [true, false] {
+                #expect(decide(flow(probe, port: 1900, tcp: tcp, address: address), ask) == .drop(reason: "no_host"),
+                        "\(address) tcp \(tcp)")
+            }
+        }
+        // An approval of the address does not reach UDP either.
+        let approved = context(approved: [key(probe, tailnet)])
+        #expect(decide(flow(probe, port: 41641, tcp: false), ask, approved) == .drop(reason: "no_host"))
+        // A UDP flow with a name is asked about by its name, as before.
+        #expect(decide(flow(probe, port: 41641, tcp: false, dnsNames: ["valensrv.example.ts.net"]), ask)
+                == .ask(reason: "no_rule", addressMatches: true))
+        // Address rules, `*` and loopback still allow UDP.
+        #expect(decide(flow(ssh, port: 41641, tcp: false), ask) == .allow(reason: "rule_line_3;address"))
+        #expect(decide(flow(probe, port: 41641, tcp: false, address: "127.0.0.1"), ask) == .allow(reason: "loopback"))
+    }
+
+    @Test func multicastAndBroadcastAddresses() {
+        for text in ["224.0.0.0", "224.0.0.251", "239.255.255.255", "255.255.255.255", "ff00::", "ff02::fb",
+                     "ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff", "::ffff:239.255.255.250"] {
+            #expect(IPAddress(text)?.isMulticastOrBroadcast == true, "\(text)")
+        }
+        for text in ["223.255.255.255", "240.0.0.0", "255.255.255.254", "10.0.0.255", "fe80::1%1", "fd00::1", "::"] {
+            #expect(IPAddress(text)?.isMulticastOrBroadcast == false, "\(text)")
+        }
     }
 
     @Test func blockAllStillDropsAFlowWithNoName() throws {
@@ -168,9 +203,8 @@ struct AddressOnlyPolicyTests {
         let approved = context(approved: [key(probe, tailnet), key(adHoc, "fd7a:115c:a1e0::1")],
                                answers: ["valensrv.example.ts.net": [tailnet]])
         #expect(decide(flow(probe), ask, approved) == .allow(reason: "approval;address"))
-        // Any port, as for a host name, and UDP too; no lookup is made.
+        // Any port, as for a host name; no lookup is made.
         #expect(decide(flow(probe, port: 2222), ask, approved) == .allow(reason: "approval;address"))
-        #expect(decide(flow(probe, port: 41641, tcp: false), ask, approved) == .allow(reason: "approval;address"))
         #expect(decide(flow(adHoc, address: "fd7a:115c:a1e0::1"), ask, approved) == .allow(reason: "approval;address"))
         // Another address, another app, or another build: asked about.
         #expect(decide(flow(probe, address: "100.66.32.76"), ask, approved) == asked)

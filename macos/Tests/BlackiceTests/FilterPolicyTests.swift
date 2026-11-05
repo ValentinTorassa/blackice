@@ -181,11 +181,12 @@ struct FilterPolicyTests {
             (flow(.unresolved, "example.org"), context(answers: ["example.org": here]), .drop(reason: "unknown_identity")),
             (flow(.invalidSignature, "example.org"), context(answers: ["example.org": here]), .drop(reason: "invalid_signature")),
             (flow(agent, "example.org", address: nil), context(), .drop(reason: "no_address")),
-            // Without a host: read the TLS server name for any app; otherwise ask about the address.
-            // QUIC (UDP on 443) is not asked about: apps retry over TCP, where the name is read.
+            // Without a host: read the TLS server name for any app; otherwise ask about a TCP
+            // flow's address. UDP with no name raises no event.
             (flow(probe, nil), context(), .readServerName),
             (flow(adHoc, nil), context(), .readServerName),
             (flow(probe, nil, tcp: false), context(), .drop(reason: "no_host")),
+            (flow(probe, nil, port: 80, tcp: false), context(), .drop(reason: "no_host")),
             (flow(probe, nil, port: 80), context(), .ask(reason: "no_rule;address", addressMatches: true)),
             (flow(probe, nil, port: 80), context(approved: [key(probe, flowAddress)]), .allow(reason: "approval;address")),
             (flow(probe, "bad host"), context(), .drop(reason: "hostname_invalid")),

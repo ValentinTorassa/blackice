@@ -93,6 +93,12 @@ public struct IPAddress: Hashable, Sendable, CustomStringConvertible {
         bytes.count == 4 ? bytes[0] == 127 : bytes == [UInt8](repeating: 0, count: 15) + [1]
     }
 
+    /// 224.0.0.0/4, 255.255.255.255 and ff00::/8. A subnet's broadcast address (10.0.0.255 on a
+    /// /24, say) is not among them: telling it apart needs the interface's netmask.
+    public var isMulticastOrBroadcast: Bool {
+        bytes.count == 4 ? bytes[0] & 0xF0 == 0xE0 || bytes == [255, 255, 255, 255] : bytes[0] == 0xFF
+    }
+
     /// fe80::/10.
     public var isLinkLocal: Bool { Self.isLinkLocal(bytes) }
 

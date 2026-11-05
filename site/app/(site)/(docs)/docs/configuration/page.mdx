@@ -66,7 +66,7 @@ TeamIdentifier=W5364U7YZB
 
 It is meant for two kinds of app.
 
-**VPN clients and DNS proxies.** They connect by address. With Tailscale's DNS on, macOS sends its lookups to 100.100.100.100, and Tailscale's network extension forwards them with its own sockets. Without a rule, block-all drops those connections because they have no host name, so names stop resolving and Tailscale goes offline, and ask mode asks about each of them by its address, so lookups wait for answers. This rule is for the standalone Tailscale build, downloaded from tailscale.com; other builds may use another identifier, so check yours with `codesign -dv`.
+**VPN clients and DNS proxies.** They connect by address. With Tailscale's DNS on, macOS sends its lookups to 100.100.100.100, and Tailscale's network extension forwards them with its own sockets. Without a rule, blackice drops those connections because they have no host name, so in ask and block-all names stop resolving and Tailscale goes offline. This rule is for the standalone Tailscale build, downloaded from tailscale.com; other builds may use another identifier, so check yours with `codesign -dv`.
 
 ```toml
 [[allow]]
@@ -105,7 +105,7 @@ hosts = ["100.64.0.0/10", "fd7a:115c:a1e0::/48", "10.0.0.5", "*.ts.net"]
 
 With `loopback = true`, the default, connections to 127.0.0.0/8 and ::1 pass in every mode, before any rule, and the log says `loopback`. Command-line tools often talk to a service on the same Mac this way, such as the Tailscale CLI to the Tailscale app.
 
-`loopback = false` filters them like any other connection: ask mode asks about them, by address when they have no host name, and block-all needs a rule for them, such as `hosts = ["127.0.0.1"]`.
+`loopback = false` filters them like any other connection: ask mode asks about them, a TCP one with no host name by its address, and block-all needs a rule for them, such as `hosts = ["127.0.0.1"]`.
 
 <Callout>
 
@@ -115,11 +115,11 @@ With `loopback = true`, the default, connections to 127.0.0.0/8 and ::1 pass in 
 
 ## Connections with no name
 
-Most connections carry a name: the host name the app asked for, a name from the DNS answers the Mac received for that address, or the TLS server name on port 443. In ask mode a connection with none of these, such as `ssh` to `100.66.32.75`, is asked about by its address: the event's `host` is the address, the same text as `ip`.
+Most connections carry a name: the host name the app asked for, a name from the DNS answers the Mac received for that address, or the TLS server name on port 443. In ask mode a TCP connection with none of these, such as `ssh` to `100.66.32.75`, is asked about by its address: the event's `host` is the address, the same text as `ip`.
 
 - An approval of the address, `blackice approve --app com.apple.ssh --host 100.66.32.75 --for 1h` or a hook's answer to that event, covers only connections from that app to exactly that address that have no name. A connection with a name is asked about by its name.
 - On port 443 blackice reads the TLS server name first. A client that connects to an address sends none, and the connection is then asked about by its address.
-- QUIC, on UDP port 443, is not asked about: blackice does not read its name, and apps try again over TCP.
+- UDP with no name (WebRTC, games, network discovery, QUIC) is dropped with no event, as are connections to multicast and broadcast addresses: they would fill the queue of questions with ones that get denied anyway. An address entry, `*` or loopback still lets UDP through.
 - Block-all drops connections with no name unless an address entry or `*` covers them.
 
 ## When blackice drops a connection

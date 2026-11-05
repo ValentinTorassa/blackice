@@ -11,8 +11,8 @@ import Foundation
 //   or address check, and an address or CIDR entry allows the addresses it holds, by address;
 // - ask allows what block-all allows, plus what a current approval names (with the same address
 //   check), and pauses the rest to ask. Ad hoc signed code has no signing identity, so in ask
-//   mode it is named by its cdhash; rules never name it. A flow with no name at all is asked
-//   about by its address, and an approval for that address allows it.
+//   mode it is named by its cdhash; rules never name it. A TCP flow with no name at all is
+//   asked about by its address, and an approval for that address allows it; a UDP one is not.
 // A host or address that does not check out is "no rule or approval matches", never an error.
 // In every mode, inbound flows pass (only outbound connections are filtered) and Apple's
 // resolver may reach port 53, since rules name hosts and need name lookups to work. Loopback
@@ -163,7 +163,7 @@ public enum FilterPolicy {
             return verdict
         }
         // No host name from the system. Ask mode reads the TLS server name to have a host to ask
-        // about, and asks about the address when there is none to read; block-all reads it only
+        // about, and asks about a TCP flow's address when there is none to read; block-all reads it only
         // when a rule or the Apple services table could match this app.
         // The system resolver gave the address for exactly one name: decide on that name now.
         if let name = flow.dnsName, let verdict = dnsNamed(identity, name: name, tls: tls, snapshot, context) {
@@ -257,15 +257,16 @@ public enum FilterPolicy {
         return .allow(reason: "rule_line_\(rule.line);address")
     }
 
-    /// Ask mode, a flow with no name: no host name from the system, not exactly one name from
+    /// Ask mode, a TCP flow with no name: no host name from the system, not exactly one name from
     /// DNS answers, and no server name to read. It is asked about by its address, which is its
-    /// destination, so no lookup applies and an approval for that address allows it. Not asked
-    /// about, and dropped as before: QUIC (UDP on port 443), whose name blackice cannot read and
-    /// which apps retry over TCP, where the server name is read; a link-local address whose
-    /// interface is not known, which could be any host on any link; and a flow with no port.
+    /// destination, so no lookup applies and an approval for that address allows it. Dropped as
+    /// before, with no event: UDP (WebRTC, games, discovery and QUIC would flood the hooks with
+    /// events that get denied anyway; address rules and `*` allow it); a multicast or broadcast
+    /// destination; a link-local address whose interface is not known, which could be any host on
+    /// any link; and a flow with no port.
     private static func byAddress(_ identity: AppIdentity, _ flow: FlowFacts, _ context: PolicyContext) -> FlowVerdict {
-        guard let address = flow.remoteAddress, address.isCheckable, flow.port != nil,
-              flow.tcp || flow.port != tlsPort else { return .drop(reason: "no_host") }
+        guard flow.tcp, let address = flow.remoteAddress, address.isCheckable, !address.isMulticastOrBroadcast,
+              flow.port != nil else { return .drop(reason: "no_host") }
         if context.approved(identity, address.description) { return .allow(reason: "approval;address") }
         return .ask(reason: "no_rule;address", addressMatches: true)
     }
