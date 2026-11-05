@@ -14,7 +14,8 @@ public struct MenuEntry: Equatable, Sendable {
         case separator
         /// A connection that waits, with Allow and Deny in its submenu.
         case waiting(WaitingEvent)
-        case recent
+        /// One line, "Recent: " and the latest decision; the last few in its submenu.
+        case recent([RecentLine])
         /// The Mode submenu: Accept All, Ask with each agent or you answering, Block All.
         case modes([ModeChoice])
         case command(MenuCommand)
@@ -23,7 +24,7 @@ public struct MenuEntry: Equatable, Sendable {
     public var kind: Kind
     public var key: String
     public var title: String
-    /// After the title, in the secondary color: the seconds left, or how long ago.
+    /// After the title on the same line, in the secondary color: the seconds left, or how long ago.
     public var detail: String?
     public var enabled: Bool
     public var checked: Bool
@@ -60,8 +61,14 @@ public struct WaitingEvent: Equatable, Sendable {
     public let lines: [String]
 }
 
+/// A decision on one line: "Denied Python → oauth2.googleapis.com", and "4m".
+public struct RecentLine: Equatable, Sendable {
+    public let title: String
+    public let detail: String?
+}
+
 public enum MenuCommand: Equatable, Sendable {
-    case openConfig, revealLog, documentation, openAtLogin, stop, quit
+    case stop, quit
 }
 
 /// An answer from a waiting connection's submenu: what `blackice approve --for` or `blackice deny`
@@ -99,18 +106,11 @@ public struct MenuContext: Equatable, Sendable {
     public var recent: [RecentDecision]
     /// When the daemon last refused a hook program whose signature did not match.
     public var hookRefused: Date?
-    public var login: LoginState
-    public var configExists: Bool
-    public var logExists: Bool
 
-    public init(version: String?, recent: [RecentDecision] = [], hookRefused: Date? = nil, login: LoginState,
-                configExists: Bool, logExists: Bool) {
+    public init(version: String?, recent: [RecentDecision] = [], hookRefused: Date? = nil) {
         self.version = version
         self.recent = recent
         self.hookRefused = hookRefused
-        self.login = login
-        self.configExists = configExists
-        self.logExists = logExists
     }
 }
 
@@ -129,7 +129,6 @@ public enum MenuPresentation {
     public static let recentLimit = 5
     /// How long a refused hook stays in the menu.
     public static let refusedHookWindow: TimeInterval = 3600
-    public static let docs = "https://blackice-macos.vercel.app/docs"
 
     /// Full in ask and block-all while the filter answers, and when it answers that it holds no
     /// configuration, since then nothing new passes; dimmed when blackice is off, lets everything
@@ -214,21 +213,17 @@ public enum MenuPresentation {
         }
     }
 
-    /// The menu, top to bottom, as it reads at `now`.
+    /// The menu, top to bottom, as it reads at `now`: only what needs a look or a choice. A line
+    /// shows up when something is wrong; the version closes it.
     public static func menu(_ snapshot: MenuSnapshot, _ context: MenuContext, now: Date = Date()) -> [MenuEntry] {
         var entries: [MenuEntry] = []
         let (title, notes) = header(snapshot)
         entries.append(MenuEntry(.title, key: "title", title: title))
         for (index, note) in notes.enumerated() { entries.append(MenuEntry(.note, key: "note.\(index)", title: note)) }
-        entries.append(MenuEntry(.note, key: "version",
-                                 title: context.version.map { "blackice \($0)" } ?? "blackice, a build outside Blackice.app"))
 
-        if let pending = snapshot.pending, snapshot.mode == .ask || !pending.events.isEmpty {
+        if let pending = snapshot.pending, !pending.events.isEmpty {
             entries.append(MenuEntry(.separator, key: "waiting.separator", title: ""))
             entries.append(MenuEntry(.section, key: "waiting.section", title: "Waiting"))
-            if pending.events.isEmpty {
-                entries.append(MenuEntry(.note, key: "waiting.none", title: "Nothing waits for an answer"))
-            }
             for event in pending.events.prefix(waitingLimit) {
                 guard let entry = waiting(event, readAt: snapshot.readAt, now: now) else { continue }
                 entries.append(entry)
@@ -239,29 +234,26 @@ public enum MenuPresentation {
             }
         }
 
-        if !context.recent.isEmpty {
-            entries.append(MenuEntry(.separator, key: "recent.separator", title: ""))
-            entries.append(MenuEntry(.section, key: "recent.section", title: "Recent decisions"))
-            for (index, decision) in context.recent.prefix(recentLimit).enumerated() {
-                let (title, detail) = recent(decision, now: now)
-                entries.append(MenuEntry(.recent, key: "recent.\(index)", title: title, detail: detail))
-            }
-        }
-
         entries.append(MenuEntry(.separator, key: "mode.separator", title: ""))
+        let recents = context.recent.prefix(recentLimit).map { decision -> RecentLine in
+            let (title, detail) = recent(decision, now: now)
+            return RecentLine(title: title, detail: detail)
+        }
+        if let latest = recents.first {
+            entries.append(MenuEntry(.recent(recents), key: "recent", title: "Recent: " + latest.title, detail: latest.detail,
+                                     enabled: true))
+        }
         // `blackice mode` waits until the filter names the new configuration, so it needs a filter
         // that answers.
         let modesEnabled = snapshot.isOn && snapshot.reachable
         entries.append(MenuEntry(.modes(modeChoices(snapshot, enabled: modesEnabled)), key: "mode", title: "Mode",
                                  enabled: modesEnabled))
-        if case .on(_, let hooks) = snapshot.filter {
-            let (line, hint) = hooksLine(hooks: hooks, daemonRunning: snapshot.daemonRunning)
+        if case .on(_, let hooks) = snapshot.filter, let line = hooksLine(hooks: hooks, daemonRunning: snapshot.daemonRunning) {
             entries.append(MenuEntry(.note, key: "hooks", title: line))
-            if let hint { entries.append(MenuEntry(.note, key: "hooks.hint", title: hint)) }
         }
         if let refused = context.hookRefused, now.timeIntervalSince(refused) < refusedHookWindow {
-            entries.append(MenuEntry(.note, key: "hooks.refused", title: "A hook did not run: its signature did not match",
-                                     detail: ago(refused, now: now)))
+            entries.append(MenuEntry(.note, key: "hooks.refused", title: "A hook's signature did not match",
+                                     detail: short(refused, now: now)))
         }
         // `blackice stop`, with Touch ID: the quit item below leaves the filter running, and
         // accept-all still has it read every connection. Off, the header says how to start it.
@@ -269,30 +261,14 @@ public enum MenuPresentation {
             entries.append(MenuEntry(.command(.stop), key: "stop", title: "Stop Filtering…", enabled: true))
         }
 
-        entries.append(MenuEntry(.separator, key: "files.separator", title: ""))
-        entries.append(MenuEntry(.command(.openConfig), key: "config", title: "Open blackice.toml",
-                                 enabled: context.configExists))
-        entries.append(MenuEntry(.command(.revealLog), key: "log", title: "Show Event Log in Finder",
-                                 enabled: context.logExists))
-        entries.append(MenuEntry(.command(.documentation), key: "docs", title: "Documentation", enabled: true))
-
         entries.append(MenuEntry(.separator, key: "app.separator", title: ""))
-        switch context.login {
-        case .unavailable(let reason):
-            entries.append(MenuEntry(.command(.openAtLogin), key: "login", title: "Open at Login"))
-            entries.append(MenuEntry(.note, key: "login.note", title: reason))
-        case .off, .on:
-            entries.append(MenuEntry(.command(.openAtLogin), key: "login", title: "Open at Login", enabled: true,
-                                     checked: context.login == .on))
-        case .needsApproval:
-            entries.append(MenuEntry(.command(.openAtLogin), key: "login", title: "Open at Login", enabled: true))
-            entries.append(MenuEntry(.note, key: "login.note", title: "Allow it in System Settings › Login Items"))
-        }
-        entries.append(MenuEntry(.command(.quit), key: "quit", title: "Quit Menu (filtering continues)", enabled: true))
+        entries.append(MenuEntry(.note, key: "version",
+                                 title: context.version.map { "blackice \($0)" } ?? "blackice, a build outside Blackice.app"))
+        entries.append(MenuEntry(.command(.quit), key: "quit", title: "Quit Menu", enabled: true))
         return entries
     }
 
-    /// "Safari → example.com:443", "8 s left", and the submenu's lines. nil for an event the
+    /// "Safari → example.com:443", "8s" left, and the submenu's lines. nil for an event the
     /// extension sent without a valid app, which `PendingReply.validate` already refuses.
     static func waiting(_ event: PendingSummary, readAt: Date, now: Date) -> MenuEntry? {
         guard let identity = event.app.identity else { return nil }
@@ -306,47 +282,32 @@ public enum MenuPresentation {
         return MenuEntry(.waiting(WaitingEvent(identity: identity, host: event.host, lines: lines)),
                          key: "waiting." + event.id,
                          title: "\(app) → " + (event.hostIsAddress ? event.hostAndPort : "\(MenuText.host(event.host)):\(event.port)"),
-                         detail: "\(left) s left", enabled: true)
+                         detail: "\(left)s", enabled: true)
     }
 
+    /// One line: "Denied Python → oauth2.googleapis.com", and how long ago ("4m").
     static func recent(_ decision: RecentDecision, now: Date) -> (title: String, detail: String?) {
         let what: String
-        var why: String?
         switch decision.verdict {
         case .approved: what = "Allowed"
         case .denied: what = "Denied"
-        case .timedOut: what = "Dropped"; why = "no answer in time"
-        case .cancelled: what = "Dropped"; why = "settings changed"
+        case .timedOut, .cancelled: what = "Dropped"
         }
-        switch decision.by {
-        case .hook?: why = "by a hook"
-        case .hand?: why = "by hand"
-        case nil: break
-        }
-        let detail = [why, ago(decision.date, now: now)].compactMap { $0 }.joined(separator: ", ")
-        return ("\(what) \(decision.app) → \(decision.host)", detail.isEmpty ? nil : detail)
+        return ("\(what) \(decision.app) → \(decision.host)", short(decision.date, now: now))
     }
 
-    /// The hooks in the saved configuration and the daemon that runs them, and what to do when
-    /// hooks have no daemon.
-    static func hooksLine(hooks: Int, daemonRunning: Bool?) -> (String, String?) {
-        let count = hooks == 0 ? "none" : "\(hooks)"
-        switch (hooks > 0, daemonRunning) {
-        case (true, true?): return ("Hooks: \(count), run by the daemon", nil)
-        case (true, false?): return ("Hooks: \(count), but the daemon is not running", "Start it with: blackice agent install")
-        case (false, true?): return ("Hooks: none, daemon running", nil)
-        case (false, false?): return ("Hooks: none, daemon not running", nil)
-        case (_, nil): return ("Hooks: \(count)", nil)
-        }
+    /// Hooks with no daemon to run them; nil when nothing needs doing.
+    static func hooksLine(hooks: Int, daemonRunning: Bool?) -> String? {
+        hooks > 0 && daemonRunning == false ? "Hooks won't run: blackice agent install" : nil
     }
 
-    /// "just now", "4 min ago", "2 h ago", "3 d ago".
-    static func ago(_ date: Date?, now: Date) -> String? {
+    /// "now", "4m", "2h", "3d".
+    static func short(_ date: Date?, now: Date) -> String? {
         guard let date else { return nil }
         let seconds = max(0, Int(now.timeIntervalSince(date)))
-        if seconds < 60 { return "just now" }
-        if seconds < 3600 { return "\(seconds / 60) min ago" }
-        if seconds < 86_400 { return "\(seconds / 3600) h ago" }
-        return "\(seconds / 86_400) d ago"
+        if seconds < 60 { return "now" }
+        if seconds < 3600 { return "\(seconds / 60)m" }
+        if seconds < 86_400 { return "\(seconds / 3600)h" }
+        return "\(seconds / 86_400)d"
     }
 }
