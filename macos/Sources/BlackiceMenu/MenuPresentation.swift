@@ -15,8 +15,8 @@ public struct MenuEntry: Equatable, Sendable {
         /// A connection that waits, with Allow and Deny in its submenu.
         case waiting(WaitingEvent)
         case recent
-        /// The Mode submenu, with a check mark on the current mode.
-        case modes(current: Mode?)
+        /// The Mode submenu: Accept All, Ask with each agent or you answering, Block All.
+        case modes([ModeChoice])
         case command(MenuCommand)
     }
 
@@ -37,6 +37,18 @@ public struct MenuEntry: Equatable, Sendable {
         self.enabled = enabled
         self.checked = checked
     }
+}
+
+/// One item of the Mode submenu.
+public struct ModeChoice: Equatable, Sendable {
+    public let mode: Mode
+    /// Who answers, for an Ask item; nil for Accept All and Block All.
+    public let answerer: Answerer?
+    public let title: String
+    /// Under the title, for an agent with no hook yet: how to connect it.
+    public let detail: String?
+    public let enabled: Bool
+    public let checked: Bool
 }
 
 /// A waiting connection's event, as its submenu needs it.
@@ -172,10 +184,27 @@ public enum MenuPresentation {
         }
     }
 
-    /// The Mode submenu's items, in this order.
-    public static let modeItems: [(mode: Mode, title: String)] = [
-        (.acceptAll, "Accept All"), (.ask, "Ask"), (.blockAll, "Block All"),
-    ]
+    /// The Mode submenu: Accept All; Ask with each agent blackice knows, enabled when its hook is
+    /// in the configuration, then with you answering; Block All. The check mark is on the mode the
+    /// filter decides in, and in ask mode on who answers. Choosing an item is `blackice mode`, or
+    /// `blackice mode ask --agent NAME`, with Touch ID.
+    public static func modeChoices(_ snapshot: MenuSnapshot, enabled: Bool) -> [ModeChoice] {
+        let current = snapshot.mode
+        let agents = snapshot.answering?.agents ?? []
+        func plain(_ mode: Mode, _ title: String) -> ModeChoice {
+            ModeChoice(mode: mode, answerer: nil, title: title, detail: nil, enabled: enabled, checked: current == mode)
+        }
+        let asks = Answerer.all.map { answerer -> ModeChoice in
+            var connected = true
+            if case .agent(let instructions) = answerer { connected = agents.contains(instructions) }
+            let title = answerer == .you ? "Ask: You (Manual)" : "Ask: \(answerer.title)"
+            return ModeChoice(mode: .ask, answerer: answerer, title: title,
+                              detail: connected ? nil : "blackice agent connect \(answerer.name)",
+                              enabled: enabled && connected,
+                              checked: current == .ask && snapshot.answering?.answerer == answerer)
+        }
+        return [plain(.acceptAll, "Accept All")] + asks + [plain(.blockAll, "Block All")]
+    }
 
     static func modeWords(_ mode: Mode) -> String {
         switch mode {
@@ -222,8 +251,9 @@ public enum MenuPresentation {
         entries.append(MenuEntry(.separator, key: "mode.separator", title: ""))
         // `blackice mode` waits until the filter names the new configuration, so it needs a filter
         // that answers.
-        entries.append(MenuEntry(.modes(current: snapshot.mode), key: "mode", title: "Mode",
-                                 enabled: snapshot.isOn && snapshot.reachable))
+        let modesEnabled = snapshot.isOn && snapshot.reachable
+        entries.append(MenuEntry(.modes(modeChoices(snapshot, enabled: modesEnabled)), key: "mode", title: "Mode",
+                                 enabled: modesEnabled))
         if case .on(_, let hooks) = snapshot.filter {
             let (line, hint) = hooksLine(hooks: hooks, daemonRunning: snapshot.daemonRunning)
             entries.append(MenuEntry(.note, key: "hooks", title: line))

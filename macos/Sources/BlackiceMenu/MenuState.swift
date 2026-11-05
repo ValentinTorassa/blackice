@@ -32,14 +32,17 @@ public struct MenuSnapshot: Equatable, Sendable {
     public var upgrade: UnfinishedUpgrade?
     /// When `pending` was read: the seconds left count down from there.
     public var readAt: Date
+    /// Under the saved configuration: the agents with hooks, and who answers in ask mode.
+    public var answering: Answering?
 
     public init(filter: Filter, pending: PendingReply? = nil, daemonRunning: Bool? = nil,
-                upgrade: UnfinishedUpgrade? = nil, readAt: Date = Date()) {
+                upgrade: UnfinishedUpgrade? = nil, readAt: Date = Date(), answering: Answering? = nil) {
         self.filter = filter
         self.pending = pending
         self.daemonRunning = daemonRunning
         self.upgrade = upgrade
         self.readAt = readAt
+        self.answering = answering
     }
 
     /// A blackice filter is saved and turned on.
@@ -68,7 +71,7 @@ extension MenuSnapshot.Filter {
         } else if saved.providerBundleID == nil || !saved.enabled {
             self = .off
         } else if let configuration = saved.configuration {
-            self = .on(saved: ActiveConfiguration(configuration), hooks: configuration.config.hooks.count)
+            self = .on(saved: ActiveConfiguration(configuration), hooks: configuration.config.activeHooks.count)
         } else {
             self = .unreadable
         }

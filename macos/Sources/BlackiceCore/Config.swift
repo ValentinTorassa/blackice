@@ -4,7 +4,7 @@ import Foundation
 //
 // Accepted: comments, bare keys, "basic" and 'literal' strings on one line, decimal
 // integers, true/false, arrays of those (they may span lines), the [[allow]] and [[hook]]
-// tables, and one [agent] table, whose `notes` alone may be a multi-line string ("""…""" or
+// tables, and one [agent] table (`answers` and `notes`; `notes` alone may be a multi-line string, """…""" or
 // '''…'''). Everything else in TOML is refused with a line number instead of being guessed
 // at: dotted or quoted keys, other [tables], inline tables, multi-line strings elsewhere,
 // a backslash at the end of a line, floats, dates, other number forms, unknown keys and
@@ -158,6 +158,8 @@ public struct BlackiceConfig: Equatable, Sendable {
     /// daemon writes as notes.md into each event's directory. It is part of the configuration, so
     /// it is loaded with Touch ID like the hooks. nil when unset or blank.
     public let agentNotes: String?
+    /// Who answers in ask mode (`answers` in [agent]). nil when unset: every hook runs.
+    public let answers: Answerer?
 
     public init(data: Data) throws {
         guard !data.isEmpty else { throw ConfigError(line: nil, "the file is empty") }
@@ -174,7 +176,7 @@ public struct BlackiceConfig: Equatable, Sendable {
     public init(text: String) throws { try self.init(data: Data(text.utf8)) }
 
     private init(mode: Mode, timeoutSeconds: Int, appleServices: Bool, loopback: Bool, allow: [AllowRule], hooks: [Hook],
-                 agentNotes: String?) {
+                 agentNotes: String?, answers: Answerer?) {
         self.mode = mode
         self.timeoutSeconds = timeoutSeconds
         self.appleServices = appleServices
@@ -182,6 +184,28 @@ public struct BlackiceConfig: Equatable, Sendable {
         self.allow = allow
         self.hooks = hooks
         self.agentNotes = agentNotes
+        self.answers = answers
+    }
+
+    /// The hooks the daemon runs: every one with no `answers`; otherwise each hook that is no
+    /// agent's (it names no `instructions`) and the hook of the agent `answers` names. With
+    /// `answers = "you"`, no agent's hook runs, and people answer.
+    public var activeHooks: [Hook] {
+        guard let answers else { return hooks }
+        return hooks.filter { hook in
+            guard let instructions = hook.program?.instructions else { return true }
+            return answers == .agent(instructions)
+        }
+    }
+
+    /// The agents with hooks, and which of them answers.
+    public var answering: Answering {
+        var agents: [AgentInstructions] = []
+        for case let instructions? in hooks.map({ $0.program?.instructions }) where !agents.contains(instructions) {
+            agents.append(instructions)
+        }
+        let answerer = answers ?? (agents.isEmpty ? .you : agents.count == 1 ? .agent(agents[0]) : nil)
+        return Answering(agents: agents, answerer: answerer)
     }
 
     /// The first rule that names this app and this host, if any. Rules say nothing about ports.
@@ -206,7 +230,7 @@ public struct BlackiceConfig: Equatable, Sendable {
         let hookCount = hooks.count == 1 ? "1 hook" : "\(hooks.count) hooks"
         return "mode \(mode.rawValue), timeout \(timeoutSeconds) s, \(rules), \(hookCount)"
             + (appleServices ? "" : ", apple_services off") + (loopback ? "" : ", loopback off")
-            + (agentNotes == nil ? "" : ", notes for the agent")
+            + (agentNotes == nil ? "" : ", notes for the agent") + (answers.map { ", \($0.title) answers" } ?? "")
     }
 }
 
@@ -247,9 +271,53 @@ extension BlackiceConfig {
         if agentTables.count > 1 {
             throw ConfigError(line: agentTables[1].line, "[agent] appears twice (first on line \(agentTables[0].line))")
         }
+        let hooks = try hookTables.map(hook)
+        var answers: Answerer?
+        if let entry = agentTables.first?.entries["answers"] {
+            let name = try entry.string("answers")
+            guard let answerer = Answerer(name: name) else {
+                throw ConfigError(line: entry.line, "answers must be \(Answerer.names), not \(quoted(name))")
+            }
+            // Naming an agent with no hook would leave nobody answering, unseen.
+            if case .agent(let instructions) = answerer, !hooks.contains(where: { $0.program?.instructions == instructions }) {
+                throw ConfigError(line: entry.line, "answers names \(quoted(name)), but no [[hook]] has instructions = " +
+                                  "\(quoted(name)): blackice agent connect \(name)")
+            }
+            answers = answerer
+        }
         return BlackiceConfig(mode: mode, timeoutSeconds: timeout, appleServices: appleServices, loopback: loopback,
-                               allow: try allowTables.map(allowRule), hooks: try hookTables.map(hook),
-                               agentNotes: try agentTables.first?.entries["notes"].flatMap(notes))
+                               allow: try allowTables.map(allowRule), hooks: hooks,
+                               agentNotes: try agentTables.first?.entries["notes"].flatMap(notes), answers: answers)
+    }
+
+    /// `text` with `answers = "NAME"` in its [agent] table: the line replaced when it is there,
+    /// added under `[agent]` when it is not, and the table added at the end when there is none.
+    /// The rest of the text stays as it is. Throws when `text`, or the result, does not parse.
+    public static func settingAnswers(_ answerer: Answerer, in text: String) throws -> String {
+        var parser = Parser(bytes: Array(text.utf8))
+        let document = try parser.parse()
+        // A file with CRLF line ends keeps them.
+        let end = text.contains("\r\n") ? "\r" : ""
+        let line = "answers = \"\(answerer.name)\"" + end
+        var result: String
+        if let agent = document.tables.first(where: { $0.kind == .agent }) {
+            var lines = text.components(separatedBy: "\n")
+            if let entry = agent.entries["answers"] {
+                lines[entry.line - 1] = line
+            } else {
+                lines.insert(line, at: agent.line)
+            }
+            result = lines.joined(separator: "\n")
+        } else {
+            result = text
+            // By byte: "\r\n" is one Character, so hasSuffix("\n") is false after it.
+            if let last = result.utf8.last, last != UInt8(ascii: "\n") { result += end + "\n" }
+            result += end + "\n[agent]" + end + "\n" + line + "\n"
+        }
+        guard try BlackiceConfig(text: result).answers == answerer else {
+            throw ConfigError(line: nil, "answers could not be set")
+        }
+        return result
     }
 
     /// `notes` in [agent]: plain text of at most `maximumNotesBytes`, lines and tabs but no other
@@ -525,7 +593,7 @@ private enum TableKind: String {
         case .root: return ["mode", "timeout_seconds", "apple_services", "loopback"]
         case .allow: return ["app", "team", "hosts"]
         case .hook: return ["on", "run", "program", "args", "env", "app", "team", "stdin", "instructions"]
-        case .agent: return ["notes"]
+        case .agent: return ["notes", "answers"]
         }
     }
 

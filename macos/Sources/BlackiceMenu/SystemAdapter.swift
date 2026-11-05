@@ -26,9 +26,9 @@ final class SystemAdapter {
             completion(MenuSnapshot(filter: .unsignedBuild))
             return
         }
-        Self.loadFilter { filter in
+        Self.loadFilter { filter, answering in
             DispatchQueue.global(qos: .utility).async {
-                var snapshot = MenuSnapshot(filter: filter)
+                var snapshot = MenuSnapshot(filter: filter, answering: answering)
                 // FilterClient reaches the service name of this app's own build of the extension.
                 if case .on = filter { snapshot.pending = try? FilterClient(teamID: teamID).pending() }
                 if full { snapshot.daemonRunning = NESystemControl.daemonRunning() }
@@ -50,9 +50,9 @@ final class SystemAdapter {
     /// `.failed`. NESystemControl runs the main run loop until it is done (MainLoop.wait), so call
     /// this on the main thread from a run loop callout, never from inside a block on the main
     /// dispatch queue, which the nested run loop would not drain.
-    func setMode(_ mode: Mode) -> MenuActionResult {
+    func setMode(_ mode: Mode, answerer: Answerer? = nil) -> MenuActionResult {
         let output = CapturedOutput()
-        return Self.result(NESystemControl().setMode(mode, output: output.system), output.errors)
+        return Self.result(NESystemControl().setMode(mode, answerer: answerer, output: output.system), output.errors)
     }
 
     /// `blackice stop`: Touch ID, then the filter removed and the network extension deactivated.
@@ -80,14 +80,16 @@ final class SystemAdapter {
 
     /// The filter preference as NESystemControl.status reads it. NEFilterManager calls back on a
     /// queue of its own choosing, so nothing here assumes the main thread.
-    nonisolated private static func loadFilter(_ done: @escaping @Sendable (MenuSnapshot.Filter) -> Void) {
+    /// Also who answers under the saved configuration.
+    nonisolated private static func loadFilter(_ done: @escaping @Sendable (MenuSnapshot.Filter, Answering?) -> Void) {
         NEFilterManager.shared().loadFromPreferences { error in
-            guard error == nil else { return done(.unreadable) }
+            guard error == nil else { return done(.unreadable, nil) }
             let manager = NEFilterManager.shared()
             let provider = manager.providerConfiguration
             let configuration = try? ProviderConfiguration(vendorConfiguration: provider?.vendorConfiguration)
             done(MenuSnapshot.Filter(SavedFilter(providerBundleID: provider?.filterDataProviderBundleIdentifier,
-                                                 enabled: manager.isEnabled, configuration: configuration)))
+                                                 enabled: manager.isEnabled, configuration: configuration)),
+                 configuration?.config.answering)
         }
     }
 

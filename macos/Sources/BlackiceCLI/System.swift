@@ -28,6 +28,8 @@ public protocol SystemControlling {
     func stop(output: SystemOutput) -> Int32
     func status(output: SystemOutput) -> Int32
     func setMode(_ mode: Mode, output: SystemOutput) -> Int32
+    /// `blackice mode ask --agent NAME`: the mode, and who answers in it, with one Touch ID.
+    func setMode(_ mode: Mode, answerer: Answerer?, output: SystemOutput) -> Int32
     /// `blackice pending`: the paused connections and the approvals.
     func pending(output: SystemOutput) -> Int32
     /// `blackice approve` and `deny`. Confirms a person with Touch ID first.
@@ -44,6 +46,17 @@ public protocol SystemControlling {
     /// `blackice report`: what `log show` prints of the filter's flow lines over the last
     /// `minutes`. Reading the log needs neither Touch ID nor the signed app.
     func flowLog(minutes: Int) -> LogShowResult
+}
+
+extension SystemControlling {
+    /// A system that changes only the mode: `--agent` gets nowhere there.
+    public func setMode(_ mode: Mode, answerer: Answerer?, output: SystemOutput) -> Int32 {
+        guard answerer == nil else {
+            output.stderr("blackice mode --agent works only from the signed Blackice.app.")
+            return ExitCode.unavailable
+        }
+        return setMode(mode, output: output)
+    }
 }
 
 extension SystemControlling {

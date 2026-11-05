@@ -598,3 +598,74 @@ struct RuleMatchingTests {
         }
     }
 }
+
+/// `answers` in [agent]: which agent's hook runs, or none, with people answering.
+struct AgentAnswersTests {
+    static let fxHook = "[[hook]]\non = 'connection'\nprogram = '/opt/fx'\napp = 'com.vercel.fx'\nteam = 'JW6Y669B67'\ninstructions = 'fx'\n"
+    static let codexHook = "[[hook]]\non = 'connection'\nprogram = '/opt/codex'\napp = 'codex'\nteam = '2DC432GLL2'\ninstructions = 'codex'\n"
+    static let plainHook = "[[hook]]\non = 'connection'\nrun = 'logger blackice'\n"
+
+    @Test func answersPicksTheAgentHookThatRuns() throws {
+        let all = "mode = 'ask'\n" + Self.plainHook + Self.fxHook + Self.codexHook
+        let every = try BlackiceConfig(text: all)
+        #expect(every.answers == nil && every.activeHooks.count == 3)
+        #expect(every.answering == Answering(agents: [.fx, .codex], answerer: nil))
+        let codex = try BlackiceConfig(text: all + "[agent]\nanswers = 'codex'\n")
+        #expect(codex.activeHooks.map { $0.program?.instructions } == [nil, .codex])
+        #expect(codex.answering == Answering(agents: [.fx, .codex], answerer: .agent(.codex)))
+        #expect(codex.summary.hasSuffix(", Codex answers") && codex.overview.contains("2 hooks"))
+        let you = try BlackiceConfig(text: all + "[agent]\nanswers = \"you\"\n")
+        #expect(you.activeHooks.map { $0.program?.instructions } == [nil] && you.answering.answerer == .you)
+        // The daemon runs those.
+        let daemon = try DaemonConfiguration(generation: 1, configText: all + "[agent]\nanswers = 'codex'\n")
+        #expect(daemon.hooks.map { $0.program?.instructions } == [nil, .codex] && daemon.summary.contains("2 hooks"))
+        // With no answers: the one agent with a hook, or you when none has one.
+        #expect(try BlackiceConfig(text: "mode = 'ask'\n" + Self.fxHook).answering.answerer == .agent(.fx))
+        #expect(try BlackiceConfig(text: "mode = 'ask'\n" + Self.plainHook).answering == Answering(agents: [], answerer: .you))
+        #expect(Answerer.names == "\"fx\", \"claude-code\", \"codex\" or \"you\"")
+        #expect(Answerer.all.map(\.title) == ["fx", "Claude Code", "Codex", "you"])
+        #expect(Answerer.all.map(\.name).compactMap(Answerer.init(name:)) == Answerer.all && Answerer(name: "You") == nil)
+    }
+
+    @Test func answersChecks() {
+        let head = "mode = 'ask'\n" + Self.fxHook + "[agent]\n"
+        expectError(head + "answers = 'gemini'", line: 9,
+                    containing: "answers must be \"fx\", \"claude-code\", \"codex\" or \"you\", not \"gemini\"")
+        expectError(head + "answers = 'codex'", line: 9,
+                    containing: "answers names \"codex\", but no [[hook]] has instructions = \"codex\": blackice agent connect codex")
+        expectError(head + "answers = ['fx']", line: 9, containing: "answers must be a string")
+        expectError(head + "answers = 'fx'\nanswers = 'you'", line: 10, containing: "answers")
+    }
+
+    @Test func settingAnswersEditsOnlyThatLine() throws {
+        let base = "mode = 'ask'\n" + Self.fxHook + Self.codexHook
+        // No [agent]: the table goes at the end.
+        #expect(try BlackiceConfig.settingAnswers(.agent(.codex), in: base) == base + "\n[agent]\nanswers = \"codex\"\n")
+        // Set already: that line is replaced, and the notes stay, a line in them that reads like the key included.
+        let notes = base + "# mine\n[agent]\nnotes = \"\"\"\nanswers = 'not a key'\n\"\"\"\nanswers = 'fx' # who answers\n"
+        #expect(try BlackiceConfig.settingAnswers(.you, in: notes)
+            == base + "# mine\n[agent]\nnotes = \"\"\"\nanswers = 'not a key'\n\"\"\"\nanswers = \"you\"\n")
+        // [agent] without it: under the header.
+        #expect(try BlackiceConfig.settingAnswers(.agent(.fx), in: base + "[agent]\nnotes = 'n'\n")
+            == base + "[agent]\nanswers = \"fx\"\nnotes = 'n'\n")
+        // CRLF stays CRLF.
+        #expect(try BlackiceConfig.settingAnswers(.you, in: "mode = 'ask'\r\n[agent]\r\nnotes = 'n'\r\n")
+            == "mode = 'ask'\r\n[agent]\r\nanswers = \"you\"\r\nnotes = 'n'\r\n")
+        #expect(try BlackiceConfig.settingAnswers(.you, in: "mode = 'ask'\r\n") == "mode = 'ask'\r\n\r\n[agent]\r\nanswers = \"you\"\r\n")
+        // An agent with no hook cannot answer.
+        #expect(throws: ConfigError.self) { try BlackiceConfig.settingAnswers(.agent(.claudeCode), in: base) }
+    }
+
+    /// `blackice mode ask --agent NAME` keeps the file's text but for `answers`, one generation on.
+    @Test func providerConfigurationWithAnAnswerer() throws {
+        let text = "mode = 'accept-all'\n" + Self.fxHook + Self.codexHook + "[agent]\nanswers = 'fx'\n"
+        let saved = try ProviderConfiguration(generation: 3, mode: .acceptAll, configText: text)
+        let codex = try saved.with(mode: .ask, answerer: .agent(.codex))
+        #expect(codex.generation == 4 && codex.mode == .ask && codex.config.answers == .agent(.codex))
+        #expect(codex.configText == text.replacingOccurrences(of: "answers = 'fx'", with: "answers = \"codex\""))
+        // Who answers already: only the mode changes, and the text stays.
+        let same = try saved.with(mode: .ask, answerer: .agent(.fx))
+        #expect(same.configText == text && same.generation == 4)
+        #expect(throws: ConfigError.self) { try saved.with(mode: .ask, answerer: .agent(.claudeCode)) }
+    }
+}

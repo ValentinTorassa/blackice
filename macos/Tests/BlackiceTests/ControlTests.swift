@@ -9,6 +9,9 @@ struct ControlTests {
         #expect(ControlAction.stop.reason == "stop filtering and remove its network extension")
         #expect(ControlAction.mode(from: .acceptAll, to: .blockAll, generation: 5).reason
             == "switch from accept-all to block-all mode")
+        #expect(ControlAction.answering(.agent(.claudeCode), mode: .ask, generation: 5).reason
+            == "switch to ask mode, with Claude Code answering")
+        #expect(ControlAction.answering(.you, mode: .ask, generation: 5).reason == "switch to ask mode, with you answering")
         let tool = AppIdentity.signed(SigningIdentity(signingID: "com.example.tool", teamID: "ABCDE12345"))
         #expect(ControlAction.approve(tool, host: "example.com", seconds: 3600).reason
             == "let ABCDE12345/com.example.tool reach example.com for 1 h")

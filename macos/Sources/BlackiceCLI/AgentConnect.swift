@@ -11,8 +11,8 @@ import BlackiceCore
 // come from blackice itself: the daemon writes them into each event's directory (see
 // AgentInstructions), so nothing in the agent's home says how to decide. What differs between
 // agents (where its settings live, how it signs in, its arguments) is in its `AgentProfile`. fx
-// is the first. Claude Code (claude-code) has no settings file: its limits are its arguments. One
-// agent answers at a time: connecting one replaces the hook of another.
+// is the first. Claude Code (claude-code) has no settings file: its limits are its arguments. Each
+// connected agent keeps its hook, and `answers` in [agent] names the one that answers.
 
 /// What blackice needs to know about one coding agent.
 public struct AgentProfile: Sendable {
@@ -923,22 +923,44 @@ extension CLI {
             config = current.config
         }
         let missing = profile.hosts.filter { config.allowRule(for: identity, host: $0) == nil }
-        // One agent answers: with two, the first answer wins, whichever it is. The first hook that
-        // runs a known agent becomes this one's, and stays as it is when it is this one already;
-        // before 0.4.0 it was a `run` line, which no signature check covers. Agent hooks after it
-        // go, the last first, so the lines before them stay where they are.
+        // Each agent keeps a hook of its own, and `answers` in [agent] says which one answers, so
+        // `blackice mode ask --agent NAME` and the menu switch between them. This agent's first
+        // hook becomes its new one, or stays as it is when it is that already. A hook that runs an
+        // agent without naming its instructions (a `run` line from before 0.4.0, which no signature
+        // check covers, or a program from 0.4.0) would run whatever `answers` says: the first one
+        // becomes this agent's when it has none, and the others go, the last first, so the lines
+        // before them stay where they are. Other agents' hooks with instructions stay.
         let agentHooks = config.hooks.filter { agentRunning($0) != nil }
-        let existingHook = agentHooks.first
+        let unnamed = agentHooks.filter { $0.program?.instructions == nil }
+        let own = agentHooks.filter { agentRunning($0)?.name == name && $0.program?.instructions == profile.instructions }
+        let existingHook = own.first ?? unnamed.first { agentRunning($0)?.name == name } ?? unnamed.first
+        let goners = agentHooks.filter { hook in
+            hook.line != existingHook?.line && (hook.program?.instructions == nil || own.contains { $0.line == hook.line })
+        }
+        let staying = agentHooks.filter { hook in hook.line != existingHook?.line && !goners.contains { $0.line == hook.line } }
         let keptHook = existingHook.map { $0.program == program && $0.on == "connection" } ?? false
         var updated = text
-        for extra in agentHooks.dropFirst().reversed() {
+        for extra in goners.reversed() where extra.line > (existingHook?.line ?? 0) {
             updated = replacingTable(at: extra.line, in: updated, with: [])
         }
         if let existingHook, !keptHook {
             updated = replacingTable(at: existingHook.line, in: updated, with: hookTable(program))
         }
+        for extra in goners.reversed() where extra.line < (existingHook?.line ?? 0) {
+            updated = replacingTable(at: extra.line, in: updated, with: [])
+        }
         if !updated.isEmpty, !updated.hasSuffix("\n") { updated += "\n" }
         updated += agentAddition(name, identity: identity, hosts: missing, hook: existingHook == nil ? program : nil)
+        // With another agent's hook there too, or `answers` set already, `answers` names this one.
+        let answerer = Answerer.agent(profile.instructions)
+        let answersSet = !staying.isEmpty || config.answers != nil
+        if answersSet {
+            do {
+                updated = try BlackiceConfig.settingAnswers(answerer, in: updated)
+            } catch {
+                return fail(ExitCode.software, "Cannot set answers in \(shown): \(error)")
+            }
+        }
         // Three times what the test took, in whole tens: 21 s on the test Mac asks for 70.
         let neededSeconds = max(60, (seconds * 3 + 9) / 10 * 10)
         var raisedTimeout = false
@@ -955,8 +977,8 @@ extension CLI {
         if let existingHook, keptHook {
             stdout("  A hook already starts \(name) (line \(existingHook.line)); it stays as it is.")
         } else if let existingHook, let other = agentRunning(existingHook), other.name != name {
-            stdout("  " + Style.done("The hook on line \(existingHook.line) ran \(other.name); it now starts \(name) instead,"))
-            stdout("    so one agent answers, once its signature checks out")
+            stdout("  " + Style.done("The hook on line \(existingHook.line) ran \(other.name) without naming its instructions;"))
+            stdout("    it now starts \(name) instead, once its signature checks out")
         } else if let existingHook, existingHook.program?.instructions == profile.instructions {
             stdout("  " + Style.done("The hook on line \(existingHook.line) now starts \(name) with \(model)"))
         } else if let existingHook {
@@ -964,9 +986,16 @@ extension CLI {
         } else {
             stdout("  " + Style.done("A hook starts \(name) for each connection that waits, once its signature checks out"))
         }
-        for extra in agentHooks.dropFirst() {
-            stdout("  " + Style.done("The hook on line \(extra.line), which ran \(agentRunning(extra)?.name ?? "an agent"), is gone: " +
-                                     "one agent answers"))
+        for extra in goners {
+            stdout("  " + Style.done("The hook on line \(extra.line), which ran \(agentRunning(extra)?.name ?? "an agent"), is gone"))
+        }
+        if answersSet {
+            let others = staying.compactMap { agentRunning($0)?.name }
+            stdout("  " + Style.done("\(name) answers ([agent] answers = \"\(name)\")") +
+                   (others.isEmpty ? "" : "; \(listed(others))'s hook stays,"))
+            if let first = others.first {
+                stdout("    for: blackice mode ask --agent \(first), or the menu's Mode")
+            }
         }
         if raisedTimeout {
             stdout("  " + Style.done("timeout_seconds is now \(min(neededSeconds, BlackiceConfig.timeoutRange.upperBound)), " +

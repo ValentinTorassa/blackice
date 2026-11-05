@@ -175,6 +175,17 @@ The daemon writes the notes as `notes.md` beside `event.json` in each event's di
 - A backslash at the end of a line, which TOML uses to join lines, is refused. Write the text as it should read.
 - Blank notes are no notes: there is no `notes.md`.
 
+## Who answers
+
+A hook with `instructions` is an agent's. With several of them, `answers` in `[agent]` names the one whose hook runs: `"fx"`, `"claude-code"`, `"codex"`, or `"you"` for none, so that you answer with `blackice approve` and `deny` or the menu. Hooks without `instructions` run either way.
+
+```toml
+[agent]
+answers = "claude-code"
+```
+
+`blackice agent connect` writes it when another agent's hook stays in the file. With no `answers`, every hook runs, as before 0.4.2. Naming an agent whose hook is not in the file is refused. `blackice mode ask --agent NAME` and the menu's Mode switch it in the configuration blackice holds, and leave the file as it is.
+
 ## The hook's environment
 
 The daemon builds the environment a hook starts with instead of passing on its own:

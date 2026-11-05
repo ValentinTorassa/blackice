@@ -44,6 +44,15 @@ public struct ProviderConfiguration: Equatable, Sendable {
         try ProviderConfiguration(generation: try Self.nextGeneration(after: self), mode: mode, configText: configText)
     }
 
+    /// In `mode`, with `answerer` answering, one generation later. When someone else answers now,
+    /// the text gets `answers` in [agent] (`BlackiceConfig.settingAnswers`): the file on disk is not
+    /// edited, as `blackice mode` leaves it, and `blackice start` loads its own `answers` again.
+    public func with(mode: Mode, answerer: Answerer?) throws -> ProviderConfiguration {
+        guard let answerer, answerer != config.answering.answerer else { return try with(mode: mode) }
+        return try ProviderConfiguration(generation: try Self.nextGeneration(after: self), mode: mode,
+                                         configText: try BlackiceConfig.settingAnswers(answerer, in: configText))
+    }
+
     /// The same configuration, generation included, as if it were in `mode`, without parsing the
     /// text again. Never installed: accept-all's dry run of ask mode decides with it.
     func viewed(in mode: Mode) -> ProviderConfiguration {
@@ -136,7 +145,7 @@ public struct ProviderConfiguration: Equatable, Sendable {
 
     public var summary: String {
         let rules = config.allow.count == 1 ? "1 allow rule" : "\(config.allow.count) allow rules"
-        let hooks = config.hooks.count == 1 ? "1 hook" : "\(config.hooks.count) hooks"
+        let hooks = config.activeHooks.count == 1 ? "1 hook" : "\(config.activeHooks.count) hooks"
         return "mode \(mode.rawValue), \(rules), \(hooks), generation \(generation)"
     }
 }

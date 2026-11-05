@@ -215,12 +215,18 @@ with `haiku` (counted against its subscription), Codex with `gpt-6-luna` (counte
 hook's. The agents approve clearly ordinary developer and vendor traffic for 8 to 24 hours and anything less plain
 for 10 minutes to an hour.
 
-One agent answers at a time. Connecting one replaces the hook of another (with two, the first answer would win)
-and says so.
+One agent answers at a time, and you choose which. Each agent you connect keeps its hook in `blackice.toml`, and
+`answers` in its `[agent]` table names the one that answers: connecting a second agent adds its hook, keeps the
+first one's and sets `answers` to the new one. `blackice mode ask --agent fx` (or `claude-code`, `codex`, or `you`
+to answer yourself) switches, with Touch ID; the menu's Mode does the same. That switch changes the configuration
+blackice holds, not the file, as `blackice mode` does, so `blackice start` loads the file's own `answers` again.
+A hook that runs an agent but names no `instructions`, such as one from 0.3 or 0.4.0, would run whoever `answers`
+names: `agent connect` replaces it with the agent's own hook, or removes it when it ran another agent.
 
 ## 6. Use it
 
 - `blackice mode ask`, `blackice mode block-all`, `blackice mode accept-all`: change the mode (Touch ID each time).
+  `blackice mode ask --agent NAME` also says who answers: an agent you connected, or `you`.
 - `blackice pending`: the connections waiting for an answer, the current approvals, and the denials of the last
   10 minutes, whose connections are dropped without asking.
 - `blackice approve --app ID --host HOST --for 1h` and `blackice deny …`: answer as a person (Touch ID).
@@ -260,8 +266,9 @@ connections wait, their number is next to it. The menu has:
   Allow for 1 Hour and Deny: the same as `blackice approve --for` and `blackice deny`, with Touch ID;
 - the last verdicts from the event log, with whether a hook or a person answered, and for an hour a warning when the
   daemon refused a hook program whose signature did not match;
-- Mode, to switch between accept-all, ask and block-all, with Touch ID, as `blackice mode` does, while the filter
-  answers;
+- Mode, to switch between Accept All, Ask with an agent answering (one item per agent; those not connected are
+  greyed out with the command that connects them), Ask: You (Manual) and Block All, with Touch ID, as `blackice
+  mode` and `blackice mode ask --agent` do, while the filter answers;
 - the hooks in the configuration and whether the daemon runs them;
 - Stop Filtering, with Touch ID, as `blackice stop` does: the filter and its network extension go, and `blackice
   start` turns them on again;

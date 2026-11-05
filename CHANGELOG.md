@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+- You choose who answers in ask mode, from the menu or the CLI. The menu's Mode lists Accept All, then Ask with
+  each agent (fx, Claude Code, Codex; one that is not connected is greyed out with the command that connects it),
+  Ask: You (Manual), and Block All, with a check mark on the one in force; choosing one takes Touch ID.
+  `blackice mode ask --agent fx|claude-code|codex|you` does the same. Asked for by a tester on 5 November 2026.
+- Connected agents keep their hooks side by side: `answers` in `[agent]` names the one whose hook runs (or `you`,
+  for none), and hooks without `instructions` run either way. `agent connect` adds its agent's hook beside the
+  others and sets `answers` to it, where it used to replace the other agent's hook. Switching with `mode --agent` or
+  the menu changes the configuration blackice holds and not the file, as `blackice mode` does. `blackice status`
+  says who answers when there is a choice. An agent hook that names no `instructions` (from 0.3 or 0.4.0) is still
+  replaced or removed by `agent connect`, since it would run whoever `answers` names.
+
 ## 0.4.1 (5 November 2026)
 
 Codex can be the agent, the agent reads your notes, its instructions ship inside blackice, ask mode asks

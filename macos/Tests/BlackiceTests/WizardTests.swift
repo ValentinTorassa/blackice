@@ -453,6 +453,20 @@ struct ReportTests {
             == "Your hooks need the daemon, which is not running: blackice agent install")
         #expect(CLI.modeChangedLines(try snapshot(.ask, withHook), daemonRunning: true).count == 1)
 
+        // Who answers, when there is a choice.
+        let fx = "[[hook]]\non = 'connection'\nprogram = '/opt/fx'\napp = 'com.vercel.fx'\nteam = 'JW6Y669B67'\ninstructions = 'fx'\n"
+        let codex = "[[hook]]\non = 'connection'\nprogram = '/opt/codex'\napp = 'codex'\nteam = '2DC432GLL2'\ninstructions = 'codex'\n"
+        let two = try ProviderConfiguration(generation: 2, mode: .ask, configText: "mode = 'ask'\n" + fx + codex + "[agent]\nanswers = 'codex'\n")
+        #expect(CLI.modeChangedLines(two, daemonRunning: true) == ["✓ Now in ask mode: \(Mode.ask.explanation).", "Codex answers them."])
+        #expect(CLI.answeringLine(two.config) == "Codex; fx has a hook too")
+        let you = try BlackiceConfig(text: "mode = 'ask'\n" + fx + codex + "[agent]\nanswers = 'you'\n")
+        #expect(CLI.answeringLine(you) == "you, with blackice approve or deny; fx and Codex have a hook too")
+        #expect(CLI.answeringLine(try BlackiceConfig(text: "mode = 'ask'\n" + fx + codex)) == "every agent with a hook")
+        #expect(CLI.answeringLine(try BlackiceConfig(text: "mode = 'ask'\n" + fx)) == nil)
+        #expect(CLI.answererRefusal(.agent(.claudeCode), config: two.config)
+            == "Claude Code has no hook in the configuration blackice holds. Connect it first: blackice agent connect claude-code")
+        #expect(CLI.answererRefusal(.agent(.fx), config: two.config) == nil && CLI.answererRefusal(.you, config: two.config) == nil)
+
         let first = CLI.firstStartLines(try snapshot(.acceptAll), daemonRunning: false)
         #expect(first.contains("  blackice mode ask          hold new connections until you or a hook answers"))
         #expect(CLI.firstStartLines(try snapshot(.ask, withHook), daemonRunning: false)

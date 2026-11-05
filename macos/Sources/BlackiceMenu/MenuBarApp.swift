@@ -310,16 +310,8 @@ final class MenuController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         switch entry.kind {
         case .waiting(let event):
             item.submenu = waitingMenu(event)
-        case .modes:
-            let submenu = NSMenu()
-            submenu.autoenablesItems = false
-            for (mode, title) in MenuPresentation.modeItems {
-                let choice = NSMenuItem(title: title, action: #selector(chooseMode(_:)), keyEquivalent: "")
-                choice.target = self
-                choice.representedObject = mode.rawValue
-                submenu.addItem(choice)
-            }
-            item.submenu = submenu
+        case .modes(let choices):
+            item.submenu = modeMenu(choices)
         case .command(let command):
             item.action = #selector(runCommand(_:))
             item.representedObject = command
@@ -352,14 +344,38 @@ final class MenuController: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 return
             }
             for (index, line) in event.lines.enumerated() { submenu.items[index].title = line }
-        case .modes(let current):
-            for choice in item.submenu?.items ?? [] {
-                choice.state = choice.representedObject as? String == current?.rawValue ? .on : .off
-                choice.isEnabled = entry.enabled
+        case .modes(let choices):
+            // Updated in place while the items are the same, so an open submenu stays open.
+            let shownItems = item.submenu?.items.filter { !$0.isSeparatorItem } ?? []
+            guard shownItems.map(\.title) == choices.map(\.title) else {
+                item.submenu = modeMenu(choices)
+                return
             }
+            for (shownItem, choice) in zip(shownItems, choices) { configure(shownItem, choice) }
         default:
             break
         }
+    }
+
+    /// Accept All, the Ask items, Block All, with a separator between modes.
+    private func modeMenu(_ choices: [ModeChoice]) -> NSMenu {
+        let submenu = NSMenu()
+        submenu.autoenablesItems = false
+        for (index, choice) in choices.enumerated() {
+            if index > 0, choices[index - 1].mode != choice.mode { submenu.addItem(.separator()) }
+            let item = NSMenuItem(title: choice.title, action: #selector(chooseMode(_:)), keyEquivalent: "")
+            item.target = self
+            configure(item, choice)
+            submenu.addItem(item)
+        }
+        return submenu
+    }
+
+    private func configure(_ item: NSMenuItem, _ choice: ModeChoice) {
+        item.representedObject = choice
+        item.state = choice.checked ? .on : .off
+        item.isEnabled = choice.enabled
+        if #available(macOS 14.4, *) { item.subtitle = choice.detail }
     }
 
     /// The event's identity, connections, address and path, then the answers.
@@ -384,11 +400,9 @@ final class MenuController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // MARK: - Actions
 
     @objc private func chooseMode(_ sender: NSMenuItem) {
-        guard let raw = sender.representedObject as? String, let mode = Mode(rawValue: raw), mode != snapshot.mode else {
-            return
-        }
+        guard let choice = sender.representedObject as? ModeChoice, !choice.checked else { return }
         afterMenuCloses { [weak self] in
-            self?.change(failure: "The mode did not change") { $0.setMode(mode) }
+            self?.change(failure: "The mode did not change") { $0.setMode(choice.mode, answerer: choice.answerer) }
         }
     }
 

@@ -27,6 +27,12 @@ private func answering(_ active: ActiveConfiguration, _ events: [PendingSummary]
     PendingReply(events: events, approvals: [], active: active)
 }
 
+/// The Mode line's checked items, and whether the line can be used.
+private func modes(_ entries: [MenuEntry]) -> (checked: [String], enabled: Bool)? {
+    guard let entry = entries.first(where: { $0.key == "mode" }), case .modes(let choices) = entry.kind else { return nil }
+    return (choices.filter(\.checked).map(\.title), entry.enabled)
+}
+
 private func titles(_ entries: [MenuEntry]) -> [String] {
     entries.compactMap { $0.kind == .separator ? nil : $0.title }
 }
@@ -147,7 +153,8 @@ struct MenuPresentationTests {
         let pending = answering(ask, [summary(secondsLeft: 40, connections: 2),
                                       summary("ev-0a1b2c3e", app: vscode, path: nil, host: "update.code.visualstudio.com",
                                               secondsLeft: 3, connections: 0)])
-        let snapshot = MenuSnapshot(filter: .on(saved: ask, hooks: 1), pending: pending, daemonRunning: true, readAt: readAt)
+        let snapshot = MenuSnapshot(filter: .on(saved: ask, hooks: 1), pending: pending, daemonRunning: true, readAt: readAt,
+                                    answering: Answering(agents: [.fx], answerer: .agent(.fx)))
         let entries = MenuPresentation.menu(snapshot, context, now: readAt.addingTimeInterval(5))
         #expect(titles(entries) == [
             "Ask mode", "blackice 0.3.2 (build 15)",
@@ -174,8 +181,8 @@ struct MenuPresentationTests {
         #expect(requests.map(\.seconds) == [600, 3600, nil])
         #expect(requests.allSatisfy { $0.authorization == .touchID && $0.host == "example.com" && $0.identity == safari.identity })
         for request in requests { try request.validate(now: Date()) }
-        // The mode submenu has a check mark on ask and can be used.
-        #expect(entries.contains { $0.kind == .modes(current: .ask) && $0.enabled })
+        // The mode submenu has a check mark on ask with fx answering, and can be used.
+        #expect(modes(entries)?.checked == ["Ask: fx"] && modes(entries)?.enabled == true)
     }
 
     @Test func manyWaitingConnectionsAreCut() throws {
@@ -250,7 +257,7 @@ struct MenuPresentationTests {
         #expect(entries.contains { $0.title == "A hook did not run: its signature did not match" && $0.detail == "10 min ago" })
         #expect(entries.contains { $0.key == "login" && $0.checked && $0.enabled })
         // A filter that does not answer cannot take a new mode, which `blackice mode` waits for.
-        #expect(entries.contains { $0.kind == .modes(current: .blockAll) && !$0.enabled })
+        #expect(modes(entries)?.checked == ["Block All"] && modes(entries)?.enabled == false)
         #expect(MenuPresentation.hooksLine(hooks: 0, daemonRunning: true).0 == "Hooks: none, daemon running")
         #expect(MenuPresentation.hooksLine(hooks: 1, daemonRunning: nil).0 == "Hooks: 1")
         // A refused hook stays in the menu for an hour.
@@ -259,8 +266,36 @@ struct MenuPresentationTests {
             .contains { $0.key == "hooks.refused" })
         // An off filter has no mode to switch from.
         let off = MenuPresentation.menu(MenuSnapshot(filter: .off), context)
-        #expect(off.contains { $0.kind == .modes(current: nil) && !$0.enabled })
+        #expect(modes(off)?.checked == [] && modes(off)?.enabled == false)
         #expect(!off.contains { $0.key == "hooks" })
+    }
+
+    /// Mode: Accept All, Ask with each agent (only those with a hook can be chosen) and with you,
+    /// Block All; the check mark on the mode, and in ask mode on who answers.
+    @Test func theModeSubmenuSaysWhoAnswers() throws {
+        let ask = try saved(.ask), accept = try saved(.acceptAll)
+        let who = Answering(agents: [.fx, .claudeCode], answerer: .agent(.claudeCode))
+        let snapshot = MenuSnapshot(filter: .on(saved: ask, hooks: 1), pending: answering(ask, []), answering: who)
+        guard let entry = MenuPresentation.menu(snapshot, context).first(where: { $0.key == "mode" }),
+              case .modes(let choices) = entry.kind else {
+            Issue.record("no Mode line")
+            return
+        }
+        #expect(choices.map(\.title) == ["Accept All", "Ask: fx", "Ask: Claude Code", "Ask: Codex", "Ask: You (Manual)", "Block All"])
+        #expect(choices.filter(\.checked).map(\.title) == ["Ask: Claude Code"])
+        #expect(choices.filter(\.enabled).map(\.title) == ["Accept All", "Ask: fx", "Ask: Claude Code", "Ask: You (Manual)", "Block All"])
+        #expect(choices.map(\.detail) == [nil, nil, nil, "blackice agent connect codex", nil, nil])
+        #expect(choices.map(\.answerer) == [nil, .agent(.fx), .agent(.claudeCode), .agent(.codex), .you, nil])
+        #expect(choices.map(\.mode) == [.acceptAll, .ask, .ask, .ask, .ask, .blockAll])
+
+        // In accept-all the check mark is on Accept All, whoever would answer in ask mode.
+        let quiet = MenuSnapshot(filter: .on(saved: accept, hooks: 1), pending: answering(accept, []), answering: who)
+        #expect(modes(MenuPresentation.menu(quiet, context))?.checked == ["Accept All"])
+
+        // You answering: the check mark on Ask: You (Manual).
+        let you = MenuSnapshot(filter: .on(saved: ask, hooks: 0), pending: answering(ask, []),
+                               answering: Answering(agents: [.fx], answerer: .you))
+        #expect(modes(MenuPresentation.menu(you, context))?.checked == ["Ask: You (Manual)"])
     }
 
     @Test func keysStayWhileTheLinesMeanTheSame() throws {

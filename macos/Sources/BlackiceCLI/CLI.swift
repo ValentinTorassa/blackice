@@ -20,7 +20,8 @@ public enum Command: Equatable, Sendable {
     case initConfig(path: String?)
     case start(configPath: String?)
     case stop, status, pending
-    case mode(Mode)
+    /// `blackice mode MODE`, and in ask mode `--agent NAME` for who answers.
+    case mode(Mode, answerer: Answerer? = nil)
     case approve(Approval)
     case deny(Denial)
     case validate(path: String)
@@ -113,6 +114,8 @@ public enum CLI {
     Every day
       mode accept-all|ask|block-all
                                 Change how new connections are treated (Touch ID)
+      mode ask --agent fx|claude-code|codex|you
+                                Ask mode, with that agent answering, or you (Touch ID)
       pending                   Connections waiting for an answer, and the approvals
       approve --app ID [--team TEAM] --host HOST [--for 1h]
                                 Let one app reach one host for a while (Touch ID)
@@ -161,10 +164,16 @@ public enum CLI {
         case "status": try noArguments(first, rest); return .status
         case "pending": try noArguments(first, rest); return .pending
         case "mode":
-            guard rest.count == 1, let mode = Mode(rawValue: rest[0]) else {
+            guard let first = rest.first, let mode = Mode(rawValue: first) else {
                 throw UsageError("mode takes one of accept-all, ask or block-all")
             }
-            return .mode(mode)
+            let options = try parseOptions(Array(rest.dropFirst()), allowed: ["agent"], command: "mode")
+            guard let name = options["agent"] else { return .mode(mode) }
+            guard mode == .ask else { throw UsageError("mode: --agent goes with ask, where it says who answers") }
+            guard let answerer = Answerer(name: name) else {
+                throw UsageError("mode: --agent takes \(Answerer.all.map(\.name).joined(separator: ", ")), not '\(printable(name))'")
+            }
+            return .mode(mode, answerer: answerer)
         case "validate":
             guard rest.count == 1, !rest[0].isEmpty, !rest[0].hasPrefix("-") else {
                 throw UsageError("validate takes one path")
@@ -350,8 +359,8 @@ public enum CLI {
             return system.stop(output: SystemOutput(stdout: stdout, stderr: stderr))
         case .status:
             return system.status(output: SystemOutput(stdout: stdout, stderr: stderr))
-        case .mode(let mode):
-            return system.setMode(mode, output: SystemOutput(stdout: stdout, stderr: stderr))
+        case .mode(let mode, let answerer):
+            return system.setMode(mode, answerer: answerer, output: SystemOutput(stdout: stdout, stderr: stderr))
         case .pending:
             return system.pending(output: SystemOutput(stdout: stdout, stderr: stderr))
         case .approve(let approval):
