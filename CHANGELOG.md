@@ -2,8 +2,8 @@
 
 ## 0.4.2 (5 November 2026)
 
-You choose who answers in ask mode from the menu, an app updated while it runs keeps its connections, an upgrade
-loads the new configuration, and fx's hook reads less.
+You choose who answers in ask mode from a smaller menu, an app updated while it runs keeps its connections, an
+upgrade loads the new configuration, and fx's hook reads less.
 
 New:
 - You choose who answers in ask mode, from the menu or the CLI. The menu's Mode lists Accept All, then Ask with
@@ -18,6 +18,11 @@ New:
   replaced or removed by `agent connect`, since it would run whoever `answers` names.
 
 Changed:
+- A smaller menu, asked for by the same tester. Each recent decision takes one line, with how long ago after it. Open
+  blackice.toml, Show Event Log in Finder, Documentation and Open at Login are gone (opening at login is `blackice menu
+  --login on|off`, which the first `start` offers); the version is at the bottom, above Quit Menu; the hooks line and
+  "Nothing waits" show only when they say something. The install script and the npm package say only what to run
+  next.
 - fx's hook replaces fx's own system prompt, written for coding, with two sentences (`fx ask --system`). Each
   decision reads about 3,700 fewer tokens, about 17%, with the same answers in the cases tried. Run `blackice agent
   connect fx` again to get it; the hook from 0.4.1 keeps working as it is.
