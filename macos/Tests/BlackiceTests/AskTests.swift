@@ -272,7 +272,7 @@ struct AskStateTests {
         let key = ApprovalKey(identity: tool, host: "example.com")
         // A hook's deny, sent with the event's token.
         let outcome = ask.answer(request(.deny, token: try #require(events["a1"]?.token)), now: 2)
-        #expect(outcome.reply.message.hasPrefix("Denied com.example.tool → example.com for 10m;"))
+        #expect(outcome.reply.message.hasPrefix("Denied com.example.tool (ABCDE12345) → example.com for 10m;"))
         #expect(ask.denials.covers(key, now: 601.9) && !ask.denials.covers(key, now: 602))
         #expect(ask.denials.summaries(now: 2) == [ApprovalSummary(app: AppReference(tool), host: "example.com", secondsLeft: 600)])
         // Only that app and that host.

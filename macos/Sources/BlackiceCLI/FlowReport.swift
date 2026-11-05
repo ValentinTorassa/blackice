@@ -239,8 +239,12 @@ public struct FlowReport: Equatable, Sendable {
     /// `cdhash/8fbec897…`), the way `pending` shows it.
     static func appName(_ label: String) -> String {
         guard let slash = label.firstIndex(of: "/") else { return label }
-        let rest = label[label.index(after: slash)...]
-        return label.hasPrefix("cdhash/") ? "ad hoc " + rest.prefix(8) : String(rest)
+        let owner = label[..<slash], rest = label[label.index(after: slash)...]
+        switch owner {
+        case "cdhash": return "ad hoc " + rest.prefix(8)
+        case "apple": return String(rest)
+        default: return String(rest) + " (" + owner + ")"
+        }
     }
 
     /// A row per reason with its apps under it, the reasons with the most lines first.
@@ -254,9 +258,8 @@ public struct FlowReport: Equatable, Sendable {
     }
 
     /// One row per app, the most lines first, counts aligned; past `appsShown`, one row for the rest.
-    /// With `words`, the keys are the report's own words, not apps.
-    static func rows(_ counts: [String: Int], indent: String, words: Bool = false) -> [String] {
-        var entries = sorted(counts).map { (label: words ? $0.key : shown(appName($0.key)), count: $0.value) }
+    static func rows(_ counts: [String: Int], indent: String) -> [String] {
+        var entries = sorted(counts).map { (label: shown(appName($0.key)), count: $0.value) }
         if entries.count > appsShown {
             let rest = entries[(appsShown - 1)...]
             let label = "\(rest.count) more apps"

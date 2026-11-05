@@ -351,13 +351,13 @@ struct RunTests {
         let adHoc = "ad hoc " + testCDHash.prefix(8)
         #expect(CLI.pendingLines(reply) == [
             "Waiting",
-            "  com.example.tool → example.com:443  3 connections, 8s left",
+            "  com.example.tool (ABCDE12345) → example.com:443  3 connections, 8s left",
             "    blackice approve --app com.example.tool --team ABCDE12345 --host example.com",
             "  \(adHoc) → pypi.org:80  1 connection, 2s left",
             "    blackice approve --cdhash \(testCDHash) --host pypi.org",
             "",
             "Approvals",
-            "  com.example.tool → api.example.com  59m",
+            "  com.example.tool (ABCDE12345) → api.example.com  59m",
         ])
         #expect(CLI.pendingLines(PendingReply(events: [], approvals: [])) == ["Nothing waiting, and no approvals."])
 

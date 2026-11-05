@@ -13,7 +13,8 @@ Changed:
   the timeout, and the daemon only when hooks need it and it is not running.
 - `pending` shows each waiting connection as `app → host:port`, with the `blackice approve` line that lets it
   through, and the approvals and denials in columns. Time left reads `45s`, `12m` or `23h 55m`, as do the
-  answers of `approve` and `deny`.
+  answers of `approve` and `deny`. An app from outside Apple keeps its team, as in
+  `com.tinyspeck.slackmacgap (BQR82RBBHL)`, since any developer can pick any signing identifier.
 - `agent connect` is a title and a check per step: the agent found, signed in, its limits, the test, the rule,
   the hook, the file saved; then the start's own lines. The first `start` does the same under `4 · Connect fx`.
 - `report` starts with a total (`Last 1h: 10271 connections, 1244 dropped, 124 asked about`) and says each drop

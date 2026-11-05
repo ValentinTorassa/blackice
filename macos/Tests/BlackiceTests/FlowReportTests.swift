@@ -114,7 +114,7 @@ struct FlowReportTests {
             "  5  nobody answered in time",
             "       3  ad hoc 3f1c6a0b",
             "       1  (app not logged)",
-            "       1  com.example.tool",
+            "       1  com.example.tool (ABCDE12345)",
             "  1  held past macOS's limit while asking",
             "       1  ad hoc 3f1c6a0b",
             "",
@@ -158,7 +158,7 @@ struct FlowReportTests {
             "  2  sent nothing for 2 minutes",
             "       2  ad hoc 3f1c6a0b",
             "  1  no server name within 10 s",
-            "       1  com.example.tool",
+            "       1  com.example.tool (ABCDE12345)",
         ])
     }
 
@@ -186,7 +186,7 @@ struct FlowReportTests {
             "         4  4 more apps",
             "   1  would be dropped",
             "        1  no host name",
-            "             1  com.example.tool",
+            "             1  com.example.tool (ABCDE12345)",
             "   1  would be decided on their server name",
             "        1  com.apple.curl",
             "   3  would go through (Apple services 2, loopback 1)",
@@ -205,7 +205,7 @@ struct FlowReportTests {
         let result = run(["report", "--last", "2h"], system)
         #expect(result.status == ExitCode.success && result.stderr.isEmpty && system.asked == [120])
         #expect(result.stdout.first == "Last 2h: 1 connection, 1 dropped")
-        #expect(result.stdout.contains("       1  com.example.tool"))
+        #expect(result.stdout.contains("       1  com.example.tool (ABCDE12345)"))
 
         let quiet = run(["report"], LogOnly(LogShowResult(status: 0, output: "Timestamp               Ty Process[PID:TID]\n")))
         #expect(quiet.status == ExitCode.success)

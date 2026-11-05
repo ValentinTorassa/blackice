@@ -155,6 +155,8 @@ public final class NESystemControl: SystemControlling {
         if request.status == ExitCode.success {
             output.stdout(Style.done("blackice is off" + (request.afterRestart ? "; macOS removes its extension at the next restart" : "")))
             if Self.daemonRunning() { output.stdout("  The daemon still runs: blackice agent uninstall") }
+        } else if current.providerBundleID != nil {
+            output.stderr("The filter is off, so connections are no longer checked; its extension is still installed.")
         }
         return request.status
     }

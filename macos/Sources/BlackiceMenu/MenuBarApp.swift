@@ -77,6 +77,7 @@ public struct MenuBar: MenuBarControlling {
         case .alreadyRunning, .opened:
             output.stdout(Style.done("blackice is in the menu bar" + (needsApproval ? "" : ", and opens there at each login")))
         case .failed(let why):
+            if !needsApproval { output.stdout(Style.done("blackice opens in the menu bar at each login")) }
             output.stderr("blackice did not open in the menu bar now (\(why)). Open Blackice.app to start it.")
         }
         return ExitCode.success
