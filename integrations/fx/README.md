@@ -44,7 +44,7 @@ on = "connection"
 program = "/Users/me/.local/bin/fx"
 app = "com.vercel.fx"
 team = "JW6Y669B67"
-args = ["ask", "--no-save", "--no-color", "--model", "anthropic/claude-haiku-5.5", "Use the blackice skill to decide whether to approve the pending connection"]
+args = ["ask", "--no-save", "--no-color", "--model", "anthropic/claude-haiku-5.5", "--system", "You answer for blackice, a network filter on a Mac: one app wants to reach one host, and you decide whether to approve it. The blackice skill in this workspace says how to read the event and how to answer. Follow it exactly and answer in its format.", "Use the blackice skill to decide whether to approve the pending connection"]
 env = ["HOME=/Users/me/.config/blackice/agent", "FX_DISABLE_KEYCHAIN=1"]
 instructions = "fx"
 ```
@@ -58,6 +58,9 @@ instructions = "fx"
   team fx signed in with, and a decision is a short read and a two-line answer, so `agent connect` writes a small
   one: Claude Haiku 5.5, which `fx models` priced at $0.10 and $0.50 per million tokens in and out on 5 November
   2026, a hundredth of Claude Fable 5.1. `agent connect fx --model ID` writes another; `fx models` lists them.
+- **`--system`** replaces fx's built-in system prompt, written for coding, with two sentences that say what the job
+  is. fx still sends its tools and the blackice skill. On 5 November 2026 that cut each decision's input from about
+  22,000 tokens to about 18,300 with Haiku 5.5, most of them read from the prompt cache either way.
 - **`env`** is added to the environment the daemon builds. `HOME` points fx at a home of its own, with its own
   login and the rules below, so they don't apply to the fx you use yourself. fx's documentation describes
   `FX_HOME` for this, but v0.0.16 does not read it. `FX_DISABLE_KEYCHAIN=1` keeps fx's login in that home rather

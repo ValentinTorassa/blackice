@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- fx's hook replaces fx's own system prompt, written for coding, with two sentences (`fx ask --system`). Each
+  decision reads about 3,700 fewer tokens, about 17%, with the same answers in the cases tried. Run `blackice agent
+  connect fx` again to get it; the hook from 0.4.1 keeps working as it is.
+
 ## 0.4.1 (5 November 2026)
 
 Codex can be the agent, the agent reads your notes, its instructions ship inside blackice, ask mode asks
