@@ -262,8 +262,9 @@ export function nextSteps(version, replaced) {
   if (replaced) {
     lines.push(
       '',
-      'You replaced an installed copy: run `blackice start`, then restart the Mac, then run',
-      '`blackice agent uninstall` and `blackice agent install` so that the daemon runs the new binary.',
+      'You replaced an installed copy: run `blackice start` now to finish the upgrade. If it exits',
+      'with 75, restart the Mac and run it again. Coming from 0.3, also run `blackice agent connect fx`',
+      '(or claude-code) again: hooks now answer on their output, and a 0.3 hook gets no answer through.',
     )
   }
   lines.push('', `Install guide: ${INSTALL_GUIDE}`)
@@ -283,7 +284,7 @@ export async function install({ version, force = false, log = console.log, platf
   check(
     !installed || force,
     `${INSTALLED_APP} is already there. To replace it, run \`npx blackice install --force\`; ` +
-      'after replacing it, run `blackice start` and restart the Mac.',
+      'after replacing it, run `blackice start`.',
   )
   const installedBuild = installed ? bundleVersion(INSTALLED_APP).build : undefined
   const userAgent = `blackice-npm/${version}`

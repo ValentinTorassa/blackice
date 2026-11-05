@@ -59,7 +59,7 @@ export const install = {
   /* The page links "GitHub release" and "install docs"; the markdown twin
      appends the URLs. */
   zip: `Or download ${release.zip} and ${release.checksum} from the GitHub release, check them and move Blackice.app to /Applications, as the install docs describe.`,
-  next: 'The first `blackice start` asks a few questions to write `blackice.toml`, then opens System Settings so you can allow the extension. `blackice agent install` starts the daemon that runs the hooks. Run `blackice stop` before removing the app, and restart the Mac after upgrading.',
+  next: 'The first `blackice start` asks a few questions to write `blackice.toml`, then opens System Settings so you can allow the extension. `blackice agent install` starts the daemon that runs the hooks. Run `blackice stop` before removing the app, and `blackice start` right after upgrading.',
 }
 
 export const configIntro = '`blackice.toml` holds the mode, your rules, and the optional hook.'

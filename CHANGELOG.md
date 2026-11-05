@@ -1,5 +1,61 @@
 # Changelog
 
+## 0.4.0 (5 November 2026)
+
+Hooks answer on their output, Claude Code can be the agent, blackice sits in the menu bar, and upgrades no longer
+need a restart.
+
+Changes that break 0.3 hooks:
+- A hook answers with the last line of its output: `approve 10m`, `approve 1h` (up to `24h`) or `deny`, and exit
+  status 0. The daemon reads it and passes the answer on itself. The event's token no longer leaves the daemon and
+  the network extension: hooks never see it, and `blackice approve` and `deny` no longer take `--token` (they always
+  ask for Touch ID). Any program of the user could read the token from the hook's event file or from the process
+  list and approve its own connection.
+- A hook can be a signed program: `program`, `app`, `team`, `args`, `env` and `stdin` in `[[hook]]`. The daemon
+  starts it suspended, checks the signature of that process, and runs it only if it matches (`hook_refused`
+  otherwise), so replacing the agent's binary keeps it from running. `run` still works, without that check.
+- The event log has `hook_answer`, `hook_no_answer` (with the reason), `answer_refused` and `hook_refused`.
+
+New:
+- `blackice agent connect claude-code` sets Claude Code up as the agent: its own configuration directory and
+  sign-in, reading the event as its only tool, a test on a sample connection, a signed program hook and its rule.
+  The first `blackice start` offers fx, Claude Code or you. Connecting one agent replaces the other's hook.
+  `integrations/eval/run.sh --agent fx|claude-code` runs either over the same 20 cases.
+- The menu bar: the blackice mark, dimmed when nothing is filtered, with the number of waiting connections. Its menu
+  shows the mode, each waiting connection with Allow for 10 Minutes, Allow for 1 Hour and Deny (Touch ID), the last
+  verdicts and who gave them, a Mode submenu and Open at Login. `blackice menu` runs it, and so does opening
+  Blackice.app. Quitting it leaves the filter running.
+- Loopback (127.0.0.0/8, ::1) passes in every mode; `loopback = false` turns that off.
+- In ask mode a TCP connection with no host name is asked about by its address instead of being dropped, and
+  `blackice approve --host` takes an address. UDP with no name, multicast and broadcast are still dropped without
+  an event.
+- `hosts` in `[[allow]]` takes addresses and ranges: `["100.64.0.0/10", "10.0.0.5", "fd7a:115c:a1e0::/48"]`.
+
+Fixed:
+- Upgrades in place: every build used the same XPC service name, and the replaced extension held it for up to 5 s,
+  so the new one often could not be reached until the Mac restarted. Each build now has its own name.
+- On port 443, a connection the system names is held to the TLS server name it sends, as DNS-named ones were, so
+  an app cannot name an allowed host and reach another site on the same address. A hello with Encrypted Client
+  Hello is judged on its outer name (reasons end in `;ech`); a rule for a front-end name covers what sits behind it.
+- An answer given under one configuration no longer lets a connection through after a switch to another one.
+- Link-local IPv6 addresses keep their interface.
+- `start` and `mode` report success only once the filter names the configuration they saved (exit 70 or 69
+  otherwise), and `status` says when the filter holds another one.
+- `agent connect` never leaves accept-all behind: when it fails or you press Control-C, it switches back. A first
+  `start` whose agent setup fails stays in accept-all, filtering nothing as before, and says so. Edits made to
+  `blackice.toml` during the setup are kept.
+- Message and configuration size limits agree on both sides; the daemon no longer keeps a finished task per event;
+  names that apps choose are escaped in the terminal.
+- The install script and the npm package check that the app is the version asked for, keep the installed app if a
+  replacement fails, and refuse a lower build.
+- A dropped connection shows in the app as "Bad file descriptor"; the guide says so.
+
+Upgrading from 0.3.2: run the install script with `--force` (`curl -fsSL
+https://blackice-macos.vercel.app/install.sh | sh -s -- --force`) or `brew upgrade --cask blackice`, then `blackice
+start`. No restart should be needed; if `start` exits with 75, restart the Mac and run `blackice start` again. Then
+run `blackice agent connect fx` (or `claude-code`) again: a 0.3 hook still runs `blackice approve --token`, which
+0.4.0 refuses, so until then ask mode denies what waits.
+
 ## 0.3.2 (4 November 2026)
 
 Fewer connections waiting in ask mode.
