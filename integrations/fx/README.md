@@ -35,7 +35,7 @@ on = "connection"
 program = "/Users/me/.local/bin/fx"
 app = "com.vercel.fx"
 team = "JW6Y669B67"
-args = ["ask", "--no-save", "--no-color", "Use the blackice skill to decide whether to approve the pending connection"]
+args = ["ask", "--no-save", "--no-color", "--model", "anthropic/claude-haiku-5.5", "Use the blackice skill to decide whether to approve the pending connection"]
 env = ["HOME=/Users/me/.config/blackice/agent", "FX_DISABLE_KEYCHAIN=1"]
 instructions = "fx"
 ```
@@ -45,6 +45,10 @@ instructions = "fx"
   `codesign -dv ~/.local/bin/fx` (`Identifier=` and `TeamIdentifier=`). The daemon starts fx suspended, checks the
   signature of the process it started, and kills it before it runs if the signature does not name both. An
   upgrade of fx that keeps its identity needs no change; a program put in its place by something else never runs.
+- **`--model`** picks the model for each decision over the one in fx's settings. AI Gateway bills it to the Vercel
+  team fx signed in with, and a decision is a short read and a two-line answer, so `agent connect` writes a small
+  one: Claude Haiku 5.5, which `fx models` priced at $0.10 and $0.50 per million tokens in and out on 5 November
+  2026, a hundredth of Claude Fable 5.1. `agent connect fx --model ID` writes another; `fx models` lists them.
 - **`env`** is added to the environment the daemon builds. `HOME` points fx at a home of its own, with its own
   login and the rules below, so they don't apply to the fx you use yourself. fx's documentation describes
   `FX_HOME` for this, but v0.0.16 does not read it. `FX_DISABLE_KEYCHAIN=1` keeps fx's login in that home rather
@@ -134,7 +138,8 @@ $ AGENT_HOME="$HOME/.config/blackice/agent" integrations/eval/run.sh --agent fx 
 
 Each event gets its own private directory with `event.json` and the repository's copy of the
 skill in it, and fx runs there, as under the hook. `AGENT_HOME` is the `HOME` fx runs with, with
-`FX_DISABLE_KEYCHAIN=1` as in the hook; without it, fx runs with your own `HOME`. `NOTES=file` puts that file in
+`FX_DISABLE_KEYCHAIN=1` as in the hook; without it, fx runs with your own `HOME`. `MODEL=id` picks another model
+than the hook's. `NOTES=file` puts that file in
 each event's directory as `notes.md`, as the daemon does with `notes` in `[agent]`. `KEEP=1` keeps the work
 directory with fx's stdout and stderr for each event.
 

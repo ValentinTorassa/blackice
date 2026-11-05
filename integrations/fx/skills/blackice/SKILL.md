@@ -117,9 +117,11 @@ deny
 approve 10m
 ```
 
-- `approve` takes the shortest time that makes sense, in minutes (`1m` to `1440m`) or hours
-  (`1h` to `24h`): `10m` for a one-off, up to `1h` for an app that keeps working with that
-  host. Never more than `24h`.
+- `approve` takes a time in minutes (`1m` to `1440m`) or hours (`1h` to `24h`), by how plain
+  the connection is. `8h` to `24h` for clearly ordinary developer or vendor traffic: an app
+  reaching its own vendor's API, update or sign-in server, or a package manager reaching its
+  registry; the same app and host are then not asked about again within the day. `10m` to `1h`
+  for anything less clear that you still approve, such as a one-off. Never more than `24h`.
 - The line is lowercase plain text on its own: no backticks, no bold, no quotes, no period, and
   nothing after it. `approve 1h.` or `**deny**` is not an answer, and the connection is dropped.
 - Only the last line counts, so put nothing after it.
@@ -134,5 +136,5 @@ For example, a reply ends like this:
 
 ```text
 Visual Studio Code, signed by Microsoft (UBF8T346G9), reaching its own update server.
-approve 1h
+approve 12h
 ```

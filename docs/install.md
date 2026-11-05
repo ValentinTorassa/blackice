@@ -201,6 +201,13 @@ the login keychain, apart from yours. Its hook gives it one tool, reading the ev
 stdin (`stdin = "none"`), since `claude -p` would add it to the prompt. Its rule covers `api.anthropic.com` and
 `platform.claude.com`. [`integrations/claude-code/README.md`](../integrations/claude-code/README.md) has the details.
 
+Each agent decides with a small model, since a decision is a short read and a two-line answer: fx with Claude
+Haiku 5.5 through AI Gateway (`anthropic/claude-haiku-5.5`, billed to the Vercel team fx signed in with), Claude Code
+with `haiku` (counted against its subscription). `--model NAME` writes another into the hook, such as
+`blackice agent connect claude-code --model sonnet`; running `agent connect` again with another model replaces the
+hook's. The agents approve clearly ordinary developer and vendor traffic for 8 to 24 hours and anything less plain
+for 10 minutes to an hour.
+
 One agent answers at a time. Connecting one replaces the hook of another (with two, the first answer would win)
 and says so.
 

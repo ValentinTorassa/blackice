@@ -28,6 +28,9 @@ public struct AgentProfile: Sendable {
     let settingsFile: String?
     /// What the daemon writes into each event's directory for it (`instructions` in its hook).
     let instructions: AgentInstructions
+    /// The model its hook asks for unless `--model` names another: a small one, since each
+    /// decision is a short read and a two-line answer.
+    public let defaultModel: String
     /// Where to get it, when it is not installed.
     let installHint: String
     /// Its own installer, as a shell command line, offered when it is not installed.
@@ -43,8 +46,9 @@ public struct AgentProfile: Sendable {
     let signedIn: @Sendable (_ statusOutput: String) -> Bool
     /// Its settings file, with the rules set and its other keys kept; nil with no settings file.
     let settings: (@Sendable (_ existing: Data?) throws -> Data)?
-    /// The hook's `args`: one request that ends with the answer as its last line of output.
-    let askArguments: @Sendable (_ agentHome: String) -> [String]
+    /// The hook's `args`: one request to this model that ends with the answer as its last line of
+    /// output.
+    let askArguments: @Sendable (_ agentHome: String, _ model: String) -> [String]
     /// What to do about a failure the agent's output names, when the test gets no answer.
     var advice: @Sendable (_ output: String) -> [String] = { _ in [] }
     /// Text that only this agent's hook holds in its `args`, for hooks written before they named
@@ -58,6 +62,9 @@ public struct AgentProfile: Sendable {
     public static let fx = AgentProfile(
         name: "fx", executable: "fx", hosts: ["ai-gateway.vercel.sh", "vercel.com", "api.vercel.com"],
         folder: ".fx", settingsFile: ".fx/settings.json", instructions: .fx,
+        // Paid from AI Gateway credits: on 5 November 2026 `fx models` priced Claude Haiku 5.5 at $0.10 and $0.50
+        // per million tokens in and out, a hundredth of Claude Fable 5.1. `--model` overrides fx's settings.
+        defaultModel: "anthropic/claude-haiku-5.5",
         installHint: "https://github.com/vercel-labs/fx",
         // fx's README; it puts fx in ~/.local/bin.
         installer: "curl -fsSL https://fx.sh/setup.sh | bash",
@@ -70,7 +77,7 @@ public struct AgentProfile: Sendable {
         signedIn: { CLI.fxSignedIn($0) }, settings: { try CLI.fxSettings($0) },
         // With stdout not a terminal, fx prints its reply as plain Markdown; the skill, which fx
         // finds in its workspace's skills/ folder, ends it with the answer.
-        askArguments: { _ in ["ask", "--no-save", "--no-color", prompt] },
+        askArguments: { _, model in ["ask", "--no-save", "--no-color", "--model", model, prompt] },
         // Seen on 3 November 2026: a Vercel team with no card on file gets HTTP 403 from AI Gateway.
         // Seen on 4 November 2026: a team with no credits left gets HTTP 502, insufficient_funds.
         advice: { stderr in
@@ -93,6 +100,8 @@ public struct AgentProfile: Sendable {
         // 2.1.317's OAuth token endpoint). Nothing else was reached in 20 decisions on 4 November 2026.
         name: "claude-code", executable: "claude", hosts: ["api.anthropic.com", "platform.claude.com"],
         folder: ".claude", settingsFile: nil, instructions: .claudeCode,
+        // Counted against the subscription it signs in with; haiku uses the least of it.
+        defaultModel: "haiku",
         installHint: "https://code.claude.com/docs/en/setup",
         // Anthropic's native installer; it puts claude in ~/.local/bin.
         installer: "curl -fsSL https://claude.ai/install.sh | bash",
@@ -106,7 +115,7 @@ public struct AgentProfile: Sendable {
                         "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"] },
         statusArguments: ["auth", "status", "--json"], loginArguments: ["auth", "login"],
         signedIn: { CLI.claudeCodeSignedIn($0) }, settings: nil,
-        askArguments: { _ in CLI.claudeCodeArguments() },
+        askArguments: { _, model in CLI.claudeCodeArguments(model: model) },
         // A hook gets none of the shell's variables, so a sign-in through ANTHROPIC_API_KEY, which
         // `claude auth status` counts, is not there. Claude Code says so on stdout.
         advice: { output in
@@ -334,9 +343,20 @@ extension CLI {
     /// The agent's hook: its executable, started directly with its home in `env`, the signature it
     /// must have, read from the executable when it was connected, and its instructions.
     static func agentHook(_ profile: AgentProfile, executable: String, agentHome: String,
-                          identity: SigningIdentity) -> HookProgram {
-        HookProgram(path: executable, arguments: profile.askArguments(agentHome), environment: profile.environment(agentHome),
+                          identity: SigningIdentity, model: String) -> HookProgram {
+        HookProgram(path: executable, arguments: profile.askArguments(agentHome, model), environment: profile.environment(agentHome),
                     identity: identity, eventOnStdin: profile.eventOnStdin, instructions: profile.instructions)
+    }
+
+    /// A model name `--model` takes: an ASCII letter or digit, then letters, digits and
+    /// `. _ - / : @ [ ]` (`anthropic/claude-haiku-5.5`, `sonnet[1m]`), up to 100 characters. It
+    /// goes into the hook's `args` as one argument, and cannot start like an option.
+    static func validModel(_ name: String) -> Bool {
+        guard let first = name.unicodeScalars.first, name.unicodeScalars.count <= 100,
+              first.isASCII, first.properties.isAlphabetic || ("0"..."9").contains(first) else { return false }
+        return name.unicodeScalars.allSatisfy {
+            $0.isASCII && ($0.properties.isAlphabetic || ("0"..."9").contains($0) || "._-/:@[]".unicodeScalars.contains($0))
+        }
     }
 
     /// The agent, if any, whose hook this is: by the instructions it names, or for a hook from
@@ -434,9 +454,9 @@ extension CLI {
     /// the daemon writes into the event's directory as its whole system prompt; plain text, whose
     /// last line is the answer. Checked against Claude Code 2.1.317.
     /// integrations/eval/agents/claude-code.sh runs the same (a test checks).
-    static func claudeCodeArguments() -> [String] {
+    static func claudeCodeArguments(model: String) -> [String] {
         ["-p", "--restricted", "--safe-mode", "--tools", "Read", "--strict-mcp-config", "--no-session-persistence",
-         "--permission-prompts", "none", "--model", "sonnet", "--max-turns", "3", "--output-format", "text",
+         "--permission-prompts", "none", "--model", model, "--max-turns", "3", "--output-format", "text",
          "--system-prompt-file", "instructions.md", claudeCodePrompt]
     }
 
@@ -526,7 +546,7 @@ extension CLI {
 
     /// `firstStep` numbers the steps on from where `blackice start` left off when it runs this
     /// right after the first start (`fromFirstStart`), which loaded the file in accept-all.
-    static func connectAgent(_ name: String, configPath: String?, readFile: (String) throws -> Data,
+    static func connectAgent(_ name: String, configPath: String?, model chosenModel: String? = nil, readFile: (String) throws -> Data,
                              system: SystemControlling, interaction: Interaction, machine: AgentMachine,
                              stdout: @escaping (String) -> Void, stderr: @escaping (String) -> Void,
                              firstStep: Int = 1, fromFirstStart: Bool = false) -> Int32 {
@@ -556,6 +576,11 @@ extension CLI {
             return ExitCode.usage
         }
         let name = profile.name
+        let model = chosenModel ?? profile.defaultModel
+        guard validModel(model) else {
+            stderr("agent connect: --model takes a model name such as \(profile.defaultModel)")
+            return ExitCode.usage
+        }
         guard let ask = interaction.ask else {
             stderr("blackice agent connect asks questions and signs \(profile.name) in, so it needs a terminal.")
             return ExitCode.usage
@@ -577,6 +602,7 @@ extension CLI {
         // What to run to try again: from blackice start, the file is written and start would
         // only load it, so the retry is agent connect itself.
         let retry = "blackice agent connect \(name)" + (configPath.map { " --config \(Describe.path($0, home: interaction.home))" } ?? "")
+            + (chosenModel.map { $0.contains("[") ? " --model '\($0)'" : " --model \($0)" } ?? "")
         var number = firstStep
         func step(_ title: String) {
             stdout(""); stdout(Style.heading("\(number) · \(title)")); stdout("")
@@ -713,10 +739,11 @@ extension CLI {
             return fail(ExitCode.cannotCreate, "Cannot set up the test in \(homeShown): \(describe(error))")
         }
         defer { try? files.removeItem(atPath: paths.test) }
+        stdout("  It decides with \(model)" + (chosenModel == nil ? "; --model NAME picks another." : "."))
         stdout("  \(name) is deciding whether Visual Studio Code may reach")
         stdout("  update.code.visualstudio.com. Its answer is only read for this test, so")
         stdout("  nothing is let through…")
-        let program = agentHook(profile, executable: executable, agentHome: paths.home, identity: identity)
+        let program = agentHook(profile, executable: executable, agentHome: paths.home, identity: identity, model: model)
         let result = machine.runHook(Hook(program: program, line: 0), event, config.agentNotes, paths.test + "/work",
                                      agentTestSeconds)
         if let stop = interruption() { return stop }
@@ -794,6 +821,8 @@ extension CLI {
         } else if let existingHook, let other = agentRunning(existingHook), other.name != name {
             stdout("  " + Style.done("The hook on line \(existingHook.line) ran \(other.name); it now starts \(name) instead,"))
             stdout("    so one agent answers, once its signature checks out")
+        } else if let existingHook, existingHook.program?.instructions == profile.instructions {
+            stdout("  " + Style.done("The hook on line \(existingHook.line) now starts \(name) with \(model)"))
         } else if let existingHook {
             stdout("  " + Style.done("The hook on line \(existingHook.line) now starts \(name) itself, once its signature checks out"))
         } else {

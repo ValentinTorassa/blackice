@@ -123,9 +123,11 @@ deny
 approve 10m
 ```
 
-- `approve` takes the shortest time that makes sense, in minutes (`1m` to `1440m`) or hours
-  (`1h` to `24h`): `10m` for a one-off, up to `1h` for an app that keeps working with that
-  host. Never more than `24h`.
+- `approve` takes a time in minutes (`1m` to `1440m`) or hours (`1h` to `24h`), by how plain
+  the connection is. `8h` to `24h` for clearly ordinary developer or vendor traffic: an app
+  reaching its own vendor's API, update or sign-in server, or a package manager reaching its
+  registry; the same app and host are then not asked about again within the day. `10m` to `1h`
+  for anything less clear that you still approve, such as a one-off. Never more than `24h`.
 - The line is lowercase plain text on its own: no backticks, no bold, no quotes, no period, and
   nothing after it. `approve 1h.` or `**deny**` is not an answer, and the connection is dropped.
 - Only the last line counts, so put nothing after it.
@@ -140,7 +142,7 @@ For example, a reply ends like this:
 
 ```text
 Visual Studio Code, signed by Microsoft (UBF8T346G9), reaching its own update server.
-approve 1h
+approve 12h
 ```
 
 """##
@@ -243,17 +245,21 @@ When you are unsure, deny.
 ## 5. Answer narrowly
 
 An approval covers exactly the event's app and host, for the time you give; an approval of an
-address covers only that address. Give the shortest
-time that makes sense: `10m` for a one-off, up to `1h` for an app that keeps working with that
-host. Never more than `24h`.
+address covers only that address. Pick the time by how plain the connection is:
+
+- `8h` to `24h` for clearly ordinary developer or vendor traffic: an app reaching its own
+  vendor's API, update or sign-in server, or a package manager reaching its registry. The same
+  app and host are then not asked about again within the day.
+- `10m` to `1h` for anything less clear that you still approve, such as a one-off.
+- Never more than `24h`.
 
 Reply with two lines of plain text and nothing else: no Markdown, no code block, no quotes.
 
 1. Why, in one line, for example
    `com.example.tool -> paste.example: file-sharing site, not what this app is for`.
 2. The verdict, alone on the last line, exactly in one of these forms:
-   - `approve 10m`: minutes, from 1 to 1440 (`approve 30m`);
-   - `approve 1h`: hours, from 1 to 24;
+   - `approve 30m`: minutes, from 1 to 1440;
+   - `approve 12h`: hours, from 1 to 24;
    - `deny`.
 
 Nothing may follow the verdict line.

@@ -94,17 +94,21 @@ When you are unsure, deny.
 ## 5. Answer narrowly
 
 An approval covers exactly the event's app and host, for the time you give; an approval of an
-address covers only that address. Give the shortest
-time that makes sense: `10m` for a one-off, up to `1h` for an app that keeps working with that
-host. Never more than `24h`.
+address covers only that address. Pick the time by how plain the connection is:
+
+- `8h` to `24h` for clearly ordinary developer or vendor traffic: an app reaching its own
+  vendor's API, update or sign-in server, or a package manager reaching its registry. The same
+  app and host are then not asked about again within the day.
+- `10m` to `1h` for anything less clear that you still approve, such as a one-off.
+- Never more than `24h`.
 
 Reply with two lines of plain text and nothing else: no Markdown, no code block, no quotes.
 
 1. Why, in one line, for example
    `com.example.tool -> paste.example: file-sharing site, not what this app is for`.
 2. The verdict, alone on the last line, exactly in one of these forms:
-   - `approve 10m`: minutes, from 1 to 1440 (`approve 30m`);
-   - `approve 1h`: hours, from 1 to 24;
+   - `approve 30m`: minutes, from 1 to 1440;
+   - `approve 12h`: hours, from 1 to 24;
    - `deny`.
 
 Nothing may follow the verdict line.

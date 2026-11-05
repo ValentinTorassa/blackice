@@ -141,9 +141,11 @@ In ask or block-all it switches to accept-all while fx is set up (Touch ID), sin
 - The hook keeps the event off Claude Code's stdin (`stdin = "none"`): `claude -p` adds what comes on stdin to its prompt, and the event should reach it only as a file it reads.
 - Its rule lets `com.anthropic.claude-code` (team Q6L2SF6YDW) reach `api.anthropic.com` and `platform.claude.com`.
 
+Each agent decides with a small model, since a decision is a short read and a two-line answer: fx with Claude Haiku 5.5 through AI Gateway (`anthropic/claude-haiku-5.5`, billed to the Vercel team fx signed in with), Claude Code with `haiku` (counted against its subscription). `--model NAME` writes another into the hook, such as `blackice agent connect claude-code --model sonnet`; running `agent connect` again with another model replaces the hook's. The agents approve clearly ordinary developer and vendor traffic for 8 to 24 hours and anything less plain for 10 minutes to an hour.
+
 One agent answers at a time: `agent connect` replaces another agent's hook, and says so. With two hooks, the first answer would win.
 
-[integrations/claude-code/README.md](https://github.com/ValentinTorassa/blackice/blob/main/integrations/claude-code/README.md) has the hook, how the sign-in works under the daemon, and the eval: the first 20 cases as expected on 4 November 2026, about 4 s each.
+[integrations/claude-code/README.md](https://github.com/ValentinTorassa/blackice/blob/main/integrations/claude-code/README.md) has the hook, how the sign-in works under the daemon, and the eval: the 23 cases as expected with `haiku` and with `sonnet` on 5 November 2026, 4.2 and 5.1 s at the median.
 
 ## 6. Use it
 

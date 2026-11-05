@@ -12,6 +12,14 @@
   or hosts you never want reached. The daemon writes them as `notes.md` beside the event, and the instructions
   have the agent follow them for judgment calls, never over their safety rules. They change only with Touch ID,
   like the rest of the file. `[allow]` and `[hook]` with single brackets now say they need double ones.
+- Ask mode costs less. `agent connect` writes a small model into the hook: fx asks for Claude Haiku 5.5
+  (`anthropic/claude-haiku-5.5`), whatever its settings name, so AI Gateway bills a hundredth of what Claude Fable
+  5.1 costs; Claude Code uses `haiku` in place of `sonnet`. `agent connect … --model NAME` picks another, and
+  connecting again with another model replaces the hook's. The instructions approve clearly ordinary developer and
+  vendor traffic for 8 to 24 hours, so the same app and host come back once a day at most, and anything less plain
+  for 10 minutes to an hour; up to 0.4.0 every approval was 10 minutes to an hour. With Claude Code on 5 November
+  2026, `haiku` and `sonnet` both decided the 23 eval cases as expected, `haiku` in 4.2 s at the median and
+  `sonnet` in 5.1 s. Run `agent connect` again to get the new model.
 
 ## 0.4.0 (5 November 2026)
 

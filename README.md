@@ -99,9 +99,13 @@ under `~/.config/blackice/agent`, one test on a sample connection, a rule that l
 - `fx`: [fx](https://github.com/vercel-labs/fx) with the blackice skill ([`integrations/fx/`](integrations/fx/)).
 - `claude-code`: [Claude Code](https://code.claude.com) in print mode, with reading the event as its only tool and a
   sign-in of its own ([`integrations/claude-code/`](integrations/claude-code/)). It ends its reply with a verdict
-  line, `approve 1h` or `deny`. On 4 November 2026 it decided the first 20 eval cases as expected, in 4 s at the median.
+  line, such as `approve 12h` or `deny`. On 5 November 2026, with `haiku`, it decided the 23 eval cases as
+  expected, in 4.2 s at the median.
 
-One agent answers at a time: connecting one replaces the other's hook.
+Each agent decides with a small model unless `--model NAME` names another: a decision is a short read and a
+two-line answer. The instructions approve clearly ordinary developer and vendor traffic for 8 to 24 hours and
+anything less plain for 10 minutes to an hour, so the same app and host are asked about once a day at most. One
+agent answers at a time: connecting one replaces the other's hook.
 [`integrations/eval/run.sh`](integrations/eval/run.sh) runs either one over the same 23 cases.
 
 ## Development

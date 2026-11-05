@@ -146,7 +146,8 @@ struct AgentConnectTests {
     }
     static func agent(_ home: URL) -> String { home.path + "/.config/blackice/agent" }
     static func program(_ home: URL) -> HookProgram {
-        HookProgram(path: "/opt/fake/fx", arguments: ["ask", "--no-save", "--no-color", AgentProfile.prompt],
+        HookProgram(path: "/opt/fake/fx", arguments: ["ask", "--no-save", "--no-color", "--model", "anthropic/claude-haiku-5.5",
+                                                      AgentProfile.prompt],
                     environment: ["HOME": agent(home), "FX_DISABLE_KEYCHAIN": "1"], identity: fx, instructions: .fx)
     }
 
@@ -183,7 +184,7 @@ struct AgentConnectTests {
 
     static let claude = SigningIdentity(signingID: "com.anthropic.claude-code", teamID: "Q6L2SF6YDW")
     static func claudeProgram(_ home: URL) -> HookProgram {
-        HookProgram(path: "/opt/fake/claude", arguments: CLI.claudeCodeArguments(),
+        HookProgram(path: "/opt/fake/claude", arguments: CLI.claudeCodeArguments(model: AgentProfile.claudeCode.defaultModel),
                     environment: ["CLAUDE_CONFIG_DIR": agent(home) + "/.claude", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"],
                     identity: claude, eventOnStdin: false, instructions: .claudeCode)
     }
@@ -330,30 +331,55 @@ struct AgentConnectTests {
 
         // Read is its only tool, and the hook goes into blackice.toml and back as it was.
         let home = "/Users/Jane Doe/.config/blackice/agent"
-        let arguments = CLI.claudeCodeArguments()
+        let arguments = CLI.claudeCodeArguments(model: "haiku")
         #expect(arguments.starts(with: ["-p", "--restricted", "--safe-mode", "--tools", "Read"]))
+        #expect(arguments.contains("haiku") && CLI.claudeCodeArguments(model: "sonnet").contains("sonnet"))
         // The instructions the daemon writes into the event's directory, its working directory.
         #expect(arguments.suffix(3) == ["--system-prompt-file", "instructions.md", CLI.claudeCodePrompt])
         #expect(AgentInstructions.claudeCode.files.map(\.path) == ["instructions.md"])
-        let program = CLI.agentHook(.claudeCode, executable: "/Users/Jane Doe/.local/bin/claude", agentHome: home, identity: Self.claude)
+        let program = CLI.agentHook(.claudeCode, executable: "/Users/Jane Doe/.local/bin/claude", agentHome: home, identity: Self.claude,
+                                    model: AgentProfile.claudeCode.defaultModel)
         let text = "mode = \"ask\"\n" + CLI.agentAddition("claude-code", identity: Self.claude, hosts: ["api.anthropic.com"], hook: program)
         let config = try BlackiceConfig(data: Data(text.utf8))
         #expect(config.hooks.first?.program == program && program.eventOnStdin == false)
         #expect(CLI.agentRunning(config.hooks[0])?.name == "claude-code")
         #expect(AgentProfile.known.map(\.name) == ["fx", "claude-code"])
+        #expect(try adapter("claude-code").contains("agent_stdin=none"))
+    }
 
-        // The eval runs the same arguments, in the same order.
-        let adapter = try String(contentsOf: URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
-            .deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("integrations/eval/agents/claude-code.sh"),
-                                 encoding: .utf8)
-        var rest = Substring(adapter)
-        for argument in arguments.dropLast(2) {
-            // The model can be changed for a run (MODEL=haiku); the hook's is the default.
-            let word = argument == "sonnet" ? "\"${MODEL:-sonnet}\"" : "\"" + argument + "\""
-            let range = try #require(rest.range(of: word), "\(argument) is not in the eval's arguments")
+    /// integrations/eval/agents/NAME.sh, which runs an agent as its hook does.
+    private func adapter(_ name: String) throws -> String {
+        try String(contentsOf: URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("integrations/eval/agents/\(name).sh"),
+                   encoding: .utf8)
+    }
+
+    /// The eval runs each agent with its hook's arguments, in the same order, and the hook's model
+    /// as the default of MODEL.
+    @Test(arguments: AgentProfile.known.map(\.name))
+    func theEvalRunsTheHooksArguments(_ name: String) throws {
+        let profile = try #require(AgentProfile.known.first { $0.name == name })
+        let text = try adapter(name)
+        var rest = Substring(text)
+        for argument in profile.askArguments("/Users/me/.config/blackice/agent", profile.defaultModel) {
+            let word = argument == profile.defaultModel ? "\"${MODEL:-\(argument)}\"" : "\"" + argument + "\""
+            let range = try #require(rest.range(of: word), "\(argument) is not in the eval's arguments for \(name)")
             rest = rest[range.upperBound...]
         }
-        #expect(adapter.contains("\"\(CLI.claudeCodePrompt)\"") && adapter.contains("agent_stdin=none"))
+    }
+
+    @Test func aModelOfYourOwn() throws {
+        #expect(try CLI.parse(["agent", "connect", "fx", "--model", "openai/gpt-6-luna"])
+                == .connectAgent(name: "fx", configPath: nil, model: "openai/gpt-6-luna"))
+        for good in ["haiku", "sonnet[1m]", "anthropic/claude-haiku-5.5", "claude-haiku-5-5@20261001", "gpt-6-luna"] {
+            #expect(CLI.validModel(good), "\(good)")
+        }
+        for bad in ["-x", "--model", "", "a b", "a;b", "a\nb", "é", String(repeating: "a", count: 101), "$(id)", "'q'"] {
+            #expect(!CLI.validModel(bad), "\(bad)")
+            #expect(throws: UsageError.self, "\(bad)") { try CLI.parse(["agent", "connect", "fx", "--model", bad]) }
+        }
+        let fx = AgentProfile.fx.askArguments("/h", "openai/gpt-6-luna")
+        #expect(fx == ["ask", "--no-save", "--no-color", "--model", "openai/gpt-6-luna", AgentProfile.prompt])
     }
 
     @Test func connectsFxEndToEnd() throws {
@@ -405,11 +431,12 @@ struct AgentConnectTests {
             program = "/opt/fake/fx"
             app = "com.vercel.fx"
             team = "JW6Y669B67"
-            args = ["ask", "--no-save", "--no-color", "\(AgentProfile.prompt)"]
+            args = ["ask", "--no-save", "--no-color", "--model", "anthropic/claude-haiku-5.5", "\(AgentProfile.prompt)"]
             env = ["FX_DISABLE_KEYCHAIN=1", "HOME=\(agent)"]
             instructions = "fx"
 
             """))
+        #expect(result.stdout.contains("  It decides with anthropic/claude-haiku-5.5; --model NAME picks another."))
         #expect(system.texts == [written] && system.agentInstalls == 1)
 
         #expect(result.stdout.contains("1 · Find fx"))
@@ -427,6 +454,17 @@ struct AgentConnectTests {
         #expect(mac.logins.count == 1 && system.texts == [written, written])
         #expect(again.stdout.contains("  fx could already reach its model's hosts."))
         #expect(again.stdout.contains { $0.hasPrefix("  A hook already starts fx (line ") })
+
+        // Another model: the same hook, in its place, with that model in its args.
+        let other = connect(home, config: config, mac: mac, system: system,
+                            arguments: ["agent", "connect", "fx", "--config", config, "--model", "openai/gpt-6-luna"])
+        #expect(other.status == 0, "\(other.stderr)")
+        let switched = try BlackiceConfig(data: Data(contentsOf: URL(fileURLWithPath: config)))
+        #expect(switched.hooks.count == 1 && switched.hooks[0].line == loaded.hooks[0].line)
+        #expect(switched.hooks[0].program?.arguments == AgentProfile.fx.askArguments(Self.agent(home), "openai/gpt-6-luna"))
+        #expect(other.stdout.contains("  It decides with openai/gpt-6-luna."))
+        #expect(other.stdout.contains("  ✓ The hook on line \(loaded.hooks[0].line) now starts fx with openai/gpt-6-luna"))
+        #expect(mac.hookRuns.last?.program?.arguments.contains("openai/gpt-6-luna") == true)
     }
 
     @Test func noAnswerLeavesTheFileAlone() throws {
@@ -930,7 +968,8 @@ struct AgentConnectTests {
         try event.validate(now: Date(), maximumWait: TimeInterval(CLI.agentTestSeconds))
         // The hook reads back from blackice.toml as it was written, quotes and backslashes included.
         let program = CLI.agentHook(.fx, executable: "/Users/Jane \"Doe\"/.local/bin/fx",
-                                    agentHome: "/Users/Jane \"Doe\"/back\\slash/.config/blackice/agent", identity: Self.fx)
+                                    agentHome: "/Users/Jane \"Doe\"/back\\slash/.config/blackice/agent", identity: Self.fx,
+                                    model: AgentProfile.fx.defaultModel)
         let config = try BlackiceConfig(data: Data(("mode = \"ask\"\n" + CLI.agentAddition("fx", identity: Self.fx, hosts: ["vercel.com"],
                                                                                           hook: program)).utf8))
         #expect(config.hooks.first?.program == program && config.allowRule(for: Self.fx, host: "vercel.com") != nil)
