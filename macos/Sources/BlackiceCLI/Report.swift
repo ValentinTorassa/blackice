@@ -19,11 +19,40 @@ public struct StatusReport {
     public let daemonRunning: Bool
     /// What the extension answered over XPC; nil when it did not answer.
     public let pending: PendingReply?
+    /// Set when the extension did not answer because macOS runs another build of it than this app's.
+    public let upgrade: UnfinishedUpgrade?
 
-    public init(filter: Filter, daemonRunning: Bool, pending: PendingReply?) {
+    public init(filter: Filter, daemonRunning: Bool, pending: PendingReply?, upgrade: UnfinishedUpgrade? = nil) {
         self.filter = filter
         self.daemonRunning = daemonRunning
         self.pending = pending
+        self.upgrade = upgrade
+    }
+}
+
+/// Blackice.app was replaced by another build and `blackice start` has not activated its extension
+/// yet, so macOS still runs the old build's. Each build's extension listens on its own XPC service
+/// name (Peers.machServiceName), so until then this app's commands cannot reach the running one.
+public struct UnfinishedUpgrade: Equatable, Sendable {
+    /// CFBundleVersion of the extension macOS runs.
+    public let running: String
+    /// CFBundleVersion of the extension inside this app.
+    public let app: String
+
+    /// `running` lists the builds of the extension macOS has enabled and is not uninstalling. nil
+    /// unless the app's build is known and every running build is older: none runs, the app's build
+    /// runs, or a newer one does, which start would refuse to replace.
+    public init?(app: String?, running: [String]) {
+        guard let app, let appVersion = ExtensionReplacement.version(app), let other = running.first,
+              running.allSatisfy({ ExtensionReplacement.version($0)?.lexicographicallyPrecedes(appVersion) == true })
+        else { return nil }
+        self.running = other
+        self.app = app
+    }
+
+    public var hint: String {
+        "blackice was upgraded to build \(app), but macOS still runs the network extension of build \(running). " +
+            "Run blackice start to finish the upgrade."
     }
 }
 
@@ -55,7 +84,12 @@ extension CLI {
         }
         if configuration.mode == .ask { row("answer in", "\(config.timeoutSeconds) s, or the connection is denied") }
         guard let pending = report.pending else {
-            row("filter", "not answering. If blackice was just upgraded, restart the Mac.")
+            if let upgrade = report.upgrade {
+                row("filter", "still build \(upgrade.running), and this app is build \(upgrade.app): " +
+                    "run blackice start to finish the upgrade")
+            } else {
+                row("filter", "not answering. If blackice was just upgraded, restart the Mac.")
+            }
             return lines
         }
         let waiting = pending.events.reduce(0) { $0 + $1.connections }

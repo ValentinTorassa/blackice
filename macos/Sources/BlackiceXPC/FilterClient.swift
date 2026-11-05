@@ -13,11 +13,14 @@ public final class FilterClient {
 
     private let connection: NSXPCConnection
 
-    /// Connects to the extension of `teamID`, the team this binary is signed with.
-    public init(teamID: String) throws {
-        guard let service = Peers.machServiceName(teamID: teamID),
-              let requirement = Peers.filterRequirement(teamID: teamID) else {
+    /// Connects to the extension of `teamID`, the team this binary is signed with, on the Mach
+    /// service of the extension inside `app`: the build this binary ships with.
+    public init(teamID: String, app: URL = Bundle.main.bundleURL) throws {
+        guard let requirement = Peers.filterRequirement(teamID: teamID) else {
             throw FilterClientError("this binary has no valid Team ID")
+        }
+        guard let service = Peers.machServiceName(teamID: teamID, app: app) else {
+            throw FilterClientError("the network extension inside \(app.path) names no valid XPC service")
         }
         connection = NSXPCConnection(machServiceName: service, options: [])
         // Checked on every reply: only our own extension can answer.
@@ -98,27 +101,35 @@ private final class ReplyBox: @unchecked Sendable {
 /// which registers again on the same connection and returns what the extension holds now. The
 /// daemon never reads a configuration from anywhere else.
 /// When the connection ends (the extension stopped or restarted), the stream finishes and the
-/// daemon exits with an error, so launchd starts it again and it registers anew.
+/// daemon exits with an error, so launchd starts it again and it registers anew. After an upgrade
+/// that is the new binary, which connects to the new build's Mach service.
 public final class XPCEventIntake: NSObject, EventIntake, EventReceiverXPC, @unchecked Sendable {
     private let teamID: String
+    private let app: URL
     private let onVerdict: @Sendable (String, Verdict) -> Void
     private let report: @Sendable (String) -> Void
     private let lock = NSLock()
     private var continuation: AsyncStream<IntakeMessage>.Continuation?
     private var connection: NSXPCConnection?
 
-    public init(teamID: String, onVerdict: @escaping @Sendable (String, Verdict) -> Void,
+    /// `app` is the Blackice.app whose extension it connects to.
+    public init(teamID: String, app: URL = Bundle.main.bundleURL, onVerdict: @escaping @Sendable (String, Verdict) -> Void,
                 report: @escaping @Sendable (String) -> Void) {
         self.teamID = teamID
+        self.app = app
         self.onVerdict = onVerdict
         self.report = report
     }
 
     public func messages() -> AsyncStream<IntakeMessage> {
         AsyncStream { continuation in
-            guard let service = Peers.machServiceName(teamID: teamID),
-                  let requirement = Peers.filterRequirement(teamID: teamID) else {
+            guard let requirement = Peers.filterRequirement(teamID: teamID) else {
                 report("no valid Team ID")
+                continuation.finish()
+                return
+            }
+            guard let service = Peers.machServiceName(teamID: teamID, app: app) else {
+                report("the network extension inside \(app.path) names no valid XPC service")
                 continuation.finish()
                 return
             }
