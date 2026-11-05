@@ -30,6 +30,10 @@
 // Connections by address, also compiled only: a flow with no name is asked about by its address,
 // which is then the event's host (FilterPolicy.eventHost).
 //
+// Accept-all's dry run of ask mode, also compiled only: each new flow is still allowed at once,
+// and its log line adds what ask mode would have decided (FilterPolicy.dryRun), for `blackice
+// report`. Nothing is held, read, looked up or asked for it.
+//
 // A dropped flow fails in the app with "Bad file descriptor" (EBADF) on connect, as ssh showed on
 // a Mac: NEFilterNewFlowVerdict.drop() and NEFilterDataVerdict.drop() take no error code, and
 // macOS's content filter offers no verdict that refuses with another one.
@@ -240,9 +244,11 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
                               dnsNames: dnsNames.names(for: address))
         let paused = Paused(flow: flow, facts: facts, serverName: nil, echPresent: false, stage: .newFlow,
                             generation: snapshot?.generation ?? 0)
+        // Accept-all's dry run of ask mode, for the log line only: it changes nothing for the flow.
+        let would = snapshot.flatMap { FilterPolicy.dryRun(facts, snapshot: $0) }
         askLock.lock()
         let verdict = FilterPolicy.decide(facts, snapshot: snapshot, context: context(now: Self.now))
-        let (step, after) = place(verdict, paused, snapshot, now: Self.now)
+        let (step, after) = place(verdict, paused, snapshot, now: Self.now, would: would)
         askLock.unlock()
         perform(after)
         switch step {
@@ -390,8 +396,9 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
     }
 
     /// Under askLock: turns a verdict into what NetworkExtension hears now and what follows.
+    /// `would` is accept-all's dry run of ask mode, logged with an allow or a drop.
     private func place(_ verdict: FlowVerdict, _ paused: Paused, _ snapshot: ProviderConfiguration?,
-                       now: TimeInterval) -> (Step, After) {
+                       now: TimeInterval, would: String? = nil) -> (Step, After) {
         let facts = paused.facts
         // A configuration change installs the new snapshot, then drops what is paused under
         // askLock. A flow decided with the old snapshot that gets here after that drop must not
@@ -407,13 +414,13 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
         }
         switch verdict {
         case .allow:
-            log(facts, verdict, snapshot, serverName: paused.serverName)
+            log(facts, verdict, snapshot, serverName: paused.serverName, would: would)
             return (.allow, .nothing)
         case .learnNames:
             log(facts, verdict, snapshot, serverName: paused.serverName)
             return (.learnNames, .nothing)
         case .drop:
-            log(facts, verdict, snapshot, serverName: paused.serverName)
+            log(facts, verdict, snapshot, serverName: paused.serverName, would: would)
             return (.drop, .nothing)
         case .readServerName:
             guard paused.stage == .newFlow else {
@@ -614,8 +621,8 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
     /// Verdict, reason and app are public so `log show` and `blackice report` can count them; the
     /// host and the rest are private (FlowLogLine.publicText).
     private func log(_ facts: FlowFacts, _ verdict: FlowVerdict, _ snapshot: ProviderConfiguration?,
-                     serverName: String? = nil) {
-        let line = FlowLogLine(flow: facts, verdict: verdict, snapshot: snapshot, serverName: serverName)
+                     serverName: String? = nil, would: String? = nil) {
+        let line = FlowLogLine(flow: facts, verdict: verdict, snapshot: snapshot, serverName: serverName, would: would)
         flowLog.notice("flow \(line.publicText, privacy: .public) \(line.json(), privacy: .private)")
     }
 

@@ -208,6 +208,8 @@ and says so.
 - `blackice mode ask`, `blackice mode block-all`, `blackice mode accept-all`: change the mode (Touch ID each time).
 - `blackice pending`: the connections waiting for an answer, and the current approvals.
 - `blackice approve --app ID --host HOST --for 1h` and `blackice deny …`: answer as a person (Touch ID).
+- `blackice report [--last 1h]`: the filter's log summed up, with drops by reason and app, and in accept-all what
+  ask mode would have asked about.
 - The daemon's event log is `~/Library/Logs/blackice/events.jsonl`. The filter logs one line per decision to
   unified logging:
 

@@ -431,6 +431,63 @@ struct FilterPolicyTests {
     }
 }
 
+/// Accept-all's dry run of ask mode: the same `decide`, on the snapshot seen in ask mode, with
+/// every address taken to match and no approval.
+struct DryRunTests {
+    @Test func labelsWhatAskModeWouldDecide() throws {
+        let acceptAll = try policySnapshot(.acceptAll)
+        let cloudd = signed("com.apple.cloudd", nil)
+        let cases: [(FlowFacts, String)] = [
+            // A rule or the Apple services table, judged as if the hello named the host on the TLS port.
+            (flow(agent, "api.example.com"), "rule_line_3;server_name"),
+            (flow(agent, "api.example.com", port: 8443), "rule_line_3"),
+            (flow(cloudd, "p01-ckdatabase.icloud.com"), "apple_service;server_name"),
+            (flow(cloudd, "p01-ckdatabase.icloud.com", tcp: false), "apple_service"),
+            (flow(agent, "other.example.com"), "ask"),
+            (flow(adHoc, "example.org"), "ask"),
+            // No host name: the hello would be read first on the TLS port; elsewhere TCP is asked
+            // about by its address and UDP dropped.
+            (flow(curl, nil), "read_server_name"),
+            (flow(probe, nil, port: 22), "ask"),
+            (flow(probe, nil, port: 22, tcp: false), "drop:no_host"),
+            (flow(.unresolved, "example.org"), "drop:unknown_identity"),
+            (flow(.invalidSignature, "example.org"), "drop:invalid_signature"),
+            (flow(probe, "bad host"), "drop:hostname_invalid"),
+            (flow(probe, "example.org", address: "127.0.0.1"), "loopback"),
+            (flow(resolver, nil, port: 53, tcp: false), "system_resolver"),
+            (flow(probe, "example.org", direction: .inbound), "inbound_not_filtered"),
+        ]
+        for (facts, label) in cases {
+            #expect(FilterPolicy.dryRun(facts, snapshot: acceptAll) == label, "\(facts)")
+        }
+        // Only accept-all runs it; the other modes decide for real.
+        for mode in [Mode.ask, .blockAll] {
+            #expect(FilterPolicy.dryRun(flow(agent, "other.example.com"), snapshot: try policySnapshot(mode)) == nil)
+        }
+    }
+
+    @Test func itIsAskModesOwnDecision() throws {
+        let acceptAll = try policySnapshot(.acceptAll)
+        let ask = try policySnapshot(.ask)
+        for (facts, _) in blockAllCases {
+            let label: String
+            switch FilterPolicy.decide(facts, snapshot: ask, context: matching) {
+            case .allow(let reason): label = reason
+            case .drop(let reason): label = "drop:" + reason
+            case .ask: label = "ask"
+            case .learnNames: label = "system_resolver"
+            case .readServerName, .resolveHost: continue
+            }
+            #expect(FilterPolicy.dryRun(facts, snapshot: acceptAll) == label, "\(facts)")
+        }
+        // A configuration that turns the Apple services table and loopback off counts as written.
+        let off = try ProviderConfiguration(generation: 2, mode: .acceptAll,
+                                            configText: "mode = \"accept-all\"\napple_services = false\nloopback = false\n")
+        #expect(FilterPolicy.dryRun(flow(signed("com.apple.cloudd", nil), "p01-ckdatabase.icloud.com"), snapshot: off) == "ask")
+        #expect(FilterPolicy.dryRun(flow(probe, "example.org", address: "127.0.0.1"), snapshot: off) == "ask")
+    }
+}
+
 struct FlowLogLineTests {
     private func object(_ line: FlowLogLine) throws -> [String: Any] {
         let json = line.json()
@@ -474,6 +531,11 @@ struct FlowLogLineTests {
             #expect(!line.publicText.contains("example.com") && !line.publicText.contains("443"))
             #expect(line.json().contains("other.example.com"))
         }
+        // In accept-all the dry run follows, in the clear; it is not in the JSON.
+        let dry = FlowLogLine(flow: flow(agent, "other.example.com"), verdict: .allow(reason: "accept_all"),
+                              snapshot: try policySnapshot(.acceptAll), would: "ask")
+        #expect(dry.publicText == "allow accept_all app=ABCDE12345/com.example.agent would=ask")
+        #expect(!dry.json().contains("would"))
     }
 
     @Test func askAndResolveVerdicts() throws {

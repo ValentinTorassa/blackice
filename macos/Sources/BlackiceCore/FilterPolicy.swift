@@ -271,6 +271,37 @@ public enum FilterPolicy {
         return .ask(reason: "no_rule;address", addressMatches: true)
     }
 
+    /// Accept-all's dry run of ask mode, for the flow log only: what ask mode, with the same rules
+    /// and the Apple services table, would decide when this flow starts. nil unless `snapshot` is
+    /// in accept-all, which still allows the flow at once and holds, reads, looks up and asks
+    /// nothing for it. The label is the reason of an allow (`rule_line_3`, `apple_service`,
+    /// `loopback`), `ask`, `drop:<reason>`, `read_server_name` or `system_resolver`.
+    ///
+    /// It is `decide` on the snapshot seen in ask mode, with what accept-all knows: no approval or
+    /// denial counts, every address is taken to match its host (nothing is looked up), and no DNS
+    /// answer is read, so a flow with no host name from the system is judged by its address. A
+    /// flow on the TLS port that names its host and that a rule or the table covers is judged as
+    /// if its hello named that host (`rule_line_3;server_name`); one with no host name would have
+    /// its hello read first, and only then be decided (`read_server_name`).
+    public static func dryRun(_ flow: FlowFacts, snapshot: ProviderConfiguration) -> String? {
+        guard snapshot.mode == .acceptAll else { return nil }
+        let ask = snapshot.viewed(in: .ask)
+        let context = PolicyContext(approved: { _, _ in false }, address: { _, _ in .match })
+        var verdict = decide(flow, snapshot: ask, context: context)
+        if verdict == .readServerName, let host = flow.hostname ?? flow.dnsName {
+            verdict = decide(flow, serverName: .serverName(host), snapshot: ask, context: context)
+        }
+        switch verdict {
+        case .allow(let reason): return reason
+        case .drop(let reason): return "drop:" + reason
+        case .ask: return "ask"
+        case .readServerName: return "read_server_name"
+        case .learnNames: return "system_resolver"
+        // Not with every address taken to match; kept for completeness.
+        case .resolveHost: return "resolve_host"
+        }
+    }
+
     /// The host an event names for a flow that ask mode pauses: the server name read from its
     /// hello, else the host name from the system, else the one name DNS answers gave its address,
     /// else the address itself as `IPAddress.description` prints it. nil when none can name it.
@@ -417,8 +448,11 @@ public struct FlowLogLine: Encodable, Sendable {
     public let port: UInt16?
     public let mode: String
     public let generation: UInt64
+    /// In accept-all, what ask mode would decide (`FilterPolicy.dryRun`); public, not in the JSON.
+    public let would: String?
 
-    public init(flow: FlowFacts, verdict: FlowVerdict, snapshot: ProviderConfiguration?, serverName: String? = nil) {
+    public init(flow: FlowFacts, verdict: FlowVerdict, snapshot: ProviderConfiguration?, serverName: String? = nil,
+                would: String? = nil) {
         switch verdict {
         case .allow: self.verdict = "allow"
         case .drop: self.verdict = "drop"
@@ -433,17 +467,20 @@ public struct FlowLogLine: Encodable, Sendable {
         port = flow.port
         mode = snapshot?.mode.rawValue ?? "none"
         generation = snapshot?.generation ?? 0
+        self.would = would
     }
 
     enum CodingKeys: String, CodingKey { case event, verdict, reason, app, host, port, mode, generation }
 
     /// What the line shows after "flow" to anyone who reads the log: the verdict, the reason and
     /// the app, as in `drop tls_unparsed app=ABCDE12345/com.example.tool`, so `log show` and
-    /// `blackice report` can count drops by app. The app is the label `blackice pending` uses:
-    /// `apple/<id>`, `<team>/<id>`, `cdhash/<hex>`, `unknown` or `invalid_signature`. CodeIdentity
-    /// accepts only letters, digits, '-', '.' and '_' in a signing identifier, and reasons are
-    /// fixed codes, so no field holds a space. The host, the port and the rest stay private.
-    public var publicText: String { "\(verdict) \(reason) app=\(app)" }
+    /// `blackice report` can count drops by app, and in accept-all what ask mode would decide, as
+    /// in `allow accept_all app=apple/com.apple.geod would=apple_service;server_name`. The app is
+    /// the label `blackice pending` uses: `apple/<id>`, `<team>/<id>`, `cdhash/<hex>`, `unknown` or
+    /// `invalid_signature`. CodeIdentity accepts only letters, digits, '-', '.' and '_' in a
+    /// signing identifier, and reasons are fixed codes, so no field holds a space. The host, the
+    /// port and the rest stay private.
+    public var publicText: String { "\(verdict) \(reason) app=\(app)" + (would.map { " would=" + $0 } ?? "") }
 
     public func json() -> String {
         let encoder = JSONEncoder()

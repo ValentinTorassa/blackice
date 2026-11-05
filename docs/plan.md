@@ -12,6 +12,7 @@ and each run on a Mac is recorded in [`evidence/`](../evidence/).
 | Repository | Its own repo. Swift files come from blackice-poc's macOS app filter, with the source commit noted in each file. |
 | Language | Swift for the extension, the CLI and the daemon. |
 | Ask mode | Asks only about connections that no rule or current approval covers. |
+| Dry run of ask mode | In accept-all the extension still allows each new flow at once, with no hold, lookup, event or data read, and its log line adds what ask mode would decide then with the same rules (`would=rule_line_3`, `would=apple_service`, `would=ask`, `would=read_server_name`, `would=drop:no_host`), from the same `FilterPolicy.decide` on the configuration seen in ask mode (decided on 5 November 2026). What accept-all does not know is assumed: every address matches its host, no approval or denial counts, and no DNS answer is read, so a connection with no host name from the system is judged by its address. On port 443 a host the app named that a rule or the table covers is judged as if the hello named it (`rule_line_3;server_name`). `blackice report [--last 1h]` sums the log up with `log show`: drops by reason and app, connections paused to ask by app, and the dry run by app. |
 | No answer in time | Deny after N seconds. N is configurable. macOS keeps a paused TCP flow as long as we want, so what bounds N is how long the app and the server wait (see the open problems). |
 | Approval scope | One app (by signing identity) and one host, with an expiry: `blackice approve --app … --host … --for 1h`. The host may be an IP address, for a connection with no name (see "Connections by address"). |
 | Ad hoc signed code | Ask mode asks about it too, and the approval names its cdhash plus the host: `blackice approve --cdhash … --host …`. A rebuild changes the cdhash, so the next connection asks again. Rules in `blackice.toml` never name it, so block-all drops it. Code with no signature has no cdhash either and is dropped. |
@@ -297,7 +298,13 @@ and each run on a Mac is recorded in [`evidence/`](../evidence/).
   `deny` line or an `approve` line with a duration of at most 24 h, and the app and host come from the event, not
   from the answer, so injected text can at most change the answer for the connection that carried it.
 - **Latency and volume.** A model takes seconds and a Mac opens hundreds of connections. Rules, expiring approvals
-  and one event per repeated connection keep the questions to new destinations.
+  and one event per repeated connection keep the questions to new destinations. The Mac's event log of 3 and 4
+  November 2026, in ask mode: about 670 paused connections in two days for about 144 app and host pairs, with a few
+  pairs asked about again and again (one ad hoc Homebrew binary 52 times, mostly denied), and the agent took 13.8 s
+  at the median (22 s at p90), longer than the 8 s a connected flow is held. Ten minutes with a broken agent dropped
+  266 connections at the deadline, 74 at the server name deadline, 71 as `hold_expired` and 50 as `tls_unparsed`.
+  Since then the log names the app of each line, accept-all runs ask mode dry, and `blackice report` sums both up
+  (see the decisions), so the rules an agent would need can be written before ask mode is on.
 - **Connections named by their TLS server name.** An app that connects to an address (`curl` and most
   command-line tools) gives the filter no host name. On 3 November 2026 blackice read it from the TLS hello,
   after the TCP connection was up, and held the hello while the event waited; servers close a connection that

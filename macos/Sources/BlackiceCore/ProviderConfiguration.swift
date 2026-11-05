@@ -44,6 +44,19 @@ public struct ProviderConfiguration: Equatable, Sendable {
         try ProviderConfiguration(generation: try Self.nextGeneration(after: self), mode: mode, configText: configText)
     }
 
+    /// The same configuration, generation included, as if it were in `mode`, without parsing the
+    /// text again. Never installed: accept-all's dry run of ask mode decides with it.
+    func viewed(in mode: Mode) -> ProviderConfiguration {
+        ProviderConfiguration(generation: generation, mode: mode, configText: configText, config: config)
+    }
+
+    private init(generation: UInt64, mode: Mode, configText: String, config: BlackiceConfig) {
+        self.generation = generation
+        self.mode = mode
+        self.configText = configText
+        self.config = config
+    }
+
     private static func nextGeneration(after previous: ProviderConfiguration?) throws -> UInt64 {
         guard let previous else { return 1 }
         guard previous.generation < UInt64.max else { throw ProviderConfigurationError("generation overflow") }

@@ -5,6 +5,11 @@
 - The filter's log lines name the app in the clear, after the verdict and reason: `flow drop timeout
   app=ABCDE12345/com.example.tool`, `apple/…` for Apple's own code, `cdhash/…` for ad hoc code. The host and the
   rest stay private. Until now nobody could tell from the log which apps lost connections.
+- In accept-all, each of those lines also says what ask mode would have done with the same rules, worked out by the
+  same code: `would=ask`, `would=rule_line_3`, `would=apple_service;server_name`, `would=read_server_name`,
+  `would=drop:no_host`. Connections still go through at once; nothing is held, looked up or asked.
+- `blackice report [--last 1h]` sums the filter's log up: drops by reason and app, connections paused to ask by app,
+  and in accept-all what ask mode would have asked about, by app. It reads `log show` and needs no Touch ID.
 
 ## 0.4.0 (5 November 2026)
 
