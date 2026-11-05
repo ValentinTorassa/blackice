@@ -496,6 +496,13 @@ public enum CLI {
                 lines.append("  \(approval.app.identity?.label ?? "unknown") -> \(approval.host), \(approval.secondsLeft) s left")
             }
         }
+        // Listed only when there are some: their connections are dropped without asking.
+        if !reply.denials.isEmpty {
+            lines.append("Denied recently (dropped without asking):")
+            for denial in reply.denials {
+                lines.append("  \(denial.app.identity?.label ?? "unknown") -> \(denial.host), \(denial.secondsLeft) s left")
+            }
+        }
         return lines
     }
 

@@ -206,7 +206,8 @@ and says so.
 ## 6. Use it
 
 - `blackice mode ask`, `blackice mode block-all`, `blackice mode accept-all`: change the mode (Touch ID each time).
-- `blackice pending`: the connections waiting for an answer, and the current approvals.
+- `blackice pending`: the connections waiting for an answer, the current approvals, and the denials of the last
+  10 minutes, whose connections are dropped without asking.
 - `blackice approve --app ID --host HOST --for 1h` and `blackice deny …`: answer as a person (Touch ID).
 - `blackice report [--last 1h]`: the filter's log summed up, with drops by reason and app, and in accept-all what
   ask mode would have asked about.

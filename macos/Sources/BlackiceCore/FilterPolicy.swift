@@ -10,9 +10,11 @@ import Foundation
 //   turns it off, a rule with hosts = ["*"] allows everything its app does, with no host
 //   or address check, and an address or CIDR entry allows the addresses it holds, by address;
 // - ask allows what block-all allows, plus what a current approval names (with the same address
-//   check), and pauses the rest to ask. Ad hoc signed code has no signing identity, so in ask
-//   mode it is named by its cdhash; rules never name it. A TCP flow with no name at all is
-//   asked about by its address, and an approval for that address allows it; a UDP one is not.
+//   check), and pauses the rest to ask, but drops an app and host denied in the last 10 minutes
+//   (`denied;remembered`) instead of asking again. Ad hoc signed code has no signing identity,
+//   so in ask mode it is named by its cdhash; rules never name it. A TCP flow with no name at
+//   all is asked about by its address, and an approval for that address allows it; a UDP one
+//   is not.
 // A host or address that does not check out is "no rule or approval matches", never an error.
 // In every mode, inbound flows pass (only outbound connections are filtered) and Apple's
 // resolver may reach port 53, since rules name hosts and need name lookups to work. Loopback
@@ -117,11 +119,16 @@ public struct PolicyContext {
     public let approved: (AppIdentity, String) -> Bool
     /// What is known about this host (normalized) and the flow's address.
     public let address: (String, IPAddress?) -> AddressCheck
+    /// Whether this app and host were denied a moment ago (AskState.denials). Only ask mode asks,
+    /// so only ask mode looks: such a flow is dropped instead of asked about.
+    public let denied: (AppIdentity, String) -> Bool
 
     public init(approved: @escaping (AppIdentity, String) -> Bool,
-                address: @escaping (String, IPAddress?) -> AddressCheck) {
+                address: @escaping (String, IPAddress?) -> AddressCheck,
+                denied: @escaping (AppIdentity, String) -> Bool = { _, _ in false }) {
         self.approved = approved
         self.address = address
+        self.denied = denied
     }
 }
 
@@ -137,6 +144,9 @@ public enum FilterPolicy {
     /// flow is dropped with `hold_expired` and its event stays open until the deadline, so an
     /// approval covers the app's next try.
     public static let connectedHoldSeconds: TimeInterval = 8
+    /// Ask mode's reason for a flow whose app and host were denied a moment ago: dropped with no
+    /// event, where it would have been asked about.
+    public static let rememberedDenial = "denied;remembered"
 
     /// The verdict for a new flow. With no configuration installed, nothing passes.
     public static func decide(_ flow: FlowFacts, snapshot: ProviderConfiguration?, context: PolicyContext) -> FlowVerdict {
@@ -189,7 +199,7 @@ public enum FilterPolicy {
             if reason == "sni_missing", snapshot.mode == .ask, flow.hostname == nil, flow.dnsName == nil,
                let identity = nameable(flow.identity, snapshot.mode) {
                 let verdict = byAddress(identity, flow, context)
-                if case .drop = verdict { return .drop(reason: reason) }
+                if case .drop(let why) = verdict { return .drop(reason: why == rememberedDenial ? why : reason) }
                 return verdict.adding(";sni_missing")
             }
             return .drop(reason: reason)
@@ -268,6 +278,7 @@ public enum FilterPolicy {
         guard flow.tcp, let address = flow.remoteAddress, address.isCheckable, !address.isMulticastOrBroadcast,
               flow.port != nil else { return .drop(reason: "no_host") }
         if context.approved(identity, address.description) { return .allow(reason: "approval;address") }
+        if context.denied(identity, address.description) { return .drop(reason: rememberedDenial) }
         return .ask(reason: "no_rule;address", addressMatches: true)
     }
 
@@ -335,7 +346,8 @@ public enum FilterPolicy {
             let reason = line.map { "rule_line_\($0)" } ?? (service ? "apple_service" : "approval")
             return .allow(reason: reason + ";dns_name")
         }
-        return ask ? .ask(reason: "no_rule", addressMatches: true) : nil
+        guard ask else { return nil }
+        return context.denied(identity, name) ? .drop(reason: rememberedDenial) : .ask(reason: "no_rule", addressMatches: true)
     }
 
     /// Whether a rule, the Apple services table, or in ask mode a current approval, names this app
@@ -422,6 +434,11 @@ public enum FilterPolicy {
         let approved = ask && context.approved(identity, host)
         // Block-all with no rule or service by name: nothing to check.
         if !ask && line == nil && !service { return .drop(reason: "no_rule") }
+        // Ask mode, a pair denied a moment ago that nothing else covers: dropped now, with no
+        // lookup and no event.
+        if ask && line == nil && !service && !approved && context.denied(identity, host) {
+            return .drop(reason: rememberedDenial)
+        }
         guard flow.remoteAddress != nil else { return .drop(reason: "no_address") }
         // An answer the resolver gave for this host and address counts like a lookup that found it.
         switch flow.dnsNames.contains(host) ? AddressCheck.match : context.address(host, flow.remoteAddress) {

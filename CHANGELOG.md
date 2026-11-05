@@ -15,6 +15,11 @@
   like. Until now all of them were dropped (`configuration_changed`), so switching from ask mode to accept-all cut
   what waited. The rest is still dropped, and an answer given under the old configuration still lets nothing
   through under the new one.
+- A deny is remembered for 10 minutes, from a hook, `blackice deny` or the menu: in ask mode the app's new
+  connections to that host are dropped at once as `denied;remembered`, with no event and no hook. On the Mac one
+  ad hoc binary was asked about 52 times in two days, mostly denied. No answer in time is not remembered. An
+  approval replaces the denial, a configuration change forgets it, and `blackice pending` lists them under "Denied
+  recently".
 
 ## 0.4.0 (5 November 2026)
 

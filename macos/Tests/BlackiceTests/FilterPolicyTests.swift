@@ -196,6 +196,44 @@ struct FilterPolicyTests {
         }
     }
 
+    /// After a deny, ask mode drops the app's new connections to that host instead of asking again.
+    @Test func aRememberedDenialDropsWhereAskModeWouldAsk() throws {
+        let ask = try policySnapshot(.ask)
+        let denied: Set<ApprovalKey> = [key(agent, "other.example.com"), key(agent, "api.example.com"), key(adHoc, "example.org"),
+                                        key(probe, "pypi.org"), key(probe, flowAddress)]
+        let context = { (check: AddressCheck) in
+            PolicyContext(approved: { _, _ in false }, address: { _, _ in check },
+                          denied: { denied.contains(ApprovalKey(identity: $0, host: $1)) })
+        }
+        let remembered = FlowVerdict.drop(reason: "denied;remembered")
+        // By name, before any lookup; by cdhash; by the one name DNS answers gave; by address.
+        for check in [AddressCheck.match, .mismatch, .unknown] {
+            #expect(FilterPolicy.decide(flow(agent, "other.example.com"), snapshot: ask, context: context(check)) == remembered)
+        }
+        #expect(FilterPolicy.decide(flow(adHoc, "example.org", port: 22), snapshot: ask, context: context(.match)) == remembered)
+        #expect(FilterPolicy.decide(flow(probe, nil, port: 22, dnsNames: ["pypi.org"]), snapshot: ask, context: context(.match))
+            == remembered)
+        #expect(FilterPolicy.decide(flow(probe, nil, port: 80), snapshot: ask, context: context(.match)) == remembered)
+        // After the hello: by its server name, or by address when it names none.
+        #expect(FilterPolicy.decide(flow(probe, nil), serverName: .serverName("pypi.org"), snapshot: ask,
+                                    context: context(.match)) == remembered)
+        #expect(FilterPolicy.decide(flow(probe, nil), serverName: .deny("sni_missing"), snapshot: ask,
+                                    context: context(.match)) == remembered)
+        // A rule still allows: a denial only takes the place of asking.
+        #expect(FilterPolicy.decide(flow(agent, "api.example.com", port: 8443), snapshot: ask, context: context(.match))
+            == .allow(reason: "rule_line_3"))
+        // Another host, another app, another build: asked about as before.
+        #expect(FilterPolicy.decide(flow(agent, "else.example.com"), snapshot: ask, context: context(.match))
+            == .ask(reason: "no_rule", addressMatches: true))
+        #expect(FilterPolicy.decide(flow(probe, "other.example.com"), snapshot: ask, context: context(.match))
+            == .ask(reason: "no_rule", addressMatches: true))
+        #expect(FilterPolicy.decide(flow(.adHoc(cdhash: String(repeating: "e", count: 40)), "example.org"), snapshot: ask,
+                                    context: context(.match)) == .ask(reason: "no_rule", addressMatches: true))
+        // Block-all asks nothing, so it is unchanged.
+        #expect(FilterPolicy.decide(flow(agent, "other.example.com"), snapshot: try policySnapshot(.blockAll),
+                                    context: context(.match)) == .drop(reason: "no_rule"))
+    }
+
     @Test func acceptAllAllowsEveryOutboundFlow() throws {
         let snapshot = try policySnapshot(.acceptAll)
         for (facts, verdict) in blockAllCases {

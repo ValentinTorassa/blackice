@@ -192,11 +192,13 @@ A hook answers on its stdout. When it exits with status 0 before the deadline, t
 
 | Line | Answer |
 | --- | --- |
-| `deny` | Drop the waiting connections. |
+| `deny` | Drop the waiting connections, and for 10 minutes the app's new ones to that host. |
 | `approve <N>m` | Approve for N minutes, from 1 to 1440. |
 | `approve <N>h` | Approve for N hours, from 1 to 24. |
 
 The daemon answers for the event's app and host, which it takes from the event, never from the hook's output, and sends the answer to the extension with the event's token. Before that line the hook can print anything, such as its reasons.
+
+A deny is remembered for 10 minutes, whoever gave it (a hook, `blackice deny` or the menu): the app's new connections to that host, on any port, are dropped at once as `denied;remembered`, with no event and no hook, so a tool that retries is not asked about again and again. A rule still allows what it names. An approval of that app and host replaces the denial, and a configuration change forgets them all. No answer in time is not a deny and is not remembered. `blackice pending` lists the denials under "Denied recently".
 
 Anything else is no answer, and the connection waits until its deadline and is dropped:
 

@@ -14,9 +14,9 @@ The commands.
 | `blackice start [--config PATH]` / `blackice stop` | Activate the extension and start filtering with `blackice.toml` (asking `init`'s questions first when the file is missing), or stop filtering and deactivate it. The first `start` opens System Settings where you allow the extension. |
 | `blackice status` | Whether blackice is on, its mode and what it does, the rules and hooks, whether the daemon is running, and how many connections wait. |
 | `blackice mode accept-all \| ask \| block-all` | Change the mode. Connections that wait go on when the new mode allows them outright, as accept-all does, and are dropped otherwise. |
-| `blackice pending` | Connections waiting for an answer, and the approvals. |
+| `blackice pending` | Connections waiting for an answer, the approvals, and the denials of the last 10 minutes. |
 | `blackice approve (--app ID [--team TEAM] \| --cdhash HEX) --host HOST [--for 1h]` | Allow one app to reach one host, or one address, until the approval expires. |
-| `blackice deny (--app ID [--team TEAM] \| --cdhash HEX) --host HOST` | Drop the waiting connections and remove the approval. |
+| `blackice deny (--app ID [--team TEAM] \| --cdhash HEX) --host HOST` | Drop the waiting connections and remove the approval. For 10 minutes the app's new connections to that host are dropped without asking, unless `approve` replaces the denial. |
 | `blackice report [--last 1h]` | The filter's log over the last minutes or hours (`30m`, `2h`, at most `168h`), summed up: drops by reason and app, connections paused to ask by app, and in accept-all what ask mode would have done. No Touch ID. |
 | `blackice daemon` | Run the hooks for paused connections and pass on their answers. The LaunchAgent runs it. |
 | `blackice agent install` / `blackice agent uninstall` | Load the daemon's LaunchAgent for the current user, or unload and remove it. |

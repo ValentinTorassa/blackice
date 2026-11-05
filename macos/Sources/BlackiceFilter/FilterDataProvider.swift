@@ -19,7 +19,8 @@
 // configuration decides each one again, lets go what it allows outright and drops the rest
 // (FilterPolicy.afterChange). A flow decided with the configuration from before a change neither
 // starts to wait nor is let through by an answer after it, and each event carries the generation
-// it was raised under.
+// it was raised under. A deny is remembered for 10 minutes (AskState.denials): the app's new
+// connections to that host are dropped with no event, until an approval or a configuration change.
 //
 // Names from DNS answers, also compiled only: in ask and block-all the system resolver's port-53
 // flows are filtered in both directions instead of allowed outright. DNSFlowTable reads the
@@ -400,6 +401,9 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
             address: { [addresses] host, address in
                 if let resolved, resolved.host == host { return HostAddressCache.check(address, against: resolved.answers) }
                 return addresses.check(host: host, address: address)
+            },
+            denied: { [denials = ask.denials] identity, host in
+                denials.covers(ApprovalKey(identity: identity, host: host), now: now)
             })
     }
 
@@ -555,10 +559,11 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
     }
 
     /// Ends every paused flow, waiting for a lookup or for an answer, without an answer: each one
-    /// gets `verdict`, and an allow lets it through at once. Their events are cancelled.
+    /// gets `verdict`, and an allow lets it through at once. Their events are cancelled, and the
+    /// remembered denials forgotten (AskState.endAll).
     private func endPaused(_ verdict: (Paused) -> FlowVerdict) {
         askLock.lock()
-        let entries = ask.pending.removeAll()
+        let entries = ask.endAll()
         let waiting = lookups.removeAll()
         askLock.unlock()
         let snapshot = snapshots.read()
@@ -580,7 +585,8 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
     func pendingReply() -> PendingReply {
         let now = Self.now
         askLock.lock(); defer { askLock.unlock() }
-        return PendingReply(events: ask.pending.summaries(now: now), approvals: ask.approvals.summaries(now: now))
+        return PendingReply(events: ask.pending.summaries(now: now), approvals: ask.approvals.summaries(now: now),
+                            denials: ask.denials.summaries(now: now))
     }
 
     func answer(_ request: AnswerRequest) -> AnswerReply {
