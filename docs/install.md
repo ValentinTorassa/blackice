@@ -216,6 +216,10 @@ and says so.
   ```
 
   The app and host of each line show as `<private>`; the verdict and reason are public.
+- A connection blackice drops fails in the app with "Bad file descriptor" (EBADF) when it connects: `ssh` and the
+  Tailscale CLI print `connect: Bad file descriptor`. That is blackice, not the network or a bug in the app, and the
+  filter's log above shows why (`flow drop` and the reason). macOS gives a filter no way to refuse with another
+  error.
 
 After changing `blackice.toml`, run `blackice start` again to load it (Touch ID).
 

@@ -181,11 +181,14 @@ struct FilterPolicyTests {
             (flow(.unresolved, "example.org"), context(answers: ["example.org": here]), .drop(reason: "unknown_identity")),
             (flow(.invalidSignature, "example.org"), context(answers: ["example.org": here]), .drop(reason: "invalid_signature")),
             (flow(agent, "example.org", address: nil), context(), .drop(reason: "no_address")),
-            // Without a host: read the TLS server name for any app; otherwise there is nothing to ask about.
+            // Without a host: read the TLS server name for any app; otherwise ask about a TCP
+            // flow's address. UDP with no name raises no event.
             (flow(probe, nil), context(), .readServerName),
             (flow(adHoc, nil), context(), .readServerName),
             (flow(probe, nil, tcp: false), context(), .drop(reason: "no_host")),
-            (flow(probe, nil, port: 80), context(), .drop(reason: "no_host")),
+            (flow(probe, nil, port: 80, tcp: false), context(), .drop(reason: "no_host")),
+            (flow(probe, nil, port: 80), context(), .ask(reason: "no_rule;address", addressMatches: true)),
+            (flow(probe, nil, port: 80), context(approved: [key(probe, flowAddress)]), .allow(reason: "approval;address")),
             (flow(probe, "bad host"), context(), .drop(reason: "hostname_invalid")),
         ]
         for (facts, context, expected) in cases {
@@ -254,8 +257,11 @@ struct FilterPolicyTests {
                        context(approved: [key(agent, "evil.example.net")], answers: ["evil.example.net": [flowAddress]]))
             == .allow(reason: "approval;server_name"))
         #expect(decide(.serverName("example.org"), ask, flow(adHoc, nil)) == .ask(reason: "no_rule", addressMatches: true))
-        // An unreadable ClientHello leaves no host to ask about.
+        // An unreadable ClientHello leaves no host to ask about. One with no server name, on a flow
+        // with no name, is asked about by its address.
         #expect(decide(.deny("server_name_timeout"), ask) == .drop(reason: "server_name_timeout"))
+        #expect(decide(.deny("sni_missing"), ask) == .ask(reason: "no_rule;address;sni_missing", addressMatches: true))
+        #expect(decide(.deny("sni_missing"), blockAll) == .drop(reason: "sni_missing"))
 
         // The mode can change to accept-all while a flow is held.
         #expect(decide(.serverName("evil.example.net"), try policySnapshot(.acceptAll)) == .allow(reason: "accept_all"))

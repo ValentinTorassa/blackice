@@ -143,7 +143,7 @@ In ask or block-all it switches to accept-all while fx is set up (Touch ID), sin
 
 One agent answers at a time: `agent connect` replaces another agent's hook, and says so. With two hooks, the first answer would win.
 
-[integrations/claude-code/README.md](https://github.com/ValentinTorassa/blackice/blob/main/integrations/claude-code/README.md) has the hook, how the sign-in works under the daemon, and the eval: 20 cases as expected on 4 November 2026, about 4 s each.
+[integrations/claude-code/README.md](https://github.com/ValentinTorassa/blackice/blob/main/integrations/claude-code/README.md) has the hook, how the sign-in works under the daemon, and the eval: the first 20 cases as expected on 4 November 2026, about 4 s each.
 
 ## 6. Use it
 
@@ -155,6 +155,8 @@ One agent answers at a time: `agent connect` replaces another agent's hook, and 
 ```console
 $ /usr/bin/log show --last 10m --style compact --predicate 'subsystem == "com.valentorassa.blackice.filter"'
 ```
+
+- A connection blackice drops fails in the app with "Bad file descriptor" (EBADF) when it connects: `ssh` and the Tailscale CLI print `connect: Bad file descriptor`. That is blackice, not the network or a bug in the app, and the filter's log above shows why (`flow drop` and the reason). macOS gives a filter no way to refuse with another error.
 
 After changing `blackice.toml`, run `blackice start` again to load it (Touch ID).
 

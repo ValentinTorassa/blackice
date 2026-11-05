@@ -20,7 +20,7 @@ The parts of blackice, and what happens to one connection in ask mode.
 
 <FigAsk n={2} />
 
-Rules from `blackice.toml`, the built-in list of macOS services and current approvals are checked first, so only new destinations wait for an answer. See [Configuration](/docs/configuration). A repeated connection, with the same app, host and port, raises one event.
+Rules from `blackice.toml`, the built-in list of macOS services and current approvals are checked first, so only new destinations wait for an answer. See [Configuration](/docs/configuration). A repeated connection, with the same app, host and port, raises one event. Connections to 127.0.0.1 and ::1 pass before any of this, and a TCP connection with no host name at all is asked about by its address.
 
 ## Open problems
 

@@ -111,7 +111,8 @@ public enum CLI {
                                 Let one app reach one host for a while (Touch ID)
       deny --app ID [--team TEAM] --host HOST
                                 Refuse it and drop its waiting connections (Touch ID)
-                                (--cdhash HEX in place of --app names ad hoc signed code)
+                                (--cdhash HEX in place of --app names ad hoc signed code;
+                                HOST may be an IP address, for connections with no name)
 
     Setup
       validate PATH             Check a blackice.toml without loading it
@@ -458,8 +459,7 @@ public enum CLI {
                 // open until its deadline, so an approval still covers the app's next try.
                 let count = event.connections == 0 ? "no connection left (an approval covers the next try)"
                     : event.connections == 1 ? "1 connection" : "\(event.connections) connections"
-                lines.append("  \(event.id)  \(label) -> \(event.host):\(event.port) (\(event.ip)), \(count), " +
-                             "\(event.secondsLeft) s left")
+                lines.append("  \(event.id)  \(label) -> \(event.destination), \(count), \(event.secondsLeft) s left")
                 if let path = event.path { lines.append("      " + Describe.terminalSafe(path)) }
             }
         }
@@ -553,8 +553,13 @@ public enum CLI {
             identity = .signed(SigningIdentity(signingID: app, teamID: team))
         }
         guard let rawHost = options["host"] else { throw UsageError("\(command) needs --host") }
-        guard let host = normalizeHost(rawHost) else {
-            throw UsageError("--host must be one host name; wildcards and IP addresses are not accepted")
+        // An address covers connections to it that have no name, as `pending` shows them.
+        if let address = IPAddress.strict(rawHost), !address.isCheckable {
+            throw UsageError("--host: a link-local address needs its interface, such as fe80::1%en0")
+        }
+        guard let host = normalizeDestination(rawHost) else {
+            throw UsageError("--host must be one host name or one IP address; wildcards and ranges are not accepted " +
+                             "(an IPv4 address is four numbers from 0 to 255 with no leading zeros)")
         }
         return (identity, host)
     }

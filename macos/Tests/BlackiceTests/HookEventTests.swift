@@ -65,7 +65,11 @@ struct HookEventTests {
             .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
             .appendingPathComponent("integrations/eval/events")
         let names = try FileManager.default.contentsOfDirectory(atPath: folder.path).filter { $0.hasSuffix(".json") }
-        #expect(names.count == 20)
+        // One event per case in cases.json, and no other.
+        let cases = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: folder.deletingLastPathComponent()
+            .appendingPathComponent("cases.json"))) as? [[String: Any]])
+        #expect(Set(names) == Set(cases.compactMap { ($0["id"] as? String).map { $0 + ".json" } }))
+        #expect(names.count == 23)
         for name in names {
             var object = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: folder.appendingPathComponent(name)))
                 as? [String: Any])

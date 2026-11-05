@@ -116,7 +116,8 @@ closed, the second as the program hook above, with an empty stdin. In both:
 Each decision took 3 to 8 s, 4.1 and 4.3 s at the median. In the first run ten replies put a sentence of reasoning
 before the reason line they were asked for and two gave a paragraph in its place; in the second, six had the extra
 sentence. In every reply the verdict was the last line. Two runs with one model show the instructions can work,
-not that they always will.
+not that they always will. Cases 21 to 23, connections whose host is their IP address, came later and have not
+run yet.
 
 ## Open questions
 

@@ -73,7 +73,7 @@ timeout_seconds = 10    # no answer in time means deny
 [[allow]]
 app = "com.example.agent"      # signing identifier
 team = "ABCDE12345"            # Team ID
-hosts = ["api.example.com"]
+hosts = ["api.example.com"]    # host names, *.domain, IP addresses and CIDR ranges, or ["*"] alone
 
 [[hook]]
 on = "connection"
@@ -85,8 +85,9 @@ env = ["HOME=/Users/me/.config/blackice/agent", "FX_DISABLE_KEYCHAIN=1"]
 ```
 
 A hook answers with the last line it prints, `deny` or `approve 10m`, and the daemon passes that on for the event's
-app and host. A hook never sees the event's one-time token. An approval covers one app and one host and expires; by
-hand, `blackice approve` needs Touch ID. Rules you want to keep go in the file. The [configuration docs](https://blackice-macos.vercel.app/docs/configuration) cover every
+app and host. A hook never sees the event's one-time token. An approval covers one app and one host, or one address for a
+connection with no name, and expires; by hand, `blackice approve` needs Touch ID. Connections to 127.0.0.1 and ::1
+pass unless `loopback = false`. Rules you want to keep go in the file. The [configuration docs](https://blackice-macos.vercel.app/docs/configuration) cover every
 key.
 
 ## Agents
@@ -97,10 +98,10 @@ under `~/.config/blackice/agent`, one test on a sample connection, a rule that l
 - `fx`: [fx](https://github.com/vercel-labs/fx) with the blackice skill ([`integrations/fx/`](integrations/fx/)).
 - `claude-code`: [Claude Code](https://code.claude.com) in print mode, with reading the event as its only tool and a
   sign-in of its own ([`integrations/claude-code/`](integrations/claude-code/)). It ends its reply with a verdict
-  line, `approve 1h` or `deny`. On 4 November 2026 it decided 20 eval cases as expected, in 4 s at the median.
+  line, `approve 1h` or `deny`. On 4 November 2026 it decided the first 20 eval cases as expected, in 4 s at the median.
 
 One agent answers at a time: connecting one replaces the other's hook.
-[`integrations/eval/run.sh`](integrations/eval/run.sh) runs either one over the same 20 cases.
+[`integrations/eval/run.sh`](integrations/eval/run.sh) runs either one over the same 23 cases.
 
 ## Development
 

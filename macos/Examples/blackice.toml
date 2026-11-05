@@ -2,12 +2,18 @@
 mode = "ask"            # "accept-all", "ask" or "block-all"
 timeout_seconds = 10    # no answer in time means deny
 apple_services = true   # macOS's own services reach Apple's hosts without a rule (the default)
+loopback = true         # connections to 127.0.0.0/8 and ::1 pass in every mode (the default)
 
 # Permanent rules. Checked before anything is asked.
 [[allow]]
 app = "com.example.agent"      # signing identifier
 team = "ABCDE12345"            # Team ID
 hosts = ["api.example.com"]    # exact hosts or "*.domain"; ["*"] alone allows any destination
+
+# Addresses and CIDR ranges match the address a connection goes to, with or without a host name.
+[[allow]]
+app = "com.apple.ssh"          # Apple's own ssh: no Team ID
+hosts = ["100.64.0.0/10", "fd7a:115c:a1e0::/48", "*.ts.net"]
 
 # The daemon starts program directly, and only when its code signature names app and team.
 # Its last line of output answers: "deny", or "approve 10m" (1-1440m or 1-24h).

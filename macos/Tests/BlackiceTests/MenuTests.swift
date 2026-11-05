@@ -189,6 +189,29 @@ struct MenuPresentationTests {
         #expect(!blocking.contains { $0.key == "waiting.section" })
     }
 
+    /// A connection with no name waits under its address, written as blackice pending writes it.
+    @Test func aConnectionWithNoNameWaitsUnderItsAddress() throws {
+        let ask = try saved(.ask)
+        let ssh = AppReference(signingID: "com.apple.ssh", teamID: nil, cdhash: nil)
+        let events = [PendingSummary(id: "ev-0a1b2c3d", app: ssh, path: "/usr/bin/ssh", host: "100.66.32.75", ip: "100.66.32.75",
+                                     port: 22, secondsLeft: 40, connections: 1),
+                      PendingSummary(id: "ev-0a1b2c3e", app: ssh, path: "/usr/bin/ssh", host: "fd7a:115c:a1e0::1",
+                                     ip: "fd7a:115c:a1e0::1", port: 22, secondsLeft: 40, connections: 1)]
+        let entries = MenuPresentation.menu(MenuSnapshot(filter: .on(saved: ask, hooks: 0), pending: answering(ask, events)), context)
+        let waiting = entries.filter { $0.key.hasPrefix("waiting.ev-") }
+        #expect(waiting.map(\.title) == ["ssh → 100.66.32.75:22", "ssh → [fd7a:115c:a1e0::1]:22"])
+        guard case .waiting(let first) = waiting[0].kind, case .waiting(let second) = waiting[1].kind else {
+            Issue.record("not waiting entries")
+            return
+        }
+        #expect(first.lines[2] == "100.66.32.75:22 (no host name)")
+        #expect(second.lines[2] == "[fd7a:115c:a1e0::1]:22 (no host name)")
+        // The answer names the address, as blackice approve --host 100.66.32.75 does.
+        let request = MenuAnswer.all[0].request(for: first)
+        #expect(request.host == "100.66.32.75")
+        try request.validate(now: Date())
+    }
+
     @Test func anUnsignedBuildShowsWhatItCannotDo() {
         let unavailable = MenuContext(version: nil, login: .unavailable("Only Blackice.app opens at login, not this build"),
                                       configExists: false, logExists: false)

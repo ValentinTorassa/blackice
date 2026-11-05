@@ -11,7 +11,9 @@ import Foundation
 /// One app and one host: what an approval and an answer name. Ports do not matter.
 public struct ApprovalKey: Hashable, Sendable {
     public let identity: AppIdentity
-    /// Normalized.
+    /// A normalized host name, or an IP address (`normalizeDestination`). An address covers only
+    /// connections to that address that have no name: a connection with a name is asked about,
+    /// and approved, by its name.
     public let host: String
 
     public init(identity: AppIdentity, host: String) {
@@ -281,7 +283,7 @@ public struct AskState<Flow> {
     /// port; a flow whose address did not match its host is dropped instead. deny drops them and
     /// removes an approval for that app and host, if there is one.
     public mutating func answer(_ request: AnswerRequest, now: TimeInterval) -> Outcome {
-        guard let identity = request.identity, normalizeHost(request.host) == request.host else {
+        guard let identity = request.identity, isNormalDestination(request.host) else {
             return refused("invalid_request", "the request does not name one app and one host")
         }
         let key = ApprovalKey(identity: identity, host: request.host)

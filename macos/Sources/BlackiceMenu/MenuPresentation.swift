@@ -265,11 +265,12 @@ public enum MenuPresentation {
         let connections = event.connections == 0 ? "No connection left; an approval covers the next try"
             : event.connections == 1 ? "1 connection waits" : "\(event.connections) connections wait"
         var lines = [MenuText.clean(identity.label, limit: MenuText.lineLimit, keepTail: true), connections,
-                     MenuText.clean("\(event.host):\(event.port) (\(event.ip))", limit: MenuText.lineLimit, keepTail: true)]
+                     MenuText.clean(event.destination, limit: MenuText.lineLimit, keepTail: true)]
         if let path = event.path { lines.append(MenuText.clean(path, limit: MenuText.lineLimit)) }
         let left = max(0, event.secondsLeft - Int(now.timeIntervalSince(readAt)))
         return MenuEntry(.waiting(WaitingEvent(identity: identity, host: event.host, lines: lines)),
-                         key: "waiting." + event.id, title: "\(app) → \(MenuText.host(event.host)):\(event.port)",
+                         key: "waiting." + event.id,
+                         title: "\(app) → " + (event.hostIsAddress ? event.hostAndPort : "\(MenuText.host(event.host)):\(event.port)"),
                          detail: "\(left) s left", enabled: true)
     }
 

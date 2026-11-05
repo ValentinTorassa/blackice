@@ -49,7 +49,8 @@ public struct HookEvent: Codable, Equatable, Sendable {
     /// Good for one answer to this event. Never given to a hook.
     public let token: String
     public let app: App
-    /// The host name, when the system or the TLS ClientHello gave one.
+    /// The host name from the system, the TLS ClientHello or a DNS answer. For a connection with
+    /// no name it is the address, the same text as `ip`. nil only in events nothing can answer.
     public let host: String?
     public let ip: String
     public let port: UInt16
@@ -112,8 +113,10 @@ public struct HookEvent: Codable, Equatable, Sendable {
             throw MessageError("app", "needs a valid signing_id (and team_id) or a cdhash, not both")
         }
         if let path = app.path, !validPath(path) { throw MessageError("app.path", "is too long or has control characters") }
-        guard let host, normalizeHost(host) == host else { throw MessageError("host", "must be a normalized host name") }
         guard let address = IPAddress(ip), address.description == ip else { throw MessageError("ip", "must be an IP address") }
+        guard let host, validEventHost(host, ip: ip) else {
+            throw MessageError("host", "must be a normalized host name, or the event's ip")
+        }
         guard port > 0 else { throw MessageError("port", "must not be 0") }
         let left = deadline.timeIntervalSince(now)
         guard left > -5, left <= maximumWait + 5 else { throw MessageError("deadline", "is not within the timeout") }
@@ -138,6 +141,13 @@ public func validEventID(_ text: String) -> Bool {
     let bytes = Array(text.utf8)
     return bytes.count == 11 && text.hasPrefix("ev-")
         && bytes[3...].allSatisfy { (48...57).contains($0) || (97...102).contains($0) }
+}
+
+/// An event's host as the extension writes it: a normalized host name, or for a connection with
+/// no name its address, exactly as `ip` (and so a link-local one only with its interface).
+/// `ip` must already be checked.
+public func validEventHost(_ host: String, ip: String) -> Bool {
+    normalizeHost(host) == host || (host == ip && isNormalDestination(host))
 }
 
 /// 43 base64url characters, as `EventToken.generate` makes them.

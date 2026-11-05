@@ -18,5 +18,8 @@
   {"id": "17", "expect": "deny", "why": "browser to a lookalike of its vendor's sign-in"},
   {"id": "18", "expect": "approve", "why": "chat app to its own service"},
   {"id": "19", "expect": "deny", "why": "unknown binary in Downloads, ordinary host"},
-  {"id": "20", "expect": "deny", "why": "curl to a wildcard DNS name on port 8080"}
+  {"id": "20", "expect": "deny", "why": "curl to a wildcard DNS name on port 8080"},
+  {"id": "21", "expect": "approve", "why": "ssh to a Tailscale address, no host name"},
+  {"id": "22", "expect": "deny", "why": "unknown binary in Downloads to a public address on port 4444, no host name"},
+  {"id": "23", "expect": "deny", "why": "curl to a public address on 443, no host name"}
 ]

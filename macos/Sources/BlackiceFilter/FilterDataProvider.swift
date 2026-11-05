@@ -26,6 +26,13 @@
 // (FlowFacts.dnsNames), and FilterPolicy decides a flow with no host name on the name when there
 // is exactly one. Ask mode drops a paused flow that the server already sees as connected after
 // FilterPolicy.connectedHoldSeconds, keeping its event open.
+//
+// Connections by address, also compiled only: a flow with no name is asked about by its address,
+// which is then the event's host (FilterPolicy.eventHost).
+//
+// A dropped flow fails in the app with "Bad file descriptor" (EBADF) on connect, as ssh showed on
+// a Mac: NEFilterNewFlowVerdict.drop() and NEFilterDataVerdict.drop() take no error code, and
+// macOS's content filter offers no verdict that refuses with another one.
 import Darwin
 import Foundation
 import Network
@@ -146,6 +153,8 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
     }
 
     /// Every flow goes to the provider, including loopback, which the default rules leave out.
+    /// FilterPolicy then allows loopback in every mode unless blackice.toml says loopback = false;
+    /// the settings stay the same either way, since they are applied only at start.
     /// No rule for IPv4-mapped loopback (::ffff:127.0.0.1/104): NetworkExtension reads that address
     /// as IPv4, refuses a prefix over 32 and fails the whole start (macOS 27.0.1).
     static func makeSettings() -> NEFilterSettings {
@@ -421,8 +430,9 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
                 return (.drop, .nothing)
             }
         case .ask(_, let addressMatches):
+            // A flow with no name is asked about by its address: the event's host is then its ip.
             guard let snapshot, let identity = facts.identity.appIdentity,
-                  let host = (paused.serverName ?? facts.hostname ?? facts.dnsName).flatMap(normalizeHost),
+                  let host = FilterPolicy.eventHost(facts, serverName: paused.serverName),
                   let port = facts.port, let address = facts.remoteAddress else {
                 log(facts, .drop(reason: "ask_incomplete"), snapshot, serverName: paused.serverName)
                 return (.drop, .nothing)

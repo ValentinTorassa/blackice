@@ -111,7 +111,9 @@ struct DNSNamePolicyTests {
     @Test func severalNamesOrNoneKeepTheServerNamePath() throws {
         let shared: Set<String> = ["a.example.com", "b.example.com"]
         #expect(try decide(bare(probe, shared), .ask) == .readServerName)
-        #expect(try decide(bare(probe, shared, port: 22), .ask) == .drop(reason: "no_host"))
+        // With no name to go on, ask mode asks about the address.
+        #expect(try decide(bare(probe, shared, port: 22), .ask) == .ask(reason: "no_rule;address", addressMatches: true))
+        #expect(try decide(bare(probe, [], port: 22), .ask) == .ask(reason: "no_rule;address", addressMatches: true))
         #expect(try decide(bare(curl, ["pypi.org", "files.example.com"], port: 22), .blockAll) == .drop(reason: "no_host"))
         #expect(try decide(bare(probe, []), .ask) == .readServerName)
         // A name without the address it came with names nothing.

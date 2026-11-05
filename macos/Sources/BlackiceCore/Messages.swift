@@ -258,6 +258,20 @@ public struct PendingSummary: Codable, Equatable, Sendable {
         case id, app, path, host, ip, port, connections
         case secondsLeft = "seconds_left"
     }
+
+    /// A connection with no name is asked about by its address, which is then its host.
+    public var hostIsAddress: Bool { host == ip }
+
+    /// "example.com:443 (203.0.113.7)", or "100.66.32.75:22 (no host name)" and
+    /// "[fd7a:115c:a1e0::1]:22 (no host name)" for a connection asked about by its address.
+    public var destination: String {
+        hostIsAddress ? "\(hostAndPort) (no host name)" : "\(hostAndPort) (\(ip))"
+    }
+
+    /// "example.com:443", "100.66.32.75:22", "[fd7a:115c:a1e0::1]:22".
+    public var hostAndPort: String {
+        (hostIsAddress && ip.contains(":") ? "[\(ip)]" : host) + ":\(port)"
+    }
 }
 
 public struct ApprovalSummary: Codable, Equatable, Sendable {
@@ -344,12 +358,12 @@ public struct PendingReply: CheckedMessage, Equatable {
         }
         try active?.validate()
         for event in events {
-            guard validEventID(event.id), event.app.identity != nil, normalizeHost(event.host) == event.host,
-                  IPAddress(event.ip)?.description == event.ip, event.secondsLeft >= 0, event.connections >= 0,
+            guard validEventID(event.id), event.app.identity != nil, IPAddress(event.ip)?.description == event.ip,
+                  validEventHost(event.host, ip: event.ip), event.secondsLeft >= 0, event.connections >= 0,
                   event.path.map(validPath) ?? true else { throw MessageError("events", "has an invalid entry") }
         }
         for approval in approvals {
-            guard approval.app.identity != nil, normalizeHost(approval.host) == approval.host,
+            guard approval.app.identity != nil, isNormalDestination(approval.host),
                   approval.secondsLeft >= 0 else { throw MessageError("approvals", "has an invalid entry") }
         }
     }
@@ -389,7 +403,9 @@ public struct AnswerRequest: CheckedMessage, Equatable {
 
     public func validate(now: Date) throws {
         guard app.identity != nil else { throw MessageError("app", "needs a valid signing_id (and team_id) or a cdhash, not both") }
-        guard normalizeHost(host) == host else { throw MessageError("host", "must be a normalized host name") }
+        guard isNormalDestination(host) else {
+            throw MessageError("host", "must be a normalized host name or IP address")
+        }
         switch kind {
         case .approve:
             guard let seconds, (1...ApprovalTable.maximumSeconds).contains(seconds) else {
