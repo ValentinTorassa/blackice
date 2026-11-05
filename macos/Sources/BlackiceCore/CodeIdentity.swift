@@ -8,14 +8,20 @@ import Security
 
 /// Positive identities of running process images, keyed by the full audit
 /// token. The token carries the PID version, which changes on exec, so one key
-/// never names two images. Bounded; when full it starts over.
+/// never names two images. Bounded: when full it forgets the processes that ended, and starts over
+/// only if every entry still runs.
 public final class IdentityCache: @unchecked Sendable {
     private let lock = NSLock()
     private var entries: [Data: IdentityResolution] = [:]
     private let limit: Int
+    private let running: (Data) -> Bool
     private var changeCount = 0
 
-    public init(limit: Int = 4096) { self.limit = limit }
+    /// `running` says whether the process a token names still runs.
+    public init(limit: Int = 4096, running: @escaping (Data) -> Bool = CodeIdentity.kernelReportsValid) {
+        self.limit = limit
+        self.running = running
+    }
 
     public func read(_ token: Data) -> IdentityResolution? {
         lock.lock(); defer { lock.unlock() }
@@ -24,7 +30,12 @@ public final class IdentityCache: @unchecked Sendable {
 
     public func store(_ token: Data, _ resolution: IdentityResolution) {
         lock.lock(); defer { lock.unlock() }
-        if entries.count >= limit { entries.removeAll(keepingCapacity: true) }
+        if entries.count >= limit {
+            // Emptying it all would also drop a long-running app's entry, which it needs once an
+            // update removes its program file (see CodeIdentity.resolve).
+            entries = entries.filter { running($0.key) }
+            if entries.count >= limit { entries.removeAll(keepingCapacity: true) }
+        }
         entries[token] = resolution
         changeCount += 1
     }
