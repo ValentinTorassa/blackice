@@ -6,7 +6,9 @@
 #
 # agents/NAME.sh gives the hook's args, env and stdin, as `blackice agent connect NAME` writes
 # them; the program is the agent's executable. The [[hook]] table is printed first. Each event
-# gets a private directory under TMPDIR with event.json (0600) in it, and the program starts there
+# gets a private directory under TMPDIR with event.json (0600) in it and, as the daemon writes
+# them from the copy inside blackice, the agent's instructions from integrations/ (0600, in 0700
+# folders; a test in macos/ keeps the two copies the same). The program starts there
 # directly, with no shell, with the environment the daemon builds (HOME, USER, LOGNAME, TMPDIR, a
 # fixed PATH, LANG, BLACKICE_EVENT_FILE, BLACKICE_EVENT_ID) plus the hook's env, and the event on
 # stdin unless the hook says `stdin = "none"`. The event's deadline is TIMEOUT seconds ahead, and
@@ -44,7 +46,8 @@ timeout=${TIMEOUT:-60}
 
 # The agent's file sets agent_bin_name (looked up on PATH when no path is given), and an
 # agent_configure that sets, from $repo: agent_args, agent_env (NAME=value), agent_stdin
-# (event or none) and agent_files (SOURCE:DEST pairs copied into each event's directory).
+# (event or none) and agent_files (SOURCE:DEST pairs: the file SOURCE is copied to the path DEST
+# in each event's directory, as AgentInstructions.files says the daemon writes it).
 agent_args=() agent_env=() agent_files=() agent_stdin=event
 # shellcheck source=/dev/null
 . "$here/agents/$agent.sh"
@@ -143,7 +146,10 @@ for case in cases:
     with open(os.open(event_file, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "wb") as f:
         f.write(data)
     for source, destination in files:
-        shutil.copytree(source, os.path.join(directory, destination))
+        target = os.path.join(directory, destination)
+        os.makedirs(os.path.dirname(target), mode=0o700, exist_ok=True)
+        with open(os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "wb") as f:
+            f.write(open(source, "rb").read())
     environment = dict(base, BLACKICE_EVENT_FILE=event_file, BLACKICE_EVENT_ID=event["id"])
     out_path = os.path.join(work, case["id"] + ".stdout")
     err_path = os.path.join(work, case["id"] + ".stderr")

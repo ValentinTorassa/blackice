@@ -3,14 +3,16 @@ import BlackiceCore
 
 // `blackice agent connect NAME`: sets a coding agent up to answer the connections that wait in
 // ask mode, the way integrations/fx/README.md describes by hand. The steps are the same for every
-// agent: find it and read its signature; give it a home of its own with the blackice skill and
+// agent: find it and read its signature; give it a home of its own, with its sign-in and, for fx,
 // rules that let it read files and nothing else, no shell included; let it decide one sample
 // event through the hook runner, reading its answer from its last line of output and passing it
 // nowhere; add a rule that lets it reach its model in every mode, and a hook that starts it
-// directly and checks its signature first; load it. What differs between agents (where its
-// settings live, how it signs in, its arguments) is in its `AgentProfile`. fx is the first.
-// Claude Code (claude-code) has no settings file: its limits are its arguments. One agent
-// answers at a time: connecting one replaces the hook of another.
+// directly, checks its signature first and names its instructions; load it. The instructions
+// come from blackice itself: the daemon writes them into each event's directory (see
+// AgentInstructions), so nothing in the agent's home says how to decide. What differs between
+// agents (where its settings live, how it signs in, its arguments) is in its `AgentProfile`. fx
+// is the first. Claude Code (claude-code) has no settings file: its limits are its arguments. One
+// agent answers at a time: connecting one replaces the hook of another.
 
 /// What blackice needs to know about one coding agent.
 public struct AgentProfile: Sendable {
@@ -21,12 +23,11 @@ public struct AgentProfile: Sendable {
     /// What it needs to reach for its model and sign-in. blackice.toml allows these in every
     /// mode, bound to the agent's signature, or the agent would wait on its own approval.
     public let hosts: [String]
-    /// Inside the agent home: the folder its skills are read from, and its settings file, when
-    /// blackice writes one.
-    let skillsFolder: String
+    /// Inside the agent home: its own folder, and its settings file, when blackice writes one.
+    let folder: String
     let settingsFile: String?
-    /// The skill's folder under Blackice.app's Resources/agents.
-    let resource: String
+    /// What the daemon writes into each event's directory for it (`instructions` in its hook).
+    let instructions: AgentInstructions
     /// Where to get it, when it is not installed.
     let installHint: String
     /// Its own installer, as a shell command line, offered when it is not installed.
@@ -46,7 +47,8 @@ public struct AgentProfile: Sendable {
     let askArguments: @Sendable (_ agentHome: String) -> [String]
     /// What to do about a failure the agent's output names, when the test gets no answer.
     var advice: @Sendable (_ output: String) -> [String] = { _ in [] }
-    /// Text that only this agent's hook holds in its `args`: a hook with it is this agent's.
+    /// Text that only this agent's hook holds in its `args`, for hooks written before they named
+    /// their instructions: a hook with it is this agent's.
     var hookMarker = AgentProfile.prompt
     /// What keeps it to deciding, said once its home is ready, when it has no settings file.
     var limits: String?
@@ -55,7 +57,7 @@ public struct AgentProfile: Sendable {
 
     public static let fx = AgentProfile(
         name: "fx", executable: "fx", hosts: ["ai-gateway.vercel.sh", "vercel.com", "api.vercel.com"],
-        skillsFolder: ".fx/skills", settingsFile: ".fx/settings.json", resource: "fx/blackice",
+        folder: ".fx", settingsFile: ".fx/settings.json", instructions: .fx,
         installHint: "https://github.com/vercel-labs/fx",
         // fx's README; it puts fx in ~/.local/bin.
         installer: "curl -fsSL https://fx.sh/setup.sh | bash",
@@ -66,8 +68,8 @@ public struct AgentProfile: Sendable {
         environment: { ["HOME": $0, "FX_DISABLE_KEYCHAIN": "1"] },
         statusArguments: ["status"], loginArguments: ["login", "vercel"],
         signedIn: { CLI.fxSignedIn($0) }, settings: { try CLI.fxSettings($0) },
-        // With stdout not a terminal, fx prints its reply as plain Markdown; the skill ends it with
-        // the answer.
+        // With stdout not a terminal, fx prints its reply as plain Markdown; the skill, which fx
+        // finds in its workspace's skills/ folder, ends it with the answer.
         askArguments: { _ in ["ask", "--no-save", "--no-color", prompt] },
         // Seen on 3 November 2026: a Vercel team with no card on file gets HTTP 403 from AI Gateway.
         // Seen on 4 November 2026: a team with no credits left gets HTTP 502, insufficient_funds.
@@ -85,12 +87,12 @@ public struct AgentProfile: Sendable {
         })
 
     /// Claude Code in print mode. Its configuration directory in the agent home holds its own
-    /// sign-in and the instructions, and nothing of yours.
+    /// sign-in, and nothing of yours.
     public static let claudeCode = AgentProfile(
         // api.anthropic.com for the model; platform.claude.com renews the sign-in (Claude Code
         // 2.1.317's OAuth token endpoint). Nothing else was reached in 20 decisions on 4 November 2026.
         name: "claude-code", executable: "claude", hosts: ["api.anthropic.com", "platform.claude.com"],
-        skillsFolder: ".claude", settingsFile: nil, resource: "claude-code/blackice",
+        folder: ".claude", settingsFile: nil, instructions: .claudeCode,
         installHint: "https://code.claude.com/docs/en/setup",
         // Anthropic's native installer; it puts claude in ~/.local/bin.
         installer: "curl -fsSL https://claude.ai/install.sh | bash",
@@ -104,7 +106,7 @@ public struct AgentProfile: Sendable {
                         "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"] },
         statusArguments: ["auth", "status", "--json"], loginArguments: ["auth", "login"],
         signedIn: { CLI.claudeCodeSignedIn($0) }, settings: nil,
-        askArguments: { CLI.claudeCodeArguments(agentHome: $0) },
+        askArguments: { _ in CLI.claudeCodeArguments() },
         // A hook gets none of the shell's variables, so a sign-in through ANTHROPIC_API_KEY, which
         // `claude auth status` counts, is not there. Claude Code says so on stdout.
         advice: { output in
@@ -136,20 +138,22 @@ struct AgentPaths {
         self.profile = profile
     }
 
-    var skills: String { home + "/" + profile.skillsFolder }
-    var skill: String { skills + "/blackice" }
     var settings: String? { profile.settingsFile.map { home + "/" + $0 } }
     var test: String { home + "/test" }
     /// The folders to create, outermost first.
     var folders: [String] {
         var folders = [home]
         var path = home
-        for part in profile.skillsFolder.split(separator: "/") {
+        for part in profile.folder.split(separator: "/") {
             path += "/" + part
             folders.append(path)
         }
         return folders
     }
+
+    /// The copies of the instructions that `agent connect` put in the home up to 0.4.0, for fx and
+    /// Claude Code. Removed once a configuration whose hook names its instructions is loaded.
+    var oldCopies: [String] { [home + "/.fx/skills/blackice", home + "/.claude/blackice"] }
 }
 
 /// What connecting an agent needs from the Mac, passed in so tests can fake it.
@@ -160,10 +164,9 @@ public struct AgentMachine {
     public let runAttached: (_ path: String, _ arguments: [String], _ environment: [String: String]) -> Int32
     /// Runs a program and returns its exit status and output.
     public let runCaptured: (_ path: String, _ arguments: [String], _ environment: [String: String]) -> (status: Int32, output: String)
-    /// Runs one hook for an event the way the daemon does (HookRunner), signature check included.
+    /// Runs one hook for an event the way the daemon does (HookRunner), signature check and
+    /// instructions included.
     public let runHook: (_ hook: Hook, _ event: HookEvent, _ workDirectory: String, _ timeoutSeconds: Int) -> HookResult
-    /// The folder inside Blackice.app with each agent's skill (agents/fx/blackice); nil outside the app.
-    public let agentResources: String?
     /// From now on Control-C and the other stop signals are caught instead of ending blackice
     /// (`Interrupts`); the function returned puts back what was there.
     public let catchInterrupts: () -> () -> Void
@@ -174,14 +177,12 @@ public struct AgentMachine {
                 runAttached: @escaping (String, [String], [String: String]) -> Int32,
                 runCaptured: @escaping (String, [String], [String: String]) -> (status: Int32, output: String),
                 runHook: @escaping (Hook, HookEvent, String, Int) -> HookResult,
-                agentResources: String?,
                 catchInterrupts: @escaping () -> () -> Void = { {} },
                 interrupted: @escaping () -> Bool = { false }) {
         self.findExecutable = findExecutable
         self.runAttached = runAttached
         self.runCaptured = runCaptured
         self.runHook = runHook
-        self.agentResources = agentResources
         self.catchInterrupts = catchInterrupts
         self.interrupted = interrupted
     }
@@ -190,11 +191,10 @@ public struct AgentMachine {
     public static var none: AgentMachine {
         AgentMachine(findExecutable: { _ in nil }, runAttached: { _, _, _ in 127 }, runCaptured: { _, _, _ in (127, "") },
                      runHook: { _, _, _, _ in HookResult(hookLine: 0, outcome: .failedToStart("no hook runner"), stderr: "",
-                                                         stderrTruncated: false, duration: 0) },
-                     agentResources: nil)
+                                                         stderrTruncated: false, duration: 0) })
     }
 
-    /// This Mac: PATH and the usual folders, Process, HookRunner, and Blackice.app's resources.
+    /// This Mac: PATH and the usual folders, Process and HookRunner.
     public static func real() -> AgentMachine {
         AgentMachine(
             findExecutable: { name in
@@ -256,8 +256,6 @@ public struct AgentMachine {
                     return failed("\(error)")
                 }
             },
-            agentResources: Bundle.main.resourceURL.map { $0.appendingPathComponent("agents").path }
-                .flatMap { FileManager.default.fileExists(atPath: $0) ? $0 : nil },
             catchInterrupts: Interrupts.catchAll, interrupted: { Interrupts.interrupted })
     }
 
@@ -332,17 +330,21 @@ enum TestAnswer: Equatable {
 }
 
 extension CLI {
-    /// The agent's hook: its executable, started directly with its home in `env`, and the signature
-    /// it must have, read from the executable when it was connected.
+    /// The agent's hook: its executable, started directly with its home in `env`, the signature it
+    /// must have, read from the executable when it was connected, and its instructions.
     static func agentHook(_ profile: AgentProfile, executable: String, agentHome: String,
                           identity: SigningIdentity) -> HookProgram {
         HookProgram(path: executable, arguments: profile.askArguments(agentHome), environment: profile.environment(agentHome),
-                    identity: identity, eventOnStdin: profile.eventOnStdin)
+                    identity: identity, eventOnStdin: profile.eventOnStdin, instructions: profile.instructions)
     }
 
-    /// The agent, if any, whose hook this is.
+    /// The agent, if any, whose hook this is: by the instructions it names, or for a hook from
+    /// before those, by what its command holds.
     static func agentRunning(_ hook: Hook) -> AgentProfile? {
-        AgentProfile.known.first { hook.commandText.contains($0.hookMarker) }
+        if let instructions = hook.program?.instructions {
+            return AgentProfile.known.first { $0.instructions == instructions }
+        }
+        return AgentProfile.known.first { hook.commandText.contains($0.hookMarker) }
     }
 
     /// A path that can go into blackice.toml: absolute, with no control character.
@@ -368,6 +370,7 @@ extension CLI {
                 .map { tomlString($0.key + "=" + $0.value) }.joined(separator: ", ") + "]")
         }
         if !program.eventOnStdin { lines.append("stdin = \"none\"") }
+        if let instructions = program.instructions { lines.append("instructions = " + tomlString(instructions.rawValue)) }
         return lines
     }
 
@@ -427,13 +430,13 @@ extension CLI {
     /// Claude Code's `args`: print mode with Read as its only tool, confined to the event's
     /// directory (--restricted, which also ignores the settings files); no CLAUDE.md, hooks,
     /// plugins or MCP servers (--safe-mode, --strict-mcp-config); nothing saved; the instructions
-    /// as its whole system prompt; plain text, whose last line is the answer. Checked against
-    /// Claude Code 2.1.317. integrations/eval/agents/claude-code.sh runs the same (a test checks).
-    static func claudeCodeArguments(agentHome: String) -> [String] {
+    /// the daemon writes into the event's directory as its whole system prompt; plain text, whose
+    /// last line is the answer. Checked against Claude Code 2.1.317.
+    /// integrations/eval/agents/claude-code.sh runs the same (a test checks).
+    static func claudeCodeArguments() -> [String] {
         ["-p", "--restricted", "--safe-mode", "--tools", "Read", "--strict-mcp-config", "--no-session-persistence",
          "--permission-prompts", "none", "--model", "sonnet", "--max-turns", "3", "--output-format", "text",
-         "--system-prompt-file", claudeCodeConfigDirectory(agentHome: agentHome) + "/blackice/instructions.md",
-         claudeCodePrompt]
+         "--system-prompt-file", "instructions.md", claudeCodePrompt]
     }
 
     /// `claude auth status --json` prints an object whose `loggedIn` is true once it is signed in.
@@ -642,15 +645,13 @@ extension CLI {
         }
         stdout("  " + Style.done("\(shownExecutable) is \(ConfigWizard.describe(identity))"))
 
-        // 2. Its own home: the skill, a sign-in, and the rules.
+        // 2. Its own home: a sign-in, and the rules. The instructions are not there: the daemon
+        // writes them, from blackice itself, into each event's directory.
         step("Give \(name) a home of its own")
         let paths = AgentPaths(userHome: interaction.home, profile: profile)
         let homeShown = Describe.path(paths.home, home: interaction.home)
         guard fitsConfig(paths.home) else {
             return fail(ExitCode.unavailable, "\(homeShown) has a control character in its path, which blackice.toml cannot hold.")
-        }
-        guard let resources = machine.agentResources else {
-            return fail(ExitCode.unavailable, "This blackice has no agent skills inside it. Use the blackice command from Blackice.app.")
         }
         let files = FileManager.default
         do {
@@ -659,12 +660,10 @@ extension CLI {
                 try files.createDirectory(atPath: parent, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
             }
             for folder in paths.folders { try privateFolder(folder) }
-            if files.fileExists(atPath: paths.skill) { try files.removeItem(atPath: paths.skill) }
-            try files.copyItem(atPath: resources + "/" + profile.resource, toPath: paths.skill)
         } catch {
             return fail(ExitCode.cannotCreate, "Cannot set up \(homeShown): \(describe(error))")
         }
-        stdout("  " + Style.done("The blackice skill is in \(homeShown)"))
+        stdout("  " + Style.done("Its home is \(homeShown); its instructions come with blackice"))
         let environment = profile.environment(paths.home)
         func signedIn() -> Bool { profile.signedIn(machine.runCaptured(executable, profile.statusArguments, environment).output) }
         if signedIn() {
@@ -838,6 +837,13 @@ extension CLI {
         let started = system.start(configText: loaded, output: SystemOutput(stdout: stdout, stderr: stderr))
         guard started == ExitCode.success else { return started }
         loadedFile = true
+        // The hook loaded now names its instructions, so the copies made up to 0.4.0 are read by
+        // nothing, and only invite a change that no hook would see. Gone only now: until this
+        // load, the configuration in force could still be a hook that reads them.
+        let removed = paths.oldCopies.filter { files.fileExists(atPath: $0) && (try? files.removeItem(atPath: $0)) != nil }
+        if !removed.isEmpty {
+            stdout("  " + Style.done("Removed the copies of the instructions earlier versions put in \(homeShown)"))
+        }
         stdout("")
         let daemon = system.installAgent(output: SystemOutput(stdout: stdout, stderr: stderr))
         guard daemon == ExitCode.success else { return daemon }

@@ -82,6 +82,7 @@ app = "com.vercel.fx"
 team = "JW6Y669B67"
 args = ["ask", "--no-save", "--no-color", "Use the blackice skill to decide whether to approve the pending connection"]
 env = ["HOME=/Users/me/.config/blackice/agent", "FX_DISABLE_KEYCHAIN=1"]
+instructions = "fx"                   # written from blackice into the event's directory
 ```
 
 A hook answers with the last line it prints, `deny` or `approve 10m`, and the daemon passes that on for the event's

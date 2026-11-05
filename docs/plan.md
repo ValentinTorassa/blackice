@@ -29,6 +29,7 @@ and each run on a Mac is recorded in [`evidence/`](../evidence/).
 | Who can approve | A person, with `blackice approve` or `deny` and Touch ID, or a hook, through the daemon (decided on 4 November 2026, for 0.4.0). The event's one-time token never leaves the extension and the daemon: a hook gets the event without it and answers on its stdout, and the daemon sends that answer to the extension with the token. The extension takes an answer with a token only on the connection of the daemon it registered. `approve` and `deny` take no `--token`. |
 | Hook answers | A hook answers only when it exits with status 0 before its deadline. The last non-empty line of its stdout, trimmed, must then be exactly `deny`, `approve <N>m` (N from 1 to 1440) or `approve <N>h` (N from 1 to 24), the limits of `approve --for`. The daemon reads at most 64 KiB of stdout; more than that, any other line, another exit status or the deadline is no answer, and the connection is denied at its deadline. The answer names no app and no host: the daemon takes both from the event, so an answer to an event whose host is an address approves or denies that address. The event log records `hook_answer` (the answer and its seconds) or `hook_no_answer` (a reason, and at most the first 24 characters of an unrecognized line, printable ASCII only), and `answer_refused` when the extension refuses the answer. |
 | Hook programs | `program = "/abs/path"` with `app` and `team`, the identity pair of `[[allow]]`, plus optional `args`, `env` and `stdin` (`"none"` keeps the event off stdin, for Claude Code; the default is `"event"`). The daemon starts the program directly, suspended, checks the code signature of the process it started, as for an `[[allow]]` rule, against `app` and `team`, and only then lets it run. Checking the process rather than the file means the code checked is the code that runs. On a mismatch it kills the process before it runs and logs `hook_refused`. `run = '…'` still runs through `/bin/sh -c` with no check. Only `program` hooks are protected against a program swapped by another program of the user; `blackice agent connect` writes one, with the identity read from the agent's binary. |
+| Agent instructions | The instructions an agent decides by ship inside the blackice binary (decided on 5 November 2026). A `program` hook names its set with `instructions = "fx"` or `"claude-code"`, and for each event the daemon writes those files into the event's private directory before it starts the program: fx's skill as `skills/blackice/SKILL.md`, where fx finds its workspace's skills, and Claude Code's system prompt as `instructions.md`, named by `--system-prompt-file instructions.md`. The hook names them by a path relative to that directory, its working directory. Up to 0.4.0 `agent connect` copied them into the agent's home, where any program of the user could rewrite them ("approve everything") once, for every decision after; it now removes those copies once the new hook is loaded. The text comes from `integrations/` through `macos/scripts/agent-instructions.sh`, and a test fails when the copy in the binary and those files differ. What stays exposed is under "Self-approval" in the open problems. |
 | Daemon | `blackice daemon` takes no options and reads no file (decided on 3 November 2026). The extension's reply to its registration carries the configuration the extension holds, the `blackice.toml` text that `start` or `mode` saved after Touch ID plus its generation, and the daemon takes its hooks and timeout from it, parsed with the same strict parser. Each event carries the generation of the configuration it was raised under, and is not sent once another one is installed; a daemon holding another one registers again on the same connection to get the current configuration, and runs no hook for an event whose configuration is gone. Hooks get an environment the daemon builds: `HOME`, `USER` and `LOGNAME` from the user database, `TMPDIR` from confstr, a fixed `PATH` and `LANG`, a `program` hook's `env` on top (which may set `HOME` but no `BLACKICE_` variable), and the event's file and ID. `blackice agent install` and `uninstall` write and load, or unload and remove, the LaunchAgent, without Touch ID. |
 | Configuration | `blackice.toml`, read by a small strict parser for the subset the file uses. No third-party dependency. |
 | Menu bar | Blackice.app opened as an app, or `blackice menu`, runs in the menu bar (4 November 2026). It shows the state and answers by hand through the same code as the CLI, Touch ID included, and adds no privileged path. Starting, stopping, rules, agents and the daemon stay in the CLI. Quitting it leaves filtering as it was. |
@@ -271,11 +272,17 @@ and each run on a Mac is recorded in [`evidence/`](../evidence/).
   hook's answer covers only its event's app and host. What is protected: a program of the user cannot take the
   token and answer in the hook's place, and no answer reaches beyond the app and host of the event it was given.
   What is not, against a program running as the same user:
-  - It can steer the hook into approving, its own connection included: rewrite `event.json` while the hook reads
-    it, so that it shows a trusted app, or change what the hook reads, such as fx's skill, rules, login or model
-    choice in the agent's home. The daemon then approves the app and host of its own copy of the event, which are
-    the program's, for at most 24 h. Closing this needs the hook and its files out of the user's reach, under
-    another user or in a sandbox; neither is planned yet.
+  - It can steer the hook into approving, its own connection included: rewrite `event.json`, or the instructions
+    the daemon wrote next to it, while the hook reads them, so that the event shows a trusted app or the
+    instructions say to approve. The event's directory has a random name but belongs to the user, so this takes a
+    program that watches the hooks' directory and wins a race each time. Or it can change what the agent still
+    reads from its home. The instructions no longer live there (see "Agent instructions" under the decisions),
+    but fx still loads its rules, its sign-in and any other skill from its home: a skill added there sits next to
+    the blackice one, and one also named blackice may be read in its place. Claude Code reads only its sign-in and
+    state there: `--restricted` and `--safe-mode` ignore its settings, CLAUDE.md, skills and hooks. The daemon then
+    approves the app and host of its own copy of the event, which are the program's, for at most 24 h. Closing
+    this needs the hook and its files out of the user's reach, under another user or in a sandbox; neither is
+    planned yet.
   - A `run` hook's program is not checked, so the program can be replaced with one that prints `approve 24h`.
     A `program` hook is checked against its signature each time it starts, but a signed program that does what
     its files say can still be steered through those files.
@@ -288,8 +295,8 @@ and each run on a Mac is recorded in [`evidence/`](../evidence/).
   also the only connection whose answers with a token the extension takes, and a copy that registers instead only
   sends what those hooks print. What remains: such a program can keep the LaunchAgent's daemon from getting events,
   by registering again and again or by stopping it, and connections then wait and are denied at their timeout. And
-  the programs a hook runs read files that any program of the user can change, such as fx's rules and skill, or
-  Claude Code's instructions, in the agent's home.
+  the programs a hook runs read files that any program of the user can change, such as fx's rules and other
+  skills in the agent's home (see "Self-approval"); their instructions come from the daemon.
 - **Prompt injection.** Host names, app names and TLS server names are chosen by whoever opens the connection, and
   they reach the model's prompt. Events carry them as structured fields. A hook's only accepted answers are a
   `deny` line or an `approve` line with a duration of at most 24 h, and the app and host come from the event, not

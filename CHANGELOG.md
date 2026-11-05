@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- The agents' instructions ship inside blackice. A `program` hook names them with `instructions = "fx"` or
+  `"claude-code"`, and the daemon writes them into the event's private directory before the agent starts: fx's
+  skill as `skills/blackice/SKILL.md`, Claude Code's system prompt as `instructions.md`. Up to 0.4.0 they were
+  files in the agent's home, `~/.config/blackice/agent`, that any program running as you could rewrite to approve
+  everything. `agent connect` writes the new key and removes those copies once the new hook is loaded.
+
 ## 0.4.0 (5 November 2026)
 
 Hooks answer on their output, Claude Code can be the agent, blackice sits in the menu bar, and upgrades no longer

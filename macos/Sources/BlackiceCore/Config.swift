@@ -82,7 +82,7 @@ public struct Hook: Equatable, Sendable {
     }
 }
 
-/// `program`, `args`, `env`, `app`, `team` and `stdin` in a [[hook]].
+/// `program`, `args`, `env`, `app`, `team`, `stdin` and `instructions` in a [[hook]].
 public struct HookProgram: Equatable, Sendable {
     /// Absolute. Started with posix_spawn, with no shell and no PATH lookup.
     public let path: String
@@ -97,14 +97,19 @@ public struct HookProgram: Equatable, Sendable {
     /// "none"`, stdin is empty, and the event is only in the file: for a program that adds what
     /// comes on stdin to a model's prompt (`claude -p`), where the event should arrive as data.
     public let eventOnStdin: Bool
+    /// The instructions the daemon writes into the event's directory before the program starts
+    /// (`instructions = "claude-code"`), from blackice itself rather than a file in the agent's
+    /// home that any program of the user could change. nil writes none.
+    public let instructions: AgentInstructions?
 
     public init(path: String, arguments: [String] = [], environment: [String: String] = [:], identity: SigningIdentity,
-                eventOnStdin: Bool = true) {
+                eventOnStdin: Bool = true, instructions: AgentInstructions? = nil) {
         self.path = path
         self.arguments = arguments
         self.environment = environment
         self.identity = identity
         self.eventOnStdin = eventOnStdin
+        self.instructions = instructions
     }
 }
 
@@ -331,7 +336,7 @@ extension BlackiceConfig {
         guard let runEntry = table.entries["run"] else {
             throw ConfigError(line: table.line, "[[hook]] needs a 'program' or a 'run' key")
         }
-        for key in ["args", "env", "app", "team", "stdin"] {
+        for key in ["args", "env", "app", "team", "stdin", "instructions"] {
             if let entry = table.entries[key] { throw ConfigError(line: entry.line, "\(key) goes with program, not run") }
         }
         let run = try runEntry.string("run")
@@ -379,8 +384,16 @@ extension BlackiceConfig {
             }
             eventOnStdin = stdin == "event"
         }
+        var instructions: AgentInstructions?
+        if let entry = table.entries["instructions"] {
+            let name = try entry.string("instructions")
+            guard let set = AgentInstructions(rawValue: name) else {
+                throw ConfigError(line: entry.line, "instructions must be \(AgentInstructions.names), not \(quoted(name))")
+            }
+            instructions = set
+        }
         return HookProgram(path: path, arguments: arguments, environment: environment, identity: identity,
-                           eventOnStdin: eventOnStdin)
+                           eventOnStdin: eventOnStdin, instructions: instructions)
     }
 
     /// An array of at most `limit` strings, each at most `maximumHookStringBytes` with no control
@@ -474,7 +487,7 @@ private enum TableKind: String {
         switch self {
         case .root: return ["mode", "timeout_seconds", "apple_services", "loopback"]
         case .allow: return ["app", "team", "hosts"]
-        case .hook: return ["on", "run", "program", "args", "env", "app", "team", "stdin"]
+        case .hook: return ["on", "run", "program", "args", "env", "app", "team", "stdin", "instructions"]
         }
     }
 

@@ -9,7 +9,8 @@ reads the event, weighs it, and ends its reply with one verdict line, which the 
 stdout: `approve 10m`, `approve 1h` or `deny`.
 
 - [`blackice/instructions.md`](blackice/instructions.md): its whole system prompt. What it reads, what it weighs
-  and how it answers, adapted from fx's skill.
+  and how it answers, adapted from fx's skill. blackice ships a copy inside its binary (a test in `macos/` fails
+  when the two differ; `macos/scripts/agent-instructions.sh` writes it).
 - [`blackice/sample-event.json`](blackice/sample-event.json): an event as a hook gets it, with no token.
 
 ## The hook
@@ -22,9 +23,10 @@ on = "connection"
 program = "/opt/homebrew/bin/claude"
 app = "com.anthropic.claude-code"
 team = "Q6L2SF6YDW"
-args = ["-p", "--restricted", "--safe-mode", "--tools", "Read", "--strict-mcp-config", "--no-session-persistence", "--permission-prompts", "none", "--model", "sonnet", "--max-turns", "3", "--output-format", "text", "--system-prompt-file", "/Users/me/.config/blackice/agent/.claude/blackice/instructions.md", "Decide the pending blackice connection in event.json."]
+args = ["-p", "--restricted", "--safe-mode", "--tools", "Read", "--strict-mcp-config", "--no-session-persistence", "--permission-prompts", "none", "--model", "sonnet", "--max-turns", "3", "--output-format", "text", "--system-prompt-file", "instructions.md", "Decide the pending blackice connection in event.json."]
 env = ["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1", "CLAUDE_CONFIG_DIR=/Users/me/.config/blackice/agent/.claude"]
 stdin = "none"
+instructions = "claude-code"
 ```
 
 `program` is the `claude` it found: the Homebrew cask's `/opt/homebrew/bin/claude`, or `~/.local/bin/claude` from
@@ -39,7 +41,11 @@ code has them, so an update that keeps Anthropic's signature needs no change. Ch
   **`--strict-mcp-config`** with no `--mcp-config` leaves no MCP server.
 - **`--permission-prompts none`**: anything that would ask for permission is refused, since nobody is there.
 - **`--no-session-persistence`**: nothing of the run is saved.
-- **`--system-prompt-file`**: the instructions replace Claude Code's own system prompt.
+- **`--system-prompt-file instructions.md`** and **`instructions = "claude-code"`**: before Claude Code starts,
+  the daemon writes the instructions, from blackice itself, as `instructions.md` in the event's directory, its
+  working directory, and they replace Claude Code's own system prompt. Up to 0.4.0 they were a file in the agent
+  home, the one file there that `--restricted` and `--safe-mode` left Claude Code reading, and any program running
+  as you could rewrite it; `agent connect` now removes that copy.
 - **`--model sonnet --max-turns 3`**: one turn to read the event and one to answer, with one to spare. Over the
   limit, `claude -p` exits with an error, and that is no answer.
 - **`stdin = "none"`**: `claude -p` adds whatever comes on stdin to the prompt, and the daemon sends the event on
@@ -65,7 +71,6 @@ have to go in the hook's environment, which is the file.
 ```console
 $ agent="$HOME/.config/blackice/agent"
 $ mkdir -p -m 700 "$agent/.claude"
-$ cp -R integrations/claude-code/blackice "$agent/.claude/"
 $ CLAUDE_CONFIG_DIR="$agent/.claude" claude auth login
 $ CLAUDE_CONFIG_DIR="$agent/.claude" claude auth status --text
 ```

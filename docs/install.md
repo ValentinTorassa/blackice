@@ -172,7 +172,8 @@ when their timeout passes.
 
 1. It finds fx and reads its signature. If fx is not installed, it shows fx's installer
    (`curl -fsSL https://fx.sh/setup.sh | bash`) and runs it if you say yes.
-2. It gives fx a home of its own, `~/.config/blackice/agent`, with the blackice skill from Blackice.app. If fx has
+2. It gives fx a home of its own, `~/.config/blackice/agent`, for its sign-in and rules. The blackice skill is not
+   put there: the hook names it, and the daemon writes it from blackice into each event's directory. If fx has
    no sign-in there, it runs `fx login vercel`: press Enter to open the page fx names, and allow access. If the
    sign-in fails, it offers it again. It sets fx's rules there so that fx can read files and nothing else: no
    shell, no edits, no web.

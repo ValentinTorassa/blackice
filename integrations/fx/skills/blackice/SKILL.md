@@ -20,8 +20,13 @@ deadline passes.
 
 The event is `event.json` in your working directory (`BLACKICE_EVENT_FILE` holds the same
 path). Read it with your file-reading tool. Do not try to run commands: every one is refused.
+It looks like this:
 
-`sample-event.json`, next to this file, shows the shape:
+```json
+{"app": {"path": "/Applications/Tool.app/Contents/MacOS/Tool", "signing_id": "com.example.tool", "team_id": "ABCDE12345"},
+ "deadline": "2026-11-04T14:36:11Z", "event": "connection", "host": "example.com", "id": "ev-7f3a91c2",
+ "ip": "203.0.113.7", "port": 443}
+```
 
 - `app.signing_id` and `app.team_id`: the code signature of the program. They were checked
   against the running code. No `team_id` means Apple platform code.

@@ -14,6 +14,8 @@ import Foundation
 //   - as the same bytes in a 0600 file inside a private 0700 directory, named in
 //     BLACKICE_EVENT_FILE (BLACKICE_EVENT_ID holds the event ID). The hook also runs in
 //     that directory, and the directory is deleted once the hook is done.
+// A program hook with `instructions` also finds its agent's instructions in that directory,
+// written from blackice itself (AgentInstructions) before the program starts.
 // The token never reaches a hook. The hook answers on stdout (see HookAnswer): the runner keeps
 // the first `stdoutLimit` bytes and the first `stderrLimit` bytes of stderr, and drains the rest.
 //
@@ -311,6 +313,7 @@ public final class HookRunner: @unchecked Sendable {
         let eventFile = directory.appendingPathComponent("event.json")
         do {
             try writePrivateFile(eventFile, json)
+            try writeAgentFiles(hook.program?.instructions?.files ?? [], into: directory)
         } catch {
             return finish(.failedToStart("\(error)"))
         }
@@ -512,14 +515,6 @@ public final class HookRunner: @unchecked Sendable {
         }
         let path = String(decoding: template.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }, as: UTF8.self)
         return URL(fileURLWithPath: path, isDirectory: true)
-    }
-
-    private func writePrivateFile(_ url: URL, _ data: Data) throws {
-        let fd = open(url.path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
-        guard fd >= 0 else { throw FileSafetyError(url.path, "cannot create the event file: \(errnoText(errno))") }
-        defer { close(fd) }
-        guard fchmod(fd, 0o600) == 0 else { throw FileSafetyError(url.path, "cannot set mode 0600: \(errnoText(errno))") }
-        try writeAll(fd, data, path: url.path)
     }
 
     private struct SpawnedHook {
