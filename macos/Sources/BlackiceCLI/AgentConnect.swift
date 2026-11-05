@@ -244,11 +244,13 @@ public struct AgentProvider: Equatable, Sendable {
     /// auth.openai.com, where the sign-in is renewed. Later that day, decisions with a ChatGPT sign-in
     /// reached chatgpt.com only; the renewal at auth.openai.com has not been seen.
     /// The models are the plans' small ones: the coding plans' are included, the others cost $0.10
-    /// and $0.50 per million tokens in and out in models.dev's list that day.
+    /// and $0.50 per million tokens in and out in models.dev's list that day. OpenAI comes first: in
+    /// the eval that day gpt-6-luna with a ChatGPT sign-in decided the 23 cases as expected in 3.9 s
+    /// at the median, while Z.AI's glm-5.3-flash took 12.8 s and approved Slack on port 6667.
     public static let openCode = [
-        AgentProvider(id: "zai-coding-plan", title: "Z.AI Coding Plan", hosts: ["api.z.ai"], model: "glm-5.3-flash"),
         AgentProvider(id: "openai", title: "OpenAI, a ChatGPT plan or an API key",
                       hosts: ["chatgpt.com", "auth.openai.com", "api.openai.com"], model: "gpt-6-luna"),
+        AgentProvider(id: "zai-coding-plan", title: "Z.AI Coding Plan", hosts: ["api.z.ai"], model: "glm-5.3-flash"),
         AgentProvider(id: "opencode-go", title: "OpenCode Go", hosts: ["opencode.ai"], model: "gpt-6-luna"),
         AgentProvider(id: "minimax-coding-plan", title: "MiniMax Token Plan", hosts: ["api.minimax.io"],
                       model: "MiniMax-M3.1-Flash"),

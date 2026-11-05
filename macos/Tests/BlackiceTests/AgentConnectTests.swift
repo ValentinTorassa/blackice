@@ -594,7 +594,7 @@ struct AgentConnectTests {
         for model in ["glm-5.3-flash", "gemini/flash"] {
             let wrong = connectOpenCode(home, config: config, mac: FakeOpenCodeMac(printed: ""), answers: [], extra: ["--model", model])
             #expect(wrong.status == ExitCode.usage, "\(model)")
-            #expect(wrong.stderr.first == "agent connect: opencode's --model is PROVIDER/MODEL, such as zai-coding-plan/glm-5.3-flash, with one of")
+            #expect(wrong.stderr.first == "agent connect: opencode's --model is PROVIDER/MODEL, such as openai/gpt-6-luna, with one of")
         }
         // The end of input at the list: nothing changes.
         let none = connectOpenCode(home, config: config, mac: FakeOpenCodeMac(printed: ""), answers: [])
@@ -645,7 +645,8 @@ struct AgentConnectTests {
             #expect(CLI.validModel(profile.defaultModel) && profile.hosts == provider.hosts && profile.provider == provider)
             #expect(profile.loginArguments == ["auth", "login", "--standalone", provider.id])
         }
-        #expect(AgentProfile.opencode.defaultModel == "zai-coding-plan/glm-5.3-flash" && AgentProfile.opencode.hosts == ["api.z.ai"])
+        #expect(AgentProfile.opencode.defaultModel == "openai/gpt-6-luna"
+                && AgentProfile.opencode.hosts == ["chatgpt.com", "auth.openai.com", "api.openai.com"])
 
         // The eval runs opencode with the hook's environment, its home put where the agent home is.
         let script = repository.appendingPathComponent("integrations/eval/agents/opencode.sh").path

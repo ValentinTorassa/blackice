@@ -207,9 +207,9 @@ install --cask codex`). Its home is a `CODEX_HOME` of its own, `~/.config/blacki
 own files, write nothing and reach no network, and keeps the event off its stdin. Its rule covers `chatgpt.com` and
 `auth.openai.com`. [`integrations/codex/README.md`](../integrations/codex/README.md) has the details.
 
-`blackice agent connect opencode` does the same for opencode, with a provider you pick from a list: Z.AI Coding
-Plan, OpenAI (a ChatGPT plan or an API key), OpenCode Go, MiniMax Token Plan, OpenRouter or Anthropic.
-`--model PROVIDER/MODEL`, such as `--model zai-coding-plan/glm-5.3-flash`, picks one without the list. If
+`blackice agent connect opencode` does the same for opencode, with a provider you pick from a list: OpenAI (a
+ChatGPT plan or an API key), Z.AI Coding Plan, OpenCode Go, MiniMax Token Plan, OpenRouter or Anthropic.
+`--model PROVIDER/MODEL`, such as `--model openai/gpt-6-luna`, picks one without the list. If
 opencode is not installed, it offers opencode's installer (`curl -fsSL https://opencode.ai/install | bash`).
 Its home is a `HOME` of its own, `~/.config/blackice/agent/.opencode`, signed in to that provider with
 `opencode auth login`. Its hook gives it one tool, reading the event's directory, with blackice's instructions as
@@ -225,7 +225,7 @@ under the hook.
 Each agent decides with a small model, since a decision is a short read and a two-line answer: fx with Claude
 Haiku 5.5 through AI Gateway (`anthropic/claude-haiku-5.5`, billed to the Vercel team fx signed in with), Claude Code
 with `haiku` (counted against its subscription), Codex with `gpt-6-luna` (counted against the ChatGPT plan),
-opencode with the provider's small one, such as `glm-5.3-flash` on the Z.AI Coding Plan.
+opencode with the provider's small one, such as `gpt-6-luna` with a ChatGPT plan.
 `--model NAME` writes another into the hook, such as
 `blackice agent connect claude-code --model sonnet`; running `agent connect` again with another model replaces the
 hook's. The agents approve clearly ordinary developer and vendor traffic for 8 to 24 hours and anything less plain

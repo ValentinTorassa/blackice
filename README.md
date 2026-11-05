@@ -106,7 +106,7 @@ under `~/.config/blackice/agent`, one test on a sample connection, a rule that l
   commands able to read only the event's directory ([`integrations/codex/`](integrations/codex/)). On 5 November
   2026, with `gpt-6-luna`, it decided the 23 eval cases as expected, in 4.6 s at the median.
 - `opencode`: [opencode](https://opencode.ai/docs) with `opencode run`, signed in to a provider you pick when you
-  connect it (Z.AI Coding Plan, OpenAI, OpenCode Go, MiniMax Token Plan, OpenRouter or Anthropic), with reading the
+  connect it (OpenAI, Z.AI Coding Plan, OpenCode Go, MiniMax Token Plan, OpenRouter or Anthropic), with reading the
   event's directory as its only tool and a rule for that provider's hosts ([`integrations/opencode/`](integrations/opencode/)).
   On 5 November 2026, with `openai/gpt-6-luna` on a ChatGPT plan, it decided the 23 eval cases as expected, in
   3.9 s at the median; with Z.AI's `glm-5.3-flash`, 22, in 12.8 s (it approved Slack on port 6667).

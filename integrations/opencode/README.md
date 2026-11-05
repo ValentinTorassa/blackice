@@ -21,15 +21,17 @@ narrow.
 
 | Provider | `--model` it writes | Hosts in the rule |
 | --- | --- | --- |
-| Z.AI Coding Plan | `zai-coding-plan/glm-5.3-flash` | `api.z.ai` |
 | OpenAI, a ChatGPT plan or an API key | `openai/gpt-6-luna` | `chatgpt.com`, `auth.openai.com`, `api.openai.com` |
+| Z.AI Coding Plan | `zai-coding-plan/glm-5.3-flash` | `api.z.ai` |
 | OpenCode Go | `opencode-go/gpt-6-luna` | `opencode.ai` |
 | MiniMax Token Plan | `minimax-coding-plan/MiniMax-M3.1-Flash` | `api.minimax.io` |
 | OpenRouter | `openrouter/openai/gpt-6-luna` | `openrouter.ai` |
 | Anthropic, an API key | `anthropic/claude-haiku-5-5` | `api.anthropic.com` |
 
 The models are each provider's small ones: the coding plans' are part of the plan, the others cost $0.10 and $0.50
-per million tokens in and out in models.dev's list on 5 November 2026.
+per million tokens in and out in models.dev's list on 5 November 2026. OpenAI is first in the list, the one Enter
+picks: in the eval below it decided every case as expected and was the fastest, while Z.AI's `glm-5.3-flash` took
+three times as long and approved one connection it should have denied.
 
 On 5 November 2026, opencode 2.2.5 decided one event with each provider, with its model list fetch off and a key that
 was not one, through a local proxy that logged every host it asked for. Each reached only its host in the table, and
@@ -41,7 +43,7 @@ and nothing else.
 
 ## The hook
 
-The hook `agent connect` writes, for a home at `/Users/me`, opencode's installer's `opencode` and Z.AI:
+The hook `agent connect` writes, for a home at `/Users/me`, opencode's installer's `opencode` and OpenAI:
 
 ```toml
 [[hook]]
@@ -49,7 +51,7 @@ on = "connection"
 program = "/Users/me/.opencode/bin/opencode"
 app = "opencode"
 team = "5NZ4Q7NXJ4"
-args = ["run", "--standalone", "--agent", "blackice", "--model", "zai-coding-plan/glm-5.3-flash", "Decide whether to approve the pending blackice connection in event.json."]
+args = ["run", "--standalone", "--agent", "blackice", "--model", "openai/gpt-6-luna", "Decide whether to approve the pending blackice connection in event.json."]
 env = ["HOME=/Users/me/.config/blackice/agent/.opencode", "OPENCODE_CONFIG_CONTENT={…}", "OPENCODE_DISABLE_AUTOUPDATE=1", "OPENCODE_DISABLE_CLAUDE_CODE=1", "OPENCODE_DISABLE_MODELS_FETCH=1", "OPENCODE_DISABLE_PROJECT_CONFIG=1", "XDG_CONFIG_HOME=."]
 stdin = "none"
 instructions = "opencode"
@@ -101,7 +103,7 @@ its sign-ins in its database there (`.local/share/opencode/opencode.db`), not in
 
 ```console
 $ export HOME="$HOME/.config/blackice/agent/.opencode"   # in a shell of its own
-$ opencode auth login --standalone zai-coding-plan
+$ opencode auth login --standalone openai
 $ opencode auth list --standalone
 ```
 
@@ -119,7 +121,7 @@ approval:
 [[allow]]
 app = "opencode"
 team = "5NZ4Q7NXJ4"
-hosts = ["api.z.ai"]
+hosts = ["chatgpt.com", "auth.openai.com", "api.openai.com"]
 ```
 
 ## Checking it
