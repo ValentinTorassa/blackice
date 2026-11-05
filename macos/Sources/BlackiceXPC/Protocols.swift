@@ -4,8 +4,9 @@
 // One connection type, opened by the CLI or the daemon to the extension's Mach service:
 //
 //   CLI     --pending(PendingRequest)-->    extension  --> PendingReply
-//   CLI     --answer(AnswerRequest)-->      extension  --> AnswerReply
+//   CLI     --answer(AnswerRequest)-->      extension  --> AnswerReply (after Touch ID)
 //   daemon  --register(RegisterRequest)-->  extension  --> RegisterReply (with the configuration)
+//   daemon  --answer(AnswerRequest)-->      extension  --> AnswerReply (a hook's, with the token)
 //   daemon  <--receive(DaemonMessage)--     extension      (events and verdicts, same connection)
 //
 // The extension cannot reach a LaunchAgent's Mach service, so the daemon opens the connection and
@@ -25,9 +26,10 @@ import Foundation
     /// the extension holds; the daemon calls it again on the same connection when an event names a
     /// generation it does not hold.
     func register(_ request: Data, reply: @escaping (Data) -> Void)
-    /// PendingRequest -> PendingReply.
+    /// PendingRequest -> PendingReply, which also names the configuration the extension decides with.
     func pending(_ request: Data, reply: @escaping (Data) -> Void)
-    /// AnswerRequest -> AnswerReply.
+    /// AnswerRequest -> AnswerReply. One with a token is taken only from the registered daemon's
+    /// connection: only the daemon sends them, for its hooks.
     func answer(_ request: Data, reply: @escaping (Data) -> Void)
 }
 

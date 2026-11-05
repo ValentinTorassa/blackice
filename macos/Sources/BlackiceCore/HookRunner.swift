@@ -3,16 +3,19 @@ import Foundation
 
 // Runs the [[hook]] commands for one event.
 //
-// The command line comes from blackice.toml, which the user wrote and the strict parser
-// accepted, so it runs as `/bin/sh -c RUN`. Nothing from the event is ever put into that
-// command line. The event reaches the hook in exactly two ways:
-//   - as JSON on stdin;
+// What runs comes from blackice.toml, which the user wrote and the strict parser accepted: a
+// `program`, started directly with its `args`, or a `run` line, started as `/bin/sh -c RUN`.
+// Nothing from the event is ever put into a command line. A program starts suspended, and runs
+// only when its code signature names the `app` and `team` of its hook; otherwise it is killed
+// before it runs a single instruction (`refused`). A `run` line has no such check.
+//
+// The event, without its token, reaches the hook in exactly two ways:
+//   - as JSON on stdin, unless its hook says `stdin = "none"` (programs only), when stdin is empty;
 //   - as the same bytes in a 0600 file inside a private 0700 directory, named in
 //     BLACKICE_EVENT_FILE (BLACKICE_EVENT_ID holds the event ID). The hook also runs in
 //     that directory, and the directory is deleted once the hook is done.
-// The token is only in those two places: never in the environment, never in the log. A hook
-// that writes it to stderr (an agent printing the command it ran) gets it replaced with
-// "[token]" before stderr leaves the runner.
+// The token never reaches a hook. The hook answers on stdout (see HookAnswer): the runner keeps
+// the first `stdoutLimit` bytes and the first `stderrLimit` bytes of stderr, and drains the rest.
 //
 // Each hook gets its own process group. At the deadline the group gets SIGTERM and, after a
 // grace period, SIGKILL. When the hook's shell exits, whatever it left behind in its group
@@ -40,6 +43,9 @@ public struct HookResult: Equatable, Sendable {
         case dropped(DropReason)
         /// posix_spawn or the event file failed.
         case failedToStart(String)
+        /// The program's code signature did not name its hook's app and team, so it was killed
+        /// before it ran. `found` is what it was (`IdentityResolution.label`).
+        case refused(found: String)
     }
 
     public enum DropReason: String, Equatable, Sendable {
@@ -60,19 +66,57 @@ public struct HookResult: Equatable, Sendable {
     /// The first `stderrLimit` bytes the hook wrote to stderr, decoded as UTF-8 with replacement.
     public let stderr: String
     public let stderrTruncated: Bool
+    /// The first `stdoutLimit` bytes the hook wrote to stdout, where it answers.
+    public let stdout: Data
+    public let stdoutTruncated: Bool
     /// From the hook's start, or from when it was dropped; the time it waited is not included.
     public let duration: TimeInterval
     /// How long the hook waited for a slot; 0 when one was free.
     public let waited: TimeInterval
 
     public init(hookLine: Int, outcome: Outcome, stderr: String, stderrTruncated: Bool, duration: TimeInterval,
-                waited: TimeInterval = 0) {
+                waited: TimeInterval = 0, stdout: Data = Data(), stdoutTruncated: Bool = false) {
         self.hookLine = hookLine
         self.outcome = outcome
         self.stderr = stderr
         self.stderrTruncated = stderrTruncated
+        self.stdout = stdout
+        self.stdoutTruncated = stdoutTruncated
         self.duration = duration
         self.waited = waited
+    }
+
+    /// The hook's answer, or why it has none. nil when the hook did not run (dropped, failed to
+    /// start or refused), which its own record says. An answer counts only from a hook that
+    /// exited with status 0 before its deadline.
+    public var answer: Result<HookAnswer, HookResult.NoAnswer>? {
+        switch outcome {
+        case .exited(let status) where status == 0:
+            return HookAnswer.parse(stdout, truncated: stdoutTruncated).mapError { .output($0) }
+        case .exited(let status): return .failure(.exitStatus(status))
+        case .signaled(let signal): return .failure(.signaled(signal))
+        case .timedOut: return .failure(.deadline)
+        case .dropped, .failedToStart, .refused: return nil
+        }
+    }
+
+    /// Why a hook that ran gave no answer.
+    public enum NoAnswer: Error, Equatable, Sendable {
+        case exitStatus(Int32)
+        case signaled(Int32)
+        /// Killed at the deadline.
+        case deadline
+        /// It exited with status 0, but its output holds no answer.
+        case output(HookAnswer.Missing)
+
+        public var reason: String {
+            switch self {
+            case .exitStatus: return "exit_status"
+            case .signaled: return "signaled"
+            case .deadline: return "deadline"
+            case .output(let missing): return missing.reason
+            }
+        }
     }
 }
 
@@ -100,10 +144,15 @@ public final class HookRunner: @unchecked Sendable {
         /// Time between SIGTERM and SIGKILL.
         public var gracePeriod: TimeInterval
         public var stderrLimit: Int
+        public var stdoutLimit: Int
+        /// The identity of a program hook, started suspended and not yet reaped. Tests replace it.
+        public var identify: @Sendable (pid_t) -> IdentityResolution
 
         public init(workDirectory: URL, environment: [String: String], maximumConcurrent: Int = 4,
                     maximumWaiting: Int = 256, minimumStartBudget: TimeInterval = 10,
-                    gracePeriod: TimeInterval = 2, stderrLimit: Int = 4096) {
+                    gracePeriod: TimeInterval = 2, stderrLimit: Int = 4096,
+                    stdoutLimit: Int = HookAnswer.maximumOutputBytes,
+                    identify: @escaping @Sendable (pid_t) -> IdentityResolution = { CodeIdentity.resolve(childPID: $0) }) {
             self.workDirectory = workDirectory
             self.environment = environment
             self.maximumConcurrent = maximumConcurrent
@@ -111,11 +160,13 @@ public final class HookRunner: @unchecked Sendable {
             self.minimumStartBudget = minimumStartBudget
             self.gracePeriod = gracePeriod
             self.stderrLimit = stderrLimit
+            self.stdoutLimit = stdoutLimit
+            self.identify = identify
         }
     }
 
     public static let shell = "/bin/sh"
-    /// launchd's PATH for agents. A hook that needs more sets PATH in its `run` line.
+    /// launchd's PATH for agents. A hook that needs more sets PATH in its `env` or its `run` line.
     public static let defaultPath = "/usr/bin:/bin:/usr/sbin:/sbin"
     public static let language = "en_US.UTF-8"
 
@@ -239,9 +290,10 @@ public final class HookRunner: @unchecked Sendable {
                              progress: @Sendable (HookProgress) -> Void) -> HookResult {
         defer { releaseSlot() }
         let started = uptime()
-        func finish(_ outcome: HookResult.Outcome, stderr: String = "", truncated: Bool = false) -> HookResult {
+        func finish(_ outcome: HookResult.Outcome, stderr: String = "", truncated: Bool = false,
+                    stdout: Data = Data(), stdoutTruncated: Bool = false) -> HookResult {
             HookResult(hookLine: hook.line, outcome: outcome, stderr: stderr, stderrTruncated: truncated,
-                       duration: uptime() - started, waited: waited)
+                       duration: uptime() - started, waited: waited, stdout: stdout, stdoutTruncated: stdoutTruncated)
         }
 
         let budget = min(event.deadline.timeIntervalSinceNow, TimeInterval(timeoutSeconds))
@@ -250,7 +302,7 @@ public final class HookRunner: @unchecked Sendable {
         let json: Data
         let directory: URL
         do {
-            json = try event.jsonData()
+            json = try event.input.jsonData()
             directory = try makeEventDirectory()
         } catch {
             return finish(.failedToStart("\(error)"))
@@ -263,23 +315,48 @@ public final class HookRunner: @unchecked Sendable {
             return finish(.failedToStart("\(error)"))
         }
 
-        var environment = options.environment.filter { key, value in
+        func usable(_ key: String, _ value: String) -> Bool {
             !key.hasPrefix("BLACKICE_") && !key.isEmpty && !key.contains("=") && !key.contains("\0") && !value.contains("\0")
+        }
+        var environment = options.environment.filter(usable)
+        if let program = hook.program {
+            environment.merge(program.environment.filter(usable)) { $1 }
         }
         environment["BLACKICE_EVENT_FILE"] = eventFile.path
         environment["BLACKICE_EVENT_ID"] = event.id
 
         let child: SpawnedHook
         do {
-            child = try spawn(hook.run, environment: environment, directory: directory)
+            if let program = hook.program {
+                child = try spawn(program.path, [program.path] + program.arguments, environment: environment,
+                                  directory: directory, suspended: true)
+            } else {
+                child = try spawn(Self.shell, [Self.shell, "-c", hook.run ?? ""], environment: environment,
+                                  directory: directory, suspended: false)
+            }
         } catch {
             return finish(.failedToStart("\(error)"))
+        }
+        if let program = hook.program {
+            // The program has not run yet. It runs only if it is the code its hook names.
+            let found = options.identify(child.pid)
+            guard found == .verified(program.identity) else {
+                _ = kill(-child.pid, SIGKILL)
+                var status: Int32 = 0
+                while waitpid(child.pid, &status, 0) < 0, errno == EINTR {}
+                close(child.stdin); close(child.stdout); close(child.stderr)
+                return finish(.refused(found: found.label))
+            }
+            _ = kill(child.pid, SIGCONT)
         }
         progress(.started(hookLine: hook.line, pid: child.pid, waited: waited))
 
         let collector = OutputCollector(limit: options.stderrLimit)
         collector.start(reading: child.stderr)
-        feed(json, to: child.stdin)
+        let answer = OutputCollector(limit: options.stdoutLimit)
+        answer.start(reading: child.stdout)
+        // `stdin = "none"`: stdin ends at once, and the event is only in the file.
+        feed(hook.program?.eventOnStdin == false ? Data() : json, to: child.stdin)
 
         let killAt = started + budget
         var lastSignal: Int32?
@@ -303,7 +380,9 @@ public final class HookRunner: @unchecked Sendable {
         while waitpid(child.pid, &status, 0) < 0, errno == EINTR {}
 
         collector.stop(after: 0.2)
+        answer.stop(after: 0.2)
         let (stderr, truncated) = collector.finish()
+        let (stdout, stdoutTruncated) = answer.finishData()
 
         let low = status & 0x7F
         let outcome: HookResult.Outcome
@@ -314,31 +393,7 @@ public final class HookRunner: @unchecked Sendable {
         } else {
             outcome = .signaled(signal: low)
         }
-        return finish(outcome, stderr: Self.redactToken(event.token, in: stderr), truncated: truncated)
-    }
-
-    /// Replaces the token in what a hook wrote. Agents echo the commands they run, sometimes cut
-    /// short ("--token 'q8Zr0d3X..."), so every run of 8 or more base64url characters that is part
-    /// of the token, or that holds it, becomes "[token]". Shorter pieces say little about the token.
-    static func redactToken(_ token: String, in text: String) -> String {
-        guard !token.isEmpty, !text.isEmpty else { return text }
-        var result = ""
-        var run = ""
-        func flush() {
-            let hides = run.count >= 8 && (token.contains(run) || run.contains(token))
-            result += hides ? "[token]" : run
-            run = ""
-        }
-        for character in text {
-            if character.isASCII, character.isLetter || character.isNumber || character == "-" || character == "_" {
-                run.append(character)
-            } else {
-                flush()
-                result.append(character)
-            }
-        }
-        flush()
-        return result
+        return finish(outcome, stderr: stderr, truncated: truncated, stdout: stdout, stdoutTruncated: stdoutTruncated)
     }
 
     /// Event IDs end up in an environment variable and the log; only plain characters are accepted.
@@ -470,24 +525,32 @@ public final class HookRunner: @unchecked Sendable {
     private struct SpawnedHook {
         let pid: pid_t
         let stdin: Int32
+        let stdout: Int32
         let stderr: Int32
     }
 
-    private func spawn(_ command: String, environment: [String: String], directory: URL) throws -> SpawnedHook {
-        var input: [Int32] = [-1, -1]
-        var errors: [Int32] = [-1, -1]
-        guard pipe(&input) == 0 else { throw FileSafetyError("pipe", errnoText(errno)) }
-        guard pipe(&errors) == 0 else {
-            close(input[0]); close(input[1])
-            throw FileSafetyError("pipe", errnoText(errno))
+    /// Starts `executable` with `arguments` (argv[0] included). With `suspended`, the child is
+    /// stopped before its first instruction until it gets SIGCONT.
+    private func spawn(_ executable: String, _ arguments: [String], environment: [String: String], directory: URL,
+                       suspended: Bool) throws -> SpawnedHook {
+        var pipes: [[Int32]] = []
+        for _ in 0..<3 {
+            var ends: [Int32] = [-1, -1]
+            guard pipe(&ends) == 0 else {
+                let code = errno
+                pipes.joined().forEach { close($0) }
+                throw FileSafetyError("pipe", errnoText(code))
+            }
+            pipes.append(ends)
         }
-        for fd in input + errors { _ = fcntl(fd, F_SETFD, FD_CLOEXEC) }
+        let (input, output, errors) = (pipes[0], pipes[1], pipes[2])
+        for fd in pipes.joined() { _ = fcntl(fd, F_SETFD, FD_CLOEXEC) }
 
         var actions: posix_spawn_file_actions_t?
         posix_spawn_file_actions_init(&actions)
         defer { posix_spawn_file_actions_destroy(&actions) }
         posix_spawn_file_actions_adddup2(&actions, input[0], 0)
-        posix_spawn_file_actions_addopen(&actions, 1, "/dev/null", O_WRONLY, 0)
+        posix_spawn_file_actions_adddup2(&actions, output[1], 1)
         posix_spawn_file_actions_adddup2(&actions, errors[1], 2)
         posix_spawn_file_actions_addchdir_np(&actions, directory.path)
 
@@ -496,7 +559,8 @@ public final class HookRunner: @unchecked Sendable {
         defer { posix_spawnattr_destroy(&attributes) }
         // Own process group; only descriptors 0-2 from the file actions are inherited; every signal
         // back to its default disposition and none blocked, whatever the daemon itself ignores.
-        let flags = POSIX_SPAWN_SETPGROUP | POSIX_SPAWN_CLOEXEC_DEFAULT | POSIX_SPAWN_SETSIGDEF | POSIX_SPAWN_SETSIGMASK
+        var flags = POSIX_SPAWN_SETPGROUP | POSIX_SPAWN_CLOEXEC_DEFAULT | POSIX_SPAWN_SETSIGDEF | POSIX_SPAWN_SETSIGMASK
+        if suspended { flags |= POSIX_SPAWN_START_SUSPENDED }
         posix_spawnattr_setflags(&attributes, Int16(flags))
         posix_spawnattr_setpgroup(&attributes, 0)
         var defaults = sigset_t()
@@ -508,20 +572,22 @@ public final class HookRunner: @unchecked Sendable {
         sigemptyset(&mask)
         posix_spawnattr_setsigmask(&attributes, &mask)
 
-        let argv = cStrings([Self.shell, "-c", command])
+        let argv = cStrings(arguments)
         let envp = cStrings(environment.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" })
         defer { argv.forEach { free($0) }; envp.forEach { free($0) } }
 
         var pid: pid_t = 0
-        let status = posix_spawn(&pid, Self.shell, &actions, &attributes, argv, envp)
+        let status = posix_spawn(&pid, executable, &actions, &attributes, argv, envp)
         close(input[0])
+        close(output[1])
         close(errors[1])
         guard status == 0 else {
             close(input[1])
+            close(output[0])
             close(errors[0])
-            throw FileSafetyError(Self.shell, "cannot start the hook: \(errnoText(status))")
+            throw FileSafetyError(executable, "cannot start the hook: \(errnoText(status))")
         }
-        return SpawnedHook(pid: pid, stdin: input[1], stderr: errors[0])
+        return SpawnedHook(pid: pid, stdin: input[1], stdout: output[0], stderr: errors[0])
     }
 
     /// Writes the event to the hook's stdin without ever blocking or raising SIGPIPE. A hook that
@@ -578,10 +644,15 @@ private final class OutputCollector: @unchecked Sendable {
     }
 
     func finish() -> (String, Bool) {
+        let (bytes, cut) = finishData()
+        return (String(decoding: bytes, as: UTF8.self), cut)
+    }
+
+    func finishData() -> (Data, Bool) {
         done.wait()
         lock.lock()
         defer { lock.unlock() }
-        return (String(decoding: data, as: UTF8.self), truncated)
+        return (data, truncated)
     }
 
     private func shouldStop() -> Bool {

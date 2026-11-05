@@ -10,9 +10,9 @@ public enum ControlAction: Equatable, Sendable {
     case start(ProviderConfiguration)
     case stop
     case mode(from: Mode, to: Mode, generation: UInt64)
-    /// approve without the event's token: a person confirms.
+    /// `blackice approve`: a person confirms.
     case approve(AppIdentity, host: String, seconds: Int)
-    /// deny without the event's token.
+    /// `blackice deny`: a person confirms.
     case deny(AppIdentity, host: String)
 
     /// What the Touch ID dialog says, completing macOS's "Blackice is trying to …". The terminal

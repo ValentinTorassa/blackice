@@ -18,6 +18,10 @@ import Foundation
 // In ask and block-all the extension also reads the resolver's DNS responses, passing every
 // byte, to learn which names each address was given for (DNSMessage.swift). A flow with no host
 // name whose address was given for exactly one name is decided on that name.
+// A TCP flow on the TLS port that a host rule, the Apple services table or an approval would
+// allow passes only once its ClientHello has been read: the server name must be the flow's host
+// (from the system or from a DNS answer), or a host covered by itself. A hello with Encrypted
+// Client Hello is judged on its server name in the clear, and its verdict's reason ends in ";ech".
 
 public enum FlowDirection: Sendable {
     case outbound, inbound, unknown
@@ -88,6 +92,16 @@ public enum FlowVerdict: Equatable, Sendable {
         case .learnNames: return "system_resolver"
         }
     }
+
+    /// An allow, drop or ask with `suffix` after its reason; any other verdict unchanged.
+    func adding(_ suffix: String) -> FlowVerdict {
+        switch self {
+        case .allow(let reason): return .allow(reason: reason + suffix)
+        case .drop(let reason): return .drop(reason: reason + suffix)
+        case .ask(let reason, let addressMatches): return .ask(reason: reason + suffix, addressMatches: addressMatches)
+        case .readServerName, .resolveHost, .learnNames: return self
+        }
+    }
 }
 
 /// What the policy needs to know besides the flow and the configuration.
@@ -129,13 +143,17 @@ public enum FilterPolicy {
         guard let identity = nameable(flow.identity, snapshot.mode) else { return .drop(reason: identityReason(flow.identity)) }
         guard flow.internetSocket else { return .drop(reason: "unsupported_socket") }
         if let verdict = anyHost(flow, snapshot) { return verdict }
+        let tls = flow.tcp && flow.port == tlsPort
         if let raw = flow.hostname {
             guard let host = normalizeHost(raw) else { return .drop(reason: "hostname_invalid") }
-            return named(identity, host: host, flow, snapshot, context, suffix: "")
+            let verdict = named(identity, host: host, flow, snapshot, context, suffix: "")
+            // The app chose this host name. On the TLS port the server name it sends picks the
+            // site behind the address, so it is read before the flow passes, as for a DNS name.
+            if tls, case .allow = verdict { return .readServerName }
+            return verdict
         }
         // No host name from the system. Ask mode reads the TLS server name to have a host to ask
         // about; block-all reads it only when a rule or the Apple services table could match this app.
-        let tls = flow.tcp && flow.port == tlsPort
         // The system resolver gave the address for exactly one name: decide on that name now.
         if let name = flow.dnsName, let verdict = dnsNamed(identity, name: name, tls: tls, snapshot, context) {
             return verdict
@@ -155,24 +173,49 @@ public enum FilterPolicy {
             return .readServerName
         case .deny(let reason):
             return .drop(reason: reason)
-        case .serverName(let name, _):
+        case .serverName(let name, let encrypted):
             if snapshot.mode == .acceptAll { return .allow(reason: "accept_all") }
             guard let identity = nameable(flow.identity, snapshot.mode) else { return .drop(reason: identityReason(flow.identity)) }
             if let verdict = anyHost(flow, snapshot) { return verdict }
-            guard let host = normalizeHost(name) else { return .drop(reason: "server_name_invalid") }
-            // The app looked one name up and names another server in its hello, perhaps on the
-            // same CDN address: that server name passes only if a rule or an approval covers it
-            // (and the address checks out), never by asking.
-            if flow.hostname == nil, let looked = flow.dnsName, host != looked {
-                guard covers(identity, host, snapshot, context) else { return .drop(reason: "server_name_mismatch") }
-                let verdict = named(identity, host: host, flow, snapshot, context, suffix: ";server_name")
-                switch verdict {
-                case .allow, .resolveHost: return verdict
-                default: return .drop(reason: "server_name_mismatch")
-                }
-            }
-            return named(identity, host: host, flow, snapshot, context, suffix: ";server_name")
+            // Encrypted Client Hello (ECH): the server name in the clear is then the provider's
+            // public front end (cloudflare-ech.com, say), and the site the connection reaches is
+            // in the encrypted inner hello, which blackice cannot read. The outer name is judged
+            // like any server name: it must be the flow's host, or be covered itself with its own
+            // address check. A decoy ECH extension (GREASE, which Chrome sends when it has no ECH
+            // key) leaves the real host there, so it passes as before. What remains: a rule or an
+            // approval for a front-end name covers every site behind it, for that app; and the
+            // app writes the outer name itself, so where the provider decrypts ECH whatever that
+            // name says, any covered name it hosts can serve as the front end. Reasons say ";ech".
+            let verdict = serverNamed(identity, name, flow, snapshot, context)
+            return encrypted ? verdict.adding(";ech") : verdict
         }
+    }
+
+    /// A held flow's server name, read in the clear.
+    private static func serverNamed(_ identity: AppIdentity, _ name: String, _ flow: FlowFacts,
+                                    _ snapshot: ProviderConfiguration, _ context: PolicyContext) -> FlowVerdict {
+        guard let host = normalizeHost(name) else { return .drop(reason: "server_name_invalid") }
+        // The flow's host before its hello: the host name from the system, or the one name the
+        // resolver gave the address for.
+        let claimed: String?
+        if let raw = flow.hostname {
+            guard let named = normalizeHost(raw) else { return .drop(reason: "hostname_invalid") }
+            claimed = named
+        } else {
+            claimed = flow.dnsName
+        }
+        // The app named one host and names another server in its hello, perhaps on the same CDN
+        // address: that server name passes only if a rule or an approval covers it (and the
+        // address checks out), never by asking.
+        if let claimed, host != claimed {
+            guard covers(identity, host, snapshot, context) else { return .drop(reason: "server_name_mismatch") }
+            let verdict = named(identity, host: host, flow, snapshot, context, suffix: ";server_name")
+            switch verdict {
+            case .allow, .resolveHost: return verdict
+            default: return .drop(reason: "server_name_mismatch")
+            }
+        }
+        return named(identity, host: host, flow, snapshot, context, suffix: ";server_name")
     }
 
     /// A rule with hosts = ["*"] for the flow's verified identity allows it outright: no host name
@@ -230,14 +273,34 @@ public enum FilterPolicy {
     /// verdict only keeps the app from seeing the connection, so the server's clock is running.
     /// nil: the whole timeout.
     public static func holdLimit(_ flow: FlowFacts, afterServerName: Bool) -> TimeInterval? {
-        if afterServerName || !flow.tcp || needsServerName(flow) { return connectedHoldSeconds }
+        if afterServerName || !flow.tcp || (flow.hostname == nil && needsServerName(flow)) { return connectedHoldSeconds }
         return nil
     }
 
-    /// A TCP flow on the TLS port with no host name from the system: allowed only once its
-    /// ClientHello has been read, also after an approval.
+    /// Whether a flow decided with the configuration of `generation` may still start to wait, for
+    /// a lookup or an event, or be let through by an answer. Installing a configuration drops
+    /// every paused flow (`configuration_changed`), but a flow callback that read the snapshot
+    /// before the change can reach the pending list after that drop, and an answer taken just
+    /// before the change can be applied after it. Such a flow is dropped the same way.
+    public static func isCurrent(_ generation: UInt64, installed: ProviderConfiguration?) -> Bool {
+        installed.map { $0.generation == generation } ?? false
+    }
+
+    /// The releases of an answer or a deadline as they apply now: an allow for a flow decided
+    /// with another configuration than the installed one becomes a drop (`configuration_changed`).
+    public static func current<Flow>(_ releases: [Release<Flow>], installed: ProviderConfiguration?,
+                                     generation: (Flow) -> UInt64) -> [Release<Flow>] {
+        releases.map { release in
+            guard release.allow, !isCurrent(generation(release.flow), installed: installed) else { return release }
+            return Release(flow: release.flow, allow: false, reason: "configuration_changed", eventID: release.eventID)
+        }
+    }
+
+    /// A TCP flow on the TLS port: a host rule, the Apple services table or an approval allows it
+    /// only once its ClientHello has been read, also after an approval, with or without a host
+    /// name from the system.
     public static func needsServerName(_ flow: FlowFacts) -> Bool {
-        flow.hostname == nil && flow.tcp && flow.port == tlsPort
+        flow.tcp && flow.port == tlsPort
     }
 
     /// A flow with a host name: rules, then the Apple services table, then approvals, each only once

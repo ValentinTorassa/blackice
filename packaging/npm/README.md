@@ -17,8 +17,13 @@ the GitHub release whose version matches this package's, and then:
 3. checks the app with `codesign --verify --strict --deep`, checks with `codesign -dvv` that it is signed as
    `com.valentorassa.blackice` with a Developer ID Application certificate of team M294LK997M, and checks that
    `spctl --assess --type execute` accepts it with `source=Notarized Developer ID`;
-4. copies it to `/Applications` with `ditto`, refusing to replace an installed copy without `--force`, and prints the
-   next steps.
+4. checks that the app's `CFBundleShortVersionString` is this package's version, and that its network extension has
+   the app's version and build number;
+5. copies it with `ditto` into a hidden folder in `/Applications` and checks the copy with `codesign --verify`, then
+   renames an installed copy into that folder and the new one into its place. If that fails, the installed copy is
+   renamed back, and it is removed only once the new one is in place. It refuses to replace an installed copy
+   without `--force`, and one with a higher build number at all, since macOS would keep that build's extension.
+   Then it prints the next steps.
 
 It does not activate the network extension or load the daemon: `blackice start` and `blackice agent install` do, as
 the [install guide](https://github.com/ValentinTorassa/blackice/blob/main/docs/install.md) describes. After
@@ -37,8 +42,9 @@ The package has no dependencies and no install scripts; it uses Node's own modul
 $ npm test
 ```
 
-The tests cover what needs no network and no Mac: the release URLs, the checksum file, the signature and Gatekeeper
-checks on sample output, the arguments, and the package's own manifest.
+The tests cover what needs no network and no Mac: the release URLs, the checksum file, the signature, Gatekeeper and
+version checks on sample output, putting a fake app in place in a temporary folder, the arguments, and the package's
+own manifest.
 
 ## License
 

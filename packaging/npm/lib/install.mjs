@@ -1,29 +1,34 @@
 // `npx blackice install`: downloads the release zip and its checksum from GitHub, checks them,
-// checks the unpacked app's signature and Gatekeeper's assessment, and copies the app to
-// /Applications. Uses only Node's own modules and the macOS tools in /usr/bin and /usr/sbin.
+// checks the unpacked app's signature, Gatekeeper's assessment and version, and puts the app in
+// /Applications. Uses only Node's own modules and the macOS tools in /usr/bin, /usr/sbin and
+// /usr/libexec.
 
 import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { createWriteStream, existsSync } from 'node:fs'
+import { createWriteStream, lstatSync, mkdtempSync, renameSync, rmSync } from 'node:fs'
 import { mkdtemp, readdir, rm } from 'node:fs/promises'
 import { get } from 'node:https'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 import { pipeline } from 'node:stream/promises'
 
 import {
   APP_NAME,
+  EXTENSION_PATH,
   INSTALL_GUIDE,
   INSTALLED_APP,
   gatekeeperProblems,
+  isOlderBuild,
   parseChecksum,
   releaseAssets,
   signatureProblems,
+  versionProblems,
 } from './release.mjs'
 
 const DITTO = '/usr/bin/ditto'
 const CODESIGN = '/usr/bin/codesign'
 const SPCTL = '/usr/sbin/spctl'
+const PLIST_BUDDY = '/usr/libexec/PlistBuddy'
 const MAX_ZIP_BYTES = 200 * 1024 * 1024
 const MAX_CHECKSUM_BYTES = 4096
 const MAX_REDIRECTS = 5
@@ -93,15 +98,37 @@ export async function downloadText(url, userAgent, maxBytes) {
 function run(tool, args) {
   const result = spawnSync(tool, args, { encoding: 'utf8' })
   if (result.error) throw new InstallError(`could not run ${tool}: ${result.error.message}`)
-  return { status: result.status, output: `${result.stdout ?? ''}${result.stderr ?? ''}` }
+  return { status: result.status, stdout: result.stdout ?? '', output: `${result.stdout ?? ''}${result.stderr ?? ''}` }
 }
 
 function check(condition, message) {
   if (!condition) throw new InstallError(message)
 }
 
-/** The checks of docs/install.md's step 1, on the unpacked app. */
-export function verifyApp(app, log = () => {}) {
+/** Whether anything, a dangling symbolic link included, is at `path`. */
+function exists(path) {
+  try {
+    lstatSync(path)
+    return true
+  } catch {
+    return false
+  }
+}
+
+/** CFBundleShortVersionString and CFBundleVersion of `bundle`, each undefined when missing. */
+function bundleVersion(bundle) {
+  const value = (key) => {
+    const result = run(PLIST_BUDDY, ['-c', `Print :${key}`, join(bundle, 'Contents/Info.plist')])
+    return result.status === 0 ? result.stdout.trim() : undefined
+  }
+  return { version: value('CFBundleShortVersionString'), build: value('CFBundleVersion') }
+}
+
+/**
+ * The checks of docs/install.md's step 1 on the unpacked app, and that it is release `version`.
+ * Returns the app's build number.
+ */
+export function verifyApp(app, version, log = () => {}) {
   const verify = run(CODESIGN, ['--verify', '--strict', '--deep', '--verbose=2', app])
   check(verify.status === 0, `codesign --verify failed:\n${verify.output.trim()}`)
   log('  signature: valid, and satisfies its Designated Requirement')
@@ -117,6 +144,104 @@ export function verifyApp(app, log = () => {}) {
   const gatekeeper = gatekeeperProblems(assessment.output)
   check(gatekeeper.length === 0, gatekeeper.join('; '))
   log('  Gatekeeper: accepted, source=Notarized Developer ID')
+
+  // The signature covers Info.plist, so these are the versions the release was signed with.
+  // Another validly signed build under this zip's name, such as an older release, stops here.
+  const versions = { app: bundleVersion(app), extension: bundleVersion(join(app, EXTENSION_PATH)) }
+  const problems = versionProblems(versions, version)
+  check(problems.length === 0, `the zip does not hold blackice ${version}: ${problems.join('; ')}`)
+  log(`  version: ${version}, build ${versions.app.build}`)
+  return versions.app.build
+}
+
+/** `ditto SOURCE TARGET`. */
+function dittoCopy(source, target) {
+  const copy = run(DITTO, [source, target])
+  check(copy.status === 0, `ditto could not copy ${basename(source)} to ${dirname(target)}:\n${copy.output.trim()}`)
+}
+
+/** `codesign --verify --strict --deep` on the copy beside the installed app. */
+function verifyCopy(copy) {
+  const verify = run(CODESIGN, ['--verify', '--strict', '--deep', copy])
+  check(verify.status === 0, `the copy of ${APP_NAME} in ${dirname(dirname(copy))} does not verify:\n${verify.output.trim()}`)
+}
+
+const SIGNALS = ['SIGINT', 'SIGTERM', 'SIGHUP']
+
+/**
+ * Puts the checked `app` at `target`. It copies the app into a new folder beside `target` and
+ * checks the copy there. Then it renames the app already at `target`, if any, into that folder and
+ * the copy to `target`. If anything fails after the installed app was renamed, it renames it back,
+ * so a failure leaves the installed app in place. The folder, with the previous app, is removed
+ * only once the new one is in place. Returns whether it replaced an app.
+ *
+ * Everything here is synchronous and runs with SIGINT, SIGTERM and SIGHUP caught, so no signal
+ * stops it halfway; one that comes meanwhile is ignored. A Ctrl-C in the terminal still stops
+ * ditto or codesign, and their step fails as any other. `copy`, `verify` and `rename` are there
+ * for the tests.
+ */
+export function placeApp(app, target, { log = () => {}, copy = dittoCopy, verify = verifyCopy, rename = renameSync } = {}) {
+  const ignore = () => {}
+  for (const signal of SIGNALS) process.on(signal, ignore)
+  try {
+    let stage
+    try {
+      stage = mkdtempSync(join(dirname(target), '.blackice-install-'))
+    } catch (error) {
+      throw new InstallError(`could not write to ${dirname(target)} (${error.code ?? error.message}); it needs an admin account`)
+    }
+    const staged = join(stage, basename(target))
+    const aside = join(stage, 'previous.app')
+    let previous
+    try {
+      copy(app, staged)
+      verify(staged)
+      const replacing = exists(target)
+      if (replacing) {
+        log(`Replacing the installed ${target}`)
+        try {
+          rename(target, aside)
+        } catch (error) {
+          throw new InstallError(
+            `could not move ${target} (${error.code ?? error.message}). Replacing an app needs App Management ` +
+              'for your terminal: System Settings > Privacy & Security > App Management.',
+          )
+        }
+        previous = aside
+      }
+      check(!exists(target), `something else is at ${target} now; left it as it is`)
+      try {
+        rename(staged, target)
+      } catch (error) {
+        throw new InstallError(`could not move the new ${APP_NAME} to ${target} (${error.code ?? error.message})`)
+      }
+      previous = undefined
+      return replacing
+    } catch (error) {
+      if (previous) {
+        if (!exists(target)) {
+          try {
+            rename(previous, target)
+            previous = undefined
+            log(`Put the previous ${APP_NAME} back at ${target}.`)
+          } catch {}
+        }
+        if (previous) error.message += `\nThe previous ${APP_NAME} is at ${previous}.`
+      }
+      throw error
+    } finally {
+      // Kept when it still holds the previous app.
+      if (!previous) {
+        try {
+          rmSync(stage, { recursive: true, force: true })
+        } catch {
+          log(`Could not remove ${stage}; move it to the Trash.`)
+        }
+      }
+    }
+  } finally {
+    for (const signal of SIGNALS) process.off(signal, ignore)
+  }
 }
 
 export function nextSteps(version, replaced) {
@@ -146,19 +271,21 @@ export function nextSteps(version, replaced) {
 }
 
 /**
- * Installs the release `version`. Refuses to replace an installed Blackice.app unless `force`.
- * Never activates the extension or loads the daemon; it prints how to.
+ * Installs the release `version`. Refuses to replace an installed Blackice.app unless `force`, and
+ * to replace one of a higher build at all. Never activates the extension or loads the daemon; it
+ * prints how to.
  */
 export async function install({ version, force = false, log = console.log, platform = process.platform, arch = process.arch }) {
   check(platform === 'darwin', 'blackice runs on macOS only')
   check(arch === 'arm64', 'the blackice build is for Apple silicon (arm64) only')
   const assets = releaseAssets(version)
-  const installed = existsSync(INSTALLED_APP)
+  const installed = exists(INSTALLED_APP)
   check(
     !installed || force,
     `${INSTALLED_APP} is already there. To replace it, run \`npx blackice install --force\`; ` +
       'after replacing it, run `blackice start` and restart the Mac.',
   )
+  const installedBuild = installed ? bundleVersion(INSTALLED_APP).build : undefined
   const userAgent = `blackice-npm/${version}`
   const work = await mkdtemp(join(tmpdir(), 'blackice-install-'))
   try {
@@ -177,22 +304,17 @@ export async function install({ version, force = false, log = console.log, platf
     check(entries.length === 1 && entries[0] === APP_NAME, `the zip should hold only ${APP_NAME}; it holds: ${entries.join(', ')}`)
     const app = join(unpacked, APP_NAME)
     log(`Checking ${APP_NAME}`)
-    verifyApp(app, log)
+    const build = verifyApp(app, version, log)
+    // macOS replaces an activated extension only with the same or a higher build, so an older
+    // app over a newer one could not start.
+    check(
+      !isOlderBuild(build, installedBuild),
+      `${INSTALLED_APP} is build ${installedBuild}, newer than build ${build} of ${version}. To go back to an older ` +
+        `build, uninstall blackice first, as the install guide says: ${INSTALL_GUIDE}`,
+    )
 
-    if (installed) {
-      log(`Removing the installed ${INSTALLED_APP}`)
-      try {
-        await rm(INSTALLED_APP, { recursive: true })
-      } catch (error) {
-        throw new InstallError(
-          `could not remove ${INSTALLED_APP} (${error.code ?? error.message}). Replacing an app needs App Management ` +
-            'for your terminal: System Settings > Privacy & Security > App Management.',
-        )
-      }
-    }
-    const copy = run(DITTO, [app, INSTALLED_APP])
-    check(copy.status === 0, `ditto could not copy ${APP_NAME} to /Applications:\n${copy.output.trim()}`)
-    log(nextSteps(version, installed))
+    const replaced = placeApp(app, INSTALLED_APP, { log })
+    log(nextSteps(version, replaced))
   } finally {
     await rm(work, { recursive: true, force: true })
   }

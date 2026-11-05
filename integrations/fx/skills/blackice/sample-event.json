@@ -1,7 +1,6 @@
 {
   "event": "connection",
   "id": "ev-7f3a91c2",
-  "token": "q8Zr0d3XyB1mVt5LkS9wJpQa2NcEf7HgUi4Ko6Rl0Ys",
   "app": { "signing_id": "com.example.tool", "team_id": "ABCDE12345", "path": "/Applications/Tool.app" },
   "host": "example.com",
   "ip": "203.0.113.7",

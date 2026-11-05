@@ -51,9 +51,10 @@ public struct Interaction {
         var ask: ((String) -> String?)?
         var choose: ((Choice) -> [Int]?)?
         if interactive {
+            // Ends the line early, as nil, once a signal is caught (`Interrupts`).
             ask = { prompt in
-                FileHandle.standardOutput.write(Data(prompt.utf8))
-                return readLine(strippingNewline: true)
+                try? FileHandle.standardOutput.write(contentsOf: Data(prompt.utf8))
+                return Interrupts.readLine()
             }
             if ProcessInfo.processInfo.environment["TERM"] != "dumb" { choose = { TerminalSelector.run($0) } }
         }
@@ -176,14 +177,14 @@ struct ConfigWizard {
         }
         if mode == .ask {
             say("")
-            say("  To have fx answer for you: blackice agent connect fx")
+            say("  To have an agent answer for you: blackice agent connect fx, or claude-code")
         }
         return answers
     }
 
     static let modes: [(Mode, String)] = [
         (.acceptAll, "accept-all   Let everything through and log it"),
-        (.ask, "ask          Hold what no rule allows until fx or you answer"),
+        (.ask, "ask          Hold what no rule allows until an agent or you answer"),
         (.blockAll, "block-all    Let through only what your rules allow"),
     ]
 
@@ -199,10 +200,11 @@ struct ConfigWizard {
             say("")
             say("  Who answers the connections that wait?")
             say("")
-            let agents = ["fx, a coding agent: blackice installs it if needed and sets it up",
-                          "Me, with blackice pending, approve and deny"]
-            guard let who = choose(Choice(options: agents, multiple: false))?.first else { return nil }
-            answers.agent = who == 0 ? "fx" : nil
+            let agents = [("fx", "fx, a coding agent: blackice installs it if needed and sets it up"),
+                          ("claude-code", "Claude Code: blackice installs it if needed and sets it up")]
+            let options = agents.map(\.1) + ["Me, with blackice pending, approve and deny"]
+            guard let who = choose(Choice(options: options, multiple: false))?.first else { return nil }
+            answers.agent = who < agents.count ? agents[who].0 : nil
         }
         if answers.mode != .acceptAll {
             guard let rules = pickApps(choose) else { return nil }
@@ -215,9 +217,10 @@ struct ConfigWizard {
     /// asks for a path or name and its hosts, as the typed questions do.
     private func pickApps(_ choose: (Choice) -> [Int]?) -> [Rule]? {
         var seen = Set<SigningIdentity>()
+        // Each app named its own bundle, so the name is escaped, in the list and in what follows.
         let running = runningApps().compactMap { path -> (name: String, identity: SigningIdentity)? in
             guard let identity = identify(path), seen.insert(identity).inserted else { return nil }
-            return (Interaction.appName(path), identity)
+            return (Describe.terminalSafe(Interaction.appName(path)), identity)
         }.prefix(Self.maximumRules)
         say("")
         say("  Apps you trust connect to any host, in every mode, without waiting.")

@@ -30,12 +30,49 @@ struct HookEventTests {
         #expect(try HookEvent.decode(event.jsonData()) == event)
     }
 
-    /// The sample next to the fx skill must stay in the format the daemon will send.
+    /// What a hook reads: everything but the token.
+    @Test func theHooksInputHasNoToken() throws {
+        let json = String(decoding: try sample.input.jsonData(), as: UTF8.self)
+        #expect(json == #"{"app":{"path":"/Applications/Tool.app","signing_id":"com.example.tool","team_id":"ABCDE12345"},"deadline":"2026-11-02T14:36:11Z","event":"connection","host":"example.com","id":"ev-7f3a91c2","ip":"203.0.113.7","port":443}"#)
+        #expect(!json.contains("token") && !json.contains(sample.token))
+        #expect(try HookEvent.Input.decode(sample.input.jsonData()) == sample.input)
+    }
+
+    /// The sample next to the fx skill must stay in the format the daemon gives hooks.
     @Test func fxSkillSampleDecodes() throws {
         let url = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
             .appendingPathComponent("integrations/fx/skills/blackice/sample-event.json")
-        #expect(try HookEvent.decode(Data(contentsOf: url)) == sample)
+        let data = try Data(contentsOf: url)
+        #expect(try HookEvent.Input.decode(data) == sample.input)
+        #expect(!String(decoding: data, as: UTF8.self).contains("token"))
+    }
+
+    /// Claude Code's sample, which `blackice agent connect claude-code` copies with its instructions.
+    @Test func claudeCodeSampleDecodes() throws {
+        let url = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("integrations/claude-code/blackice/sample-event.json")
+        let data = try Data(contentsOf: url)
+        let input = try HookEvent.Input.decode(data)
+        #expect(input.app.signingID == "com.microsoft.VSCode" && input.host == "update.code.visualstudio.com")
+        #expect(!String(decoding: data, as: UTF8.self).contains("token"))
+    }
+
+    /// The eval's events are in the hook's format once integrations/eval/run.sh adds the deadline.
+    @Test func evalEventsDecode() throws {
+        let folder = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("integrations/eval/events")
+        let names = try FileManager.default.contentsOfDirectory(atPath: folder.path).filter { $0.hasSuffix(".json") }
+        #expect(names.count == 20)
+        for name in names {
+            var object = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: folder.appendingPathComponent(name)))
+                as? [String: Any])
+            #expect(object["token"] == nil, "\(name)")
+            object["deadline"] = "2026-11-04T14:36:11Z"
+            #expect(throws: Never.self, "\(name)") { try HookEvent.Input.decode(JSONSerialization.data(withJSONObject: object)) }
+        }
     }
 
     @Test func hostileFieldsStayInsideTheirJSONStrings() throws {

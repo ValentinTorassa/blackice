@@ -15,7 +15,11 @@ hosts = ["api.example.com"]
 
 [[hook]]
 on = "connection"
-run = 'fx ask "Use the blackice skill to decide whether to approve the pending connection"'
+program = "/Users/me/.local/bin/fx"
+app = "com.vercel.fx"
+team = "JW6Y669B67"
+args = ["ask", "--no-save", "--no-color", "Use the blackice skill to decide whether to approve the pending connection"]
+env = ["HOME=/Users/me/.config/blackice/agent", "FX_DISABLE_KEYCHAIN=1"]
 """
 
 /// The error a document produces, or nil if it parses.
@@ -51,9 +55,11 @@ struct ConfigParsingTests {
         #expect(config.allow[0].team == "ABCDE12345")
         #expect(config.allow[0].hosts.map(\.source) == ["api.example.com"])
         #expect(config.allow[0].line == 6)
-        #expect(config.hooks == [Hook(on: "connection",
-                                      run: #"fx ask "Use the blackice skill to decide whether to approve the pending connection""#,
-                                      line: 11)])
+        #expect(config.hooks == [Hook(on: "connection", program: HookProgram(
+            path: "/Users/me/.local/bin/fx",
+            arguments: ["ask", "--no-save", "--no-color", "Use the blackice skill to decide whether to approve the pending connection"],
+            environment: ["HOME": "/Users/me/.config/blackice/agent", "FX_DISABLE_KEYCHAIN": "1"],
+            identity: SigningIdentity(signingID: "com.vercel.fx", teamID: "JW6Y669B67")), line: 11)])
         #expect(config.summary == "mode ask, timeout 10 s, 1 allow rule, 1 hook")
     }
 
@@ -302,13 +308,74 @@ struct ConfigRejectionTests {
     @Test func hookChecks() {
         let head = "mode = 'ask'\n[[hook]]\n"
         expectError(head + "run = 'x'", line: 2, containing: "needs an 'on' key")
-        expectError(head + "on = 'connection'", line: 2, containing: "needs a 'run' key")
+        expectError(head + "on = 'connection'", line: 2, containing: "needs a 'program' or a 'run' key")
         expectError(head + "on = 'dns'\nrun = 'x'", line: 3, containing: "on must be \"connection\"")
         expectError(head + "on = 'connection'\nrun = '   '", line: 4, containing: "must not be empty")
         expectError(head + "on = 'connection'\nrun = \"line one\\nline two\"", line: 4, containing: "no control characters")
         expectError(head + "on = 'connection'\nrun = \"esc \\u001b[31m\"", line: 4, containing: "no control characters")
         expectError(head + "on = 'connection'\nrun = \"c1 \\u0085\"", line: 4, containing: "no control characters")
         expectError(head + "on = 'connection'\nrun = '" + String(repeating: "x", count: 4097) + "'", line: 4, containing: "longer than 4096 bytes")
+    }
+
+    @Test func aProgramHook() throws {
+        let config = try BlackiceConfig(text: """
+        mode = "ask"
+
+        [[hook]]
+        on = "connection"
+        program = "/Users/Jane Doe/.local/bin/fx"
+        app = "com.vercel.fx"
+        team = "JW6Y669B67"
+        args = ["ask", "--no-save",
+                "Use the blackice skill to decide whether to approve the pending connection"]
+        env = ["HOME=/Users/Jane Doe/.config/blackice/agent", "FX_DISABLE_KEYCHAIN=1", "EMPTY=", "A=b=c"]
+
+        [[hook]]
+        on = "connection"
+        program = "/bin/sh"
+        app = "com.apple.sh"
+        stdin = "none"
+        """)
+        #expect(config.hooks == [
+            Hook(program: HookProgram(
+                path: "/Users/Jane Doe/.local/bin/fx",
+                arguments: ["ask", "--no-save", "Use the blackice skill to decide whether to approve the pending connection"],
+                environment: ["HOME": "/Users/Jane Doe/.config/blackice/agent", "FX_DISABLE_KEYCHAIN": "1", "EMPTY": "", "A": "b=c"],
+                identity: SigningIdentity(signingID: "com.vercel.fx", teamID: "JW6Y669B67")), line: 3),
+            // No team: Apple platform code, as in [[allow]].
+            Hook(program: HookProgram(path: "/bin/sh", identity: SigningIdentity(signingID: "com.apple.sh", teamID: nil),
+                                      eventOnStdin: false), line: 12),
+        ])
+        #expect(config.hooks[0].run == nil && config.hooks[1].commandText == "/bin/sh")
+        #expect(config.hooks[0].program?.eventOnStdin == true)
+        #expect(config.hooks[0].commandText.hasPrefix("/Users/Jane Doe/.local/bin/fx ask --no-save Use the blackice skill"))
+    }
+
+    @Test func programHookChecks() {
+        let head = "mode = 'ask'\n[[hook]]\non = 'connection'\n"
+        let fx = head + "program = '/opt/fx'\napp = 'com.vercel.fx'\n"
+        expectError(head + "program = '/opt/fx'\nrun = 'fx'\napp = 'com.vercel.fx'", line: 5, containing: "'program' or 'run', not both")
+        expectError(head + "program = '/opt/fx'", line: 2, containing: "with program needs an 'app' key")
+        expectError(head + "program = 'fx'\napp = 'com.vercel.fx'", line: 4, containing: "must be an absolute path")
+        expectError(head + "program = \"/opt/f\\nx\"\napp = 'com.vercel.fx'", line: 4, containing: "must be an absolute path")
+        expectError(head + "program = '/opt/fx'\napp = 'com vercel'", line: 5, containing: "signing identifier")
+        expectError(fx + "team = 'jw6y669b67'", line: 6, containing: "Team ID")
+        expectError(fx + "args = 'ask'", line: 6, containing: "args must be an array of strings")
+        expectError(fx + "args = ['ask', 1]", line: 6, containing: "holds an integer")
+        expectError(fx + "args = [\"a\\u0000b\"]", line: 6, containing: "no control characters")
+        expectError(fx + "args = [" + Array(repeating: "'a'", count: 65).joined(separator: ",") + "]", line: 6,
+                    containing: "more than 64 entries")
+        expectError(fx + "env = ['HOME']", line: 6, containing: "NAME=value")
+        expectError(fx + "env = ['=x']", line: 6, containing: "not a variable name")
+        expectError(fx + "env = ['1A=x']", line: 6, containing: "not a variable name")
+        expectError(fx + "env = ['A B=x']", line: 6, containing: "not a variable name")
+        expectError(fx + "env = ['BLACKICE_EVENT_FILE=/tmp/x']", line: 6, containing: "BLACKICE_ is the daemon's")
+        expectError(fx + "env = ['A=1', 'A=2']", line: 6, containing: "A is set twice")
+        expectError(fx + "stdin = 'file'", line: 6, containing: "stdin must be \"event\" or \"none\"")
+        expectError(fx + "stdin = false", line: 6, containing: "stdin")
+        for key in ["args = ['x']", "env = ['A=1']", "app = 'com.a'", "team = 'ABCDE12345'", "stdin = 'none'"] {
+            expectError(head + "run = 'x'\n" + key, line: 5, containing: "goes with program, not run")
+        }
     }
 
     @Test func tableCountLimits() {

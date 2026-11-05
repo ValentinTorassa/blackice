@@ -1,4 +1,5 @@
 import Foundation
+import BlackiceCore
 
 /// A list the person picks from: one option, or several.
 public struct Choice: Equatable, Sendable {
@@ -74,11 +75,15 @@ struct SelectorState: Equatable {
 
 /// The list drawn in the terminal: ↑ and ↓ (or k and j) move. With one option to pick, Enter picks
 /// it; with several, Enter or space ticks an option and Continue confirms. Control-C, Control-D,
-/// Escape and q cancel. The terminal is put back as it was in every case.
+/// Escape and q cancel, and so do SIGTERM and SIGHUP, which are caught while the list is up. The
+/// terminal is put back as it was in every case.
 enum TerminalSelector {
     /// The picked indices, in order; nil when the person cancelled or the terminal cannot do it.
     static func run(_ choice: Choice) -> [Int]? {
         guard !choice.options.isEmpty else { return [] }
+        // Released after the terminal is put back below (defers run last first).
+        let release = Interrupts.catchAll()
+        defer { release() }
         var saved = termios()
         guard tcgetattr(STDIN_FILENO, &saved) == 0 else { return nil }
         var raw = saved
@@ -98,9 +103,11 @@ enum TerminalSelector {
         var state = SelectorState(choice)
         let hint = choice.multiple ? "↑↓ move · Enter picks · Continue when done" : "↑↓ move · Enter picks"
         var drawn = 0
+        // An app chose its own name: escape what could redraw the list.
+        let options = choice.options.map(Describe.terminalSafe)
         func draw() {
             var text = drawn > 0 ? "\u{1B}[\(drawn)A" : ""
-            for (index, option) in choice.options.enumerated() {
+            for (index, option) in options.enumerated() {
                 let here = index == state.cursor
                 let pointer = here ? Style.command("❯") : " "
                 let box = choice.multiple ? (state.ticked.contains(index) ? Style.wrap("◉", "32") + " " : "○ ") : ""
@@ -151,9 +158,19 @@ enum TerminalSelector {
         }
     }
 
+    /// nil at the end of input, and once a signal was caught (`Interrupts`), checked every 200 ms.
     private static func readByte() -> UInt8? {
-        var byte: UInt8 = 0
-        return read(STDIN_FILENO, &byte, 1) == 1 ? byte : nil
+        while !Interrupts.interrupted {
+            var descriptor = pollfd(fd: STDIN_FILENO, events: Int16(POLLIN), revents: 0)
+            let ready = poll(&descriptor, 1, 200)
+            if ready < 0, errno != EINTR { return nil }
+            guard ready > 0 else { continue }
+            var byte: UInt8 = 0
+            let count = read(STDIN_FILENO, &byte, 1)
+            if count < 0, errno == EINTR { continue }
+            return count == 1 ? byte : nil
+        }
+        return nil
     }
 
     /// Whether another byte arrives within 50 ms.
@@ -162,7 +179,8 @@ enum TerminalSelector {
         return poll(&descriptor, 1, 50) > 0
     }
 
+    /// A terminal that hung up refuses the write; the list goes on to put things back.
     private static func write(_ text: String) {
-        FileHandle.standardOutput.write(Data(text.utf8))
+        try? FileHandle.standardOutput.write(contentsOf: Data(text.utf8))
     }
 }

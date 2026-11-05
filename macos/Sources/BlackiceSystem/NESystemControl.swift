@@ -69,31 +69,45 @@ public final class NESystemControl: SystemControlling {
         guard save(manager, output, firstSave: firstSave) else { return ExitCode.software }
         // The filter's process can come up seconds after the save, and macOS cuts the connections
         // open at that moment (on 3 November 2026 it cut fx's sign-in, started right after the
-        // first start). Wait until it answers, so that what runs next does not lose its connection.
-        let answering = Self.extensionAnswers(attempts: 40, interval: 0.5)
+        // first start). Wait until it answers, so that what runs next does not lose its connection,
+        // and until it names the configuration just saved: it keeps the one it has when it refuses
+        // the new one, and saving says nothing about that.
+        let inForce = Self.activation(of: candidate)
         output.stdout("")
-        CLI.onLines(candidate).forEach(output.stdout)
-        if replaced, !answering {
+        if replaced, inForce == .noAnswer {
             output.stderr("blackice was upgraded, and macOS needs a restart to finish. Restart the Mac, then run blackice start again.")
             output.stderr("Until then hooks, pending, approve and deny cannot reach the filter, and ask mode drops what it holds.")
             return ExitCode.tempFail
         }
+        guard inForce == .active else {
+            CLI.notActiveLines(candidate, inForce).forEach(output.stderr)
+            return CLI.activationStatus(inForce)
+        }
+        CLI.onLines(candidate).forEach(output.stdout)
         if neededApproval || output.setup, output.next {
             CLI.firstStartLines(candidate, daemonRunning: Self.daemonRunning()).forEach(output.stdout)
         }
         return ExitCode.success
     }
 
-    /// Whether the extension's XPC service answers `pending`, trying for a few seconds while a newly
-    /// launched extension starts listening. On 3 November 2026 an extension that replaced an older
-    /// version in place had no Mach service until the Mac restarted (docs/install.md, "Upgrading").
-    static func extensionAnswers(attempts: Int = 10, interval: TimeInterval = 0.5) -> Bool {
-        guard let teamID = CodeIdentity.current()?.teamID else { return false }
+    /// Asks the extension which configuration it decides with until it names `candidate`, for up
+    /// to `attempts` × `interval`: a newly launched extension takes a few seconds to listen, and a
+    /// running one installs a change on its own queue. On 3 November 2026 an extension that
+    /// replaced an older version in place had no Mach service until the Mac restarted
+    /// (docs/install.md, "Upgrading").
+    static func activation(of candidate: ProviderConfiguration, attempts: Int = 40, interval: TimeInterval = 0.5) -> Activation {
+        guard let teamID = CodeIdentity.current()?.teamID else { return .noAnswer }
+        var last = Activation.noAnswer
         for attempt in 1...attempts {
-            if (try? FilterClient(teamID: teamID).pending()) != nil { return true }
+            if let reply = try? FilterClient(teamID: teamID).pending() {
+                last = Activation(reply, saved: candidate)
+                if last == .active { return last }
+                // A newer generation: another change came after this one.
+                if let active = reply.active, active.generation > candidate.generation { return last }
+            }
             if attempt < attempts { Thread.sleep(forTimeInterval: interval) }
         }
-        return false
+        return last
     }
 
     public func stop(output: SystemOutput) -> Int32 {
@@ -134,10 +148,12 @@ public final class NESystemControl: SystemControlling {
             filter = .unreadable
         }
         var pending: PendingReply?
+        var upgrade: UnfinishedUpgrade?
         if case .on = filter, let teamID = CodeIdentity.current()?.teamID {
             pending = try? FilterClient(teamID: teamID).pending()
+            if pending == nil { upgrade = Self.unfinishedUpgrade() }
         }
-        CLI.statusLines(StatusReport(filter: filter, daemonRunning: Self.daemonRunning(), pending: pending))
+        CLI.statusLines(StatusReport(filter: filter, daemonRunning: Self.daemonRunning(), pending: pending, upgrade: upgrade))
             .forEach(output.stdout)
         return ExitCode.success
     }
@@ -151,6 +167,21 @@ public final class NESystemControl: SystemControlling {
     /// Whether launchd has the daemon's LaunchAgent loaded for this user.
     static func daemonRunning() -> Bool {
         LaunchAgent.run(["print", "gui/\(getuid())/\(LaunchAgent.label)"]).status == 0
+    }
+
+    /// Asked when the extension does not answer: whether macOS runs another build of it than the
+    /// one inside this app, because the app was replaced and `blackice start` has not run since.
+    /// One properties request to macOS; nil when it fails or the builds match.
+    static func unfinishedUpgrade() -> UnfinishedUpgrade? {
+        let result = Completion()
+        let delegate = ExtensionPropertiesDelegate(result: result)
+        let request = OSSystemExtensionRequest.propertiesRequest(forExtensionWithIdentifier: BlackiceIdentifiers.filter,
+                                                                 queue: .main)
+        request.delegate = delegate
+        OSSystemExtensionManager.shared.submitRequest(request)
+        let status = withExtendedLifetime(delegate) { MainLoop.wait(for: result, timeout: 5) }
+        guard status == ExitCode.success else { return nil }
+        return UnfinishedUpgrade(app: Peers.extensionBuild(app: Bundle.main.bundleURL), running: delegate.running)
     }
 
     public func setMode(_ mode: Mode, output: SystemOutput) -> Int32 {
@@ -186,6 +217,11 @@ public final class NESystemControl: SystemControlling {
         }
         manager.providerConfiguration = provider
         guard save(manager, output) else { return ExitCode.software }
+        let inForce = Self.activation(of: candidate)
+        guard inForce == .active else {
+            CLI.notActiveLines(candidate, inForce).forEach(output.stderr)
+            return CLI.activationStatus(inForce)
+        }
         CLI.modeChangedLines(candidate, daemonRunning: Self.daemonRunning()).forEach(output.stdout)
         return ExitCode.success
     }
@@ -201,32 +237,32 @@ public final class NESystemControl: SystemControlling {
             CLI.pendingLines(reply).forEach(output.stdout)
             return ExitCode.success
         } catch {
-            output.stderr("Cannot reach blackice's filter (\(error)). Is blackice on? Check with: blackice status")
+            output.stderr(Self.unfinishedUpgrade().map { "Cannot reach blackice's filter. " + $0.hint }
+                ?? "Cannot reach blackice's filter (\(error)). Is blackice on? Check with: blackice status")
             return ExitCode.unavailable
         }
     }
 
-    /// With the event's token the request goes as is: the extension checks the token. Without
-    /// one, a person confirms with Touch ID first, and the extension trusts that claim only because
-    /// the connection's code signing requirement proves it comes from this signed binary.
+    /// A person confirms with Touch ID first, and the extension trusts that claim only because the
+    /// connection's code signing requirement proves it comes from this signed binary. Hooks do not
+    /// come through here: the daemon sends their answers itself, with the event's token.
     public func answer(_ request: AnswerRequest, output: SystemOutput) -> Int32 {
         guard Self.isSignedHost(), let teamID = CodeIdentity.current()?.teamID else {
             return UnsignedSystem().answer(request, output: output)
         }
         let command = "blackice \(request.kind.rawValue)"
-        if request.authorization == .touchID {
-            guard let identity = request.identity else { return ExitCode.usage }
-            let action: ControlAction = request.kind == .approve
-                ? .approve(identity, host: request.host, seconds: request.seconds ?? 0)
-                : .deny(identity, host: request.host)
-            guard confirm(action, output) else { return ExitCode.noPermission }
-        }
+        guard request.authorization == .touchID, let identity = request.identity else { return ExitCode.usage }
+        let action: ControlAction = request.kind == .approve
+            ? .approve(identity, host: request.host, seconds: request.seconds ?? 0)
+            : .deny(identity, host: request.host)
+        guard confirm(action, output) else { return ExitCode.noPermission }
         do {
             let reply = try FilterClient(teamID: teamID).answer(request)
             if reply.status == .done { output.stdout(reply.message) } else { output.stderr("\(command): \(reply.message)") }
             return CLI.answerStatus(reply)
         } catch {
-            output.stderr("\(command): cannot reach blackice's filter (\(error)). Is blackice on? Check with: blackice status")
+            output.stderr(Self.unfinishedUpgrade().map { "\(command): cannot reach blackice's filter. " + $0.hint }
+                ?? "\(command): cannot reach blackice's filter (\(error)). Is blackice on? Check with: blackice status")
             return ExitCode.unavailable
         }
     }
@@ -283,7 +319,7 @@ public final class NESystemControl: SystemControlling {
     }
 
     private func refuseForeign(_ owner: String, _ output: SystemOutput) -> Int32 {
-        output.stderr("Another product (\(owner)) has this Mac's content filter, so blackice will not change it.")
+        output.stderr("Another product (\(Describe.terminalSafe(owner))) has this Mac's content filter, so blackice will not change it.")
         return ExitCode.unavailable
     }
 
@@ -465,6 +501,35 @@ final class ExtensionRequestDelegate: NSObject, OSSystemExtensionRequestDelegate
         }
         output.stderr("macOS refused the network extension request: \(error.localizedDescription) " +
                       "(\(error.domain) \(error.code)).")
+        result.finish(ExitCode.software)
+    }
+}
+
+/// The builds of the extension that macOS has enabled and is not uninstalling, from a properties
+/// request. Never asks the person and never replaces anything.
+final class ExtensionPropertiesDelegate: NSObject, OSSystemExtensionRequestDelegate {
+    private let result: Completion
+    private(set) var running: [String] = []
+
+    init(result: Completion) { self.result = result }
+
+    func request(_ request: OSSystemExtensionRequest, foundProperties properties: [OSSystemExtensionProperties]) {
+        running = properties.filter { $0.isEnabled && !$0.isUninstalling }.map(\.bundleVersion)
+        result.finish(ExitCode.success)
+    }
+
+    func requestNeedsUserApproval(_ request: OSSystemExtensionRequest) {}
+
+    func request(_ request: OSSystemExtensionRequest, actionForReplacingExtension existing: OSSystemExtensionProperties,
+                 withExtension candidate: OSSystemExtensionProperties) -> OSSystemExtensionRequest.ReplacementAction {
+        .cancel
+    }
+
+    func request(_ request: OSSystemExtensionRequest, didFinishWithResult result: OSSystemExtensionRequest.Result) {
+        self.result.finish(ExitCode.success)
+    }
+
+    func request(_ request: OSSystemExtensionRequest, didFailWithError error: Error) {
         result.finish(ExitCode.software)
     }
 }

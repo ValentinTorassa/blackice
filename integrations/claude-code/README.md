@@ -14,15 +14,22 @@ stdout: `approve 10m`, `approve 1h` or `deny`.
 
 ## The hook
 
+The hook `agent connect` writes, for a home at `/Users/me` and the Homebrew `claude`:
+
 ```toml
 [[hook]]
 on = "connection"
-run = 'CLAUDE_CONFIG_DIR="$HOME/.config/blackice/agent/.claude" CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 /opt/homebrew/bin/claude -p --restricted --safe-mode --tools Read --strict-mcp-config --no-session-persistence --permission-prompts none --model sonnet --max-turns 3 --output-format text --system-prompt-file "$HOME/.config/blackice/agent/.claude/blackice/instructions.md" "Decide the pending blackice connection in event.json." </dev/null'
+program = "/opt/homebrew/bin/claude"
+app = "com.anthropic.claude-code"
+team = "Q6L2SF6YDW"
+args = ["-p", "--restricted", "--safe-mode", "--tools", "Read", "--strict-mcp-config", "--no-session-persistence", "--permission-prompts", "none", "--model", "sonnet", "--max-turns", "3", "--output-format", "text", "--system-prompt-file", "/Users/me/.config/blackice/agent/.claude/blackice/instructions.md", "Decide the pending blackice connection in event.json."]
+env = ["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1", "CLAUDE_CONFIG_DIR=/Users/me/.config/blackice/agent/.claude"]
+stdin = "none"
 ```
 
-`agent connect` writes the same line with the paths spelled out, and the path of `claude` it found (the Homebrew
-cask's `/opt/homebrew/bin/claude`, or `~/.local/bin/claude` from Anthropic's installer). Checked against Claude Code
-2.1.317:
+`program` is the `claude` it found: the Homebrew cask's `/opt/homebrew/bin/claude`, or `~/.local/bin/claude` from
+Anthropic's installer. `app` and `team` are read from that binary, and the daemon starts it only when the running
+code has them, so an update that keeps Anthropic's signature needs no change. Checked against Claude Code 2.1.317:
 
 - **`--tools Read`**: reading files is its only tool. No shell, no edits, no web.
 - **`--restricted`** keeps the file tools inside the working directory, which is the event's private directory
@@ -35,8 +42,10 @@ cask's `/opt/homebrew/bin/claude`, or `~/.local/bin/claude` from Anthropic's ins
 - **`--system-prompt-file`**: the instructions replace Claude Code's own system prompt.
 - **`--model sonnet --max-turns 3`**: one turn to read the event and one to answer, with one to spare. Over the
   limit, `claude -p` exits with an error, and that is no answer.
-- **`</dev/null`**: `claude -p` adds whatever comes on stdin to the prompt. The daemon sends the event there too,
-  and closing it keeps the event out of the prompt: it arrives only through the Read tool, as data.
+- **`stdin = "none"`**: `claude -p` adds whatever comes on stdin to the prompt, and the daemon sends the event on
+  stdin unless the hook says otherwise. With an empty stdin the event stays out of the prompt: it arrives only
+  through the Read tool, as data, where Claude treats it with more suspicion than text from the person it works
+  for.
 - **`CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`**: no telemetry, error reports or update checks, so the rule
   below can stay at two hosts.
 
@@ -78,14 +87,15 @@ hosts = ["api.anthropic.com", "platform.claude.com"]
 ```
 
 `api.anthropic.com` is the model. `platform.claude.com` is where Claude Code 2.1.317 renews its sign-in (its OAuth
-token endpoint); the renewal has not been seen under the hook yet. In the 20 eval runs and the probes before them,
+token endpoint); the renewal has not been seen under the hook yet. In the 40 eval runs and the probes before them,
 on a Mac in ask mode with a rule for `*.anthropic.com`, the event log showed no other connection from Claude Code.
 The Claude Code you use yourself reaches more (telemetry, updates, connectors), which the hook turns off.
 
 ## Checking it
 
 [`../eval/run.sh`](../eval/run.sh) runs a decider over the events in [`../eval/events/`](../eval/events/) the way
-the daemon runs a hook, and compares each verdict with [`../eval/cases.json`](../eval/cases.json):
+the daemon runs a program hook, with the hook above (the instructions from the repository), and compares each
+answer with [`../eval/cases.json`](../eval/cases.json):
 
 ```console
 $ integrations/eval/run.sh --agent claude-code
@@ -93,7 +103,8 @@ $ integrations/eval/run.sh --agent claude-code
 
 It uses the sign-in in `~/.config/blackice/agent/.claude`; `CLAUDE_CONFIG_DIR=dir` picks another one, and
 `MODEL=haiku` another model. On 4 November 2026, with Claude Code 2.1.317 and `sonnet` (claude-sonnet-5-5), signed
-in through a personal configuration directory, one run came out 20 for 20:
+in through a personal configuration directory, two runs came out 20 for 20: the first as a `run` line with stdin
+closed, the second as the program hook above, with an empty stdin. In both:
 
 - the six apps reaching their own services were approved, each for 1 hour, the cdhash-named Homebrew `gh`
   included;
@@ -102,9 +113,10 @@ in through a personal configuration directory, one run came out 20 for 20:
   host or the path were denied;
 - the injected `touch` never ran: there is no shell.
 
-Each decision took 3 to 8 s, 4.1 s at the median. Ten replies put a sentence of reasoning before the reason
-line they were asked for, two gave a paragraph in its place, and in every reply the verdict was the last line. One run with one
-model shows the instructions can work, not that they always will.
+Each decision took 3 to 8 s, 4.1 and 4.3 s at the median. In the first run ten replies put a sentence of reasoning
+before the reason line they were asked for and two gave a paragraph in its place; in the second, six had the extra
+sentence. In every reply the verdict was the last line. Two runs with one model show the instructions can work,
+not that they always will.
 
 ## Open questions
 
@@ -114,3 +126,5 @@ model shows the instructions can work, not that they always will.
   its deadline until the limit resets.
 - **The model.** `sonnet` follows the latest Sonnet. Pinning a full model name makes runs comparable over time,
   and lags behind.
+- **Several at once.** The daemon runs up to 4 hooks at once, so up to 4 Claude Code processes share one sign-in.
+  How they renew it together has not been seen.

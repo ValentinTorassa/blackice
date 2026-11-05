@@ -39,18 +39,64 @@ public struct AllowRule: Equatable, Sendable {
     }
 }
 
+/// What a [[hook]] runs for each event: a shell command line (`run`), or an executable (`program`)
+/// that the daemon starts directly and checks against its code signature first. Either way it
+/// answers on its stdout (see `HookAnswer`).
 public struct Hook: Equatable, Sendable {
     /// The only event so far is "connection".
     public let on: String
-    /// The command line to run.
-    public let run: String
+    /// The command line to run with `/bin/sh -c`. Nothing checks what the shell then runs, so a
+    /// program of the user that replaces it (fx in ~/.local/bin, say) answers in its place.
+    public let run: String?
+    /// The executable to run, checked against its signature before each run.
+    public let program: HookProgram?
     /// Line of the hook's [[hook]] header.
     public let line: Int
 
     public init(on: String = "connection", run: String, line: Int) {
         self.on = on
         self.run = run
+        program = nil
         self.line = line
+    }
+
+    public init(on: String = "connection", program: HookProgram, line: Int) {
+        self.on = on
+        run = nil
+        self.program = program
+        self.line = line
+    }
+
+    /// The command as one string, for finding a hook by what it runs: `run`, or the program and
+    /// its arguments separated by spaces.
+    public var commandText: String {
+        run ?? program.map { ([$0.path] + $0.arguments).joined(separator: " ") } ?? ""
+    }
+}
+
+/// `program`, `args`, `env`, `app`, `team` and `stdin` in a [[hook]].
+public struct HookProgram: Equatable, Sendable {
+    /// Absolute. Started with posix_spawn, with no shell and no PATH lookup.
+    public let path: String
+    /// argv[1...]; argv[0] is `path`.
+    public let arguments: [String]
+    /// Set on top of the environment the daemon builds; `env = ["NAME=value", ...]` in the file.
+    public let environment: [String: String]
+    /// The signing identifier and Team ID the running program must have, checked as [[allow]]
+    /// rules check apps. No Team ID means Apple platform code.
+    public let identity: SigningIdentity
+    /// Whether the event comes on stdin too (`stdin = "event"`, the default). With `stdin =
+    /// "none"`, stdin is empty, and the event is only in the file: for a program that adds what
+    /// comes on stdin to a model's prompt (`claude -p`), where the event should arrive as data.
+    public let eventOnStdin: Bool
+
+    public init(path: String, arguments: [String] = [], environment: [String: String] = [:], identity: SigningIdentity,
+                eventOnStdin: Bool = true) {
+        self.path = path
+        self.arguments = arguments
+        self.environment = environment
+        self.identity = identity
+        self.eventOnStdin = eventOnStdin
     }
 }
 
@@ -76,6 +122,10 @@ public struct BlackiceConfig: Equatable, Sendable {
     public static let maximumHostsPerRule = 256
     public static let maximumHooks = 8
     public static let maximumRunBytes = 4096
+    /// For `program`, each of `args` and each `env` entry.
+    public static let maximumHookStringBytes = 4096
+    public static let maximumHookArguments = 64
+    public static let maximumHookEnvironment = 64
 
     public let mode: Mode
     public let timeoutSeconds: Int
@@ -160,8 +210,9 @@ extension BlackiceConfig {
                                allow: try allowTables.map(allowRule), hooks: try hookTables.map(hook))
     }
 
-    private static func allowRule(_ table: Table) throws -> AllowRule {
-        guard let appEntry = table.entries["app"] else { throw ConfigError(line: table.line, "[[allow]] needs an 'app' key") }
+    /// `app` and `team`, the same in [[allow]] and in a [[hook]] with `program`.
+    private static func signingIdentity(_ table: Table, missing: String) throws -> SigningIdentity {
+        guard let appEntry = table.entries["app"] else { throw ConfigError(line: table.line, missing) }
         let app = try appEntry.string("app")
         guard validSigningID(app) else {
             throw ConfigError(line: appEntry.line, "app must be a signing identifier (letters, digits, '-', '.', '_'), not \(quoted(app))")
@@ -174,6 +225,12 @@ extension BlackiceConfig {
             }
             team = text
         }
+        return SigningIdentity(signingID: app, teamID: team)
+    }
+
+    private static func allowRule(_ table: Table) throws -> AllowRule {
+        let identity = try signingIdentity(table, missing: "[[allow]] needs an 'app' key")
+        let (app, team) = (identity.signingID, identity.teamID)
         guard let hostsEntry = table.entries["hosts"] else { throw ConfigError(line: table.line, "[[allow]] needs a 'hosts' key") }
         guard case .array(let items) = hostsEntry.value else {
             throw ConfigError(line: hostsEntry.line, "hosts must be an array of strings, not \(hostsEntry.value.typeName)")
@@ -213,7 +270,18 @@ extension BlackiceConfig {
         guard on == "connection" else {
             throw ConfigError(line: onEntry.line, "on must be \"connection\", not \(quoted(on))")
         }
-        guard let runEntry = table.entries["run"] else { throw ConfigError(line: table.line, "[[hook]] needs a 'run' key") }
+        if let runEntry = table.entries["run"], let programEntry = table.entries["program"] {
+            throw ConfigError(line: max(runEntry.line, programEntry.line), "[[hook]] takes 'program' or 'run', not both")
+        }
+        if let programEntry = table.entries["program"] {
+            return Hook(on: on, program: try program(programEntry, in: table), line: table.line)
+        }
+        guard let runEntry = table.entries["run"] else {
+            throw ConfigError(line: table.line, "[[hook]] needs a 'program' or a 'run' key")
+        }
+        for key in ["args", "env", "app", "team", "stdin"] {
+            if let entry = table.entries[key] { throw ConfigError(line: entry.line, "\(key) goes with program, not run") }
+        }
         let run = try runEntry.string("run")
         guard !run.allSatisfy({ $0 == " " || $0 == "\t" }) else { throw ConfigError(line: runEntry.line, "run must not be empty") }
         guard run.utf8.count <= maximumRunBytes else {
@@ -224,11 +292,76 @@ extension BlackiceConfig {
         }
         return Hook(on: on, run: run, line: table.line)
     }
+
+    private static func program(_ entry: Entry, in table: Table) throws -> HookProgram {
+        let path = try entry.string("program")
+        guard path.hasPrefix("/"), path.utf8.count <= HookEvent.maximumPathBytes, !path.unicodeScalars.contains(where: isControl) else {
+            throw ConfigError(line: entry.line, "program must be an absolute path, not \(quoted(path))")
+        }
+        let identity = try signingIdentity(
+            table, missing: "[[hook]] with program needs an 'app' key: the signing identifier the program must have")
+        var arguments: [String] = []
+        if let argsEntry = table.entries["args"] {
+            arguments = try strings(argsEntry, "args", at: maximumHookArguments)
+        }
+        var environment: [String: String] = [:]
+        if let envEntry = table.entries["env"] {
+            for item in try strings(envEntry, "env", at: maximumHookEnvironment) {
+                guard let equals = item.firstIndex(of: "=") else {
+                    throw ConfigError(line: envEntry.line, "env entries are NAME=value, not \(quoted(item))")
+                }
+                let name = String(item[..<equals])
+                guard validEnvironmentName(name), !name.hasPrefix("BLACKICE_") else {
+                    throw ConfigError(line: envEntry.line, "\(quoted(name)) is not a variable name a hook may set " +
+                                      "(letters, digits and '_'; BLACKICE_ is the daemon's)")
+                }
+                guard environment[name] == nil else { throw ConfigError(line: envEntry.line, "\(name) is set twice in env") }
+                environment[name] = String(item[item.index(after: equals)...])
+            }
+        }
+        var eventOnStdin = true
+        if let stdinEntry = table.entries["stdin"] {
+            let stdin = try stdinEntry.string("stdin")
+            guard ["event", "none"].contains(stdin) else {
+                throw ConfigError(line: stdinEntry.line, "stdin must be \"event\" or \"none\", not \(quoted(stdin))")
+            }
+            eventOnStdin = stdin == "event"
+        }
+        return HookProgram(path: path, arguments: arguments, environment: environment, identity: identity,
+                           eventOnStdin: eventOnStdin)
+    }
+
+    /// An array of at most `limit` strings, each at most `maximumHookStringBytes` with no control
+    /// characters other than tab.
+    private static func strings(_ entry: Entry, _ key: String, at limit: Int) throws -> [String] {
+        guard case .array(let items) = entry.value else {
+            throw ConfigError(line: entry.line, "\(key) must be an array of strings, not \(entry.value.typeName)")
+        }
+        guard items.count <= limit else { throw ConfigError(line: entry.line, "\(key) has more than \(limit) entries") }
+        return try items.map { item in
+            guard case .string(let text) = item else {
+                throw ConfigError(line: entry.line, "\(key) must be an array of strings, but it holds \(item.typeName)")
+            }
+            guard text.utf8.count <= maximumHookStringBytes, !text.unicodeScalars.contains(where: isControl) else {
+                throw ConfigError(line: entry.line, "\(key) entries must be at most \(maximumHookStringBytes) bytes " +
+                                  "with no control characters")
+            }
+            return text
+        }
+    }
 }
 
 /// C0 controls other than tab, DEL and C1 controls.
 private func isControl(_ scalar: Unicode.Scalar) -> Bool {
     (scalar.value < 0x20 && scalar.value != 0x09) || (0x7F...0x9F).contains(scalar.value)
+}
+
+/// An ASCII letter or '_', then letters, digits and '_'.
+func validEnvironmentName(_ name: String) -> Bool {
+    guard let first = name.utf8.first, !(48...57).contains(first) else { return false }
+    return name.utf8.count <= 255 && name.utf8.allSatisfy {
+        (65...90).contains($0) || (97...122).contains($0) || (48...57).contains($0) || $0 == 95
+    }
 }
 
 /// A value from the file, safe to print: printable ASCII is kept, the rest is escaped, and long values are cut.
@@ -289,7 +422,7 @@ private enum TableKind: String {
         switch self {
         case .root: return ["mode", "timeout_seconds", "apple_services"]
         case .allow: return ["app", "team", "hosts"]
-        case .hook: return ["on", "run"]
+        case .hook: return ["on", "run", "program", "args", "env", "app", "team", "stdin"]
         }
     }
 

@@ -433,7 +433,8 @@ public final class DNSNameTable: @unchecked Sendable {
         guard !learned.isEmpty else { return }
         lock.lock(); defer { lock.unlock() }
         let now = clock()
-        for item in learned {
+        // A link-local answer names no interface, so it says nothing about a flow's address.
+        for item in learned where item.address.isCheckable {
             let expires = now + Self.lifetime(ttl: item.ttl)
             var names = (entries[item.address] ?? [:]).filter { $0.value > now }
             if names.isEmpty, entries[item.address] == nil, entries.count >= maximumAddresses {
@@ -450,7 +451,7 @@ public final class DNSNameTable: @unchecked Sendable {
 
     /// The names whose answers gave this address and have not expired. Never blocks for long.
     public func names(for address: IPAddress?) -> Set<String> {
-        guard let address else { return [] }
+        guard let address, address.isCheckable else { return [] }
         lock.lock(); defer { lock.unlock() }
         guard let names = entries[address] else { return [] }
         let now = clock()

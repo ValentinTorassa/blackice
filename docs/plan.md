@@ -15,15 +15,18 @@ and each run on a Mac is recorded in [`evidence/`](../evidence/).
 | No answer in time | Deny after N seconds. N is configurable. macOS keeps a paused TCP flow as long as we want, so what bounds N is how long the app and the server wait (see the open problems). |
 | Approval scope | One app (by signing identity) and one host, with an expiry: `blackice approve --app … --host … --for 1h`. |
 | Ad hoc signed code | Ask mode asks about it too, and the approval names its cdhash plus the host: `blackice approve --cdhash … --host …`. A rebuild changes the cdhash, so the next connection asks again. Rules in `blackice.toml` never name it, so block-all drops it. Code with no signature has no cdhash either and is dropped. |
-| Host and address | Before a rule or an approval counts, the host is resolved with the system resolver and the flow's remote address must be among the answers, which are kept for 30 s. A mismatch means no rule or approval matches: ask mode asks, block-all drops, and the log says `address_mismatch`. |
+| Host and address | Before a rule or an approval counts, the host is resolved with the system resolver and the flow's remote address must be among the answers, which are kept for 30 s. A mismatch means no rule or approval matches: ask mode asks, block-all drops, and the log says `address_mismatch`. On TCP port 443 a flow that a rule, the Apple services table or an approval would allow is then held until its TLS ClientHello is read, with a host name from the system as with one from DNS answers (below): the server name must be that host, or a host covered by itself whose address checks out, or the flow is dropped (`server_name_mismatch`). The host name from the system is the app's choice, and the server name picks the site behind a shared address. The hold ends at the hello, within the 10 s that held flows get. In ask mode such a flow is still asked about by its host name before it connects, and an approval resumes it into the hold. |
 | Apple services | macOS's own services pass without a rule, through a built-in table (`macos/Sources/BlackiceCore/AppleServices.swift`) of signing identifier → the Apple hosts that service uses. An entry counts only for Apple platform code (no Team ID, `anchor apple`) and only when the address checks out, as for a rule; the log says `apple_service`. The table comes from the first ask-mode run's event log plus well-known services. Tools that run commands or fetch any URL (curl, nscurl, python3, perl, ruby, the shells, ssh, scp, nc, git, osascript, Safari, WebKit's networking process, nsurlsessiond) are never in it, and a test checks that. trustd and ocspd get Apple's hosts and those of the main public certificate authorities, not any host on port 80: a certificate names its own OCSP, CRL and issuer URLs, so any app could reach a host of its choosing through trustd. On by default; `apple_services = false` turns it off. |
 | Any destination | `hosts = ["*"]`, alone in a rule, lets that app reach anything, including flows with an address and no host name, in block-all and ask. No host or address check applies, and the log says `rule_line_N`. For VPN clients and DNS proxies, which connect by address, and for a browser you would allow everywhere anyway. Everything the app does is then allowed. `*` next to other hosts is an error. |
 | Names from DNS answers | In ask and block-all the extension reads the system resolver's DNS traffic (mDNSResponder's port-53 flows, UDP and TCP) and passes every byte unchanged; accept-all reads nothing. A response counts only when it answers a query sent on the same flow, with the same ID and question, the check the resolver applies itself. The question's name is recorded against the A and AAAA addresses at the end of its CNAME chain (never the CNAME targets), for the records' TTL held between 30 s and 5 minutes, at most 16 names per address and 4096 addresses. Anything malformed, truncated or not understood teaches nothing. A connection with no host name from the system whose address was given for exactly one name is decided on that name, which passes the host and address check since it came with the address: rules and approvals for it count, and ask mode asks about it. On port 443 the TLS server name is still read, and a server name other than that one must be covered itself, or the connection is dropped (`server_name_mismatch`), so an app cannot look up an allowed name and then reach another site on the same CDN address. Several names for one address, or none, leave the server name path as it was. |
+| Encrypted Client Hello | A ClientHello with the `encrypted_client_hello` extension (ECH) is judged on its server name in the clear, like any other: it must be the flow's host, or a host covered by itself whose address checks out, or the connection is dropped (`server_name_mismatch`). Its verdict's reason ends in `;ech` (`rule_line_3;server_name;ech`, `server_name_mismatch;ech`), so `log show` can count such hellos. A decoy ECH extension (GREASE), which Chrome sends when it has no ECH key for the server, leaves the real host in the clear, so it passes as without ECH. Real ECH puts the provider's public front end there (`cloudflare-ech.com`, say), which is not the host the app named, so the connection is dropped unless the front-end name is covered itself. The limit: the site the connection reaches is in the encrypted part, which blackice cannot read, so a rule or an approval for a front-end name covers whatever site sits behind it. Allowing or approving such a name (`cloudflare-ech.com` and the like) gives that app the provider's whole network. And the app writes the name in the clear itself: where a provider decrypts ECH whatever that name says, any covered name it hosts can serve as the front end. Dropping every ECH hello was considered and rejected (4 November 2026): GREASE looks the same as real ECH, so it would break apps built on Chromium and, if macOS's own TLS sends ECH, Apple's services and the deciding agent. |
 | DNS in block-all | Apple's resolver stays reachable on port 53 in every mode, so in block-all any app can still make name lookups through it, which can carry data out. Documented as a known gap; tying DNS answers to rules with an `NEDNSProxyProvider` is later work. |
-| Hooks that leave their process group | Best effort, and documented: a process started by a hook that calls `setsid` or `setpgid` escapes the kill at the deadline and when the hook exits. Running hooks under a separate user or in a sandbox would close this; neither is planned yet. |
+| Hooks that leave their process group | Best effort, and documented: a process started by a hook that calls `setsid` or `setpgid` escapes the kill at the deadline and when the hook exits, and can write to the hook's stdout until the daemon stops reading it, 0.2 s after the hook exits. Running hooks under a separate user or in a sandbox would close this; neither is planned yet. |
 | Approval storage | In memory, inside the extension. Permanent rules live in `blackice.toml`. |
-| Who can approve | The hook, with the event's one-time token, or a person with Touch ID. |
-| Daemon | `blackice daemon` takes no options and reads no file (decided on 3 November 2026). The extension's reply to its registration carries the configuration the extension holds, the `blackice.toml` text that `start` or `mode` saved after Touch ID plus its generation, and the daemon takes its hooks and timeout from it, parsed with the same strict parser. Each event carries the generation the extension held when it sent it; a daemon holding another one registers again on the same connection to get the current configuration, and runs no hook for an event whose configuration is gone. Hooks get an environment the daemon builds: `HOME`, `USER` and `LOGNAME` from the user database, `TMPDIR` from confstr, a fixed `PATH` and `LANG`, and the event's file and ID. `blackice agent install` and `uninstall` write and load, or unload and remove, the LaunchAgent, without Touch ID. |
+| Who can approve | A person, with `blackice approve` or `deny` and Touch ID, or a hook, through the daemon (decided on 4 November 2026, for 0.4.0). The event's one-time token never leaves the extension and the daemon: a hook gets the event without it and answers on its stdout, and the daemon sends that answer to the extension with the token. The extension takes an answer with a token only on the connection of the daemon it registered. `approve` and `deny` take no `--token`. |
+| Hook answers | A hook answers only when it exits with status 0 before its deadline. The last non-empty line of its stdout, trimmed, must then be exactly `deny`, `approve <N>m` (N from 1 to 1440) or `approve <N>h` (N from 1 to 24), the limits of `approve --for`. The daemon reads at most 64 KiB of stdout; more than that, any other line, another exit status or the deadline is no answer, and the connection is denied at its deadline. The answer names no app and no host: the daemon takes both from the event. The event log records `hook_answer` (the answer and its seconds) or `hook_no_answer` (a reason, and at most the first 24 characters of an unrecognized line, printable ASCII only), and `answer_refused` when the extension refuses the answer. |
+| Hook programs | `program = "/abs/path"` with `app` and `team`, the identity pair of `[[allow]]`, plus optional `args`, `env` and `stdin` (`"none"` keeps the event off stdin, for Claude Code; the default is `"event"`). The daemon starts the program directly, suspended, checks the code signature of the process it started, as for an `[[allow]]` rule, against `app` and `team`, and only then lets it run. Checking the process rather than the file means the code checked is the code that runs. On a mismatch it kills the process before it runs and logs `hook_refused`. `run = '…'` still runs through `/bin/sh -c` with no check. Only `program` hooks are protected against a program swapped by another program of the user; `blackice agent connect` writes one, with the identity read from the agent's binary. |
+| Daemon | `blackice daemon` takes no options and reads no file (decided on 3 November 2026). The extension's reply to its registration carries the configuration the extension holds, the `blackice.toml` text that `start` or `mode` saved after Touch ID plus its generation, and the daemon takes its hooks and timeout from it, parsed with the same strict parser. Each event carries the generation of the configuration it was raised under, and is not sent once another one is installed; a daemon holding another one registers again on the same connection to get the current configuration, and runs no hook for an event whose configuration is gone. Hooks get an environment the daemon builds: `HOME`, `USER` and `LOGNAME` from the user database, `TMPDIR` from confstr, a fixed `PATH` and `LANG`, a `program` hook's `env` on top (which may set `HOME` but no `BLACKICE_` variable), and the event's file and ID. `blackice agent install` and `uninstall` write and load, or unload and remove, the LaunchAgent, without Touch ID. |
 | Configuration | `blackice.toml`, read by a small strict parser for the subset the file uses. No third-party dependency. |
 | Apple account | Individual Developer Program membership. |
 
@@ -35,7 +38,8 @@ and each run on a Mac is recorded in [`evidence/`](../evidence/).
   the flow, sends an event to the daemon over XPC, and resumes the flow when an answer arrives or the timeout passes.
 - **`blackice daemon`** runs as a LaunchAgent for the user, receives events and runs the hooks. The extension
   cannot start processes.
-- **`blackice approve`** reaches the extension over XPC, adds a temporary rule and releases matching paused flows.
+- **`blackice approve`** reaches the extension over XPC after Touch ID, adds a temporary rule and releases matching
+  paused flows. The daemon sends a hook's answer the same way, with the event's token.
 
 ## Phases
 
@@ -123,6 +127,9 @@ and each run on a Mac is recorded in [`evidence/`](../evidence/).
    in a burst, at most 4 hooks at once with the rest logged as dropped (before the queue).
    *Done* on 3 November 2026: on a Mac the hook, running fx, approved api.github.com and denied pastebin.com
    (P2-01, P2-02).
+   In 0.4.0 hooks get no token and answer on stdout (see "Who can approve" and "Hook answers" under the
+   decisions), so the runner no longer replaces anything in their stderr, and `program` hooks are started only
+   when their signature checks out. Not yet run on a Mac.
 4. **The agent decides.** An fx skill that says what to look at, when to approve and how to call `approve`. A fixed
    allow rule for the deciding agent and its model provider, bound to their signatures. *Done when* fx decides ten
    test connections with nobody touching the keyboard.
@@ -146,13 +153,20 @@ and each run on a Mac is recorded in [`evidence/`](../evidence/).
    and signed it in from `start`; the run went on with an earlier sign-in, because the new one's Vercel team had no
    card for AI Gateway, and fx approved two connections in about 5 s
    ([P5-06](../evidence/P5-06-onboarding-from-zero-macos.md)).
+   In 0.4.0 fx runs nothing: it reads the event with its file tool and ends its reply with the answer line, and its
+   rules refuse every command. `agent connect` writes a `program` hook for fx, with the signing identifier and Team
+   ID read from fx's binary, and its test reads fx's last line. The eval reads the same line with the daemon's
+   rules. Neither has run with a model yet: on 4 November 2026 the one run against the sample event stopped at AI
+   Gateway, whose team had no credits left (HTTP 502, `insufficient_funds`), with nothing on stdout.
    A second decider, written on 4 November 2026 and not yet run under the daemon: Claude Code in print mode
    ([`integrations/claude-code/`](../integrations/claude-code/README.md)), with reading the event as its only tool,
    a sign-in of its own (its own `CLAUDE_CONFIG_DIR`, kept in the login keychain, so the hook keeps `HOME`) and a
-   rule for `api.anthropic.com` and `platform.claude.com`. It answers with a verdict line on stdout, and
-   `blackice agent connect claude-code` sets it up as `connect fx` does. [`integrations/eval/run.sh`](../integrations/eval/run.sh)
-   runs any decider over the same 20 events the way the daemon runs a hook; Claude Code 2.1.317 with Sonnet
-   decided all 20 as expected, in 3 to 8 s each.
+   rule for `api.anthropic.com` and `platform.claude.com`. `blackice agent connect claude-code` writes its
+   `program` hook as `connect fx` does, with `stdin = "none"`: `claude -p` adds stdin to its prompt, and the event
+   should reach it only as the file it reads. One agent answers at a time: connecting one replaces another's hook.
+   [`integrations/eval/run.sh`](../integrations/eval/run.sh) runs any decider over the same 20 events the way the
+   daemon runs a program hook; Claude Code 2.1.317 with Sonnet decided all 20 as expected, twice (as a `run` line,
+   then as a program hook), in 3 to 8 s each.
 5. **Hardening and evidence.** Fault tests (daemon down, hook hung, bursts of connections, restart), evidence
    entries in the style of blackice-poc, notarization and an installer. *Done when* `macos/scripts/fault-test.sh`
    passes on a Mac and the run is recorded in [`evidence/`](../evidence/), and a `Blackice-<version>.zip` from
@@ -184,7 +198,9 @@ and each run on a Mac is recorded in [`evidence/`](../evidence/).
    and checks it, not published. On 3 November 2026 the cask installed 0.1.0 from the published release over build 4
    ([P5-02](../evidence/P5-02-homebrew-upgrade-from-release-macos.md)): the app verified as signed, notarized and
    accepted, `blackice start` found the upgraded extension unreachable and exited with 75, and after a restart it
-   answered. Build 4 replaces the token in the hooks' stderr (P2-02), which the builds of the earlier fx runs did
+   answered. The logs of later failed upgrades show why: the replaced build's process still held the XPC service
+   name that every build shared. After 0.3.2 each build has its own (see "Upgrades in place" under the open
+   problems). Build 4 replaces the token in the hooks' stderr (P2-02), which the builds of the earlier fx runs did
    not.
    *Done* on 3 November 2026, with the published 0.2.1 ([P5-04](../evidence/P5-04-install-start-faults-from-release-macos.md)): the uninstall steps of
    `install.md` removed the previous install, the curl one-liner checked the release and installed it into
@@ -227,17 +243,35 @@ and each run on a Mac is recorded in [`evidence/`](../evidence/).
 - **Deadlock.** The deciding agent needs the network to reach its model. If that connection also goes to ask mode,
   it waits for its own approval. Phase 4's fixed rule for the decider handles this; it has to exist before ask mode
   is turned on for real.
-- **Self-approval.** Any program of the user can run `blackice approve`. Requiring the event's token keeps a
-  program from approving its own connection.
+- **Self-approval.** Any program of the user can run `blackice approve`, and needs Touch ID to get anywhere.
+  Since 0.4.0 the event's token stays in the extension and the daemon: it is not in the event file, the hook's
+  stdin or environment, or any command line, so a program cannot read it there and answer in the hook's place. A
+  hook's answer covers only its event's app and host. What is protected: a program of the user cannot take the
+  token and answer in the hook's place, and no answer reaches beyond the app and host of the event it was given.
+  What is not, against a program running as the same user:
+  - It can steer the hook into approving, its own connection included: rewrite `event.json` while the hook reads
+    it, so that it shows a trusted app, or change what the hook reads, such as fx's skill, rules, login or model
+    choice in the agent's home. The daemon then approves the app and host of its own copy of the event, which are
+    the program's, for at most 24 h. Closing this needs the hook and its files out of the user's reach, under
+    another user or in a sandbox; neither is planned yet.
+  - A `run` hook's program is not checked, so the program can be replaced with one that prints `approve 24h`.
+    A `program` hook is checked against its signature each time it starts, but a signed program that does what
+    its files say can still be steered through those files.
+  - It can stop the daemon or keep it busy, and connections then wait and are denied at their timeout.
+  - The daemon's memory holds the tokens of the events it is answering. The daemon is signed with the hardened
+    runtime, so macOS refuses other programs of the user `task_for_pid` on it; that has not been tested on a Mac.
 - **Daemon impersonation.** Any program of the user can still run `blackice daemon` and register in place of the
   LaunchAgent, but that copy runs the hooks of the configuration saved with Touch ID, in an environment it builds
-  itself (see Daemon under the decisions), so it cannot run hooks of its own. What remains: such a program can keep
-  the LaunchAgent's daemon from getting events, by registering again and again or by stopping it, and connections
-  then wait and are denied at their timeout. And the programs a hook runs read files that any program of the user
-  can change, such as fx's rules and skill, or Claude Code's instructions, in the agent's home.
+  itself (see Daemon under the decisions), so it cannot run hooks of its own. Since 0.4.0 the registered daemon is
+  also the only connection whose answers with a token the extension takes, and a copy that registers instead only
+  sends what those hooks print. What remains: such a program can keep the LaunchAgent's daemon from getting events,
+  by registering again and again or by stopping it, and connections then wait and are denied at their timeout. And
+  the programs a hook runs read files that any program of the user can change, such as fx's rules and skill, or
+  Claude Code's instructions, in the agent's home.
 - **Prompt injection.** Host names, app names and TLS server names are chosen by whoever opens the connection, and
-  they reach the model's prompt. Events carry them as structured fields, and the only accepted answers are approve
-  or deny.
+  they reach the model's prompt. Events carry them as structured fields. A hook's only accepted answers are a
+  `deny` line or an `approve` line with a duration of at most 24 h, and the app and host come from the event, not
+  from the answer, so injected text can at most change the answer for the connection that carried it.
 - **Latency and volume.** A model takes seconds and a Mac opens hundreds of connections. Rules, expiring approvals
   and one event per repeated connection keep the questions to new destinations.
 - **Connections named by their TLS server name.** An app that connects to an address (`curl` and most
@@ -261,7 +295,9 @@ and each run on a Mac is recorded in [`evidence/`](../evidence/).
     server name path. And when two names share an address but only one was seen, the event can name the other
     one; the server name check then drops the connection rather than let it through.
   - Apps that connect by name (URLSession, Network.framework) carry the host name and are asked about at once:
-    `nscurl` waited 18 s (P2-01) and 28 s (P2-02) for fx's approval and got HTTP 200.
+    `nscurl` waited 18 s (P2-01) and 28 s (P2-02) for fx's approval and got HTTP 200. Since 4 November 2026 such a
+    connection on port 443, once a rule or an approval allows it, is held until its ClientHello is read (see "Host
+    and address"). Not yet run on a Mac.
 - **The Mac's own services in ask mode.** With only the demo's rules, iCloud, CalDAV, Software Update, Maps and
   AuthKit were paused and then dropped at the deadline, and the demo's three events were a few among dozens. The
   Apple services table (see the decisions) now covers those and other well-known services. In the build 4 run
@@ -290,11 +326,33 @@ and each run on a Mac is recorded in [`evidence/`](../evidence/).
   daemon, `pending`, `approve` and `deny` could not reach it, so ask mode dropped everything it paused at the
   deadline. A restart fixed it; P2-02 is the same build after the restart. `blackice start` now checks, after macOS
   replaces a running extension, that its XPC service answers, and if it does not, says to restart and exits with
-  status 75. [`install.md`](install.md)'s upgrade steps include the restart. The upgrade from build 4 to build 5
-  with Homebrew did the same, and the check caught it ([P5-02](../evidence/P5-02-homebrew-upgrade-from-release-macos.md)):
-  two upgrades out of two. Why is not known; for now an upgrade means a restart. The upgrade to build 15 answered
-  at once, but the build 14 it replaced had been activated over build 13 that morning and had never been reachable,
-  with no restart in between ([P5-09](../evidence/P5-09-hook-queue-faults-0.3.2-candidate-macos.md)).
+  status 75. The upgrade from build 4 to build 5 with Homebrew did the same, and the check caught it
+  ([P5-02](../evidence/P5-02-homebrew-upgrade-from-release-macos.md)). The upgrade to build 15 answered at once, but
+  the build 14 it replaced had been activated over build 13 that morning and had never been reachable, with no
+  restart in between ([P5-09](../evidence/P5-09-hook-queue-faults-0.3.2-candidate-macos.md)).
+  The cause, from the Mac's logs of three failed upgrades (4 November 2026): nesessionmanager runs each version of
+  the extension as its own launchd job, labelled with the version
+  (`NetworkExtension.com.valentorassa.blackice.filter.0.3.1.14`), and up to 0.3.2 every version's job declared the
+  same Mach service, `M294LK997M.com.valentorassa.blackice.filter`. During a replace it ends the old job and
+  submits the new one 4 to 6 ms later. The old process still holds XPC transactions open and lives until launchd's
+  5 s exit timeout, so launchd refuses the new job's endpoint ("The endpoint … already exists and is owned by" the
+  old version, then "failed activation … error = 1: Operation not permitted"). The new extension's listener has no
+  endpoint, though it logs `xpc_listening ok` (`resume()` reports nothing); then the old job is removed, the name
+  is gone, and every lookup fails with "No such process" until a restart. When the old process had already exited at
+  submit time, nobody held the name and the upgrade worked, so upgrades alternated between failing and working.
+  The fix, after 0.3.2: each build has its own name, ending in its `CFBundleVersion`
+  (`M294LK997M.com.valentorassa.blackice.filter.16`), still under the app group as NetworkExtension requires.
+  `sign.sh` writes it into the extension's Info.plist and `package.sh` checks it. The extension listens on the name
+  in its own Info.plist; the CLI and the daemon look up the one in the Info.plist of the extension inside their
+  `Blackice.app`, and both sides check it with `Peers.machServiceName`, so they read one value from one file. The
+  extension now logs `xpc_listening` with the name. Until `start` activates the new build, the new CLI cannot reach
+  the old extension, so a hook's `approve` or `deny` fails too and in ask mode its connection waits for the
+  deadline. `status`, `pending`, `approve` and `deny` then compare the build macOS runs with the app's and say to
+  run `blackice start` to finish the upgrade. The daemon already exits when its connection to the old
+  extension ends, and launchd starts the new binary, which looks up the new name. The check after `start` stays.
+  [`install.md`](install.md) says to restart only when it fails, and always for 0.3.2 and earlier. It needs a signed
+  run to confirm: two consecutive signed builds, the second put over the first, with `start` exiting 0 and the
+  daemon registering again, no restart.
 - **Events with no connection left.** In P5-01, `blackice pending` failed with "the network extension sent an
   invalid reply: events has an invalid entry": an event whose paused flows were all dropped with `hold_expired`
   stays pending, by design, and is listed with 0 connections, while the CLI's check of the reply required at
@@ -302,10 +360,14 @@ and each run on a Mac is recorded in [`evidence/`](../evidence/).
   the next try)" (`CLITests`). Not yet run on a Mac.
 - **Limits of the host check.** The system resolver may answer blackice's lookup differently than it answered
   the app (round-robin, CDNs, split DNS), which shows as a mismatch: ask mode asks and block-all drops. And a match
-  proves only that the name resolves to that address now, not who controls the name.
+  proves only that the name resolves to that address now, not who controls the name. The server name is read only
+  from TCP on port 443, and from the clear part of an Encrypted Client Hello: a rule or an approval for an ECH front
+  end, such as `cloudflare-ech.com`, covers every site behind it. On another port, over UDP (QUIC) or in the HTTP
+  `Host` header, an app with a rule for one
+  host can still name another site behind the same address.
 - **Hook limits.** The limit of 4 hooks at once, at most 256 hooks waiting for a slot, the 10 s a waiting hook needs
-  left to start (or the whole timeout, when that is shorter), the 2 s grace period and the 4 KiB of stderr kept per
-  hook are first guesses, set in code rather than in `blackice.toml`.
+  left to start (or the whole timeout, when that is shorter), the 2 s grace period, the 4 KiB of stderr kept per
+  hook and the 64 KiB of stdout read for its answer are first guesses, set in code rather than in `blackice.toml`.
 - **Log rotation.** The event log only grows. Rotation, or leaving it to newsyslog, is not decided.
 - **Installation.** No dialog per connection, but macOS asks once to allow the extension in System Settings, unless
   the Mac is managed with an MDM profile.

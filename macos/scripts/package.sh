@@ -63,6 +63,9 @@ BUILD=$(plist "$SRC_APP" CFBundleVersion)
 [[ "$BUILD" =~ ^[1-9][0-9]*$ ]] || die "CFBundleVersion '$BUILD' is not a positive whole number"
 [[ "$(plist "$SRC_APP/$EXT_PATH" CFBundleShortVersionString)" == "$VERSION" ]] || die "the extension's version differs from the app's"
 [[ "$(plist "$SRC_APP/$EXT_PATH" CFBundleVersion)" == "$BUILD" ]] || die "the extension's build number differs from the app's"
+# Each build's own XPC service, as sign.sh names it and the CLI looks it up.
+SERVICE=$(plist "$SRC_APP/$EXT_PATH" NetworkExtension:NEMachServiceName)
+[[ "$SERVICE" == "$TEAM_ID.$FILTER_ID.$BUILD" ]] || die "NEMachServiceName is '$SERVICE', not $TEAM_ID.$FILTER_ID.$BUILD"
 NAME="Blackice-$VERSION"
 echo "Blackice.app $VERSION (build $BUILD) -> $OUT/$NAME.zip"
 codesign --verify --strict --deep --verbose=2 "$SRC_APP"

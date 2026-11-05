@@ -23,14 +23,17 @@ $ curl -fsSL https://blackice-macos.vercel.app/install.sh | sh
 
 The script ([`site/lib/install.sh`](../site/lib/install.sh)) downloads the zip and its checksum from the GitHub
 release and runs the checks of step 1, except `stapler validate`, which needs Xcode's command line tools (`spctl`
-checks the notarization as well). If a check fails, it stops before touching `/Applications`. Otherwise it copies
-`Blackice.app` to `/Applications` and writes `~/.local/bin/blackice`, a small script that runs
-`/Applications/Blackice.app/Contents/MacOS/blackice` (set `BLACKICE_BIN_DIR` for another folder). It starts nothing.
-Run it as your user, without `sudo`.
+checks the notarization as well). It also checks that the app and its extension are the version the script installs,
+so an older release served under the new name does not pass. If a check fails, it stops before touching
+`/Applications`. Otherwise it copies `Blackice.app` to `/Applications` and writes `~/.local/bin/blackice`, a small
+script that runs `/Applications/Blackice.app/Contents/MacOS/blackice` (set `BLACKICE_BIN_DIR` for another folder). It
+starts nothing. Run it as your user, without `sudo`.
 
 It stops if blackice is installed with Homebrew, and if another version is in `/Applications`. To replace that one,
 run it with `--force` (`curl -fsSL https://blackice-macos.vercel.app/install.sh | sh -s -- --force`), then see **To
-upgrade** under Rollback. Then continue with step 3.
+upgrade** under Rollback. With `--force` it copies the new app into a hidden folder in `/Applications`, checks the
+copy, and then swaps it with the installed one; if the swap fails, the installed copy is put back. It does not
+replace a copy with a higher build number: see **To go back to an earlier version**. Then continue with step 3.
 
 ## With Homebrew
 
@@ -94,15 +97,18 @@ full path, and a script that runs the full path, worked.
 `blackice start` reads `~/.config/blackice/blackice.toml` unless you pass `--config PATH`. If the file is not there,
 `start` asks a few questions and writes it. You pick the answers from lists with the arrow keys:
 - the mode;
-- in ask mode, who answers: fx, or you;
+- in ask mode, who answers: fx, Claude Code, or you;
 - apps to trust, from the apps and system extensions running now (a VPN client's network extension, such as
   Tailscale's, is one). Each may reach any host, and "Another app" takes a path such as
   `/Applications/Slack.app` or a signing identifier.
 
-If you pick fx, `start` also sets fx up, as `blackice agent connect fx` does (see "Let an agent answer"). It stays in
-accept-all until fx is installed, signed in and tested, and loads ask mode at the end, so nothing waits on an answer
-before fx can give it. `blackice init` asks the same questions without starting anything. Or write the file
-yourself, starting in accept-all, which lets everything through and only logs:
+If you pick an agent, `start` also sets it up, as `blackice agent connect fx` or `claude-code` does (see "Let an agent
+answer"). It stays in accept-all until the agent is installed, signed in and tested, and loads ask mode at the end, so
+nothing waits on an answer before the agent can give it. If the agent cannot be set up, or you stop the setup with
+Control-C, blackice stays on in accept-all, filtering nothing, as before that first start, and says so. Finish it
+later with `blackice agent connect` and its name, or filter without an agent with `blackice mode ask` (you answer
+with `blackice approve` and `deny`) or `blackice mode block-all`; until then `blackice status` says the same. `blackice init` asks the same questions without
+starting anything. Or write the file yourself, starting in accept-all, which lets everything through and only logs:
 
 ```toml
 mode = "accept-all"     # "accept-all", "ask" or "block-all"
@@ -165,25 +171,34 @@ when their timeout passes.
    (`curl -fsSL https://fx.sh/setup.sh | bash`) and runs it if you say yes.
 2. It gives fx a home of its own, `~/.config/blackice/agent`, with the blackice skill from Blackice.app. If fx has
    no sign-in there, it runs `fx login vercel`: press Enter to open the page fx names, and allow access. If the
-   sign-in fails, it offers it again. It sets fx's rules there so that fx can run `blackice approve` and
-   `blackice deny` and nothing else.
-3. It runs the hook once on a sample connection, with `blackice` replaced by a stand-in so nothing is let through,
-   and checks that fx answered with the event's token. AI Gateway needs a card on file for the Vercel team fx
-   signed in with; without one, the test fails with HTTP 403 `customer_verification_required`.
+   sign-in fails, it offers it again. It sets fx's rules there so that fx can read files and nothing else: no
+   shell, no edits, no web.
+3. It runs the hook once on a sample connection and checks that fx's last line is an answer, `deny` or
+   `approve 10m`. That answer is only read, so nothing is let through. AI Gateway needs a card on file for the
+   Vercel team fx signed in with; without one, the test fails with HTTP 403 `customer_verification_required`.
+   With no credits left on that team, it fails with HTTP 502 `insufficient_funds`; add credits on the team's AI
+   Gateway page in the Vercel dashboard.
 4. Only then does it add to `blackice.toml` a rule that lets fx reach its model (Vercel's AI Gateway) in every mode,
-   and the hook, and raise `timeout_seconds` to at least 60.
+   and the hook, and raise `timeout_seconds` to at least 60. The hook starts fx directly, and only when fx's
+   signature names the signing identifier and Team ID read in step 1. A hook from 0.3 that runs the skill with
+   `run` is replaced.
 5. Unless the file is in ask mode already, it asks whether to switch. It loads the file (Touch ID) and starts the
    daemon.
 
 In ask or block-all it switches to accept-all while fx is set up (Touch ID), since fx's own connections would wait
-until its rule is loaded, and the last step loads your file again.
+until its rule is loaded, and the last step loads your file again. If the setup stops before that step, because a
+step failed or you pressed Control-C, it switches back to the mode it was in (Touch ID). Control-C while fx signs in
+goes to fx, and the setup stops once fx has quit.
 [`integrations/fx/README.md`](../integrations/fx/README.md) has the same steps by hand.
 
 `blackice agent connect claude-code` does the same for Claude Code. Its home is a Claude Code configuration
 directory of its own, `~/.config/blackice/agent/.claude`, signed in with `claude auth login`; the sign-in stays in
-the login keychain, apart from yours. Its hook gives it one tool, reading the event, and it answers with the last
-line of its reply. Its rule covers `api.anthropic.com` and `platform.claude.com`.
-[`integrations/claude-code/README.md`](../integrations/claude-code/README.md) has the details.
+the login keychain, apart from yours. Its hook gives it one tool, reading the event, and keeps the event off its
+stdin (`stdin = "none"`), since `claude -p` would add it to the prompt. Its rule covers `api.anthropic.com` and
+`platform.claude.com`. [`integrations/claude-code/README.md`](../integrations/claude-code/README.md) has the details.
+
+One agent answers at a time. Connecting one replaces the hook of another (with two, the first answer would win)
+and says so.
 
 ## 6. Use it
 
@@ -248,9 +263,17 @@ runs.
 allow the extension again in System Settings.
 
 **To upgrade**, check the new package as in step 1, put its `Blackice.app` in `/Applications` over the old one (with
-Homebrew, `brew upgrade --cask blackice`; with the install script, run it with `--force`) and run `blackice start`:
-macOS replaces the running extension with the one with the higher build number. Then restart the Mac. On 3 November
-2026, on macOS 27.0.1, an extension upgraded this way kept filtering but had no XPC service until the Mac restarted,
-so the daemon, `pending`, `approve` and `deny` could not reach it and ask mode dropped everything it paused.
-`blackice start` checks for this after an upgrade, says so and exits with status 75. After the restart, run
-`blackice agent uninstall` and `blackice agent install`, so that the daemon runs the new binary.
+Homebrew, `brew upgrade --cask blackice`; with the install script, run it with `--force`) and run `blackice start`
+right away. macOS replaces the running extension with the one with the higher build number, and `start` checks that
+the new one answers over XPC. If it does not, `start` says so and exits with status 75: restart the Mac, then run
+`blackice start` again. The daemon needs nothing: when the old extension stops, the daemon's connection ends, it
+exits, and launchd starts it again from the new app.
+
+Upgrading to 0.3.2 or an earlier version, restart the Mac after `start` even when it succeeds. Up to 0.3.2 every
+build's extension listened on the same XPC service name. On macOS 27.0.1 the replaced build's process still held that
+name for up to 5 s after macOS started the new build, launchd refused the name to the new one, and the new extension
+kept filtering but could not be reached until the Mac restarted: the daemon, `pending`, `approve` and `deny` failed,
+and ask mode dropped everything it paused. That happened in about every other upgrade. After 0.3.2 each build has its
+own name. Until `start` runs, the new `blackice` then cannot reach the old extension, so hooks' answers fail and ask
+mode denies what waits for them; `status`, `pending`, `approve` and `deny` say to run `blackice start` to finish the
+upgrade. Not yet run on a Mac.

@@ -48,8 +48,8 @@ Apple silicon and macOS 14 or later.
 $ curl -fsSL https://blackice-macos.vercel.app/install.sh | sh
 ```
 
-The script ([`site/lib/install.sh`](site/lib/install.sh)) checks the release zip's checksum, signature and
-notarization, copies Blackice.app to /Applications and adds a `blackice` command to `~/.local/bin`. Or with Homebrew:
+The script ([`site/lib/install.sh`](site/lib/install.sh)) checks the release zip's checksum, signature, notarization
+and version, copies Blackice.app to /Applications and adds a `blackice` command to `~/.local/bin`. Or with Homebrew:
 
 ```console
 $ brew trust --cask valentintorassa/tap/blackice
@@ -75,11 +75,16 @@ hosts = ["api.example.com"]
 
 [[hook]]
 on = "connection"
-run = 'fx ask "Use the blackice skill to decide whether to approve the pending connection"'
+program = "/Users/me/.local/bin/fx"   # started only when its signature names app and team
+app = "com.vercel.fx"
+team = "JW6Y669B67"
+args = ["ask", "--no-save", "--no-color", "Use the blackice skill to decide whether to approve the pending connection"]
+env = ["HOME=/Users/me/.config/blackice/agent", "FX_DISABLE_KEYCHAIN=1"]
 ```
 
-An approval covers one app and one host, expires, and needs the event's one-time token or Touch ID. Rules you want
-to keep go in the file. The [configuration docs](https://blackice-macos.vercel.app/docs/configuration) cover every
+A hook answers with the last line it prints, `deny` or `approve 10m`, and the daemon passes that on for the event's
+app and host. A hook never sees the event's one-time token. An approval covers one app and one host and expires; by
+hand, `blackice approve` needs Touch ID. Rules you want to keep go in the file. The [configuration docs](https://blackice-macos.vercel.app/docs/configuration) cover every
 key.
 
 ## Agents
@@ -92,6 +97,7 @@ under `~/.config/blackice/agent`, one test on a sample connection, a rule that l
   sign-in of its own ([`integrations/claude-code/`](integrations/claude-code/)). It ends its reply with a verdict
   line, `approve 1h` or `deny`. On 4 November 2026 it decided 20 eval cases as expected, in 4 s at the median.
 
+One agent answers at a time: connecting one replaces the other's hook.
 [`integrations/eval/run.sh`](integrations/eval/run.sh) runs either one over the same 20 cases.
 
 ## Development
