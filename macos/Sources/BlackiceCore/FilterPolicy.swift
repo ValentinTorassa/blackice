@@ -136,6 +136,8 @@ public enum FilterPolicy {
     /// Apple's resolver, the only code allowed to reach DNS in block-all without a rule.
     public static let systemResolver = SigningIdentity(signingID: "com.apple.mDNSResponder", teamID: nil)
     public static let dnsPort: UInt16 = 53
+    /// DNS over TLS, and over QUIC on UDP (RFC 7858, RFC 9250).
+    public static let encryptedDNSPort: UInt16 = 853
     /// The port where a missing host name is read from the TLS server name.
     public static let tlsPort: UInt16 = 443
     /// Ask mode's limit for a paused flow the server already sees as connected, or a UDP flow.
@@ -160,6 +162,15 @@ public enum FilterPolicy {
         // on this Mac, and its own connections out are filtered under its own identity.
         if snapshot.config.loopback, flow.remoteAddress?.isLoopback == true { return .allow(reason: "loopback") }
         if snapshot.mode == .acceptAll { return .allow(reason: "accept_all") }
+        // The resolver's encrypted DNS, on 443 (HTTPS, or HTTP/3 over UDP) or 853, which macOS tries
+        // on its own when a resolver offers it. Its answers cannot be read, and they are what names
+        // the addresses that apps connect to, so it is dropped at once, with no event, and macOS
+        // goes back to plain DNS on port 53. A rule for the resolver lets it through.
+        if flow.port == tlsPort || flow.port == encryptedDNSPort,
+           flow.identity == .verified(systemResolver) || flow.process == .verified(systemResolver),
+           !snapshot.config.allow.contains(where: { $0.names(systemResolver) }) {
+            return .drop(reason: "encrypted_dns")
+        }
         guard let identity = nameable(flow.identity, snapshot.mode) else { return .drop(reason: identityReason(flow.identity)) }
         guard flow.internetSocket else { return .drop(reason: "unsupported_socket") }
         if let verdict = anyHost(flow, snapshot) ?? byAddressRule(flow, snapshot) { return verdict }
