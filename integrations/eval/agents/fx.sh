@@ -12,6 +12,7 @@ agent_bin_name=fx
 agent_configure() {
   agent_files=("$repo/integrations/fx/skills/blackice/SKILL.md:skills/blackice/SKILL.md")
   agent_args=("ask" "--no-save" "--no-color" "--model" "${MODEL:-anthropic/claude-haiku-5.5}"
+              "--system" "You answer for blackice, a network filter on a Mac: one app wants to reach one host, and you decide whether to approve it. The blackice skill in this workspace says how to read the event and how to answer. Follow it exactly and answer in its format."
               "Use the blackice skill to decide whether to approve the pending connection")
   if [ -n "${AGENT_HOME:-}" ]; then agent_env=("HOME=$AGENT_HOME" "FX_DISABLE_KEYCHAIN=1"); fi
 }

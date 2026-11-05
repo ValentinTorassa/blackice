@@ -204,7 +204,7 @@ struct AgentConnectTests {
     }
     static func program(_ home: URL, path: String = "/opt/fake/fx") -> HookProgram {
         HookProgram(path: path, arguments: ["ask", "--no-save", "--no-color", "--model", "anthropic/claude-haiku-5.5",
-                                                      AgentProfile.prompt],
+                                                      "--system", CLI.fxSystemPrompt, AgentProfile.prompt],
                     environment: ["HOME": agent(home), "FX_DISABLE_KEYCHAIN": "1"], identity: fx, instructions: .fx)
     }
 
@@ -539,7 +539,8 @@ struct AgentConnectTests {
             #expect(throws: UsageError.self, "\(bad)") { try CLI.parse(["agent", "connect", "fx", "--model", bad]) }
         }
         let fx = AgentProfile.fx.askArguments("/h", "openai/gpt-6-luna")
-        #expect(fx == ["ask", "--no-save", "--no-color", "--model", "openai/gpt-6-luna", AgentProfile.prompt])
+        #expect(fx == ["ask", "--no-save", "--no-color", "--model", "openai/gpt-6-luna", "--system", CLI.fxSystemPrompt,
+                       AgentProfile.prompt])
     }
 
     @Test func connectsFxEndToEnd() throws {
@@ -591,7 +592,7 @@ struct AgentConnectTests {
             program = "/opt/fake/fx"
             app = "com.vercel.fx"
             team = "JW6Y669B67"
-            args = ["ask", "--no-save", "--no-color", "--model", "anthropic/claude-haiku-5.5", "\(AgentProfile.prompt)"]
+            args = ["ask", "--no-save", "--no-color", "--model", "anthropic/claude-haiku-5.5", "--system", "\(CLI.fxSystemPrompt)", "\(AgentProfile.prompt)"]
             env = ["FX_DISABLE_KEYCHAIN=1", "HOME=\(agent)"]
             instructions = "fx"
 
