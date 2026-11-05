@@ -50,8 +50,8 @@ and each run on a Mac is recorded in [`evidence/`](../evidence/).
   reachable, with the number of waiting connections next to it. The mode is the one the extension says it decides with,
   and, as in `blackice status`, the menu says when that is not the saved configuration, or when an unfinished upgrade
   keeps the extension out of reach (`NESystemControl.unfinishedUpgrade`). Its menu shows the mode, the waiting
-  connections with Allow for 10 minutes, Allow for 1 hour and Deny, the last five verdicts from the event log on one
-  line each, a warning for an hour after a `hook_refused`, a mode switch, Stop Filtering, the version and Quit Menu; a
+  connections with Allow for 10 minutes, Allow for 1 hour and Deny, the latest verdict from the event log on one line
+  (the last five in its submenu), a warning for an hour after a `hook_refused`, a mode switch, Stop Filtering, the version and Quit Menu; a
   line about hooks shows up only when the daemon that runs them is not running. Since 5 November 2026 (a tester's
   "minimal and clean") it has no file, documentation or login items: opening at login is `blackice menu --login on|off`
   (`SMAppService.mainApp`, for the signed app in `/Applications`). It reads

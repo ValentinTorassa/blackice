@@ -371,6 +371,8 @@ final class MenuController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             item.submenu = waitingMenu(event)
         case .modes(let choices):
             item.submenu = modeMenu(choices)
+        case .recent(let lines):
+            item.submenu = recentMenu(lines)
         case .command(let command):
             item.action = #selector(runCommand(_:))
             item.representedObject = command
@@ -413,9 +415,23 @@ final class MenuController: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 return
             }
             for (shownItem, choice) in zip(shownItems, choices) { configure(shownItem, choice) }
+        case .recent(let lines):
+            item.submenu = recentMenu(lines)
         default:
             break
         }
+    }
+
+    /// The last decisions, one line each, to read only.
+    private func recentMenu(_ lines: [RecentLine]) -> NSMenu {
+        let submenu = NSMenu()
+        submenu.autoenablesItems = false
+        for (index, line) in lines.enumerated() {
+            let item = NSMenuItem(title: line.title, action: nil, keyEquivalent: "")
+            configure(item, MenuEntry(.note, key: "recent.\(index)", title: line.title, detail: line.detail))
+            submenu.addItem(item)
+        }
+        return submenu
     }
 
     /// Accept All, the Ask items, Block All, with a separator between modes.

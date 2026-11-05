@@ -181,7 +181,7 @@ The mark is full in ask and block-all, and dimmed when blackice is off, in accep
 
 - the mode the filter decides in, or why blackice is off or not reachable. As `blackice status` does, it says when the filter did not take the saved settings and when an upgrade needs `blackice start`;
 - each connection that waits, as app → host:port with the seconds left, and in its submenu Allow for 10 Minutes, Allow for 1 Hour and Deny: the same as `blackice approve --for` and `blackice deny`, with Touch ID;
-- the last five verdicts from the event log, one line each with how long ago, and for an hour a warning when the daemon refused a hook program whose signature did not match;
+- Recent: the latest verdict from the event log on one line, with how long ago, and the last five in its submenu; for an hour, a warning when the daemon refused a hook program whose signature did not match;
 - Mode, to switch between Accept All, Ask with an agent answering (one item per agent; those not connected are greyed out with the command that connects them), Ask: You (Manual) and Block All, with Touch ID, as `blackice mode` and `blackice mode ask --agent` do, while the filter answers;
 - a warning when there are hooks and the daemon that runs them is not running;
 - Stop Filtering, with Touch ID, as `blackice stop` does: the filter and its network extension go, and `blackice start` turns them on again;
