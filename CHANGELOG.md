@@ -7,6 +7,11 @@
   skill as `skills/blackice/SKILL.md`, Claude Code's system prompt as `instructions.md`. Up to 0.4.0 they were
   files in the agent's home, `~/.config/blackice/agent`, that any program running as you could rewrite to approve
   everything. `agent connect` writes the new key and removes those copies once the new hook is loaded.
+- Notes for the agent: `notes` in an `[agent]` table of `blackice.toml`, up to 4 KiB of plain text over several
+  lines (`"""…"""` or `'''…'''`, the only multi-line strings the file takes), such as the tools you use for work
+  or hosts you never want reached. The daemon writes them as `notes.md` beside the event, and the instructions
+  have the agent follow them for judgment calls, never over their safety rules. They change only with Touch ID,
+  like the rest of the file. `[allow]` and `[hook]` with single brackets now say they need double ones.
 
 ## 0.4.0 (5 November 2026)
 

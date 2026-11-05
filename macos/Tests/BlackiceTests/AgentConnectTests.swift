@@ -16,6 +16,7 @@ private final class FakeAgentMac: @unchecked Sendable {
     var logins: [[String: String]] = []
     var hookRuns: [Hook] = []
     var events: [HookEvent] = []
+    var notes: [String?] = []
     /// Runs while fx decides the sample event, as a person editing blackice.toml meanwhile would.
     var duringTest: (() -> Void)?
     /// Control-C pressed while fx signs in or decides the sample event; fx dies of it.
@@ -47,9 +48,10 @@ private final class FakeAgentMac: @unchecked Sendable {
             runCaptured: { _, arguments, _ in
                 (0, arguments == ["status"] ? "[status] model=x\n[status] auth=\(self.signedIn ? "vercel" : "missing")\n" : "")
             },
-            runHook: { hook, event, _, _ in
+            runHook: { hook, event, notes, _, _ in
                 self.hookRuns.append(hook)
                 self.events.append(event)
+                self.notes.append(notes)
                 self.duringTest?()
                 if self.controlC == .test {
                     self.interrupted = true
@@ -89,7 +91,7 @@ private final class FakeClaudeMac: @unchecked Sendable {
                 arguments == ["auth", "status", "--json"]
                     ? (self.signedIn ? 0 : 1, "{\n  \"loggedIn\": \(self.signedIn),\n  \"authMethod\": \"claude.ai\"\n}\n") : (0, "")
             },
-            runHook: { hook, _, _, _ in
+            runHook: { hook, _, _, _, _ in
                 self.hookRuns.append(hook)
                 return HookResult(hookLine: 0, outcome: .exited(status: self.status), stderr: "", stderrTruncated: false,
                                   duration: 6, stdout: Data(self.printed.utf8))
@@ -874,6 +876,23 @@ struct AgentConnectTests {
         #expect(loaded.allow.count == 2 && !written.contains("run = "))
         #expect(written.contains("env = [\"FX_DISABLE_KEYCHAIN=1\", \"HOME=\(Self.agent(home))\"]\ninstructions = \"fx\"\n" +
                                  "# a note about the next rule\n\n[[allow]]"))
+    }
+
+    /// The test runs with the owner's notes, as the daemon would, and the [agent] table stays as it was,
+    /// a line of the notes that looks like a table header included.
+    @Test func theOwnersNotesGoWithTheTest() throws {
+        let notes = "I build with the tools in /opt/tools.\n[Not a table] Deny analytics hosts."
+        let agentTable = "[agent]\nnotes = \"\"\"\n\(notes)\"\"\"\n"
+        let (home, config) = try setUp("mode = \"ask\"\n\n[[hook]]\non = \"connection\"\nrun = 'true'\n\n" + agentTable)
+        defer { removeTree(home) }
+        let mac = FakeAgentMac(signedIn: true, answer: Self.approve)
+        let result = connect(home, config: config, mac: mac, system: Loading())
+        #expect(result.status == 0, "\(result.stderr)")
+        #expect(mac.notes == [notes])
+        let written = try String(contentsOfFile: config, encoding: .utf8)
+        let loaded = try BlackiceConfig(data: Data(written.utf8))
+        #expect(loaded.agentNotes == notes && written.contains("\n" + agentTable))
+        #expect(loaded.hooks.last?.program == Self.program(home))
     }
 
     @Test func pieces() throws {

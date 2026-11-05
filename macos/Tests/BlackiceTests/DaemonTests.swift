@@ -124,6 +124,26 @@ struct DaemonTests {
         #expect(!(try String(contentsOf: logURL, encoding: .utf8)).contains(testToken))
     }
 
+    /// The owner's notes from [agent] reach each hook as notes.md beside the event, 0600; with none
+    /// there is no file.
+    @Test func theOwnersNotesAreBesideTheEvent() async throws {
+        let dir = try makePrivateDirectory()
+        defer { removeTree(dir) }
+        let daemon = Daemon(log: try EventLog(url: dir.appendingPathComponent("events.jsonl")), runner: try testRunner(dir))
+        let copy = "{ stat -f %Lp notes.md && cat notes.md; } > \(quotedPath(dir))/$BLACKICE_EVENT_ID.notes 2>&1"
+        let text = "mode = \"ask\"\ntimeout_seconds = 5\n[[hook]]\non = \"connection\"\nrun = \"\(copy)\"\n"
+        await daemon.run(FakeIntake([
+            .registered(try DaemonConfiguration(generation: 1, configText: text + "[agent]\nnotes = '''\nDeny analytics hosts.'''\n")),
+            .event(testEvent(id: "ev-1"), generation: 1),
+        ]))
+        await daemon.run(FakeIntake([
+            .registered(try DaemonConfiguration(generation: 2, configText: text)),
+            .event(testEvent(id: "ev-2"), generation: 2),
+        ]))
+        #expect(try String(contentsOf: dir.appendingPathComponent("ev-1.notes"), encoding: .utf8) == "600\nDeny analytics hosts.\n")
+        #expect(try String(contentsOf: dir.appendingPathComponent("ev-2.notes"), encoding: .utf8).contains("No such file"))
+    }
+
     /// The hook's last line is the answer. The daemon sends it for the event's app and host, with
     /// the event's token, through the intake: the hook never had the token.
     @Test func anAnswerGoesToTheExtensionWithTheEventsToken() async throws {

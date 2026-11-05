@@ -15,7 +15,8 @@ import Foundation
 //     BLACKICE_EVENT_FILE (BLACKICE_EVENT_ID holds the event ID). The hook also runs in
 //     that directory, and the directory is deleted once the hook is done.
 // A program hook with `instructions` also finds its agent's instructions in that directory,
-// written from blackice itself (AgentInstructions) before the program starts.
+// written from blackice itself (AgentInstructions) before the program starts, and every hook
+// finds the owner's notes from [agent] as notes.md when the configuration has them.
 // The token never reaches a hook. The hook answers on stdout (see HookAnswer): the runner keeps
 // the first `stdoutLimit` bytes and the first `stderrLimit` bytes of stderr, and drains the rest.
 //
@@ -227,12 +228,15 @@ public final class HookRunner: @unchecked Sendable {
 
     /// Runs `hooks` for `event` side by side and returns one result per hook, in file order.
     /// Each hook is killed at `event.deadline` or after `timeoutSeconds`, whichever comes first.
-    public func run(_ hooks: [Hook], for event: HookEvent, timeoutSeconds: Int,
+    /// `notes`, the owner's notes for the agent from the configuration, go in each event's
+    /// directory as notes.md.
+    public func run(_ hooks: [Hook], for event: HookEvent, timeoutSeconds: Int, notes: String? = nil,
                     progress: @escaping @Sendable (HookProgress) -> Void = { _ in }) async -> [HookResult] {
         await withTaskGroup(of: HookResult.self) { group in
             for hook in hooks {
                 group.addTask {
-                    let result = await self.runOne(hook, for: event, timeoutSeconds: timeoutSeconds, progress: progress)
+                    let result = await self.runOne(hook, for: event, timeoutSeconds: timeoutSeconds, notes: notes,
+                                                   progress: progress)
                     progress(.finished(result))
                     return result
                 }
@@ -258,7 +262,7 @@ public final class HookRunner: @unchecked Sendable {
 
     // MARK: - One hook
 
-    private func runOne(_ hook: Hook, for event: HookEvent, timeoutSeconds: Int,
+    private func runOne(_ hook: Hook, for event: HookEvent, timeoutSeconds: Int, notes: String?,
                         progress: @escaping @Sendable (HookProgress) -> Void) async -> HookResult {
         func dropped(_ reason: HookResult.DropReason, waited: TimeInterval = 0) -> HookResult {
             HookResult(hookLine: hook.line, outcome: .dropped(reason), stderr: "", stderrTruncated: false, duration: 0,
@@ -280,15 +284,15 @@ public final class HookRunner: @unchecked Sendable {
         // from the concurrency pool. A hook gets its thread only once it holds a slot.
         return await withCheckedContinuation { continuation in
             Thread {
-                let result = self.runBlocking(hook, event: event, timeoutSeconds: timeoutSeconds, waited: waited,
-                                              progress: progress)
+                let result = self.runBlocking(hook, event: event, timeoutSeconds: timeoutSeconds, notes: notes,
+                                              waited: waited, progress: progress)
                 continuation.resume(returning: result)
             }.start()
         }
     }
 
     /// Runs one hook that holds a slot, and gives the slot back when it is done.
-    private func runBlocking(_ hook: Hook, event: HookEvent, timeoutSeconds: Int, waited: TimeInterval,
+    private func runBlocking(_ hook: Hook, event: HookEvent, timeoutSeconds: Int, notes: String?, waited: TimeInterval,
                              progress: @Sendable (HookProgress) -> Void) -> HookResult {
         defer { releaseSlot() }
         let started = uptime()
@@ -313,7 +317,9 @@ public final class HookRunner: @unchecked Sendable {
         let eventFile = directory.appendingPathComponent("event.json")
         do {
             try writePrivateFile(eventFile, json)
-            try writeAgentFiles(hook.program?.instructions?.files ?? [], into: directory)
+            var files = hook.program?.instructions?.files ?? []
+            if let notes { files.append(AgentFile(path: "notes.md", text: notes.hasSuffix("\n") ? notes : notes + "\n")) }
+            try writeAgentFiles(files, into: directory)
         } catch {
             return finish(.failedToStart("\(error)"))
         }

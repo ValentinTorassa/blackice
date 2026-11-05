@@ -164,9 +164,10 @@ public struct AgentMachine {
     public let runAttached: (_ path: String, _ arguments: [String], _ environment: [String: String]) -> Int32
     /// Runs a program and returns its exit status and output.
     public let runCaptured: (_ path: String, _ arguments: [String], _ environment: [String: String]) -> (status: Int32, output: String)
-    /// Runs one hook for an event the way the daemon does (HookRunner), signature check and
-    /// instructions included.
-    public let runHook: (_ hook: Hook, _ event: HookEvent, _ workDirectory: String, _ timeoutSeconds: Int) -> HookResult
+    /// Runs one hook for an event the way the daemon does (HookRunner), signature check,
+    /// instructions and the owner's notes included.
+    public let runHook: (_ hook: Hook, _ event: HookEvent, _ notes: String?, _ workDirectory: String,
+                         _ timeoutSeconds: Int) -> HookResult
     /// From now on Control-C and the other stop signals are caught instead of ending blackice
     /// (`Interrupts`); the function returned puts back what was there.
     public let catchInterrupts: () -> () -> Void
@@ -176,7 +177,7 @@ public struct AgentMachine {
     public init(findExecutable: @escaping (String) -> String?,
                 runAttached: @escaping (String, [String], [String: String]) -> Int32,
                 runCaptured: @escaping (String, [String], [String: String]) -> (status: Int32, output: String),
-                runHook: @escaping (Hook, HookEvent, String, Int) -> HookResult,
+                runHook: @escaping (Hook, HookEvent, String?, String, Int) -> HookResult,
                 catchInterrupts: @escaping () -> () -> Void = { {} },
                 interrupted: @escaping () -> Bool = { false }) {
         self.findExecutable = findExecutable
@@ -190,8 +191,8 @@ public struct AgentMachine {
     /// Nothing found, nothing run.
     public static var none: AgentMachine {
         AgentMachine(findExecutable: { _ in nil }, runAttached: { _, _, _ in 127 }, runCaptured: { _, _, _ in (127, "") },
-                     runHook: { _, _, _, _ in HookResult(hookLine: 0, outcome: .failedToStart("no hook runner"), stderr: "",
-                                                         stderrTruncated: false, duration: 0) })
+                     runHook: { _, _, _, _, _ in HookResult(hookLine: 0, outcome: .failedToStart("no hook runner"), stderr: "",
+                                                            stderrTruncated: false, duration: 0) })
     }
 
     /// This Mac: PATH and the usual folders, Process and HookRunner.
@@ -227,7 +228,7 @@ public struct AgentMachine {
                 process.waitUntilExit()
                 return (process.terminationStatus, String(decoding: data, as: UTF8.self))
             },
-            runHook: { hook, event, workDirectory, timeoutSeconds in
+            runHook: { hook, event, notes, workDirectory, timeoutSeconds in
                 let failed = { (why: String) in
                     HookResult(hookLine: 0, outcome: .failedToStart(why), stderr: "", stderrTruncated: false, duration: 0)
                 }
@@ -237,7 +238,7 @@ public struct AgentMachine {
                     let box = ResultBox()
                     let done = DispatchSemaphore(value: 0)
                     Task {
-                        box.results = await runner.run([hook], for: event, timeoutSeconds: timeoutSeconds) {
+                        box.results = await runner.run([hook], for: event, timeoutSeconds: timeoutSeconds, notes: notes) {
                             if case .started(_, let pid, _) = $0 { box.started(pid) }
                         }
                         done.signal()
@@ -716,7 +717,8 @@ extension CLI {
         stdout("  update.code.visualstudio.com. Its answer is only read for this test, so")
         stdout("  nothing is let through…")
         let program = agentHook(profile, executable: executable, agentHome: paths.home, identity: identity)
-        let result = machine.runHook(Hook(program: program, line: 0), event, paths.test + "/work", agentTestSeconds)
+        let result = machine.runHook(Hook(program: program, line: 0), event, config.agentNotes, paths.test + "/work",
+                                     agentTestSeconds)
         if let stop = interruption() { return stop }
         let seconds = Int(result.duration.rounded())
         switch testAnswer(result, seconds: agentTestSeconds) {

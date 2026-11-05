@@ -51,8 +51,10 @@ instructions = "fx"
   than in your keychain.
 - **`instructions`** has the daemon write the blackice skill into the event's directory before fx starts.
 
-The daemon starts each hook in a new private directory holding the event as `event.json` and the skill as
-`skills/blackice/SKILL.md`, and names the event's file in `BLACKICE_EVENT_FILE`. That directory is fx's workspace,
+The daemon starts each hook in a new private directory holding the event as `event.json`, the skill as
+`skills/blackice/SKILL.md` and, when `blackice.toml` has `notes` in `[agent]`, the owner's notes as `notes.md`
+(the skill has fx follow them for judgment calls, never over its safety rules), and names the event's file in
+`BLACKICE_EVENT_FILE`. That directory is fx's workspace,
 so fx can read the event without reaching outside it. The event also goes to the hook on stdin, but `fx ask`
 treats stdin as its prompt, so the skill reads the file. The event has no token: the hook never sees it.
 
@@ -132,8 +134,9 @@ $ AGENT_HOME="$HOME/.config/blackice/agent" integrations/eval/run.sh --agent fx 
 
 Each event gets its own private directory with `event.json` and the repository's copy of the
 skill in it, and fx runs there, as under the hook. `AGENT_HOME` is the `HOME` fx runs with, with
-`FX_DISABLE_KEYCHAIN=1` as in the hook; without it, fx runs with your own `HOME`. `KEEP=1` keeps the work directory
-with fx's stdout and stderr for each event.
+`FX_DISABLE_KEYCHAIN=1` as in the hook; without it, fx runs with your own `HOME`. `NOTES=file` puts that file in
+each event's directory as `notes.md`, as the daemon does with `notes` in `[agent]`. `KEEP=1` keeps the work
+directory with fx's stdout and stderr for each event.
 
 There are 23 events. The first twelve were fx's own, and they cover:
 

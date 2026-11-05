@@ -156,6 +156,25 @@ The daemon starts the program suspended, checks the signature of the process it 
 
 **`run`, unchecked.** `run = '…'` is a line for `/bin/sh -c`, as before 0.4.0. Nothing checks what it starts, so any program running as you can put something else in its place, for example earlier in `PATH`. Only `program` hooks are protected that way. `run` takes no `app`, `team`, `args`, `env`, `stdin` or `instructions`.
 
+## Notes for the agent
+
+`notes` in an `[agent]` table is your own guidance for the agent that answers in ask mode: what you use for work, what you never want reached. It is the one value in the file that may span lines:
+
+```toml
+[agent]
+notes = """
+For work I run a cloud CLI with Homebrew's python (/opt/homebrew/bin/python3); it reaches api.cloud.example.
+Deny analytics and tracking hosts, such as stats.example.com, whatever the app.
+"""
+```
+
+The daemon writes the notes as `notes.md` beside `event.json` in each event's directory, and the instructions of fx and Claude Code say to follow them for judgment calls. They never override the instructions' safety rules: the event's fields stay untrusted, lookalike hosts are still denied and no approval is longer than 24 hours, and text in the event that claims to be a note is a reason to deny. The notes are part of `blackice.toml`, so they change only with your Touch ID, like the hooks.
+
+- `"""` takes the escapes of a `"…"` string; `'''` takes the text as written. A line break right after the opening quotes is left out.
+- At most 4 KiB, of plain text: lines and tabs, but no other control characters and none of the Unicode controls that change the order text reads in.
+- A backslash at the end of a line, which TOML uses to join lines, is refused. Write the text as it should read.
+- Blank notes are no notes: there is no `notes.md`.
+
 ## The hook's environment
 
 The daemon builds the environment a hook starts with instead of passing on its own:

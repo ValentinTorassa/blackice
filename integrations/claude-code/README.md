@@ -13,6 +13,10 @@ stdout: `approve 10m`, `approve 1h` or `deny`.
   when the two differ; `macos/scripts/agent-instructions.sh` writes it).
 - [`blackice/sample-event.json`](blackice/sample-event.json): an event as a hook gets it, with no token.
 
+When `blackice.toml` has `notes` in `[agent]`, the daemon also writes them as `notes.md` next to the event, and the
+instructions have Claude Code read them in the same turn as the event and follow them for judgment calls, never
+over the safety rules. `NOTES=file` gives the eval below a `notes.md`.
+
 ## The hook
 
 The hook `agent connect` writes, for a home at `/Users/me` and the Homebrew `claude`:
@@ -35,7 +39,8 @@ code has them, so an update that keeps Anthropic's signature needs no change. Ch
 
 - **`--tools Read`**: reading files is its only tool. No shell, no edits, no web.
 - **`--restricted`** keeps the file tools inside the working directory, which is the event's private directory
-  with `event.json` alone in it: a read of `/etc/hosts` was refused. It also ignores the user, project and local
+  with `event.json`, the instructions and the owner's `notes.md`, if any, in it: a read of `/etc/hosts` was
+  refused. It also ignores the user, project and local
   settings files, so nothing in them can add a tool or a hook.
 - **`--safe-mode`** turns off CLAUDE.md files, skills, plugins, hooks and the rest of the customizations, and
   **`--strict-mcp-config`** with no `--mcp-config` leaves no MCP server.
