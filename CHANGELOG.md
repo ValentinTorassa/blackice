@@ -80,6 +80,10 @@ Fixed:
   signed, as `fx upgrade --channel dev` builds are, it uses a signed fx further on PATH, or offers to install fx's
   release for blackice only, in `~/.config/blackice/agent/bin`, leaving yours and your PATH as they are. Until now it
   stopped at "Find fx": no rule can name such a build.
+- The menu bar app no longer stays "Not reachable" after an upgrade. Each build of the extension listens on an
+  XPC service of its own, and the menu from before the upgrade kept asking the old one. Now the menu opens the new
+  Blackice.app itself once the app is replaced, and quits once it is removed; `blackice start` closes and reopens a
+  menu left from another build, such as the 0.4.0 one, which cannot tell.
 
 Upgrading from 0.4.0: `brew upgrade --cask blackice` or the install script with `--force`, then `blackice
 start`. Then run `blackice agent connect fx` (or `claude-code`, or `codex`) again to get the small model and the

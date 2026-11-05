@@ -275,7 +275,8 @@ connections wait, their number is next to it. The menu has:
 - Open blackice.toml, Show Event Log in Finder, Documentation, Open at Login, and Quit Menu.
 
 Quitting the menu leaves the filter and the daemon running; Stop Filtering is what turns the filter off. Starting
-blackice, rules, agents and the daemon stay in the CLI. The menu has not run as the signed app yet: Touch ID from the menu, Open at Login and its reads
+blackice, rules, agents and the daemon stay in the CLI. When Blackice.app is replaced by an upgrade, the menu opens the
+new one by itself, and `blackice start` does it for a menu from 0.4.0. The menu has not run as the signed app yet: Touch ID from the menu, Open at Login and its reads
 of the filter are untested on a Mac.
 
 ## Uninstall

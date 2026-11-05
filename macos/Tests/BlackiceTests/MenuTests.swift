@@ -475,8 +475,11 @@ struct RecentDecisionsTests {
 private final class FakeMenuBar: MenuBarControlling {
     var canOffer: Bool
     var calls: [String] = []
+    var reopens = 0
 
     init(canOffer: Bool) { self.canOffer = canOffer }
+
+    func reopenIfOutdated(output: SystemOutput) { reopens += 1 }
 
     func run(output: SystemOutput) -> Int32 { calls.append("run"); return 0 }
 
@@ -548,5 +551,88 @@ struct MenuCommandTests {
         #expect(no.calls.isEmpty && no.stdout.last == "  Later, with: blackice menu --login on")
         let cannot = firstStart([""], canOffer: false)
         #expect(cannot.calls.isEmpty && cannot.prompts == ["  Mode [1]: "])
+    }
+
+    /// Every start that turns the filter on gives a menu bar app from before an upgrade its turn
+    /// to be opened again; one that fails does not.
+    @Test func startReopensAnOutdatedMenu() throws {
+        let home = try makePrivateDirectory()
+        defer { removeTree(home) }
+        let config = home.appendingPathComponent("blackice.toml").path
+        try Data("mode = \"accept-all\"\n".utf8).write(to: URL(fileURLWithPath: config))
+        let interaction = Interaction(ask: nil, createFile: CLI.createFile, identify: { _ in nil },
+                                      fileExists: { FileManager.default.fileExists(atPath: $0) }, home: home.path, version: nil)
+        let menuBar = FakeMenuBar(canOffer: false)
+        #expect(CLI.run(["start", "--config", config], stdout: { _ in }, stderr: { _ in }, system: StartOnly(),
+                        interaction: interaction, menuBar: menuBar) == 0)
+        #expect(menuBar.reopens == 1 && menuBar.calls.isEmpty)
+        let refused = FakeMenuBar(canOffer: false)
+        #expect(CLI.run(["start", "--config", config], stdout: { _ in }, stderr: { _ in }, system: FailingStart(),
+                        interaction: interaction, menuBar: refused) == ExitCode.noPermission)
+        #expect(refused.reopens == 0)
+    }
+}
+
+private final class FailingStart: SystemControlling {
+    func start(configText: String, output: SystemOutput) -> Int32 { ExitCode.noPermission }
+    func stop(output: SystemOutput) -> Int32 { 0 }
+    func status(output: SystemOutput) -> Int32 { 0 }
+    func setMode(_ mode: Mode, output: SystemOutput) -> Int32 { 0 }
+    func pending(output: SystemOutput) -> Int32 { 0 }
+    func answer(_ request: AnswerRequest, output: SystemOutput) -> Int32 { 0 }
+    func runDaemon(output: SystemOutput) -> Int32 { 0 }
+    func installAgent(output: SystemOutput) -> Int32 { 0 }
+    func uninstallAgent(output: SystemOutput) -> Int32 { 0 }
+}
+
+struct MenuUpgradeTests {
+    /// The menu bar app's own check: another build on disk opens it; no app for a while quits.
+    @Test func theAppOnDiskDecides() {
+        #expect(MenuUpgrade.decide(running: "18", installed: "18", missing: 0) == .stay)
+        #expect(MenuUpgrade.decide(running: "18", installed: "19", missing: 0) == .reopen)
+        #expect(MenuUpgrade.decide(running: "18", installed: "17", missing: 0) == .reopen)
+        #expect(MenuUpgrade.decide(running: "18", installed: nil, missing: MenuUpgrade.quitAfter - 1) == .stay)
+        #expect(MenuUpgrade.decide(running: "18", installed: nil, missing: MenuUpgrade.quitAfter) == .quit)
+        // A build outside Blackice.app has no build to compare.
+        #expect(MenuUpgrade.decide(running: nil, installed: "19", missing: 0) == .stay)
+    }
+
+    /// start's check: a menu from before 0.4.1 records no build, so it is from before.
+    @Test func startComparesTheRecordedBuild() {
+        #expect(!MenuUpgrade.outdated(recorded: "19", own: "19"))
+        #expect(MenuUpgrade.outdated(recorded: "18", own: "19"))
+        #expect(MenuUpgrade.outdated(recorded: nil, own: "19"))
+        #expect(!MenuUpgrade.outdated(recorded: nil, own: nil))
+    }
+
+    /// The lock file holds the running build, and the lock can be let go before the process ends.
+    @Test func theLockFileRecordsTheBuild() throws {
+        let folder = try makePrivateDirectory()
+        defer { removeTree(folder) }
+        let url = folder.appendingPathComponent("blackice-menu.lock")
+        let lock = try #require(try MenuInstanceLock(url: url))
+        #expect(MenuInstanceLock.recordedBuild(url: url) == nil)
+        lock.record(build: "19")
+        #expect(MenuInstanceLock.recordedBuild(url: url) == "19")
+        lock.record(build: "7")
+        #expect(MenuInstanceLock.recordedBuild(url: url) == "7")
+        #expect(MenuInstanceLock.isHeld(url: url))
+        lock.release()
+        #expect(!MenuInstanceLock.isHeld(url: url))
+        withExtendedLifetime(lock) {}
+    }
+
+    /// The build is read from Info.plist on disk each time, not from what Bundle kept.
+    @Test func theInstalledBuildIsReadFromDisk() throws {
+        let app = try makePrivateDirectory()
+        defer { removeTree(app) }
+        let contents = app.appendingPathComponent("Contents")
+        try FileManager.default.createDirectory(at: contents, withIntermediateDirectories: true)
+        #expect(MenuUpgrade.installedBuild(app) == nil)
+        for build in ["18", "19"] {
+            let plist = try PropertyListSerialization.data(fromPropertyList: ["CFBundleVersion": build], format: .xml, options: 0)
+            try plist.write(to: contents.appendingPathComponent("Info.plist"))
+            #expect(MenuUpgrade.installedBuild(app) == build)
+        }
     }
 }
