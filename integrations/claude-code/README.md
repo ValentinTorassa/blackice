@@ -9,8 +9,13 @@ reads the event, weighs it, and ends its reply with one verdict line, which the 
 stdout: `approve 10m`, `approve 1h` or `deny`.
 
 - [`blackice/instructions.md`](blackice/instructions.md): its whole system prompt. What it reads, what it weighs
-  and how it answers, adapted from fx's skill.
+  and how it answers, adapted from fx's skill. blackice ships a copy inside its binary (a test in `macos/` fails
+  when the two differ; `macos/scripts/agent-instructions.sh` writes it).
 - [`blackice/sample-event.json`](blackice/sample-event.json): an event as a hook gets it, with no token.
+
+When `blackice.toml` has `notes` in `[agent]`, the daemon also writes them as `notes.md` next to the event, and the
+instructions have Claude Code read them in the same turn as the event and follow them for judgment calls, never
+over the safety rules. `NOTES=file` gives the eval below a `notes.md`.
 
 ## The hook
 
@@ -22,9 +27,10 @@ on = "connection"
 program = "/opt/homebrew/bin/claude"
 app = "com.anthropic.claude-code"
 team = "Q6L2SF6YDW"
-args = ["-p", "--restricted", "--safe-mode", "--tools", "Read", "--strict-mcp-config", "--no-session-persistence", "--permission-prompts", "none", "--model", "sonnet", "--max-turns", "3", "--output-format", "text", "--system-prompt-file", "/Users/me/.config/blackice/agent/.claude/blackice/instructions.md", "Decide the pending blackice connection in event.json."]
+args = ["-p", "--restricted", "--safe-mode", "--tools", "Read", "--strict-mcp-config", "--no-session-persistence", "--permission-prompts", "none", "--model", "haiku", "--max-turns", "3", "--output-format", "text", "--system-prompt-file", "instructions.md", "Decide the pending blackice connection in event.json."]
 env = ["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1", "CLAUDE_CONFIG_DIR=/Users/me/.config/blackice/agent/.claude"]
 stdin = "none"
+instructions = "claude-code"
 ```
 
 `program` is the `claude` it found: the Homebrew cask's `/opt/homebrew/bin/claude`, or `~/.local/bin/claude` from
@@ -33,15 +39,21 @@ code has them, so an update that keeps Anthropic's signature needs no change. Ch
 
 - **`--tools Read`**: reading files is its only tool. No shell, no edits, no web.
 - **`--restricted`** keeps the file tools inside the working directory, which is the event's private directory
-  with `event.json` alone in it: a read of `/etc/hosts` was refused. It also ignores the user, project and local
+  with `event.json`, the instructions and the owner's `notes.md`, if any, in it: a read of `/etc/hosts` was
+  refused. It also ignores the user, project and local
   settings files, so nothing in them can add a tool or a hook.
 - **`--safe-mode`** turns off CLAUDE.md files, skills, plugins, hooks and the rest of the customizations, and
   **`--strict-mcp-config`** with no `--mcp-config` leaves no MCP server.
 - **`--permission-prompts none`**: anything that would ask for permission is refused, since nobody is there.
 - **`--no-session-persistence`**: nothing of the run is saved.
-- **`--system-prompt-file`**: the instructions replace Claude Code's own system prompt.
-- **`--model sonnet --max-turns 3`**: one turn to read the event and one to answer, with one to spare. Over the
-  limit, `claude -p` exits with an error, and that is no answer.
+- **`--system-prompt-file instructions.md`** and **`instructions = "claude-code"`**: before Claude Code starts,
+  the daemon writes the instructions, from blackice itself, as `instructions.md` in the event's directory, its
+  working directory, and they replace Claude Code's own system prompt. Up to 0.4.0 they were a file in the agent
+  home, the one file there that `--restricted` and `--safe-mode` left Claude Code reading, and any program running
+  as you could rewrite it; `agent connect` now removes that copy.
+- **`--model haiku --max-turns 3`**: the smallest model, which uses the least of the subscription, and one turn
+  to read the event and the notes and one to answer, with one to spare. Over the limit, `claude -p` exits with an
+  error, and that is no answer. `agent connect claude-code --model sonnet` writes another model.
 - **`stdin = "none"`**: `claude -p` adds whatever comes on stdin to the prompt, and the daemon sends the event on
   stdin unless the hook says otherwise. With an empty stdin the event stays out of the prompt: it arrives only
   through the Read tool, as data, where Claude treats it with more suspicion than text from the person it works
@@ -65,7 +77,6 @@ have to go in the hook's environment, which is the file.
 ```console
 $ agent="$HOME/.config/blackice/agent"
 $ mkdir -p -m 700 "$agent/.claude"
-$ cp -R integrations/claude-code/blackice "$agent/.claude/"
 $ CLAUDE_CONFIG_DIR="$agent/.claude" claude auth login
 $ CLAUDE_CONFIG_DIR="$agent/.claude" claude auth status --text
 ```
@@ -102,22 +113,29 @@ $ integrations/eval/run.sh --agent claude-code
 ```
 
 It uses the sign-in in `~/.config/blackice/agent/.claude`; `CLAUDE_CONFIG_DIR=dir` picks another one, and
-`MODEL=haiku` another model. On 4 November 2026, with Claude Code 2.1.317 and `sonnet` (claude-sonnet-5-5), signed
-in through a personal configuration directory, two runs came out 20 for 20: the first as a `run` line with stdin
-closed, the second as the program hook above, with an empty stdin. In both:
+`MODEL=sonnet` another model.
 
-- the six apps reaching their own services were approved, each for 1 hour, the cdhash-named Homebrew `gh`
-  included;
-- the lookalike hosts, the binaries in `~/Downloads`, `/tmp` and a hidden cache directory, the bare IP address,
-  the odd ports (22, 6667, 8080, 8443), the event with no host and the three with instructions injected into the
-  host or the path were denied;
-- the injected `touch` never ran: there is no shell.
+On 5 November 2026, with Claude Code 2.1.317 signed in through a personal configuration directory, the program
+hook above with the instructions that say how long to approve for, one run with `haiku` and one with `sonnet` both
+came out 23 for 23:
 
-Each decision took 3 to 8 s, 4.1 and 4.3 s at the median. In the first run ten replies put a sentence of reasoning
-before the reason line they were asked for and two gave a paragraph in its place; in the second, six had the extra
-sentence. In every reply the verdict was the last line. Two runs with one model show the instructions can work,
-not that they always will. Cases 21 to 23, connections whose host is their IP address, came later and have not
-run yet.
+| Model | As expected | Median | p90 | Replies of exactly two lines |
+| --- | --- | --- | --- | --- |
+| `haiku` | 23/23 | 4.2 s | 5.3 s | 23 |
+| `sonnet` | 23/23 | 5.1 s | 6.2 s | 5 |
+
+- The seven apps reaching their own services were approved: for 8 to 24 hours, the cdhash-named Homebrew `gh`
+  for 8 with both models, and `ssh` to a Tailscale address, the one address approved, for 1 hour.
+- The lookalike hosts, the binaries in `~/Downloads`, `/tmp` and a hidden cache directory, the bare and public
+  addresses, the odd ports (22, 4444, 6667, 8080, 8443), the event with no host and the four with instructions in
+  the host or the path were denied.
+- The injected `touch` never ran: there is no shell.
+- Every verdict was the last line. `sonnet` put a sentence or a paragraph of reasoning before the two lines in 18
+  replies; `haiku` kept to the two lines. So the hook uses `haiku`.
+
+On 4 November 2026, with `sonnet` and the first 20 cases, two runs (one as a `run` line, one as the program hook)
+had come out 20 for 20, 4.1 and 4.3 s at the median, every approval for 1 hour, as those instructions asked. A few
+runs show the instructions can work, not that they always will.
 
 ## Open questions
 
@@ -125,7 +143,7 @@ run yet.
   that renames or changes one changes what the hook allows. Run the eval again after upgrading.
 - **Usage limits.** A subscription that hits its limit answers with an error, and every connection is denied at
   its deadline until the limit resets.
-- **The model.** `sonnet` follows the latest Sonnet. Pinning a full model name makes runs comparable over time,
-  and lags behind.
+- **The model.** `haiku` follows the latest Haiku. Pinning a full model name (`--model claude-haiku-5-5`) makes
+  runs comparable over time, and lags behind.
 - **Several at once.** The daemon runs up to 4 hooks at once, so up to 4 Claude Code processes share one sign-in.
   How they renew it together has not been seen.

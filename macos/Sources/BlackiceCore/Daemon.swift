@@ -261,7 +261,8 @@ public final class Daemon: Sendable {
         await withTaskGroup(of: Void.self) { group in
             for hook in hooks {
                 group.addTask {
-                    let results = await self.runner.run([hook], for: event, timeoutSeconds: configuration.timeoutSeconds) { progress in
+                    let results = await self.runner.run([hook], for: event, timeoutSeconds: configuration.timeoutSeconds,
+                                                        notes: configuration.config.agentNotes) { progress in
                         switch progress {
                         case .queued(let hookLine, let waiting):
                             self.record(.hookQueued(eventID: event.id, hookLine: hookLine, waiting: waiting))

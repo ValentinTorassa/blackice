@@ -72,10 +72,10 @@ Use the folder on the `PATH`, or a script that runs the full path, rather than a
 `blackice start` reads `~/.config/blackice/blackice.toml` unless you pass `--config PATH`. If the file is not there, `start` asks a few questions and writes it. You pick the answers from lists with the arrow keys:
 
 - the mode;
-- in ask mode, who answers: fx, Claude Code, or you;
+- in ask mode, who answers: fx, Claude Code, Codex, or you;
 - apps to trust, from the apps and system extensions running now (a VPN client's network extension, such as Tailscale's, is one). Each may reach any host, and "Another app" takes a path such as `/Applications/Slack.app` or a signing identifier.
 
-If you pick an agent, `start` also sets it up, as `blackice agent connect fx` or `claude-code` does (see "Let an agent answer"). It stays in accept-all until the agent is installed, signed in and tested, and loads ask mode at the end, so nothing waits on an answer before the agent can give it. If the agent cannot be set up, or you stop the setup with Control-C, blackice stays on in accept-all, filtering nothing, as before that first start, and says so. Finish it later with `blackice agent connect` and its name, or filter without an agent with `blackice mode ask` (you answer with `blackice approve` and `deny`) or `blackice mode block-all`; until then `blackice status` says the same. `blackice init` asks the same questions without starting anything. Or write the file yourself, starting in accept-all, which lets everything through and only logs:
+If you pick an agent, `start` also sets it up, as `blackice agent connect` does for that agent (see "Let an agent answer"). It stays in accept-all until the agent is installed, signed in and tested, and loads ask mode at the end, so nothing waits on an answer before the agent can give it. If the agent cannot be set up, or you stop the setup with Control-C, blackice stays on in accept-all, filtering nothing, as before that first start, and says so. Finish it later with `blackice agent connect` and its name, or filter without an agent with `blackice mode ask` (you answer with `blackice approve` and `deny`) or `blackice mode block-all`; until then `blackice status` says the same. `blackice init` asks the same questions without starting anything. Or write the file yourself, starting in accept-all, which lets everything through and only logs:
 
 ```toml
 mode = "accept-all"     # "accept-all", "ask" or "block-all"
@@ -126,7 +126,7 @@ $ blackice agent install
 `blackice agent connect fx` sets fx up to answer the connections that wait in ask mode:
 
 1. It finds fx and reads its signature. If fx is not installed, it shows fx's installer (`curl -fsSL https://fx.sh/setup.sh | bash`) and runs it if you say yes.
-2. It gives fx a home of its own, `~/.config/blackice/agent`, with the blackice skill from Blackice.app. If fx has no sign-in there, it runs `fx login vercel`: press Enter to open the page fx names, and allow access. If the sign-in fails, it offers it again. It sets fx's rules there so that fx can read files and nothing else: no shell, no edits, no web.
+2. It gives fx a home of its own, `~/.config/blackice/agent`, for its sign-in and rules. The blackice skill is not put there: the hook names it, and the daemon writes it from blackice into each event's directory. If fx has no sign-in there, it runs `fx login vercel`: press Enter to open the page fx names, and allow access. If the sign-in fails, it offers it again. It sets fx's rules there so that fx can read files and nothing else: no shell, no edits, no web.
 3. It runs the hook once on a sample connection and checks that fx's last line is an answer, `deny` or `approve 10m`. That answer is only read, so nothing is let through. AI Gateway needs a card on file for the Vercel team fx signed in with; without one, the test fails with HTTP 403 `customer_verification_required`. With no credits left on that team, it fails with HTTP 502 `insufficient_funds`; add credits on the team's AI Gateway page in the Vercel dashboard.
 4. Only then does it add to `blackice.toml` a rule that lets fx reach its model (Vercel's AI Gateway) in every mode, and the hook, and raise `timeout_seconds` to at least 60. The hook starts fx directly, and only when fx's signature names the signing identifier and Team ID read in step 1. A hook from 0.3 that runs the skill with `run` is replaced.
 5. Unless the file is in ask mode already, it asks whether to switch. It loads the file (Touch ID) and starts the daemon.
@@ -136,14 +136,26 @@ In ask or block-all it switches to accept-all while fx is set up (Touch ID), sin
 `blackice agent connect claude-code` does the same for [Claude Code](https://code.claude.com), with these differences:
 
 - If `claude` is not installed, it offers Anthropic's installer (`curl -fsSL https://claude.ai/install.sh | bash`).
-- Its home is a Claude Code configuration directory of its own, `~/.config/blackice/agent/.claude`, with blackice's instructions in it. If Claude Code has no sign-in there, it runs `claude auth login`, which opens a sign-in page in your browser. The sign-in is kept in your login keychain, apart from your own Claude Code's, and nothing secret goes in `blackice.toml`.
+- Its home is a Claude Code configuration directory of its own, `~/.config/blackice/agent/.claude`. Its instructions come from blackice, as fx's skill does. If Claude Code has no sign-in there, it runs `claude auth login`, which opens a sign-in page in your browser. The sign-in is kept in your login keychain, apart from your own Claude Code's, and nothing secret goes in `blackice.toml`.
 - There is no settings file to write: the hook's `args` give Claude Code one tool, reading the event, and turn off CLAUDE.md files, plugins, hooks and MCP servers.
 - The hook keeps the event off Claude Code's stdin (`stdin = "none"`): `claude -p` adds what comes on stdin to its prompt, and the event should reach it only as a file it reads.
 - Its rule lets `com.anthropic.claude-code` (team Q6L2SF6YDW) reach `api.anthropic.com` and `platform.claude.com`.
 
+Each agent decides with a small model, since a decision is a short read and a two-line answer: fx with Claude Haiku 5.5 through AI Gateway (`anthropic/claude-haiku-5.5`, billed to the Vercel team fx signed in with), Claude Code with `haiku` (counted against its subscription), Codex with `gpt-6-luna` (counted against the ChatGPT plan). `--model NAME` writes another into the hook, such as `blackice agent connect claude-code --model sonnet`; running `agent connect` again with another model replaces the hook's. The agents approve clearly ordinary developer and vendor traffic for 8 to 24 hours and anything less plain for 10 minutes to an hour.
+
+`blackice agent connect codex` does the same for [Codex](https://developers.openai.com/codex/cli), signed in with a ChatGPT plan, with these differences:
+
+- Install it first, for example with `brew install --cask codex`; `agent connect` does not offer an installer for it.
+- Its home is a `CODEX_HOME` of its own, `~/.config/blackice/agent/.codex`. If Codex has no sign-in there, it runs `codex login`, which opens a sign-in page in your browser. Its decisions count against that plan.
+- Its hook runs `codex exec` with its instructions from blackice in place of Codex's own, and commands that can read only the event's directory and the system's own files, write nothing and reach no network. No `config.toml`, MCP servers, hooks, plugins or web search.
+- The hook keeps the event off Codex's stdin (`stdin = "none"`), as for Claude Code.
+- Its rule lets `codex` (team 2DC432GLL2) reach `chatgpt.com` and `auth.openai.com`.
+
+[integrations/codex/README.md](https://github.com/ValentinTorassa/blackice/blob/main/integrations/codex/README.md) has the hook and what each flag does.
+
 One agent answers at a time: `agent connect` replaces another agent's hook, and says so. With two hooks, the first answer would win.
 
-[integrations/claude-code/README.md](https://github.com/ValentinTorassa/blackice/blob/main/integrations/claude-code/README.md) has the hook, how the sign-in works under the daemon, and the eval: the first 20 cases as expected on 4 November 2026, about 4 s each.
+[integrations/claude-code/README.md](https://github.com/ValentinTorassa/blackice/blob/main/integrations/claude-code/README.md) has the hook, how the sign-in works under the daemon, and the eval: the 23 cases as expected with `haiku` and with `sonnet` on 5 November 2026, 4.2 and 5.1 s at the median.
 
 ## 6. Use it
 

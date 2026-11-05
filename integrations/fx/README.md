@@ -11,15 +11,18 @@ connections. Up to 0.3, fx answered by running `blackice approve` or `deny` with
 answer, and the daemon passes that on. That way has not yet run on a Mac.
 
 - [`skills/blackice/SKILL.md`](skills/blackice/SKILL.md): what the agent reads, what it
-  weighs and how it answers.
+  weighs and how it answers. blackice ships a copy inside its binary (a test in `macos/` fails when the two
+  differ; `macos/scripts/agent-instructions.sh` writes it).
 - [`skills/blackice/sample-event.json`](skills/blackice/sample-event.json): an event as a hook gets it, without
   the token. A unit test in `macos/` decodes it, so the two stay in step.
 
-## Installing the skill
+## Where the skill comes from
 
 fx looks for skills in `~/.fx/skills`, `~/.agents/skills` and `~/.claude/skills`, and in a
-workspace's `.fx/skills`, `.agents/skills`, `.claude/skills` and `skills/`. For the hook it
-goes in the agent's own home; the commands are under [Permissions](#permissions).
+workspace's `.fx/skills`, `.agents/skills`, `.claude/skills` and `skills/`. Up to 0.4.0 the skill went in the
+agent's own home, where any program running as you could rewrite it. Now the hook says `instructions = "fx"`,
+and for each event the daemon writes the skill from blackice itself as `skills/blackice/SKILL.md` in the event's
+directory, which is fx's workspace. `agent connect` removes the old copy in `~/.fx/skills` of the agent home.
 
 ## The hook
 
@@ -32,8 +35,9 @@ on = "connection"
 program = "/Users/me/.local/bin/fx"
 app = "com.vercel.fx"
 team = "JW6Y669B67"
-args = ["ask", "--no-save", "--no-color", "Use the blackice skill to decide whether to approve the pending connection"]
+args = ["ask", "--no-save", "--no-color", "--model", "anthropic/claude-haiku-5.5", "Use the blackice skill to decide whether to approve the pending connection"]
 env = ["HOME=/Users/me/.config/blackice/agent", "FX_DISABLE_KEYCHAIN=1"]
+instructions = "fx"
 ```
 
 - **`program`** is the absolute path of fx. The daemon starts it directly, with `args`, and no shell.
@@ -41,15 +45,22 @@ env = ["HOME=/Users/me/.config/blackice/agent", "FX_DISABLE_KEYCHAIN=1"]
   `codesign -dv ~/.local/bin/fx` (`Identifier=` and `TeamIdentifier=`). The daemon starts fx suspended, checks the
   signature of the process it started, and kills it before it runs if the signature does not name both. An
   upgrade of fx that keeps its identity needs no change; a program put in its place by something else never runs.
+- **`--model`** picks the model for each decision over the one in fx's settings. AI Gateway bills it to the Vercel
+  team fx signed in with, and a decision is a short read and a two-line answer, so `agent connect` writes a small
+  one: Claude Haiku 5.5, which `fx models` priced at $0.10 and $0.50 per million tokens in and out on 5 November
+  2026, a hundredth of Claude Fable 5.1. `agent connect fx --model ID` writes another; `fx models` lists them.
 - **`env`** is added to the environment the daemon builds. `HOME` points fx at a home of its own, with its own
   login and the rules below, so they don't apply to the fx you use yourself. fx's documentation describes
   `FX_HOME` for this, but v0.0.16 does not read it. `FX_DISABLE_KEYCHAIN=1` keeps fx's login in that home rather
   than in your keychain.
+- **`instructions`** has the daemon write the blackice skill into the event's directory before fx starts.
 
-The daemon starts each hook in a new private directory holding the event as `event.json`, and names that file in
-`BLACKICE_EVENT_FILE`. That directory is fx's workspace, so fx can read the event without reaching outside it. The
-event also goes to the hook on stdin, but `fx ask` treats stdin as its prompt, so the skill reads the file. The
-event has no token: the hook never sees it.
+The daemon starts each hook in a new private directory holding the event as `event.json`, the skill as
+`skills/blackice/SKILL.md` and, when `blackice.toml` has `notes` in `[agent]`, the owner's notes as `notes.md`
+(the skill has fx follow them for judgment calls, never over its safety rules), and names the event's file in
+`BLACKICE_EVENT_FILE`. That directory is fx's workspace,
+so fx can read the event without reaching outside it. The event also goes to the hook on stdin, but `fx ask`
+treats stdin as its prompt, so the skill reads the file. The event has no token: the hook never sees it.
 
 ## The answer
 
@@ -82,8 +93,7 @@ The agent only has to read files: `event.json` and the skill. Set up its home on
 
 ```console
 $ agent="$HOME/.config/blackice/agent"
-$ mkdir -p "$agent/.fx/skills"
-$ cp -R integrations/fx/skills/blackice "$agent/.fx/skills/"
+$ mkdir -p -m 700 "$agent/.fx"
 $ HOME="$agent" FX_DISABLE_KEYCHAIN=1 fx login
 ```
 
@@ -109,8 +119,10 @@ Then add these keys to `$agent/.fx/settings.json`, which `fx login` creates:
 - `fx permissions`, run with the same `HOME`, shows the mode and the rules fx loaded.
 
 Don't add MCP servers to this home: their tools are not covered by these rules. And keep in mind that any program
-running as you can change the skill, the rules and the login in this home, and through them what fx answers. The
-signature check covers fx itself, not the files it reads.
+running as you can change the rules and the login in this home, or add a skill there, and through them what fx
+answers: fx loads skills from its home as well as from its workspace, and which of two skills named blackice it
+reads is up to fx. The signature check covers fx itself, and the skill comes from blackice, not the other files fx
+reads.
 
 ## Checking the skill
 
@@ -126,8 +138,10 @@ $ AGENT_HOME="$HOME/.config/blackice/agent" integrations/eval/run.sh --agent fx 
 
 Each event gets its own private directory with `event.json` and the repository's copy of the
 skill in it, and fx runs there, as under the hook. `AGENT_HOME` is the `HOME` fx runs with, with
-`FX_DISABLE_KEYCHAIN=1` as in the hook; without it, fx runs with your own `HOME`. `KEEP=1` keeps the work directory
-with fx's stdout and stderr for each event.
+`FX_DISABLE_KEYCHAIN=1` as in the hook; without it, fx runs with your own `HOME`. `MODEL=id` picks another model
+than the hook's. `NOTES=file` puts that file in
+each event's directory as `notes.md`, as the daemon does with `notes` in `[agent]`. `KEEP=1` keeps the work
+directory with fx's stdout and stderr for each event.
 
 There are 23 events. The first twelve were fx's own, and they cover:
 

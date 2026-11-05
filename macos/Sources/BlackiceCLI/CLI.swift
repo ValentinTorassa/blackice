@@ -26,8 +26,9 @@ public enum Command: Equatable, Sendable {
     case validate(path: String)
     case daemon
     case agent(AgentAction)
-    /// `blackice agent connect NAME`: set an agent up to answer what waits in ask mode.
-    case connectAgent(name: String, configPath: String?)
+    /// `blackice agent connect NAME`: set an agent up to answer what waits in ask mode, with its
+    /// default model or the one `--model` names.
+    case connectAgent(name: String, configPath: String?, model: String? = nil)
     case menu(MenuRequest)
     /// `blackice report [--last 1h]`: the filter's flow log over the last `minutes`, summed up.
     case report(minutes: Int)
@@ -124,9 +125,10 @@ public enum CLI {
 
     Setup
       validate PATH             Check a blackice.toml without loading it
-      agent connect fx|claude-code [--config PATH]
-                                Let fx or Claude Code answer what waits in ask mode: its
-                                own home, a test, its rule and hook, then ask mode if you want
+      agent connect fx|claude-code|codex [--model NAME] [--config PATH]
+                                Let fx, Claude Code or Codex answer what waits in ask mode: its
+                                own home, a test, its rule and hook, then ask mode if you want.
+                                --model picks the model it decides with (a small one by default)
       agent install|uninstall   Run hooks for waiting connections, now and at each login
       menu [--login on|off]     Show blackice in the menu bar until you quit it; --login on
                                 opens it now and at each login, --login off stops that
@@ -181,9 +183,13 @@ public enum CLI {
                 guard let name = arguments.first, !name.hasPrefix("-") else {
                     throw UsageError("agent connect needs the agent's name: blackice agent connect fx")
                 }
-                let options = try parseOptions(Array(arguments.dropFirst()), allowed: ["config"], command: "agent connect")
+                let options = try parseOptions(Array(arguments.dropFirst()), allowed: ["config", "model"], command: "agent connect")
                 if let path = options["config"], path.hasPrefix("-") { throw UsageError("agent connect: --config needs a path") }
-                return .connectAgent(name: name, configPath: options["config"])
+                if let model = options["model"], !validModel(model) {
+                    throw UsageError("agent connect: --model takes a model name, such as haiku or anthropic/claude-haiku-5.5: " +
+                                     "letters, digits and . _ - / : @ [ ]")
+                }
+                return .connectAgent(name: name, configPath: options["config"], model: options["model"])
             }
             guard rest.count == 1, let action = AgentAction(rawValue: rest[0]) else {
                 throw UsageError("agent takes install, uninstall or connect")
@@ -286,8 +292,8 @@ public enum CLI {
             return system.installAgent(output: SystemOutput(stdout: stdout, stderr: stderr))
         case .agent(.uninstall):
             return system.uninstallAgent(output: SystemOutput(stdout: stdout, stderr: stderr))
-        case .connectAgent(let name, let configPath):
-            return connectAgent(name, configPath: configPath, readFile: readFile, system: system, interaction: interaction,
+        case .connectAgent(let name, let configPath, let model):
+            return connectAgent(name, configPath: configPath, model: model, readFile: readFile, system: system, interaction: interaction,
                                 machine: agents, stdout: stdout, stderr: stderr)
         case .menu(.run):
             return menuBar.run(output: SystemOutput(stdout: stdout, stderr: stderr))

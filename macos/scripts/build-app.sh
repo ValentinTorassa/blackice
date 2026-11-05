@@ -42,11 +42,7 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$EXT/Contents/MacOS"
 command cp "$BIN/blackice" "$APP/Contents/MacOS/blackice"
 command cp "$BIN/blackice-filter" "$EXT/Contents/MacOS/com.valentorassa.blackice.filter"
 command cp "$MACOS_DIR/Resources/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
-# The skill blackice agent connect fx puts in fx's home, and the instructions blackice agent
-# connect claude-code puts in Claude Code's.
-mkdir -p "$APP/Contents/Resources/agents/fx" "$APP/Contents/Resources/agents/claude-code"
-command cp -R "$MACOS_DIR/../integrations/fx/skills/blackice" "$APP/Contents/Resources/agents/fx/blackice"
-command cp -R "$MACOS_DIR/../integrations/claude-code/blackice" "$APP/Contents/Resources/agents/claude-code/blackice"
+# The agents' instructions are inside the blackice binary (AgentInstructions), not resources.
 command cp "$MACOS_DIR/Resources/Blackice-Info.plist" "$APP/Contents/Info.plist"
 command cp "$MACOS_DIR/Resources/Filter-Info.plist" "$EXT/Contents/Info.plist"
 BUDDY=/usr/libexec/PlistBuddy
@@ -65,8 +61,6 @@ test -x "$APP/Contents/MacOS/blackice"
 test -x "$EXT/Contents/MacOS/com.valentorassa.blackice.filter"
 test "$("$BUDDY" -c 'Print :CFBundleIconFile' "$APP/Contents/Info.plist")" = AppIcon
 test -s "$APP/Contents/Resources/AppIcon.icns"
-test -s "$APP/Contents/Resources/agents/fx/blackice/SKILL.md"
-test -s "$APP/Contents/Resources/agents/claude-code/blackice/instructions.md"
 
 echo "Built, unsigned: $APP (CFBundleVersion $BUILD_NUMBER, $(uname -m) only)"
 echo 'No Developer ID, entitlements or profiles applied; no extension installed or activated.'

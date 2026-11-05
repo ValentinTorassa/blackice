@@ -3,14 +3,16 @@ import BlackiceCore
 
 // `blackice agent connect NAME`: sets a coding agent up to answer the connections that wait in
 // ask mode, the way integrations/fx/README.md describes by hand. The steps are the same for every
-// agent: find it and read its signature; give it a home of its own with the blackice skill and
+// agent: find it and read its signature; give it a home of its own, with its sign-in and, for fx,
 // rules that let it read files and nothing else, no shell included; let it decide one sample
 // event through the hook runner, reading its answer from its last line of output and passing it
 // nowhere; add a rule that lets it reach its model in every mode, and a hook that starts it
-// directly and checks its signature first; load it. What differs between agents (where its
-// settings live, how it signs in, its arguments) is in its `AgentProfile`. fx is the first.
-// Claude Code (claude-code) has no settings file: its limits are its arguments. One agent
-// answers at a time: connecting one replaces the hook of another.
+// directly, checks its signature first and names its instructions; load it. The instructions
+// come from blackice itself: the daemon writes them into each event's directory (see
+// AgentInstructions), so nothing in the agent's home says how to decide. What differs between
+// agents (where its settings live, how it signs in, its arguments) is in its `AgentProfile`. fx
+// is the first. Claude Code (claude-code) has no settings file: its limits are its arguments. One
+// agent answers at a time: connecting one replaces the hook of another.
 
 /// What blackice needs to know about one coding agent.
 public struct AgentProfile: Sendable {
@@ -21,12 +23,14 @@ public struct AgentProfile: Sendable {
     /// What it needs to reach for its model and sign-in. blackice.toml allows these in every
     /// mode, bound to the agent's signature, or the agent would wait on its own approval.
     public let hosts: [String]
-    /// Inside the agent home: the folder its skills are read from, and its settings file, when
-    /// blackice writes one.
-    let skillsFolder: String
+    /// Inside the agent home: its own folder, and its settings file, when blackice writes one.
+    let folder: String
     let settingsFile: String?
-    /// The skill's folder under Blackice.app's Resources/agents.
-    let resource: String
+    /// What the daemon writes into each event's directory for it (`instructions` in its hook).
+    let instructions: AgentInstructions
+    /// The model its hook asks for unless `--model` names another: a small one, since each
+    /// decision is a short read and a two-line answer.
+    public let defaultModel: String
     /// Where to get it, when it is not installed.
     let installHint: String
     /// Its own installer, as a shell command line, offered when it is not installed.
@@ -42,11 +46,13 @@ public struct AgentProfile: Sendable {
     let signedIn: @Sendable (_ statusOutput: String) -> Bool
     /// Its settings file, with the rules set and its other keys kept; nil with no settings file.
     let settings: (@Sendable (_ existing: Data?) throws -> Data)?
-    /// The hook's `args`: one request that ends with the answer as its last line of output.
-    let askArguments: @Sendable (_ agentHome: String) -> [String]
+    /// The hook's `args`: one request to this model that ends with the answer as its last line of
+    /// output.
+    let askArguments: @Sendable (_ agentHome: String, _ model: String) -> [String]
     /// What to do about a failure the agent's output names, when the test gets no answer.
     var advice: @Sendable (_ output: String) -> [String] = { _ in [] }
-    /// Text that only this agent's hook holds in its `args`: a hook with it is this agent's.
+    /// Text that only this agent's hook holds in its `args`, for hooks written before they named
+    /// their instructions: a hook with it is this agent's.
     var hookMarker = AgentProfile.prompt
     /// What keeps it to deciding, said once its home is ready, when it has no settings file.
     var limits: String?
@@ -55,7 +61,10 @@ public struct AgentProfile: Sendable {
 
     public static let fx = AgentProfile(
         name: "fx", executable: "fx", hosts: ["ai-gateway.vercel.sh", "vercel.com", "api.vercel.com"],
-        skillsFolder: ".fx/skills", settingsFile: ".fx/settings.json", resource: "fx/blackice",
+        folder: ".fx", settingsFile: ".fx/settings.json", instructions: .fx,
+        // Paid from AI Gateway credits: on 5 November 2026 `fx models` priced Claude Haiku 5.5 at $0.10 and $0.50
+        // per million tokens in and out, a hundredth of Claude Fable 5.1. `--model` overrides fx's settings.
+        defaultModel: "anthropic/claude-haiku-5.5",
         installHint: "https://github.com/vercel-labs/fx",
         // fx's README; it puts fx in ~/.local/bin.
         installer: "curl -fsSL https://fx.sh/setup.sh | bash",
@@ -66,9 +75,9 @@ public struct AgentProfile: Sendable {
         environment: { ["HOME": $0, "FX_DISABLE_KEYCHAIN": "1"] },
         statusArguments: ["status"], loginArguments: ["login", "vercel"],
         signedIn: { CLI.fxSignedIn($0) }, settings: { try CLI.fxSettings($0) },
-        // With stdout not a terminal, fx prints its reply as plain Markdown; the skill ends it with
-        // the answer.
-        askArguments: { _ in ["ask", "--no-save", "--no-color", prompt] },
+        // With stdout not a terminal, fx prints its reply as plain Markdown; the skill, which fx
+        // finds in its workspace's skills/ folder, ends it with the answer.
+        askArguments: { _, model in ["ask", "--no-save", "--no-color", "--model", model, prompt] },
         // Seen on 3 November 2026: a Vercel team with no card on file gets HTTP 403 from AI Gateway.
         // Seen on 4 November 2026: a team with no credits left gets HTTP 502, insufficient_funds.
         advice: { stderr in
@@ -85,12 +94,14 @@ public struct AgentProfile: Sendable {
         })
 
     /// Claude Code in print mode. Its configuration directory in the agent home holds its own
-    /// sign-in and the instructions, and nothing of yours.
+    /// sign-in, and nothing of yours.
     public static let claudeCode = AgentProfile(
         // api.anthropic.com for the model; platform.claude.com renews the sign-in (Claude Code
         // 2.1.317's OAuth token endpoint). Nothing else was reached in 20 decisions on 4 November 2026.
         name: "claude-code", executable: "claude", hosts: ["api.anthropic.com", "platform.claude.com"],
-        skillsFolder: ".claude", settingsFile: nil, resource: "claude-code/blackice",
+        folder: ".claude", settingsFile: nil, instructions: .claudeCode,
+        // Counted against the subscription it signs in with; haiku uses the least of it.
+        defaultModel: "haiku",
         installHint: "https://code.claude.com/docs/en/setup",
         // Anthropic's native installer; it puts claude in ~/.local/bin.
         installer: "curl -fsSL https://claude.ai/install.sh | bash",
@@ -104,7 +115,7 @@ public struct AgentProfile: Sendable {
                         "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"] },
         statusArguments: ["auth", "status", "--json"], loginArguments: ["auth", "login"],
         signedIn: { CLI.claudeCodeSignedIn($0) }, settings: nil,
-        askArguments: { CLI.claudeCodeArguments(agentHome: $0) },
+        askArguments: { _, model in CLI.claudeCodeArguments(model: model) },
         // A hook gets none of the shell's variables, so a sign-in through ANTHROPIC_API_KEY, which
         // `claude auth status` counts, is not there. Claude Code says so on stdout.
         advice: { output in
@@ -120,7 +131,38 @@ public struct AgentProfile: Sendable {
         // Read tool, as data.
         eventOnStdin: false)
 
-    public static let known = [fx, claudeCode]
+    /// Codex (`codex exec`), signed in with a ChatGPT plan. CODEX_HOME in the agent home holds its
+    /// own sign-in, apart from yours in ~/.codex.
+    public static let codex = AgentProfile(
+        // chatgpt.com for the model (its backend API) with a ChatGPT sign-in; auth.openai.com renews
+        // that sign-in. On 5 November 2026 Codex 0.166.0 reached only chatgpt.com in its decisions.
+        name: "codex", executable: "codex", hosts: ["chatgpt.com", "auth.openai.com"],
+        folder: ".codex", settingsFile: nil, instructions: .codex,
+        // "Fast and affordable model for easier tasks", in Codex 0.166.0's list; it counts against the plan.
+        defaultModel: "gpt-6-luna",
+        installHint: "brew install --cask codex, or https://developers.openai.com/codex/cli",
+        installer: nil,
+        loginHint: ["Codex opens a sign-in page in your browser. Sign in with the ChatGPT account whose",
+                    "plan its decisions should count against, then come back here."],
+        // HOME stays the account's own, as the daemon sets it; CODEX_HOME keeps the sign-in apart.
+        environment: { ["CODEX_HOME": CLI.codexHome(agentHome: $0)] },
+        statusArguments: ["login", "status"], loginArguments: ["login"],
+        signedIn: { CLI.codexSignedIn($0) }, settings: nil,
+        askArguments: { _, model in CLI.codexArguments(model: model) },
+        // With no sign-in in CODEX_HOME, Codex 0.166.0 tries api.openai.com and stops at HTTP 401.
+        advice: { output in
+            output.contains("401 Unauthorized")
+                ? ["Codex had no sign-in in the hook's environment, which has none of your shell's",
+                   "variables (OPENAI_API_KEY among them). Sign it in for blackice with:",
+                   "CODEX_HOME=~/.config/blackice/agent/.codex codex login"]
+                : []
+        },
+        hookMarker: CLI.codexPrompt,
+        limits: "Its hook lets it read only the event's directory: no writes, no network, no web search, no MCP servers",
+        // codex exec adds what comes on stdin to its prompt. The event reaches it only as a file.
+        eventOnStdin: false)
+
+    public static let known = [fx, claudeCode, codex]
 
     /// What the hook asks the agent. A hook whose line holds it already uses the blackice skill.
     public static let prompt = "Use the blackice skill to decide whether to approve the pending connection"
@@ -136,20 +178,22 @@ struct AgentPaths {
         self.profile = profile
     }
 
-    var skills: String { home + "/" + profile.skillsFolder }
-    var skill: String { skills + "/blackice" }
     var settings: String? { profile.settingsFile.map { home + "/" + $0 } }
     var test: String { home + "/test" }
     /// The folders to create, outermost first.
     var folders: [String] {
         var folders = [home]
         var path = home
-        for part in profile.skillsFolder.split(separator: "/") {
+        for part in profile.folder.split(separator: "/") {
             path += "/" + part
             folders.append(path)
         }
         return folders
     }
+
+    /// The copies of the instructions that `agent connect` put in the home up to 0.4.0, for fx and
+    /// Claude Code. Removed once a configuration whose hook names its instructions is loaded.
+    var oldCopies: [String] { [home + "/.fx/skills/blackice", home + "/.claude/blackice"] }
 }
 
 /// What connecting an agent needs from the Mac, passed in so tests can fake it.
@@ -160,10 +204,10 @@ public struct AgentMachine {
     public let runAttached: (_ path: String, _ arguments: [String], _ environment: [String: String]) -> Int32
     /// Runs a program and returns its exit status and output.
     public let runCaptured: (_ path: String, _ arguments: [String], _ environment: [String: String]) -> (status: Int32, output: String)
-    /// Runs one hook for an event the way the daemon does (HookRunner), signature check included.
-    public let runHook: (_ hook: Hook, _ event: HookEvent, _ workDirectory: String, _ timeoutSeconds: Int) -> HookResult
-    /// The folder inside Blackice.app with each agent's skill (agents/fx/blackice); nil outside the app.
-    public let agentResources: String?
+    /// Runs one hook for an event the way the daemon does (HookRunner), signature check,
+    /// instructions and the owner's notes included.
+    public let runHook: (_ hook: Hook, _ event: HookEvent, _ notes: String?, _ workDirectory: String,
+                         _ timeoutSeconds: Int) -> HookResult
     /// From now on Control-C and the other stop signals are caught instead of ending blackice
     /// (`Interrupts`); the function returned puts back what was there.
     public let catchInterrupts: () -> () -> Void
@@ -173,15 +217,13 @@ public struct AgentMachine {
     public init(findExecutable: @escaping (String) -> String?,
                 runAttached: @escaping (String, [String], [String: String]) -> Int32,
                 runCaptured: @escaping (String, [String], [String: String]) -> (status: Int32, output: String),
-                runHook: @escaping (Hook, HookEvent, String, Int) -> HookResult,
-                agentResources: String?,
+                runHook: @escaping (Hook, HookEvent, String?, String, Int) -> HookResult,
                 catchInterrupts: @escaping () -> () -> Void = { {} },
                 interrupted: @escaping () -> Bool = { false }) {
         self.findExecutable = findExecutable
         self.runAttached = runAttached
         self.runCaptured = runCaptured
         self.runHook = runHook
-        self.agentResources = agentResources
         self.catchInterrupts = catchInterrupts
         self.interrupted = interrupted
     }
@@ -189,12 +231,11 @@ public struct AgentMachine {
     /// Nothing found, nothing run.
     public static var none: AgentMachine {
         AgentMachine(findExecutable: { _ in nil }, runAttached: { _, _, _ in 127 }, runCaptured: { _, _, _ in (127, "") },
-                     runHook: { _, _, _, _ in HookResult(hookLine: 0, outcome: .failedToStart("no hook runner"), stderr: "",
-                                                         stderrTruncated: false, duration: 0) },
-                     agentResources: nil)
+                     runHook: { _, _, _, _, _ in HookResult(hookLine: 0, outcome: .failedToStart("no hook runner"), stderr: "",
+                                                            stderrTruncated: false, duration: 0) })
     }
 
-    /// This Mac: PATH and the usual folders, Process, HookRunner, and Blackice.app's resources.
+    /// This Mac: PATH and the usual folders, Process and HookRunner.
     public static func real() -> AgentMachine {
         AgentMachine(
             findExecutable: { name in
@@ -227,7 +268,7 @@ public struct AgentMachine {
                 process.waitUntilExit()
                 return (process.terminationStatus, String(decoding: data, as: UTF8.self))
             },
-            runHook: { hook, event, workDirectory, timeoutSeconds in
+            runHook: { hook, event, notes, workDirectory, timeoutSeconds in
                 let failed = { (why: String) in
                     HookResult(hookLine: 0, outcome: .failedToStart(why), stderr: "", stderrTruncated: false, duration: 0)
                 }
@@ -237,7 +278,7 @@ public struct AgentMachine {
                     let box = ResultBox()
                     let done = DispatchSemaphore(value: 0)
                     Task {
-                        box.results = await runner.run([hook], for: event, timeoutSeconds: timeoutSeconds) {
+                        box.results = await runner.run([hook], for: event, timeoutSeconds: timeoutSeconds, notes: notes) {
                             if case .started(_, let pid, _) = $0 { box.started(pid) }
                         }
                         done.signal()
@@ -256,8 +297,6 @@ public struct AgentMachine {
                     return failed("\(error)")
                 }
             },
-            agentResources: Bundle.main.resourceURL.map { $0.appendingPathComponent("agents").path }
-                .flatMap { FileManager.default.fileExists(atPath: $0) ? $0 : nil },
             catchInterrupts: Interrupts.catchAll, interrupted: { Interrupts.interrupted })
     }
 
@@ -332,17 +371,32 @@ enum TestAnswer: Equatable {
 }
 
 extension CLI {
-    /// The agent's hook: its executable, started directly with its home in `env`, and the signature
-    /// it must have, read from the executable when it was connected.
+    /// The agent's hook: its executable, started directly with its home in `env`, the signature it
+    /// must have, read from the executable when it was connected, and its instructions.
     static func agentHook(_ profile: AgentProfile, executable: String, agentHome: String,
-                          identity: SigningIdentity) -> HookProgram {
-        HookProgram(path: executable, arguments: profile.askArguments(agentHome), environment: profile.environment(agentHome),
-                    identity: identity, eventOnStdin: profile.eventOnStdin)
+                          identity: SigningIdentity, model: String) -> HookProgram {
+        HookProgram(path: executable, arguments: profile.askArguments(agentHome, model), environment: profile.environment(agentHome),
+                    identity: identity, eventOnStdin: profile.eventOnStdin, instructions: profile.instructions)
     }
 
-    /// The agent, if any, whose hook this is.
+    /// A model name `--model` takes: an ASCII letter or digit, then letters, digits and
+    /// `. _ - / : @ [ ]` (`anthropic/claude-haiku-5.5`, `sonnet[1m]`), up to 100 characters. It
+    /// goes into the hook's `args` as one argument, and cannot start like an option.
+    static func validModel(_ name: String) -> Bool {
+        guard let first = name.unicodeScalars.first, name.unicodeScalars.count <= 100,
+              first.isASCII, first.properties.isAlphabetic || ("0"..."9").contains(first) else { return false }
+        return name.unicodeScalars.allSatisfy {
+            $0.isASCII && ($0.properties.isAlphabetic || ("0"..."9").contains($0) || "._-/:@[]".unicodeScalars.contains($0))
+        }
+    }
+
+    /// The agent, if any, whose hook this is: by the instructions it names, or for a hook from
+    /// before those, by what its command holds.
     static func agentRunning(_ hook: Hook) -> AgentProfile? {
-        AgentProfile.known.first { hook.commandText.contains($0.hookMarker) }
+        if let instructions = hook.program?.instructions {
+            return AgentProfile.known.first { $0.instructions == instructions }
+        }
+        return AgentProfile.known.first { hook.commandText.contains($0.hookMarker) }
     }
 
     /// A path that can go into blackice.toml: absolute, with no control character.
@@ -368,6 +422,7 @@ extension CLI {
                 .map { tomlString($0.key + "=" + $0.value) }.joined(separator: ", ") + "]")
         }
         if !program.eventOnStdin { lines.append("stdin = \"none\"") }
+        if let instructions = program.instructions { lines.append("instructions = " + tomlString(instructions.rawValue)) }
         return lines
     }
 
@@ -427,13 +482,56 @@ extension CLI {
     /// Claude Code's `args`: print mode with Read as its only tool, confined to the event's
     /// directory (--restricted, which also ignores the settings files); no CLAUDE.md, hooks,
     /// plugins or MCP servers (--safe-mode, --strict-mcp-config); nothing saved; the instructions
-    /// as its whole system prompt; plain text, whose last line is the answer. Checked against
-    /// Claude Code 2.1.317. integrations/eval/agents/claude-code.sh runs the same (a test checks).
-    static func claudeCodeArguments(agentHome: String) -> [String] {
+    /// the daemon writes into the event's directory as its whole system prompt; plain text, whose
+    /// last line is the answer. Checked against Claude Code 2.1.317.
+    /// integrations/eval/agents/claude-code.sh runs the same (a test checks).
+    static func claudeCodeArguments(model: String) -> [String] {
         ["-p", "--restricted", "--safe-mode", "--tools", "Read", "--strict-mcp-config", "--no-session-persistence",
-         "--permission-prompts", "none", "--model", "sonnet", "--max-turns", "3", "--output-format", "text",
-         "--system-prompt-file", claudeCodeConfigDirectory(agentHome: agentHome) + "/blackice/instructions.md",
-         claudeCodePrompt]
+         "--permission-prompts", "none", "--model", model, "--max-turns", "3", "--output-format", "text",
+         "--system-prompt-file", "instructions.md", claudeCodePrompt]
+    }
+
+    /// What the hook asks Codex.
+    static let codexPrompt = "Decide the pending blackice connection described in event.json."
+
+    /// Codex's own home, CODEX_HOME, inside the agent home.
+    static func codexHome(agentHome: String) -> String { agentHome + "/.codex" }
+
+    /// Codex's `args`: one `codex exec` request, checked against Codex 0.166.0.
+    /// - Nothing of yours: no config.toml (--ignore-user-config), no exec-policy rules
+    ///   (--ignore-rules), no AGENTS.md from the working directory (project_doc_max_bytes=0), no
+    ///   hooks, plugins, apps, subagents, image generation, browser or computer use, no web search,
+    ///   no session saved (--ephemeral) and no history. --strict-config refuses a key it does not know.
+    /// - The instructions the daemon writes into the event's directory replace Codex's own
+    ///   (model_instructions_file, relative to the working directory).
+    /// - Its commands run in a sandbox that reads only the event's directory and the system's own
+    ///   files (`:minimal`), writes nothing and has no network. Not `--sandbox read-only`: that
+    ///   reads the whole disk, your home included, and takes the place of the profile when both are given.
+    ///   Nothing asks for approval (approval_policy never), and the shell is not a login shell.
+    /// integrations/eval/agents/codex.sh runs the same (a test checks).
+    static func codexArguments(model: String) -> [String] {
+        ["exec", "--strict-config", "--skip-git-repo-check", "--ephemeral", "--ignore-user-config", "--ignore-rules",
+         "--color", "never", "-m", model,
+         "-c", "model_reasoning_effort=\"low\"",
+         "-c", "model_instructions_file=\"instructions.md\"",
+         "-c", "project_doc_max_bytes=0",
+         "-c", "default_permissions=\"blackice\"",
+         "-c", "permissions.blackice.filesystem={\":minimal\"=\"read\",\":workspace_roots\"=\"read\"}",
+         "-c", "approval_policy=\"never\"",
+         "-c", "allow_login_shell=false",
+         "-c", "web_search=\"disabled\"",
+         "-c", "analytics.enabled=false",
+         "-c", "feedback.enabled=false",
+         "-c", "history.persistence=\"none\"",
+         "--disable", "hooks", "--disable", "plugins", "--disable", "apps", "--disable", "multi_agent",
+         "--disable", "image_generation", "--disable", "browser_use", "--disable", "computer_use",
+         codexPrompt]
+    }
+
+    /// `codex login status` says "Logged in using ChatGPT" (or an API key) once it is signed in,
+    /// and "Not logged in" before.
+    static func codexSignedIn(_ status: String) -> Bool {
+        status.split(whereSeparator: \.isNewline).contains { $0.hasPrefix("Logged in") }
     }
 
     /// `claude auth status --json` prints an object whose `loggedIn` is true once it is signed in.
@@ -522,7 +620,7 @@ extension CLI {
 
     /// `firstStep` numbers the steps on from where `blackice start` left off when it runs this
     /// right after the first start (`fromFirstStart`), which loaded the file in accept-all.
-    static func connectAgent(_ name: String, configPath: String?, readFile: (String) throws -> Data,
+    static func connectAgent(_ name: String, configPath: String?, model chosenModel: String? = nil, readFile: (String) throws -> Data,
                              system: SystemControlling, interaction: Interaction, machine: AgentMachine,
                              stdout: @escaping (String) -> Void, stderr: @escaping (String) -> Void,
                              firstStep: Int = 1, fromFirstStart: Bool = false) -> Int32 {
@@ -547,11 +645,16 @@ extension CLI {
             }
         }
         guard let profile = AgentProfile.known.first(where: { $0.name == name }) else {
-            stderr("blackice agent connect knows \(listed(AgentProfile.known.map(\.name))) so far (Codex is planned): " +
+            stderr("blackice agent connect knows \(listed(AgentProfile.known.map(\.name))): " +
                    "blackice agent connect fx")
             return ExitCode.usage
         }
         let name = profile.name
+        let model = chosenModel ?? profile.defaultModel
+        guard validModel(model) else {
+            stderr("agent connect: --model takes a model name such as \(profile.defaultModel)")
+            return ExitCode.usage
+        }
         guard let ask = interaction.ask else {
             stderr("blackice agent connect asks questions and signs \(profile.name) in, so it needs a terminal.")
             return ExitCode.usage
@@ -573,6 +676,7 @@ extension CLI {
         // What to run to try again: from blackice start, the file is written and start would
         // only load it, so the retry is agent connect itself.
         let retry = "blackice agent connect \(name)" + (configPath.map { " --config \(Describe.path($0, home: interaction.home))" } ?? "")
+            + (chosenModel.map { $0.contains("[") ? " --model '\($0)'" : " --model \($0)" } ?? "")
         var number = firstStep
         func step(_ title: String) {
             stdout(""); stdout(Style.heading("\(number) · \(title)")); stdout("")
@@ -642,15 +746,13 @@ extension CLI {
         }
         stdout("  " + Style.done("\(shownExecutable) is \(ConfigWizard.describe(identity))"))
 
-        // 2. Its own home: the skill, a sign-in, and the rules.
+        // 2. Its own home: a sign-in, and the rules. The instructions are not there: the daemon
+        // writes them, from blackice itself, into each event's directory.
         step("Give \(name) a home of its own")
         let paths = AgentPaths(userHome: interaction.home, profile: profile)
         let homeShown = Describe.path(paths.home, home: interaction.home)
         guard fitsConfig(paths.home) else {
             return fail(ExitCode.unavailable, "\(homeShown) has a control character in its path, which blackice.toml cannot hold.")
-        }
-        guard let resources = machine.agentResources else {
-            return fail(ExitCode.unavailable, "This blackice has no agent skills inside it. Use the blackice command from Blackice.app.")
         }
         let files = FileManager.default
         do {
@@ -659,12 +761,10 @@ extension CLI {
                 try files.createDirectory(atPath: parent, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
             }
             for folder in paths.folders { try privateFolder(folder) }
-            if files.fileExists(atPath: paths.skill) { try files.removeItem(atPath: paths.skill) }
-            try files.copyItem(atPath: resources + "/" + profile.resource, toPath: paths.skill)
         } catch {
             return fail(ExitCode.cannotCreate, "Cannot set up \(homeShown): \(describe(error))")
         }
-        stdout("  " + Style.done("The blackice skill is in \(homeShown)"))
+        stdout("  " + Style.done("Its home is \(homeShown); its instructions come with blackice"))
         let environment = profile.environment(paths.home)
         func signedIn() -> Bool { profile.signedIn(machine.runCaptured(executable, profile.statusArguments, environment).output) }
         if signedIn() {
@@ -713,11 +813,13 @@ extension CLI {
             return fail(ExitCode.cannotCreate, "Cannot set up the test in \(homeShown): \(describe(error))")
         }
         defer { try? files.removeItem(atPath: paths.test) }
+        stdout("  It decides with \(model)" + (chosenModel == nil ? "; --model NAME picks another." : "."))
         stdout("  \(name) is deciding whether Visual Studio Code may reach")
         stdout("  update.code.visualstudio.com. Its answer is only read for this test, so")
         stdout("  nothing is let through…")
-        let program = agentHook(profile, executable: executable, agentHome: paths.home, identity: identity)
-        let result = machine.runHook(Hook(program: program, line: 0), event, paths.test + "/work", agentTestSeconds)
+        let program = agentHook(profile, executable: executable, agentHome: paths.home, identity: identity, model: model)
+        let result = machine.runHook(Hook(program: program, line: 0), event, config.agentNotes, paths.test + "/work",
+                                     agentTestSeconds)
         if let stop = interruption() { return stop }
         let seconds = Int(result.duration.rounded())
         switch testAnswer(result, seconds: agentTestSeconds) {
@@ -793,6 +895,8 @@ extension CLI {
         } else if let existingHook, let other = agentRunning(existingHook), other.name != name {
             stdout("  " + Style.done("The hook on line \(existingHook.line) ran \(other.name); it now starts \(name) instead,"))
             stdout("    so one agent answers, once its signature checks out")
+        } else if let existingHook, existingHook.program?.instructions == profile.instructions {
+            stdout("  " + Style.done("The hook on line \(existingHook.line) now starts \(name) with \(model)"))
         } else if let existingHook {
             stdout("  " + Style.done("The hook on line \(existingHook.line) now starts \(name) itself, once its signature checks out"))
         } else {
@@ -838,6 +942,13 @@ extension CLI {
         let started = system.start(configText: loaded, output: SystemOutput(stdout: stdout, stderr: stderr))
         guard started == ExitCode.success else { return started }
         loadedFile = true
+        // The hook loaded now names its instructions, so the copies made up to 0.4.0 are read by
+        // nothing, and only invite a change that no hook would see. Gone only now: until this
+        // load, the configuration in force could still be a hook that reads them.
+        let removed = paths.oldCopies.filter { files.fileExists(atPath: $0) && (try? files.removeItem(atPath: $0)) != nil }
+        if !removed.isEmpty {
+            stdout("  " + Style.done("Removed the copies of the instructions earlier versions put in \(homeShown)"))
+        }
         stdout("")
         let daemon = system.installAgent(output: SystemOutput(stdout: stdout, stderr: stderr))
         guard daemon == ExitCode.success else { return daemon }

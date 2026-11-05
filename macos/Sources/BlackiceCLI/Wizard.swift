@@ -177,7 +177,7 @@ struct ConfigWizard {
         }
         if mode == .ask {
             say("")
-            say("  To have an agent answer for you: blackice agent connect fx, or claude-code")
+            say("  To have an agent answer for you: blackice agent connect fx, claude-code or codex")
         }
         return answers
     }
@@ -201,7 +201,8 @@ struct ConfigWizard {
             say("  Who answers the connections that wait?")
             say("")
             let agents = [("fx", "fx, a coding agent: blackice installs it if needed and sets it up"),
-                          ("claude-code", "Claude Code: blackice installs it if needed and sets it up")]
+                          ("claude-code", "Claude Code: blackice installs it if needed and sets it up"),
+                          ("codex", "Codex, with your ChatGPT plan: blackice sets it up once installed")]
             let options = agents.map(\.1) + ["Me, with blackice pending, approve and deny"]
             guard let who = choose(Choice(options: options, multiple: false))?.first else { return nil }
             answers.agent = who < agents.count ? agents[who].0 : nil

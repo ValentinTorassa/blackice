@@ -27,6 +27,32 @@
   diagnostics submission and others. Most get only the hosts they reached; those on an iCloud host named after the
   account's partition (`p404-…`) get `*.icloud.com`. accountsd, which signs in to other providers' accounts, stays
   out.
+- The agents' instructions ship inside blackice. A `program` hook names them with `instructions = "fx"` or
+  `"claude-code"`, and the daemon writes them into the event's private directory before the agent starts: fx's
+  skill as `skills/blackice/SKILL.md`, Claude Code's system prompt as `instructions.md`. Up to 0.4.0 they were
+  files in the agent's home, `~/.config/blackice/agent`, that any program running as you could rewrite to approve
+  everything. `agent connect` writes the new key and removes those copies once the new hook is loaded.
+- Notes for the agent: `notes` in an `[agent]` table of `blackice.toml`, up to 4 KiB of plain text over several
+  lines (`"""…"""` or `'''…'''`, the only multi-line strings the file takes), such as the tools you use for work
+  or hosts you never want reached. The daemon writes them as `notes.md` beside the event, and the instructions
+  have the agent follow them for judgment calls, never over their safety rules. They change only with Touch ID,
+  like the rest of the file. `[allow]` and `[hook]` with single brackets now say they need double ones.
+- Ask mode costs less. `agent connect` writes a small model into the hook: fx asks for Claude Haiku 5.5
+  (`anthropic/claude-haiku-5.5`), whatever its settings name, so AI Gateway bills a hundredth of what Claude Fable
+  5.1 costs; Claude Code uses `haiku` in place of `sonnet`. `agent connect … --model NAME` picks another, and
+  connecting again with another model replaces the hook's. The instructions approve clearly ordinary developer and
+  vendor traffic for 8 to 24 hours, so the same app and host come back once a day at most, and anything less plain
+  for 10 minutes to an hour; up to 0.4.0 every approval was 10 minutes to an hour. With Claude Code on 5 November
+  2026, `haiku` and `sonnet` both decided the 23 eval cases as expected, `haiku` in 4.2 s at the median and
+  `sonnet` in 5.1 s. Run `agent connect` again to get the new model.
+- `blackice agent connect codex` sets Codex up as the agent, signed in with a ChatGPT plan: a `CODEX_HOME` of its
+  own with its sign-in (`codex login`), a test on a sample connection, a signed program hook (`codex exec`, model
+  `gpt-6-luna`) and a rule for `chatgpt.com` and `auth.openai.com`. Its hook ignores your Codex configuration,
+  rules, hooks, plugins and web search, replaces Codex's base prompt with blackice's instructions, and lets its
+  commands read only the event's directory and the system's own files, with no writes and no network; not
+  `--sandbox read-only`, which reads your whole home. The first `blackice start` offers it next to fx and Claude
+  Code. `integrations/eval/run.sh --agent codex` runs it over the 23 cases: on 5 November 2026 `gpt-6-luna` and
+  `gpt-6.1-sol` both decided all 23 as expected, in 4.6 and 6.6 s at the median.
 
 ## 0.4.0 (5 November 2026)
 

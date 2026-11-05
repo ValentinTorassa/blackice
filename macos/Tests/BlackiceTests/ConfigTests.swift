@@ -322,11 +322,14 @@ struct ConfigRejectionTests {
         expectError("mode.x = 'ask'", line: 1, containing: "dotted keys are not supported")
         expectError("\"mode\" = 'ask'", line: 1, containing: "quoted keys are not supported")
         expectError("'mode' = 'ask'", line: 1, containing: "quoted keys are not supported")
-        expectError("mode = 'ask'\n[allow]", line: 2, containing: "only [[allow]] and [[hook]] tables")
+        expectError("mode = 'ask'\n[allow]", line: 2, containing: "[allow] needs double brackets")
+        expectError("mode = 'ask'\n[rules]", line: 2, containing: "unknown table [rules]")
+        expectError("mode = 'ask'\n[[agent]]", line: 2, containing: "write [agent], not [[agent]]")
+        expectError("mode = 'ask'\n[agent.x]", line: 2, containing: "dotted table names")
         expectError("mode = 'ask'\n[[allow.extra]]", line: 2, containing: "dotted table names")
         expectError("mode = 'ask'\n[[rules]]", line: 2, containing: "unknown table [[rules]]")
         expectError("mode = 'ask'\n[[allow]", line: 2, containing: "expected ']]'")
-        expectError("mode = 'ask'\n[ [allow] ]", line: 2, containing: "only [[allow]] and [[hook]] tables")
+        expectError("mode = 'ask'\n[ [allow] ]", line: 2, containing: "expected [agent], [[allow]] or [[hook]]")
         expectError("mode = { value = 'ask' }", line: 1, containing: "inline tables")
         expectError("mode = \"\"\"ask\"\"\"", line: 1, containing: "multi-line strings")
         expectError("mode = '''ask'''", line: 1, containing: "multi-line strings")
@@ -469,6 +472,60 @@ struct ConfigRejectionTests {
         expectError(hooks, line: 2 + BlackiceConfig.maximumHooks * 3, containing: "more than 8 [[hook]] tables")
     }
 
+    @Test func agentNotes() throws {
+        let config = try BlackiceConfig(text: """
+        mode = "ask"
+
+        [agent]
+        notes = \"\"\"
+        I use the AWS CLI from Homebrew's python for work.
+        \tDeny analytics hosts, such as "stats.example.com".
+        Quotes at the end: ""\"\"\"
+        """)
+        #expect(config.agentNotes == """
+        I use the AWS CLI from Homebrew's python for work.
+        \tDeny analytics hosts, such as "stats.example.com".
+        Quotes at the end: ""
+        """)
+        #expect(config.summary.hasSuffix(", notes for the agent"))
+
+        // Literal strings take no escapes, CRLF reads as LF, and the line after the closing quotes still parses.
+        let literal = try BlackiceConfig(text: "mode = 'ask'\r\n[agent]\r\nnotes = '''\r\nC:\\path\r\nnext'''\r\n[[allow]]\r\n"
+                                         + "app = 'com.a'\r\nhosts = ['a.example']\r\n")
+        #expect(literal.agentNotes == "C:\\path\nnext")
+        #expect(literal.allow.count == 1)
+
+        #expect(try BlackiceConfig(text: "mode = 'ask'\n[agent]\nnotes = 'one line'").agentNotes == "one line")
+        #expect(try BlackiceConfig(text: "mode = 'ask'\n[agent]\nnotes = \"\"\"\n  \n\"\"\"").agentNotes == nil)
+        #expect(try BlackiceConfig(text: "mode = 'ask'\n[agent]").agentNotes == nil)
+        #expect(try BlackiceConfig(text: "mode = 'ask'").agentNotes == nil)
+        #expect(!(try BlackiceConfig(text: "mode = 'ask'").summary.contains("notes")))
+    }
+
+    @Test func agentNotesChecks() {
+        let head = "mode = 'ask'\n[agent]\n"
+        let atLimit = String(repeating: "a", count: BlackiceConfig.maximumNotesBytes)
+        #expect((try? BlackiceConfig(text: head + "notes = '''" + atLimit + "'''"))?.agentNotes == atLimit)
+        expectError(head + "notes = '''" + atLimit + "é'''", line: 3, containing: "notes is longer than 4 KiB")
+        expectError(head + "notes = \"\"\"a\\u001bb\"\"\"", line: 3, containing: "without the control character U+001B")
+        expectError(head + "notes = \"\"\"a\\rb\"\"\"", line: 3, containing: "without the control character U+000D")
+        expectError(head + "notes = 'a\u{202E}b'", line: 3, containing: "without the control character U+202E")
+        expectError(head + "notes = \"\"\"a\u{2066}b\"\"\"", line: 3, containing: "U+2066")
+        expectError(head + "notes = \"\"\"a\u{7}b\"\"\"", line: 3, containing: "control character in string")
+        expectError(head + "notes = \"\"\"a\rb\"\"\"", line: 3, containing: "carriage return")
+        expectError(head + "notes = \"\"\"\nfirst \\\nsecond\"\"\"", line: 4, containing: "backslash at the end of a line")
+        expectError(head + "notes = \"\"\"a\\qb\"\"\"", line: 3, containing: "invalid escape")
+        expectError(head + "notes = \"\"\"\nnever closed\n", line: 3, containing: "unterminated multi-line string")
+        expectError(head + "notes = '''a''''''", line: 3, containing: "more than five quotes")
+        expectError(head + "notes = '''a''' trailing", line: 3, containing: "unexpected text after the value")
+        expectError(head + "notes = ['a']", line: 3, containing: "notes must be a string")
+        expectError(head + "notes = 'a'\nnotes = 'b'", line: 4, containing: "notes")
+        expectError(head + "model = 'x'", line: 3, containing: "unknown key")
+        expectError(head + "notes = 'a'\n[agent]\nnotes = 'b'", line: 4, containing: "[agent] appears twice (first on line 2)")
+        expectError("mode = 'ask'\nnotes = \"\"\"a\"\"\"", line: 2, containing: "unknown key")
+        expectError("mode = 'ask'\n[[hook]]\non = 'connection'\nrun = \"\"\"x\"\"\"", line: 4, containing: "only notes in [agent]")
+    }
+
     @Test func errorsDoNotEchoControlCharacters() {
         guard let failure = error("mode = \"\\u001b[2Jask\"") else {
             Issue.record("expected an error")
@@ -481,7 +538,8 @@ struct ConfigRejectionTests {
     @Test func hostileInputsNeverCrash() {
         // Deterministic noise built from the grammar's own pieces: every result must be a value or a ConfigError.
         let pieces = ["mode", " = ", "'ask'", "\"", "'", "[[", "]]", "[", "]", ",", "#", "\n", "\r\n", "\\", "\\u", "{",
-                      "hosts", "app", "allow", "hook", "=", "0", "9", ".", "*", "\u{0}", "é", "\t"]
+                      "hosts", "app", "allow", "hook", "=", "0", "9", ".", "*", "\u{0}", "é", "\t",
+                      "[agent]", "notes = ", "\"\"\"", "'''", "\u{202E}"]
         var state: UInt64 = 0x9E3779B97F4A7C15
         for _ in 0..<2000 {
             var text = ""

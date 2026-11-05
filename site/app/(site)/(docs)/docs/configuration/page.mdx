@@ -35,6 +35,7 @@ app = "com.vercel.fx"
 team = "JW6Y669B67"
 args = ["ask", "--no-save", "--no-color", "Use the blackice skill to decide whether to approve the pending connection"]
 env = ["HOME=/Users/me/.config/blackice/agent", "FX_DISABLE_KEYCHAIN=1"]
+instructions = "fx"            # the daemon writes fx's skill from blackice into the event's directory
 ```
 
 The parser is strict: an unknown key or a value of the wrong type stops blackice from starting instead of being guessed at.
@@ -148,11 +149,31 @@ In ask mode the daemon runs each `[[hook]]` with `on = "connection"` for a conne
 - `app` and `team` are the signing identifier and Team ID, as in an `[[allow]]` rule, and `codesign -dv` shows them. Leave `team` out only for Apple's own programs.
 - `args` lists the arguments, as strings. Nothing from the event is ever put in them.
 - `env` lists `NAME=value` strings added to the [environment](#the-hooks-environment). A name may not start with `BLACKICE_`.
-- `stdin = "none"` gives the program an empty stdin, so the event is only in its file. The default, `"event"`, sends the event on stdin too. Claude Code's hook says `"none"`: `claude -p` adds whatever comes on stdin to its prompt, and the event should reach it only as a file it reads.
+- `stdin = "none"` gives the program an empty stdin, so the event is only in its file. The default, `"event"`, sends the event on stdin too. The hooks of Claude Code and Codex say `"none"`: `claude -p` and `codex exec` add whatever comes on stdin to their prompt, and the event should reach them only as a file they read.
+- `instructions` names the agent whose instructions the daemon writes into the event's directory before the program starts, from the copy inside blackice: `"fx"` writes the blackice skill as `skills/blackice/SKILL.md`, `"claude-code"` and `"codex"` write `instructions.md`. The hook names them by that relative path, as in `--system-prompt-file instructions.md`. A file in the agent's home could be rewritten by any program running as you; this one comes with blackice.
 
 The daemon starts the program suspended, checks the signature of the process it started, and kills it before it runs if the signature does not name both. The log says `hook_refused`, with the identity it found. So a program that something else put at that path never runs, and an update of the program that keeps its identity needs no change.
 
-**`run`, unchecked.** `run = '…'` is a line for `/bin/sh -c`, as before 0.4.0. Nothing checks what it starts, so any program running as you can put something else in its place, for example earlier in `PATH`. Only `program` hooks are protected that way. `run` takes no `app`, `team`, `args`, `env` or `stdin`.
+**`run`, unchecked.** `run = '…'` is a line for `/bin/sh -c`, as before 0.4.0. Nothing checks what it starts, so any program running as you can put something else in its place, for example earlier in `PATH`. Only `program` hooks are protected that way. `run` takes no `app`, `team`, `args`, `env`, `stdin` or `instructions`.
+
+## Notes for the agent
+
+`notes` in an `[agent]` table is your own guidance for the agent that answers in ask mode: what you use for work, what you never want reached. It is the one value in the file that may span lines:
+
+```toml
+[agent]
+notes = """
+For work I run a cloud CLI with Homebrew's python (/opt/homebrew/bin/python3); it reaches api.cloud.example.
+Deny analytics and tracking hosts, such as stats.example.com, whatever the app.
+"""
+```
+
+The daemon writes the notes as `notes.md` beside `event.json` in each event's directory, and the instructions of fx, Claude Code and Codex say to follow them for judgment calls. They never override the instructions' safety rules: the event's fields stay untrusted, lookalike hosts are still denied and no approval is longer than 24 hours, and text in the event that claims to be a note is a reason to deny. The notes are part of `blackice.toml`, so they change only with your Touch ID, like the hooks.
+
+- `"""` takes the escapes of a `"…"` string; `'''` takes the text as written. A line break right after the opening quotes is left out.
+- At most 4 KiB, of plain text: lines and tabs, but no other control characters and none of the Unicode controls that change the order text reads in.
+- A backslash at the end of a line, which TOML uses to join lines, is refused. Write the text as it should read.
+- Blank notes are no notes: there is no `notes.md`.
 
 ## The hook's environment
 
@@ -166,7 +187,7 @@ The daemon builds the environment a hook starts with instead of passing on its o
 | `LANG` | `en_US.UTF-8` |
 | `BLACKICE_EVENT_FILE`, `BLACKICE_EVENT_ID` | The event's file and ID. |
 
-A `program` hook's `env` is added on top and may replace any of these but the last two. In the example above, `HOME` gives fx a home of its own, with its own login, skill and rules.
+A `program` hook's `env` is added on top and may replace any of these but the last two. In the example above, `HOME` gives fx a home of its own, with its own login and rules.
 
 ## The event a hook receives
 

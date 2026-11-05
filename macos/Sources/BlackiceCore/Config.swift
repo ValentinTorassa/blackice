@@ -3,10 +3,12 @@ import Foundation
 // blackice.toml: a strict reader for the small subset of TOML the file uses.
 //
 // Accepted: comments, bare keys, "basic" and 'literal' strings on one line, decimal
-// integers, true/false, arrays of those (they may span lines), and the [[allow]] and
-// [[hook]] tables. Everything else in TOML is refused with a line number instead of
-// being guessed at: dotted or quoted keys, [tables], inline tables, multi-line
-// strings, floats, dates, other number forms, unknown keys and duplicate keys.
+// integers, true/false, arrays of those (they may span lines), the [[allow]] and [[hook]]
+// tables, and one [agent] table, whose `notes` alone may be a multi-line string ("""…""" or
+// '''…'''). Everything else in TOML is refused with a line number instead of being guessed
+// at: dotted or quoted keys, other [tables], inline tables, multi-line strings elsewhere,
+// a backslash at the end of a line, floats, dates, other number forms, unknown keys and
+// duplicate keys.
 
 public enum Mode: String, CaseIterable, Sendable {
     case acceptAll = "accept-all"
@@ -82,7 +84,7 @@ public struct Hook: Equatable, Sendable {
     }
 }
 
-/// `program`, `args`, `env`, `app`, `team` and `stdin` in a [[hook]].
+/// `program`, `args`, `env`, `app`, `team`, `stdin` and `instructions` in a [[hook]].
 public struct HookProgram: Equatable, Sendable {
     /// Absolute. Started with posix_spawn, with no shell and no PATH lookup.
     public let path: String
@@ -97,14 +99,19 @@ public struct HookProgram: Equatable, Sendable {
     /// "none"`, stdin is empty, and the event is only in the file: for a program that adds what
     /// comes on stdin to a model's prompt (`claude -p`), where the event should arrive as data.
     public let eventOnStdin: Bool
+    /// The instructions the daemon writes into the event's directory before the program starts
+    /// (`instructions = "claude-code"`), from blackice itself rather than a file in the agent's
+    /// home that any program of the user could change. nil writes none.
+    public let instructions: AgentInstructions?
 
     public init(path: String, arguments: [String] = [], environment: [String: String] = [:], identity: SigningIdentity,
-                eventOnStdin: Bool = true) {
+                eventOnStdin: Bool = true, instructions: AgentInstructions? = nil) {
         self.path = path
         self.arguments = arguments
         self.environment = environment
         self.identity = identity
         self.eventOnStdin = eventOnStdin
+        self.instructions = instructions
     }
 }
 
@@ -134,6 +141,8 @@ public struct BlackiceConfig: Equatable, Sendable {
     public static let maximumHookStringBytes = 4096
     public static let maximumHookArguments = 64
     public static let maximumHookEnvironment = 64
+    /// `notes` in [agent], in UTF-8.
+    public static let maximumNotesBytes = 4096
 
     public let mode: Mode
     public let timeoutSeconds: Int
@@ -145,6 +154,10 @@ public struct BlackiceConfig: Equatable, Sendable {
     public let loopback: Bool
     public let allow: [AllowRule]
     public let hooks: [Hook]
+    /// The owner's own guidance for the deciding agent (`notes` in [agent]): plain text, which the
+    /// daemon writes as notes.md into each event's directory. It is part of the configuration, so
+    /// it is loaded with Touch ID like the hooks. nil when unset or blank.
+    public let agentNotes: String?
 
     public init(data: Data) throws {
         guard !data.isEmpty else { throw ConfigError(line: nil, "the file is empty") }
@@ -160,13 +173,15 @@ public struct BlackiceConfig: Equatable, Sendable {
 
     public init(text: String) throws { try self.init(data: Data(text.utf8)) }
 
-    private init(mode: Mode, timeoutSeconds: Int, appleServices: Bool, loopback: Bool, allow: [AllowRule], hooks: [Hook]) {
+    private init(mode: Mode, timeoutSeconds: Int, appleServices: Bool, loopback: Bool, allow: [AllowRule], hooks: [Hook],
+                 agentNotes: String?) {
         self.mode = mode
         self.timeoutSeconds = timeoutSeconds
         self.appleServices = appleServices
         self.loopback = loopback
         self.allow = allow
         self.hooks = hooks
+        self.agentNotes = agentNotes
     }
 
     /// The first rule that names this app and this host, if any. Rules say nothing about ports.
@@ -191,6 +206,7 @@ public struct BlackiceConfig: Equatable, Sendable {
         let hookCount = hooks.count == 1 ? "1 hook" : "\(hooks.count) hooks"
         return "mode \(mode.rawValue), timeout \(timeoutSeconds) s, \(rules), \(hookCount)"
             + (appleServices ? "" : ", apple_services off") + (loopback ? "" : ", loopback off")
+            + (agentNotes == nil ? "" : ", notes for the agent")
     }
 }
 
@@ -227,8 +243,28 @@ extension BlackiceConfig {
         if hookTables.count > maximumHooks {
             throw ConfigError(line: hookTables[maximumHooks].line, "more than \(maximumHooks) [[hook]] tables")
         }
+        let agentTables = document.tables.filter { $0.kind == .agent }
+        if agentTables.count > 1 {
+            throw ConfigError(line: agentTables[1].line, "[agent] appears twice (first on line \(agentTables[0].line))")
+        }
         return BlackiceConfig(mode: mode, timeoutSeconds: timeout, appleServices: appleServices, loopback: loopback,
-                               allow: try allowTables.map(allowRule), hooks: try hookTables.map(hook))
+                               allow: try allowTables.map(allowRule), hooks: try hookTables.map(hook),
+                               agentNotes: try agentTables.first?.entries["notes"].flatMap(notes))
+    }
+
+    /// `notes` in [agent]: plain text of at most `maximumNotesBytes`, lines and tabs but no other
+    /// control characters, and none of the Unicode controls that reorder or hide text, so what the
+    /// agent reads is what the owner sees in the file. nil when blank.
+    private static func notes(_ entry: Entry) throws -> String? {
+        let text = try entry.string("notes")
+        guard text.utf8.count <= maximumNotesBytes else {
+            throw ConfigError(line: entry.line, "notes is longer than \(maximumNotesBytes / 1024) KiB")
+        }
+        if let bad = text.unicodeScalars.first(where: { ($0 != "\n" && isControl($0)) || isBidiControl($0) }) {
+            throw ConfigError(line: entry.line, "notes must be plain text, without the control character U+" +
+                              String(format: "%04X", bad.value))
+        }
+        return text.allSatisfy(\.isWhitespace) ? nil : text
     }
 
     /// `app` and `team`, the same in [[allow]] and in a [[hook]] with `program`.
@@ -331,7 +367,7 @@ extension BlackiceConfig {
         guard let runEntry = table.entries["run"] else {
             throw ConfigError(line: table.line, "[[hook]] needs a 'program' or a 'run' key")
         }
-        for key in ["args", "env", "app", "team", "stdin"] {
+        for key in ["args", "env", "app", "team", "stdin", "instructions"] {
             if let entry = table.entries[key] { throw ConfigError(line: entry.line, "\(key) goes with program, not run") }
         }
         let run = try runEntry.string("run")
@@ -379,8 +415,16 @@ extension BlackiceConfig {
             }
             eventOnStdin = stdin == "event"
         }
+        var instructions: AgentInstructions?
+        if let entry = table.entries["instructions"] {
+            let name = try entry.string("instructions")
+            guard let set = AgentInstructions(rawValue: name) else {
+                throw ConfigError(line: entry.line, "instructions must be \(AgentInstructions.names), not \(quoted(name))")
+            }
+            instructions = set
+        }
         return HookProgram(path: path, arguments: arguments, environment: environment, identity: identity,
-                           eventOnStdin: eventOnStdin)
+                           eventOnStdin: eventOnStdin, instructions: instructions)
     }
 
     /// An array of at most `limit` strings, each at most `maximumHookStringBytes` with no control
@@ -406,6 +450,12 @@ extension BlackiceConfig {
 /// C0 controls other than tab, DEL and C1 controls.
 private func isControl(_ scalar: Unicode.Scalar) -> Bool {
     (scalar.value < 0x20 && scalar.value != 0x09) || (0x7F...0x9F).contains(scalar.value)
+}
+
+/// The bidirectional embeddings, overrides and isolates, which make text read in another order
+/// than it is stored.
+private func isBidiControl(_ scalar: Unicode.Scalar) -> Bool {
+    (0x202A...0x202E).contains(scalar.value) || (0x2066...0x2069).contains(scalar.value)
 }
 
 /// An ASCII letter or '_', then letters, digits and '_'.
@@ -468,17 +518,24 @@ private struct Entry {
 }
 
 private enum TableKind: String {
-    case root, allow, hook
+    case root, allow, hook, agent
 
     var keys: Set<String> {
         switch self {
         case .root: return ["mode", "timeout_seconds", "apple_services", "loopback"]
         case .allow: return ["app", "team", "hosts"]
-        case .hook: return ["on", "run", "program", "args", "env", "app", "team", "stdin"]
+        case .hook: return ["on", "run", "program", "args", "env", "app", "team", "stdin", "instructions"]
+        case .agent: return ["notes"]
         }
     }
 
-    var label: String { self == .root ? "at the top level" : "in [[\(rawValue)]]" }
+    var label: String {
+        switch self {
+        case .root: return "at the top level"
+        case .agent: return "in [agent]"
+        case .allow, .hook: return "in [[\(rawValue)]]"
+        }
+    }
 }
 
 private struct Table {
@@ -532,7 +589,8 @@ private struct Parser {
             }
             index += 1
             skipSpaces()
-            let value = try parseValue(inArray: false)
+            // Only the agent's notes may span lines.
+            let value = try parseValue(inArray: false, multiline: key == "notes")
             try expectEndOfLine()
             if document.tables.isEmpty {
                 try add(key, value, line: keyLine, to: &document.root)
@@ -560,7 +618,21 @@ private struct Parser {
     mutating func parseHeader() throws -> Table {
         let headerLine = line
         guard peek(1) == UInt8(ascii: "[") else {
-            throw fail("only [[allow]] and [[hook]] tables are supported")
+            // [agent], the one table that is not an array of tables.
+            index += 1
+            skipSpaces()
+            guard let first = current, isBareKeyByte(first) else { throw fail("expected [agent], [[allow]] or [[hook]]") }
+            let name = try parseKey()
+            skipSpaces()
+            if current == UInt8(ascii: ".") { throw fail("dotted table names are not supported") }
+            guard current == UInt8(ascii: "]") else { throw fail("expected ']' after the table name") }
+            index += 1
+            try expectEndOfLine()
+            switch name {
+            case "agent": return Table(kind: .agent, line: headerLine)
+            case "allow", "hook": throw ConfigError(line: headerLine, "[\(name)] needs double brackets: [[\(name)]]")
+            default: throw ConfigError(line: headerLine, "unknown table [\(name)]; only [agent], [[allow]] and [[hook]] are supported")
+            }
         }
         index += 2
         skipSpaces()
@@ -573,7 +645,8 @@ private struct Parser {
         switch name {
         case "allow": return Table(kind: .allow, line: headerLine)
         case "hook": return Table(kind: .hook, line: headerLine)
-        default: throw ConfigError(line: headerLine, "unknown table [[\(name)]]; only [[allow]] and [[hook]] are supported")
+        case "agent": throw ConfigError(line: headerLine, "[agent] is a single table: write [agent], not [[agent]]")
+        default: throw ConfigError(line: headerLine, "unknown table [[\(name)]]; only [agent], [[allow]] and [[hook]] are supported")
         }
     }
 
@@ -589,15 +662,15 @@ private struct Parser {
         return String(decoding: bytes[start..<index], as: UTF8.self)
     }
 
-    mutating func parseValue(inArray: Bool) throws -> Value {
+    mutating func parseValue(inArray: Bool, multiline: Bool = false) throws -> Value {
         guard let byte = current else { throw fail("expected a value") }
         switch byte {
-        case UInt8(ascii: "\""):
-            if peek(1) == UInt8(ascii: "\""), peek(2) == UInt8(ascii: "\"") { throw fail("multi-line strings are not supported") }
-            return .string(try parseBasicString())
-        case UInt8(ascii: "'"):
-            if peek(1) == UInt8(ascii: "'"), peek(2) == UInt8(ascii: "'") { throw fail("multi-line strings are not supported") }
-            return .string(try parseLiteralString())
+        case UInt8(ascii: "\""), UInt8(ascii: "'"):
+            if peek(1) == byte, peek(2) == byte {
+                guard multiline else { throw fail("multi-line strings are not supported here; only notes in [agent] takes one") }
+                return .string(try parseMultilineString())
+            }
+            return .string(try byte == UInt8(ascii: "\"") ? parseBasicString() : parseLiteralString())
         case UInt8(ascii: "["):
             if inArray { throw fail("nested arrays are not supported") }
             return .array(try parseArray())
@@ -639,24 +712,73 @@ private struct Parser {
             case UInt8(ascii: "\""):
                 return String(decoding: out, as: UTF8.self)
             case UInt8(ascii: "\\"):
-                guard let escape = current else { throw fail("unterminated string") }
-                index += 1
-                switch escape {
-                case UInt8(ascii: "\""): out.append(0x22)
-                case UInt8(ascii: "\\"): out.append(0x5C)
-                case UInt8(ascii: "b"): out.append(0x08)
-                case UInt8(ascii: "t"): out.append(0x09)
-                case UInt8(ascii: "n"): out.append(0x0A)
-                case UInt8(ascii: "f"): out.append(0x0C)
-                case UInt8(ascii: "r"): out.append(0x0D)
-                case UInt8(ascii: "u"): out += try parseUnicodeEscape(digits: 4)
-                case UInt8(ascii: "U"): out += try parseUnicodeEscape(digits: 8)
-                default: throw fail("invalid escape in string")
-                }
+                guard current != nil else { throw fail("unterminated string") }
+                out += try parseEscape()
             default:
                 if isControlByte(byte) && byte != 0x09 { throw fail("control character in string") }
                 out.append(byte)
             }
+        }
+    }
+
+    /// What follows a backslash in a basic string.
+    mutating func parseEscape() throws -> [UInt8] {
+        guard let escape = current else { throw fail("invalid escape in string") }
+        index += 1
+        switch escape {
+        case UInt8(ascii: "\""): return [0x22]
+        case UInt8(ascii: "\\"): return [0x5C]
+        case UInt8(ascii: "b"): return [0x08]
+        case UInt8(ascii: "t"): return [0x09]
+        case UInt8(ascii: "n"): return [0x0A]
+        case UInt8(ascii: "f"): return [0x0C]
+        case UInt8(ascii: "r"): return [0x0D]
+        case UInt8(ascii: "u"): return try parseUnicodeEscape(digits: 4)
+        case UInt8(ascii: "U"): return try parseUnicodeEscape(digits: 8)
+        default: throw fail("invalid escape in string")
+        }
+    }
+
+    /// A """basic""" or '''literal''' string over several lines, as TOML reads them: a line break
+    /// right after the opening quotes is dropped, CRLF reads as LF, one or two quotes just before
+    /// the closing three belong to the string, and a basic one takes the escapes of a one-line
+    /// string. A backslash at the end of a line, which TOML uses to join lines, is refused.
+    mutating func parseMultilineString() throws -> String {
+        let quote = bytes[index]
+        let basic = quote == UInt8(ascii: "\"")
+        let startLine = line
+        index += 3
+        if current == 0x0A {
+            index += 1; line += 1
+        } else if current == 0x0D, peek(1) == 0x0A {
+            index += 2; line += 1
+        }
+        var out: [UInt8] = []
+        while true {
+            guard let byte = current else { throw ConfigError(line: startLine, "unterminated multi-line string") }
+            if byte == quote, peek(1) == quote, peek(2) == quote {
+                var run = 3
+                while peek(run) == quote { run += 1 }
+                guard run <= 5 else { throw fail("more than five quotes end a multi-line string") }
+                out += Array(repeating: quote, count: run - 3)
+                index += run
+                return String(decoding: out, as: UTF8.self)
+            }
+            if try consumeNewline() {
+                out.append(0x0A)
+                continue
+            }
+            index += 1
+            if basic, byte == UInt8(ascii: "\\") {
+                guard let next = current else { throw ConfigError(line: startLine, "unterminated multi-line string") }
+                if next == 0x0A || next == 0x0D {
+                    throw fail("a backslash at the end of a line is not supported; write the text as it should read")
+                }
+                out += try parseEscape()
+                continue
+            }
+            if isControlByte(byte) && byte != 0x09 { throw fail("control character in string") }
+            out.append(byte)
         }
     }
 

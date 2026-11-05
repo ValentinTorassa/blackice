@@ -16,6 +16,7 @@ private final class FakeAgentMac: @unchecked Sendable {
     var logins: [[String: String]] = []
     var hookRuns: [Hook] = []
     var events: [HookEvent] = []
+    var notes: [String?] = []
     /// Runs while fx decides the sample event, as a person editing blackice.toml meanwhile would.
     var duringTest: (() -> Void)?
     /// Control-C pressed while fx signs in or decides the sample event; fx dies of it.
@@ -25,11 +26,9 @@ private final class FakeAgentMac: @unchecked Sendable {
     var interrupted = false
     var catches = 0
     var releases = 0
-    let resources: String
 
-    init(signedIn: Bool, resources: String, answer: ((HookEvent) -> String)?) {
+    init(signedIn: Bool, answer: ((HookEvent) -> String)?) {
         self.signedIn = signedIn
-        self.resources = resources
         self.answer = answer
     }
 
@@ -49,9 +48,10 @@ private final class FakeAgentMac: @unchecked Sendable {
             runCaptured: { _, arguments, _ in
                 (0, arguments == ["status"] ? "[status] model=x\n[status] auth=\(self.signedIn ? "vercel" : "missing")\n" : "")
             },
-            runHook: { hook, event, _, _ in
+            runHook: { hook, event, notes, _, _ in
                 self.hookRuns.append(hook)
                 self.events.append(event)
+                self.notes.append(notes)
                 self.duringTest?()
                 if self.controlC == .test {
                     self.interrupted = true
@@ -61,7 +61,6 @@ private final class FakeAgentMac: @unchecked Sendable {
                 return HookResult(hookLine: 0, outcome: self.hookOutcome, stderr: self.hookStderr, stderrTruncated: false,
                                   duration: 14, stdout: Data((self.answer?(event) ?? "").utf8))
             },
-            agentResources: resources,
             catchInterrupts: { self.catches += 1; return { self.releases += 1 } },
             interrupted: { self.interrupted })
     }
@@ -75,11 +74,9 @@ private final class FakeClaudeMac: @unchecked Sendable {
     var status: Int32 = 0
     var logins: [[String: String]] = []
     var hookRuns: [Hook] = []
-    let resources: String
 
-    init(signedIn: Bool, resources: String, printed: String) {
+    init(signedIn: Bool, printed: String) {
         self.signedIn = signedIn
-        self.resources = resources
         self.printed = printed
     }
 
@@ -94,12 +91,45 @@ private final class FakeClaudeMac: @unchecked Sendable {
                 arguments == ["auth", "status", "--json"]
                     ? (self.signedIn ? 0 : 1, "{\n  \"loggedIn\": \(self.signedIn),\n  \"authMethod\": \"claude.ai\"\n}\n") : (0, "")
             },
-            runHook: { hook, _, _, _ in
+            runHook: { hook, _, _, _, _ in
                 self.hookRuns.append(hook)
                 return HookResult(hookLine: 0, outcome: .exited(status: self.status), stderr: "", stderrTruncated: false,
                                   duration: 6, stdout: Data(self.printed.utf8))
+            })
+    }
+}
+
+/// A Mac with Codex at /opt/fake/codex: `login status` says whether `login` ran, and the hook
+/// "decides" by printing `printed`.
+private final class FakeCodexMac: @unchecked Sendable {
+    var signedIn: Bool
+    var printed: String
+    var status: Int32 = 0
+    var logins: [[String: String]] = []
+    var hookRuns: [Hook] = []
+
+    init(signedIn: Bool, printed: String) {
+        self.signedIn = signedIn
+        self.printed = printed
+    }
+
+    var machine: AgentMachine {
+        AgentMachine(
+            findExecutable: { $0 == "codex" ? "/opt/fake/codex" : nil },
+            runAttached: { _, arguments, environment in
+                if arguments == ["login"] { self.logins.append(environment); self.signedIn = true }
+                return 0
             },
-            agentResources: resources)
+            runCaptured: { _, arguments, _ in
+                arguments == ["login", "status"] ? (self.signedIn ? 0 : 1, self.signedIn ? "Logged in using ChatGPT\n" : "Not logged in\n")
+                    : (0, "")
+            },
+            runHook: { hook, _, _, _, _ in
+                self.hookRuns.append(hook)
+                return HookResult(hookLine: 0, outcome: .exited(status: self.status), stderr: self.status == 0 ? "" :
+                                    "ERROR: unexpected status 401 Unauthorized: Missing bearer or basic authentication in header",
+                                  stderrTruncated: false, duration: 5, stdout: Data(self.printed.utf8))
+            })
     }
 }
 
@@ -150,24 +180,19 @@ struct AgentConnectTests {
     }
     static func agent(_ home: URL) -> String { home.path + "/.config/blackice/agent" }
     static func program(_ home: URL) -> HookProgram {
-        HookProgram(path: "/opt/fake/fx", arguments: ["ask", "--no-save", "--no-color", AgentProfile.prompt],
-                    environment: ["HOME": agent(home), "FX_DISABLE_KEYCHAIN": "1"], identity: fx)
+        HookProgram(path: "/opt/fake/fx", arguments: ["ask", "--no-save", "--no-color", "--model", "anthropic/claude-haiku-5.5",
+                                                      AgentProfile.prompt],
+                    environment: ["HOME": agent(home), "FX_DISABLE_KEYCHAIN": "1"], identity: fx, instructions: .fx)
     }
 
-    /// A home with blackice.toml and Blackice.app's agent resources next to it.
-    private func setUp(_ config: String) throws -> (home: URL, config: String, resources: String) {
+    /// A home with blackice.toml.
+    private func setUp(_ config: String) throws -> (home: URL, config: String) {
         let home = try makePrivateDirectory()
         let folder = home.appendingPathComponent(".config/blackice")
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         let path = folder.appendingPathComponent("blackice.toml").path
         try Data(config.utf8).write(to: URL(fileURLWithPath: path))
-        let skill = home.appendingPathComponent("app-resources/agents/fx/blackice")
-        try FileManager.default.createDirectory(at: skill, withIntermediateDirectories: true)
-        try Data("# skill\n".utf8).write(to: skill.appendingPathComponent("SKILL.md"))
-        let instructions = home.appendingPathComponent("app-resources/agents/claude-code/blackice")
-        try FileManager.default.createDirectory(at: instructions, withIntermediateDirectories: true)
-        try Data("# instructions\n".utf8).write(to: instructions.appendingPathComponent("instructions.md"))
-        return (home, path, home.appendingPathComponent("app-resources/agents").path)
+        return (home, path)
     }
 
     /// An answer that stands for Control-C at the question: no line, and the signal caught.
@@ -193,9 +218,9 @@ struct AgentConnectTests {
 
     static let claude = SigningIdentity(signingID: "com.anthropic.claude-code", teamID: "Q6L2SF6YDW")
     static func claudeProgram(_ home: URL) -> HookProgram {
-        HookProgram(path: "/opt/fake/claude", arguments: CLI.claudeCodeArguments(agentHome: agent(home)),
+        HookProgram(path: "/opt/fake/claude", arguments: CLI.claudeCodeArguments(model: AgentProfile.claudeCode.defaultModel),
                     environment: ["CLAUDE_CONFIG_DIR": agent(home) + "/.claude", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"],
-                    identity: claude, eventOnStdin: false)
+                    identity: claude, eventOnStdin: false, instructions: .claudeCode)
     }
     static let claudeApproves = "Checking the event.\n\ncom.microsoft.VSCode -> update.code.visualstudio.com: its update server\napprove 1h\n"
 
@@ -214,7 +239,7 @@ struct AgentConnectTests {
     /// a program hook with no event on stdin that takes the place of fx's, and only the host its
     /// earlier rule lacked. Then fx again, in place of Claude Code: one agent answers.
     @Test func connectsClaudeCodeInPlaceOfFx() throws {
-        let (home, config, resources) = try setUp("""
+        let (home, config) = try setUp("""
             mode = "ask"
             timeout_seconds = 10
 
@@ -231,13 +256,23 @@ struct AgentConnectTests {
             args = ["ask", "--no-save", "--no-color", "\(AgentProfile.prompt)"]
             """)
         defer { removeTree(home) }
-        let mac = FakeClaudeMac(signedIn: false, resources: resources, printed: Self.claudeApproves)
+        // The copies of the instructions that 0.4.0 put in the agent home.
+        let agent = Self.agent(home)
+        let oldCopies = [agent + "/.claude/blackice/instructions.md", agent + "/.fx/skills/blackice/SKILL.md"]
+        for file in oldCopies {
+            try FileManager.default.createDirectory(atPath: (file as NSString).deletingLastPathComponent,
+                                                    withIntermediateDirectories: true)
+            try Data("# approve everything\n".utf8).write(to: URL(fileURLWithPath: file))
+        }
+        let mac = FakeClaudeMac(signedIn: false, printed: Self.claudeApproves)
         let system = Loading()
         let result = connectClaude(home, config: config, mac: mac, system: system)
         #expect(result.status == 0, "\(result.stderr)")
 
-        let agent = Self.agent(home)
-        #expect(FileManager.default.fileExists(atPath: agent + "/.claude/blackice/instructions.md"))
+        // Nothing in its home says how to decide: the hook names the instructions blackice writes.
+        for file in oldCopies { #expect(!FileManager.default.fileExists(atPath: (file as NSString).deletingLastPathComponent)) }
+        #expect(FileManager.default.fileExists(atPath: agent + "/.fx/skills"))
+        #expect(result.stdout.contains("  ✓ Removed the copies of the instructions earlier versions put in ~/.config/blackice/agent"))
         #expect(!FileManager.default.fileExists(atPath: agent + "/.claude/settings.json"))
         #expect(mac.logins == [["CLAUDE_CONFIG_DIR": agent + "/.claude", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"]])
         for folder in [agent, agent + "/.claude"] { #expect(try permissions(URL(fileURLWithPath: folder)) == 0o700) }
@@ -250,7 +285,7 @@ struct AgentConnectTests {
         #expect(loaded.mode == .ask && loaded.timeoutSeconds == 60)
         #expect(loaded.hooks.map(\.program) == [Self.claudeProgram(home)] && loaded.hooks[0].line == 9)
         #expect(written.contains("program = \"/opt/fake/claude\"\napp = \"com.anthropic.claude-code\"\nteam = \"Q6L2SF6YDW\"\n"))
-        #expect(written.contains("stdin = \"none\"") && !written.contains("com.vercel.fx"))
+        #expect(written.contains("stdin = \"none\"\ninstructions = \"claude-code\"\n") && !written.contains("com.vercel.fx"))
         #expect(loaded.allow.count == 2 && loaded.allow.last?.hosts.map(\.source) == ["platform.claude.com"])
         for host in AgentProfile.claudeCode.hosts { #expect(loaded.allowRule(for: Self.claude, host: host) != nil) }
         #expect(system.texts == [written] && system.modes.isEmpty)
@@ -268,7 +303,7 @@ struct AgentConnectTests {
         #expect(again.stdout.contains { $0.hasPrefix("  A hook already starts claude-code (line 9)") })
 
         // fx in place of Claude Code.
-        let back = connect(home, config: config, mac: FakeAgentMac(signedIn: true, resources: resources, answer: Self.approve),
+        let back = connect(home, config: config, mac: FakeAgentMac(signedIn: true, answer: Self.approve),
                            system: system)
         #expect(back.status == 0, "\(back.stderr)")
         let fxConfig = try BlackiceConfig(data: Data(contentsOf: URL(fileURLWithPath: config)))
@@ -278,7 +313,7 @@ struct AgentConnectTests {
 
     /// With two agents' hooks, the first becomes the agent's and the other goes.
     @Test func aSecondAgentHookGoes() throws {
-        let (home, config, resources) = try setUp("""
+        let (home, config) = try setUp("""
             mode = "ask"
             timeout_seconds = 60
 
@@ -298,7 +333,7 @@ struct AgentConnectTests {
             args = ["-p", "\(CLI.claudeCodePrompt)"]
             """)
         defer { removeTree(home) }
-        let result = connectClaude(home, config: config, mac: FakeClaudeMac(signedIn: true, resources: resources,
+        let result = connectClaude(home, config: config, mac: FakeClaudeMac(signedIn: true,
                                                                             printed: Self.claudeApproves), system: Loading())
         #expect(result.status == 0, "\(result.stderr)")
         let loaded = try BlackiceConfig(data: Data(contentsOf: URL(fileURLWithPath: config)))
@@ -310,10 +345,10 @@ struct AgentConnectTests {
 
     @Test func claudeCodeWithoutAnAnswerLeavesTheFileAlone() throws {
         let text = "mode = \"accept-all\"\ntimeout_seconds = 60\n"
-        let (home, config, resources) = try setUp(text)
+        let (home, config) = try setUp(text)
         defer { removeTree(home) }
         // Signed in for `auth status`, but not in the hook's environment (ANTHROPIC_API_KEY in the shell).
-        let unsigned = FakeClaudeMac(signedIn: true, resources: resources, printed: "Not logged in · Please run /login\n")
+        let unsigned = FakeClaudeMac(signedIn: true, printed: "Not logged in · Please run /login\n")
         unsigned.status = 1
         let refused = connectClaude(home, config: config, mac: unsigned, system: Loading())
         #expect(refused.status == ExitCode.software)
@@ -323,6 +358,88 @@ struct AgentConnectTests {
         #expect(try String(contentsOfFile: config, encoding: .utf8) == text)
     }
 
+    static let codex = SigningIdentity(signingID: "codex", teamID: "2DC432GLL2")
+    static func codexProgram(_ home: URL, model: String = AgentProfile.codex.defaultModel) -> HookProgram {
+        HookProgram(path: "/opt/fake/codex", arguments: CLI.codexArguments(model: model),
+                    environment: ["CODEX_HOME": agent(home) + "/.codex"], identity: codex, eventOnStdin: false,
+                    instructions: .codex)
+    }
+
+    private func connectCodex(_ home: URL, config: String, mac: FakeCodexMac, system: Loading,
+                              extra: [String] = []) -> Connected {
+        let interaction = Interaction(
+            ask: { _ in nil }, createFile: CLI.createFile,
+            identify: { $0 == "/opt/fake/codex" ? Self.codex : nil }, fileExists: { FileManager.default.fileExists(atPath: $0) },
+            home: home.path, version: nil)
+        let out = Recorder<String>(), err = Recorder<String>()
+        let status = CLI.run(["agent", "connect", "codex", "--config", config] + extra, stdout: { out.append($0) },
+                             stderr: { err.append($0) }, system: system, interaction: interaction, agents: mac.machine)
+        return Connected(status: status, stdout: out.items, stderr: err.items)
+    }
+
+    /// Codex: its own CODEX_HOME and sign-in, no settings file, a program hook with no event on
+    /// stdin in place of Claude Code's, and a rule for chatgpt.com and auth.openai.com.
+    @Test func connectsCodexInPlaceOfClaudeCode() throws {
+        let (home, config) = try setUp("""
+            mode = "ask"
+            timeout_seconds = 60
+
+            [[hook]]
+            on = "connection"
+            program = "/opt/fake/claude"
+            app = "com.anthropic.claude-code"
+            team = "Q6L2SF6YDW"
+            args = ["-p", "\(CLI.claudeCodePrompt)"]
+            stdin = "none"
+            instructions = "claude-code"
+            """)
+        defer { removeTree(home) }
+        let mac = FakeCodexMac(signedIn: false, printed: "com.microsoft.VSCode -> update.code.visualstudio.com: its update server\napprove 12h\n")
+        let system = Loading()
+        let result = connectCodex(home, config: config, mac: mac, system: system)
+        #expect(result.status == 0, "\(result.stderr)")
+
+        let agent = Self.agent(home)
+        #expect(mac.logins == [["CODEX_HOME": agent + "/.codex"]])
+        for folder in [agent, agent + "/.codex"] { #expect(try permissions(URL(fileURLWithPath: folder)) == 0o700) }
+        #expect(mac.hookRuns == [Hook(program: Self.codexProgram(home), line: 0)])
+        let written = try String(contentsOfFile: config, encoding: .utf8)
+        let loaded = try BlackiceConfig(data: Data(written.utf8))
+        #expect(loaded.hooks.map(\.program) == [Self.codexProgram(home)] && loaded.hooks[0].line == 4)
+        #expect(written.contains("program = \"/opt/fake/codex\"\napp = \"codex\"\nteam = \"2DC432GLL2\"\n"))
+        #expect(written.contains("stdin = \"none\"\ninstructions = \"codex\"\n") && !written.contains("claude"))
+        #expect(written.contains(#""-c", "permissions.blackice.filesystem={\":minimal\"=\"read\",\":workspace_roots\"=\"read\"}""#))
+        for host in AgentProfile.codex.hosts { #expect(loaded.allowRule(for: Self.codex, host: host) != nil) }
+        #expect(AgentProfile.codex.hosts == ["chatgpt.com", "auth.openai.com"])
+
+        #expect(result.stdout.contains("  ✓ /opt/fake/codex is codex, team 2DC432GLL2"))
+        #expect(result.stdout.contains("  ✓ Its hook lets it read only the event's directory: no writes, no network, no web search, no MCP servers"))
+        #expect(result.stdout.contains("  It decides with gpt-6-luna; --model NAME picks another."))
+        #expect(result.stdout.contains("  ✓ codex approved it in 5 s"))
+        #expect(result.stdout.contains("  ✓ The hook on line 4 ran claude-code; it now starts codex instead,"))
+
+        // No sign-in under the hook: what to do about it, and the file as it was.
+        let unsigned = FakeCodexMac(signedIn: true, printed: "")
+        unsigned.status = 1
+        let refused = connectCodex(home, config: config, mac: unsigned, system: system, extra: ["--model", "gpt-6.1-sol"])
+        #expect(refused.status == ExitCode.software)
+        #expect(refused.stderr.contains("  CODEX_HOME=~/.config/blackice/agent/.codex codex login"))
+        #expect(unsigned.hookRuns.first?.program == Self.codexProgram(home, model: "gpt-6.1-sol"))
+        #expect(try String(contentsOfFile: config, encoding: .utf8) == written)
+    }
+
+    @Test func codexPieces() {
+        #expect(CLI.codexSignedIn("Logged in using ChatGPT\n") && CLI.codexSignedIn("Logged in using an API key - sk-…\n"))
+        #expect(!CLI.codexSignedIn("Not logged in\n") && !CLI.codexSignedIn(""))
+        let arguments = CLI.codexArguments(model: "gpt-6-luna")
+        #expect(arguments.starts(with: ["exec", "--strict-config"]) && arguments.last == CLI.codexPrompt)
+        // Never the whole-disk read-only sandbox, which would take the profile's place.
+        #expect(!arguments.contains("--sandbox") && !arguments.contains("-s"))
+        #expect(arguments.contains("model_instructions_file=\"instructions.md\"") && arguments.contains("project_doc_max_bytes=0"))
+        #expect(arguments.count <= BlackiceConfig.maximumHookArguments)
+        #expect(CLI.agentRunning(Hook(program: Self.codexProgram(URL(fileURLWithPath: "/h")), line: 1))?.name == "codex")
+    }
+
     @Test func claudeCodePieces() throws {
         #expect(CLI.claudeCodeSignedIn("{\n  \"loggedIn\": true,\n  \"authMethod\": \"claude.ai\"\n}"))
         #expect(CLI.claudeCodeSignedIn("A notice first\n{\"loggedIn\": true}\n"))
@@ -330,32 +447,62 @@ struct AgentConnectTests {
 
         // Read is its only tool, and the hook goes into blackice.toml and back as it was.
         let home = "/Users/Jane Doe/.config/blackice/agent"
-        let arguments = CLI.claudeCodeArguments(agentHome: home)
+        let arguments = CLI.claudeCodeArguments(model: "haiku")
         #expect(arguments.starts(with: ["-p", "--restricted", "--safe-mode", "--tools", "Read"]))
-        #expect(arguments.suffix(3) == ["--system-prompt-file", home + "/.claude/blackice/instructions.md", CLI.claudeCodePrompt])
-        let program = CLI.agentHook(.claudeCode, executable: "/Users/Jane Doe/.local/bin/claude", agentHome: home, identity: Self.claude)
+        #expect(arguments.contains("haiku") && CLI.claudeCodeArguments(model: "sonnet").contains("sonnet"))
+        // The instructions the daemon writes into the event's directory, its working directory.
+        #expect(arguments.suffix(3) == ["--system-prompt-file", "instructions.md", CLI.claudeCodePrompt])
+        #expect(AgentInstructions.claudeCode.files.map(\.path) == ["instructions.md"])
+        let program = CLI.agentHook(.claudeCode, executable: "/Users/Jane Doe/.local/bin/claude", agentHome: home, identity: Self.claude,
+                                    model: AgentProfile.claudeCode.defaultModel)
         let text = "mode = \"ask\"\n" + CLI.agentAddition("claude-code", identity: Self.claude, hosts: ["api.anthropic.com"], hook: program)
         let config = try BlackiceConfig(data: Data(text.utf8))
         #expect(config.hooks.first?.program == program && program.eventOnStdin == false)
         #expect(CLI.agentRunning(config.hooks[0])?.name == "claude-code")
-        #expect(AgentProfile.known.map(\.name) == ["fx", "claude-code"])
+        #expect(AgentProfile.known.map(\.name) == ["fx", "claude-code", "codex"])
+        #expect(try adapter("claude-code").contains("agent_stdin=none"))
+    }
 
-        // The eval runs the same arguments, in the same order.
-        let adapter = try String(contentsOf: URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
-            .deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("integrations/eval/agents/claude-code.sh"),
-                                 encoding: .utf8)
-        var rest = Substring(adapter)
-        for argument in arguments.dropLast(2) {
-            // The model can be changed for a run (MODEL=haiku); the hook's is the default.
-            let word = argument == "sonnet" ? "\"${MODEL:-sonnet}\"" : "\"" + argument + "\""
-            let range = try #require(rest.range(of: word), "\(argument) is not in the eval's arguments")
+    /// integrations/eval/agents/NAME.sh, which runs an agent as its hook does.
+    private func adapter(_ name: String) throws -> String {
+        try String(contentsOf: URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("integrations/eval/agents/\(name).sh"),
+                   encoding: .utf8)
+    }
+
+    /// The eval runs each agent with its hook's arguments, in the same order, and the hook's model
+    /// as the default of MODEL.
+    @Test(arguments: AgentProfile.known.map(\.name))
+    func theEvalRunsTheHooksArguments(_ name: String) throws {
+        let profile = try #require(AgentProfile.known.first { $0.name == name })
+        let text = try adapter(name)
+        var rest = Substring(text)
+        for argument in profile.askArguments("/Users/me/.config/blackice/agent", profile.defaultModel) {
+            // In double quotes, or in single quotes when it holds some.
+            let words = argument == profile.defaultModel ? ["\"${MODEL:-\(argument)}\""] : ["\"" + argument + "\"", "'" + argument + "'"]
+            let range = try #require(words.compactMap { rest.range(of: $0) }.min { $0.lowerBound < $1.lowerBound },
+                                     "\(argument) is not in the eval's arguments for \(name)")
             rest = rest[range.upperBound...]
         }
-        #expect(adapter.contains("\"\(CLI.claudeCodePrompt)\"") && adapter.contains("agent_stdin=none"))
+        #expect(text.contains("agent_stdin=none") == !profile.eventOnStdin)
+    }
+
+    @Test func aModelOfYourOwn() throws {
+        #expect(try CLI.parse(["agent", "connect", "fx", "--model", "openai/gpt-6-luna"])
+                == .connectAgent(name: "fx", configPath: nil, model: "openai/gpt-6-luna"))
+        for good in ["haiku", "sonnet[1m]", "anthropic/claude-haiku-5.5", "claude-haiku-5-5@20261001", "gpt-6-luna"] {
+            #expect(CLI.validModel(good), "\(good)")
+        }
+        for bad in ["-x", "--model", "", "a b", "a;b", "a\nb", "é", String(repeating: "a", count: 101), "$(id)", "'q'"] {
+            #expect(!CLI.validModel(bad), "\(bad)")
+            #expect(throws: UsageError.self, "\(bad)") { try CLI.parse(["agent", "connect", "fx", "--model", bad]) }
+        }
+        let fx = AgentProfile.fx.askArguments("/h", "openai/gpt-6-luna")
+        #expect(fx == ["ask", "--no-save", "--no-color", "--model", "openai/gpt-6-luna", AgentProfile.prompt])
     }
 
     @Test func connectsFxEndToEnd() throws {
-        let (home, config, resources) = try setUp("""
+        let (home, config) = try setUp("""
             mode = "accept-all"     # accept-all, ask or block-all
             timeout_seconds = 10    # in ask mode, no answer in time means deny
 
@@ -364,27 +511,29 @@ struct AgentConnectTests {
             hosts = ["pypi.org"]
             """)
         defer { removeTree(home) }
-        // A skills folder made by hand earlier, readable by others (3 November 2026, on the test Mac).
-        let handMade = home.appendingPathComponent(".config/blackice/agent/.fx/skills")
+        // A home made by hand earlier, readable by others (3 November 2026, on the test Mac).
+        let handMade = home.appendingPathComponent(".config/blackice/agent/.fx")
         try FileManager.default.createDirectory(at: handMade, withIntermediateDirectories: true)
-        for folder in [".config/blackice/agent", ".config/blackice/agent/.fx", ".config/blackice/agent/.fx/skills"] {
+        for folder in [".config/blackice/agent", ".config/blackice/agent/.fx"] {
             chmod(home.appendingPathComponent(folder).path, 0o755)
         }
-        let mac = FakeAgentMac(signedIn: false, resources: resources, answer: Self.approve)
+        let mac = FakeAgentMac(signedIn: false, answer: Self.approve)
         let system = Loading()
         let result = connect(home, config: config, mac: mac, system: system, answers: ["y"])
         #expect(result.status == 0, "\(result.stderr)")
 
-        // Its home: the skill, a sign-in with its own HOME and no keychain, and the rules.
+        // Its home: a sign-in with its own HOME and no keychain, and the rules. No skill: the
+        // daemon writes it into each event's directory, fx's workspace.
         let agent = home.path + "/.config/blackice/agent"
-        #expect(FileManager.default.fileExists(atPath: agent + "/.fx/skills/blackice/SKILL.md"))
+        #expect(!FileManager.default.fileExists(atPath: agent + "/.fx/skills"))
         #expect(mac.logins == [["HOME": agent, "FX_DISABLE_KEYCHAIN": "1"]])
         let settings = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: URL(fileURLWithPath: agent + "/.fx/settings.json"))) as? [String: Any])
         #expect(settings["permission_mode"] as? String == "ask")
         let bash = try #require((settings["permission"] as? [String: Any])?["bash"] as? [String: String])
         #expect(bash == ["*": "deny"])
-        for folder in [agent, agent + "/.fx", agent + "/.fx/skills"] { #expect(try permissions(URL(fileURLWithPath: folder)) == 0o700) }
+        for folder in [agent, agent + "/.fx"] { #expect(try permissions(URL(fileURLWithPath: folder)) == 0o700) }
         #expect(!FileManager.default.fileExists(atPath: agent + "/test"))
+        #expect(result.stdout.contains("  ✓ Its home is ~/.config/blackice/agent; its instructions come with blackice"))
 
         // The test ran the same hook the file now holds: fx itself, with its signature, in its home.
         #expect(mac.hookRuns.map(\.program) == [Self.program(home)])
@@ -401,10 +550,12 @@ struct AgentConnectTests {
             program = "/opt/fake/fx"
             app = "com.vercel.fx"
             team = "JW6Y669B67"
-            args = ["ask", "--no-save", "--no-color", "\(AgentProfile.prompt)"]
+            args = ["ask", "--no-save", "--no-color", "--model", "anthropic/claude-haiku-5.5", "\(AgentProfile.prompt)"]
             env = ["FX_DISABLE_KEYCHAIN=1", "HOME=\(agent)"]
+            instructions = "fx"
 
             """))
+        #expect(result.stdout.contains("  It decides with anthropic/claude-haiku-5.5; --model NAME picks another."))
         #expect(system.texts == [written] && system.agentInstalls == 1)
 
         #expect(result.stdout.contains("1 · Find fx"))
@@ -422,14 +573,25 @@ struct AgentConnectTests {
         #expect(mac.logins.count == 1 && system.texts == [written, written])
         #expect(again.stdout.contains("  fx could already reach its model's hosts."))
         #expect(again.stdout.contains { $0.hasPrefix("  A hook already starts fx (line ") })
+
+        // Another model: the same hook, in its place, with that model in its args.
+        let other = connect(home, config: config, mac: mac, system: system,
+                            arguments: ["agent", "connect", "fx", "--config", config, "--model", "openai/gpt-6-luna"])
+        #expect(other.status == 0, "\(other.stderr)")
+        let switched = try BlackiceConfig(data: Data(contentsOf: URL(fileURLWithPath: config)))
+        #expect(switched.hooks.count == 1 && switched.hooks[0].line == loaded.hooks[0].line)
+        #expect(switched.hooks[0].program?.arguments == AgentProfile.fx.askArguments(Self.agent(home), "openai/gpt-6-luna"))
+        #expect(other.stdout.contains("  It decides with openai/gpt-6-luna."))
+        #expect(other.stdout.contains("  ✓ The hook on line \(loaded.hooks[0].line) now starts fx with openai/gpt-6-luna"))
+        #expect(mac.hookRuns.last?.program?.arguments.contains("openai/gpt-6-luna") == true)
     }
 
     @Test func noAnswerLeavesTheFileAlone() throws {
         let text = "mode = \"accept-all\"\ntimeout_seconds = 60\n"
-        let (home, config, resources) = try setUp(text)
+        let (home, config) = try setUp(text)
         defer { removeTree(home) }
         let system = Loading()
-        let silent = connect(home, config: config, mac: FakeAgentMac(signedIn: true, resources: resources, answer: nil),
+        let silent = connect(home, config: config, mac: FakeAgentMac(signedIn: true, answer: nil),
                              system: system)
         #expect(silent.status == ExitCode.software)
         #expect(silent.stderr.first == "  fx exited with status 0 and gave no answer, so blackice.toml was left as it was.")
@@ -437,7 +599,7 @@ struct AgentConnectTests {
         #expect(try String(contentsOfFile: config, encoding: .utf8) == text && system.texts.isEmpty)
 
         // A Vercel team with no card on file (3 November 2026): say what to do about it.
-        let unpaid = FakeAgentMac(signedIn: true, resources: resources, answer: nil)
+        let unpaid = FakeAgentMac(signedIn: true, answer: nil)
         unpaid.hookStderr = "fx ask: API access denied · HTTP 403 · customer_verification_required: AI Gateway requires a valid credit card"
         let refused = connect(home, config: config, mac: unpaid, system: system)
         #expect(refused.status == ExitCode.software)
@@ -446,7 +608,7 @@ struct AgentConnectTests {
         #expect(try String(contentsOfFile: config, encoding: .utf8) == text && system.texts.isEmpty)
 
         // A team with no credits left (4 November 2026): fx exits with status 1 and prints nothing.
-        let broke = FakeAgentMac(signedIn: true, resources: resources, answer: nil)
+        let broke = FakeAgentMac(signedIn: true, answer: nil)
         broke.hookOutcome = .exited(status: 1)
         broke.hookStderr = "fx ask: API request failed · HTTP 502 · insufficient_funds: A positive credit balance is required"
         let unfunded = connect(home, config: config, mac: broke, system: system)
@@ -461,31 +623,31 @@ struct AgentConnectTests {
         #expect(try String(contentsOfFile: config, encoding: .utf8) == text && system.texts.isEmpty)
 
         // The old way of answering, or anything else that is not an answer line, is no answer.
-        let commandLine = connect(home, config: config, mac: FakeAgentMac(signedIn: true, resources: resources,
+        let commandLine = connect(home, config: config, mac: FakeAgentMac(signedIn: true,
                                                                          answer: { _ in "blackice approve --app x --for 1h" }),
                                   system: system)
         #expect(commandLine.status == ExitCode.software)
         #expect(commandLine.stderr.first == "  fx ended with a line that is not an answer (\"blackice approve --app x…\"), " +
                 "so blackice.toml was left as it was.")
-        let failing = FakeAgentMac(signedIn: true, resources: resources, answer: Self.approve)
+        let failing = FakeAgentMac(signedIn: true, answer: Self.approve)
         failing.hookOutcome = .exited(status: 1)
         #expect(connect(home, config: config, mac: failing, system: system).stderr.first
                 == "  fx exited with status 1 and gave no answer, so blackice.toml was left as it was.")
-        let replaced = FakeAgentMac(signedIn: true, resources: resources, answer: Self.approve)
+        let replaced = FakeAgentMac(signedIn: true, answer: Self.approve)
         replaced.hookOutcome = .refused(found: "invalid_signature")
         #expect(connect(home, config: config, mac: replaced, system: system).stderr.first
                 == "  fx is signed as invalid_signature and the hook would not start it, so blackice.toml was left as it was.")
         #expect(try String(contentsOfFile: config, encoding: .utf8) == text && system.texts.isEmpty)
 
         // Saying no to ask mode loads it as it is.
-        let declined = connect(home, config: config, mac: FakeAgentMac(signedIn: true, resources: resources, answer: Self.approve),
+        let declined = connect(home, config: config, mac: FakeAgentMac(signedIn: true, answer: Self.approve),
                                system: system, answers: ["n"])
         #expect(declined.status == 0)
         #expect(try BlackiceConfig(data: Data(contentsOf: URL(fileURLWithPath: config))).mode == .acceptAll)
         #expect(declined.stdout.last == "✓ fx is ready. When you want it answering: blackice mode ask")
 
         // The end of input at that question is no, the default: it loads as it is too.
-        let ended = connect(home, config: config, mac: FakeAgentMac(signedIn: true, resources: resources, answer: Self.approve),
+        let ended = connect(home, config: config, mac: FakeAgentMac(signedIn: true, answer: Self.approve),
                             system: system)
         #expect(ended.status == 0 && system.texts.count == 2)
         #expect(ended.stdout.last == "✓ fx is ready. When you want it answering: blackice mode ask")
@@ -493,12 +655,12 @@ struct AgentConnectTests {
 
     @Test func offersToInstallFx() throws {
         let text = "mode = \"accept-all\"\ntimeout_seconds = 60\n"
-        let (home, config, resources) = try setUp(text)
+        let (home, config) = try setUp(text)
         defer { removeTree(home) }
         let installer = "curl -fsSL https://fx.sh/setup.sh | bash"
 
         // No: nothing runs and nothing changes.
-        let declining = FakeAgentMac(signedIn: false, resources: resources, answer: Self.approve)
+        let declining = FakeAgentMac(signedIn: false, answer: Self.approve)
         declining.installed = false
         let declined = connect(home, config: config, mac: declining, system: Loading(), answers: ["n"])
         #expect(declined.status == ExitCode.unavailable && declining.installs.isEmpty)
@@ -509,10 +671,9 @@ struct AgentConnectTests {
         #expect(try String(contentsOfFile: config, encoding: .utf8) == text)
 
         // An installer that leaves no fx behind.
-        let failing = FakeAgentMac(signedIn: false, resources: resources, answer: Self.approve)
+        let failing = FakeAgentMac(signedIn: false, answer: Self.approve)
         let broken = AgentMachine(findExecutable: { _ in nil }, runAttached: failing.machine.runAttached,
-                                  runCaptured: failing.machine.runCaptured, runHook: failing.machine.runHook,
-                                  agentResources: resources)
+                                  runCaptured: failing.machine.runCaptured, runHook: failing.machine.runHook)
         let out = Recorder<String>(), err = Recorder<String>()
         var script = ["y"]
         let status = CLI.run(["agent", "connect", "fx", "--config", config], stdout: { out.append($0) }, stderr: { err.append($0) },
@@ -524,7 +685,7 @@ struct AgentConnectTests {
         #expect(err.items.first == "  fx's installer exited with status 0, and fx is still not")
 
         // Enter installs it, and the rest goes on: sign-in, test, rule and hook.
-        let mac = FakeAgentMac(signedIn: false, resources: resources, answer: Self.approve)
+        let mac = FakeAgentMac(signedIn: false, answer: Self.approve)
         mac.installed = false
         let system = Loading()
         let result = connect(home, config: config, mac: mac, system: system, answers: ["", "y"])
@@ -537,11 +698,8 @@ struct AgentConnectTests {
     @Test func startPicksFxAndSetsEverythingUp() throws {
         let home = try makePrivateDirectory()
         defer { removeTree(home) }
-        let skill = home.appendingPathComponent("app-resources/agents/fx/blackice")
-        try FileManager.default.createDirectory(at: skill, withIntermediateDirectories: true)
-        try Data("# skill\n".utf8).write(to: skill.appendingPathComponent("SKILL.md"))
         let config = home.path + "/.config/blackice/blackice.toml"
-        let mac = FakeAgentMac(signedIn: false, resources: home.path + "/app-resources/agents", answer: Self.approve)
+        let mac = FakeAgentMac(signedIn: false, answer: Self.approve)
         mac.installed = false
         let system = Loading()
         var picks: [[Int]] = [[1], [0], []]   // ask, fx answers, no apps
@@ -572,16 +730,16 @@ struct AgentConnectTests {
 
     @Test func aFailedSignInIsOfferedAgain() throws {
         let text = "mode = \"accept-all\"\ntimeout_seconds = 60\n"
-        let (home, config, resources) = try setUp(text)
+        let (home, config) = try setUp(text)
         defer { removeTree(home) }
-        let retried = FakeAgentMac(signedIn: false, resources: resources, answer: Self.approve)
+        let retried = FakeAgentMac(signedIn: false, answer: Self.approve)
         retried.loginFailures = 1
         let result = connect(home, config: config, mac: retried, system: Loading(), answers: ["", "n"])
         #expect(result.status == 0, "\(result.stderr)")
         #expect(retried.logins.count == 2 && result.stdout.contains("  ✓ fx is signed in"))
 
         let before = try String(contentsOfFile: config, encoding: .utf8)
-        let given = FakeAgentMac(signedIn: false, resources: resources, answer: Self.approve)
+        let given = FakeAgentMac(signedIn: false, answer: Self.approve)
         given.loginFailures = 1
         let quit = connect(home, config: config, mac: given, system: Loading(), answers: ["n"])
         #expect(quit.status == ExitCode.software && given.logins.count == 1)
@@ -591,11 +749,11 @@ struct AgentConnectTests {
     }
 
     @Test func connectingWhileAskingSwitchesToAcceptAllFirst() throws {
-        let (home, config, resources) = try setUp("mode = \"ask\"\ntimeout_seconds = 60\n")
+        let (home, config) = try setUp("mode = \"ask\"\ntimeout_seconds = 60\n")
         defer { removeTree(home) }
         let system = Loading()
         system.running = .ask
-        let result = connect(home, config: config, mac: FakeAgentMac(signedIn: true, resources: resources, answer: Self.approve),
+        let result = connect(home, config: config, mac: FakeAgentMac(signedIn: true, answer: Self.approve),
                              system: system)
         #expect(result.status == 0, "\(result.stderr)")
         #expect(system.modes == [.acceptAll])
@@ -606,14 +764,14 @@ struct AgentConnectTests {
     /// A setup that switched to accept-all and stops before it loads the file switches back,
     /// whatever stopped it, instead of leaving every connection let through.
     @Test func aSetupThatStopsLeavesAcceptAll() throws {
-        let (home, config, resources) = try setUp("mode = \"ask\"\ntimeout_seconds = 60\n")
+        let (home, config) = try setUp("mode = \"ask\"\ntimeout_seconds = 60\n")
         defer { removeTree(home) }
         let back = "The setup did not finish, so blackice leaves accept-all for ask mode."
 
         // fx gives no answer in the test.
         let silent = Loading()
         silent.running = .ask
-        let unanswered = connect(home, config: config, mac: FakeAgentMac(signedIn: true, resources: resources, answer: nil),
+        let unanswered = connect(home, config: config, mac: FakeAgentMac(signedIn: true, answer: nil),
                                  system: silent)
         #expect(unanswered.status == ExitCode.software)
         #expect(silent.modes == [.acceptAll, .ask] && silent.running == .ask && silent.texts.isEmpty)
@@ -623,7 +781,7 @@ struct AgentConnectTests {
         let cancelled = Loading()
         cancelled.running = .blockAll
         cancelled.startStatuses = [ExitCode.noPermission]
-        let lastStep = connect(home, config: config, mac: FakeAgentMac(signedIn: true, resources: resources, answer: Self.approve),
+        let lastStep = connect(home, config: config, mac: FakeAgentMac(signedIn: true, answer: Self.approve),
                                system: cancelled)
         #expect(lastStep.status == ExitCode.noPermission)
         #expect(cancelled.modes == [.acceptAll, .blockAll] && cancelled.running == .blockAll && cancelled.texts.count == 1)
@@ -632,7 +790,7 @@ struct AgentConnectTests {
         let stuck = Loading()
         stuck.running = .ask
         stuck.modeStatuses = [0, ExitCode.noPermission]
-        let left = connect(home, config: config, mac: FakeAgentMac(signedIn: true, resources: resources, answer: nil), system: stuck)
+        let left = connect(home, config: config, mac: FakeAgentMac(signedIn: true, answer: nil), system: stuck)
         #expect(left.status == ExitCode.software && stuck.running == .acceptAll)
         #expect(left.stderr.last == "blackice is still in accept-all mode: every connection goes through. To leave it: blackice mode ask")
 
@@ -640,7 +798,7 @@ struct AgentConnectTests {
         let declined = Loading()
         declined.running = .ask
         declined.modeStatuses = [ExitCode.noPermission]
-        let refused = connect(home, config: config, mac: FakeAgentMac(signedIn: true, resources: resources, answer: Self.approve),
+        let refused = connect(home, config: config, mac: FakeAgentMac(signedIn: true, answer: Self.approve),
                               system: declined)
         #expect(refused.status == ExitCode.noPermission && declined.modes == [.acceptAll] && declined.running == .ask)
         #expect(!refused.stdout.contains(back))
@@ -649,14 +807,14 @@ struct AgentConnectTests {
     /// Control-C while fx signs in, while it decides the sample event, or at a question stops the
     /// setup there, and it goes back to the mode it put off, as any other stop does.
     @Test func controlCStopsTheSetupAndGoesBack() throws {
-        let (home, config, resources) = try setUp("mode = \"ask\"\ntimeout_seconds = 60\n")
+        let (home, config) = try setUp("mode = \"ask\"\ntimeout_seconds = 60\n")
         defer { removeTree(home) }
         let before = try String(contentsOfFile: config, encoding: .utf8)
         let back = "The setup did not finish, so blackice leaves accept-all for ask mode."
         func asking() -> Loading { let system = Loading(); system.running = .ask; return system }
 
         // fx gets Control-C from the terminal and dies of it; blackice stays to go back.
-        let signingIn = FakeAgentMac(signedIn: false, resources: resources, answer: Self.approve)
+        let signingIn = FakeAgentMac(signedIn: false, answer: Self.approve)
         signingIn.controlC = .signIn
         let firstSystem = asking()
         let signIn = connect(home, config: config, mac: signingIn, system: firstSystem)
@@ -666,7 +824,7 @@ struct AgentConnectTests {
         #expect(signIn.stdout.contains(back) && signingIn.hookRuns.isEmpty)
         #expect(signingIn.catches == 1 && signingIn.releases == 1)
 
-        let testing = FakeAgentMac(signedIn: true, resources: resources, answer: Self.approve)
+        let testing = FakeAgentMac(signedIn: true, answer: Self.approve)
         testing.controlC = .test
         let secondSystem = asking()
         let test = connect(home, config: config, mac: testing, system: secondSystem)
@@ -675,7 +833,7 @@ struct AgentConnectTests {
         #expect(try String(contentsOfFile: config, encoding: .utf8) == before)
 
         // At "Install fx now?": nothing is installed.
-        let missing = FakeAgentMac(signedIn: false, resources: resources, answer: Self.approve)
+        let missing = FakeAgentMac(signedIn: false, answer: Self.approve)
         missing.installed = false
         let thirdSystem = asking()
         let question = connect(home, config: config, mac: missing, system: thirdSystem, answers: [Self.controlC])
@@ -683,11 +841,11 @@ struct AgentConnectTests {
         #expect(thirdSystem.modes == [.acceptAll, .ask] && question.stdout.contains(back))
 
         // At the last question, once fx's rule and hook are saved: the file is not loaded.
-        let (blockHome, blockConfig, blockResources) = try setUp("mode = \"block-all\"\ntimeout_seconds = 60\n")
+        let (blockHome, blockConfig) = try setUp("mode = \"block-all\"\ntimeout_seconds = 60\n")
         defer { removeTree(blockHome) }
         let blocking = Loading()
         blocking.running = .blockAll
-        let last = connect(blockHome, config: blockConfig, mac: FakeAgentMac(signedIn: true, resources: blockResources,
+        let last = connect(blockHome, config: blockConfig, mac: FakeAgentMac(signedIn: true,
                                                                             answer: Self.approve),
                            system: blocking, answers: [Self.controlC])
         #expect(last.status == ExitCode.interrupted && blocking.texts.isEmpty && blocking.agentInstalls == 0)
@@ -702,10 +860,8 @@ struct AgentConnectTests {
                                                        written: BlackiceConfig) {
             let home = try makePrivateDirectory()
             defer { removeTree(home) }
-            let skill = home.appendingPathComponent("app-resources/agents/fx/blackice")
-            try FileManager.default.createDirectory(at: skill, withIntermediateDirectories: true)
             let config = home.path + "/.config/blackice/blackice.toml"
-            let mac = FakeAgentMac(signedIn: false, resources: home.path + "/app-resources/agents", answer: Self.approve)
+            let mac = FakeAgentMac(signedIn: false, answer: Self.approve)
             mac.installed = false
             let system = Loading()
             var picks: [[Int]] = [[1], [0], []]   // ask, fx answers, no apps
@@ -750,10 +906,10 @@ struct AgentConnectTests {
     /// An edit to blackice.toml while fx is set up is kept: the file is read again before fx's rule
     /// and hook go in. An edit while the file is being saved makes the save stop instead.
     @Test func editsMadeDuringTheSetupAreKept() throws {
-        let (home, config, resources) = try setUp("mode = \"accept-all\"\ntimeout_seconds = 60\n")
+        let (home, config) = try setUp("mode = \"accept-all\"\ntimeout_seconds = 60\n")
         defer { removeTree(home) }
         let rule = "\n[[allow]]\napp = \"com.apple.curl\"\nhosts = [\"pypi.org\"]\n"
-        let editing = FakeAgentMac(signedIn: true, resources: resources, answer: Self.approve)
+        let editing = FakeAgentMac(signedIn: true, answer: Self.approve)
         editing.duringTest = {
             let handle = FileHandle(forWritingAtPath: config)
             handle?.seekToEndOfFile()
@@ -771,7 +927,7 @@ struct AgentConnectTests {
         #expect(system.texts == [written])
 
         // Another writer between the first save and the switch to ask mode: nothing is overwritten.
-        let (otherHome, otherConfig, otherResources) = try setUp("mode = \"accept-all\"\ntimeout_seconds = 60\n")
+        let (otherHome, otherConfig) = try setUp("mode = \"accept-all\"\ntimeout_seconds = 60\n")
         defer { removeTree(otherHome) }
         let edited = "mode = \"block-all\"\ntimeout_seconds = 60\n"
         var script = ["y"]
@@ -786,7 +942,7 @@ struct AgentConnectTests {
         let refusing = Loading()
         let status = CLI.run(["agent", "connect", "fx", "--config", otherConfig], stdout: { _ in }, stderr: { err.append($0) },
                              system: refusing, interaction: interaction,
-                             agents: FakeAgentMac(signedIn: true, resources: otherResources, answer: Self.approve).machine)
+                             agents: FakeAgentMac(signedIn: true, answer: Self.approve).machine)
         #expect(status == ExitCode.tempFail)
         #expect(err.items.last == "  Something else changed ~/.config/blackice/blackice.toml meanwhile, so blackice agent connect left it as it is. Run it again.")
         #expect(try String(contentsOfFile: otherConfig, encoding: .utf8) == edited && refusing.texts.isEmpty)
@@ -803,24 +959,24 @@ struct AgentConnectTests {
     }
 
     @Test func aSymlinkedHomeIsRefused() throws {
-        let (home, config, resources) = try setUp("mode = \"accept-all\"\n")
+        let (home, config) = try setUp("mode = \"accept-all\"\n")
         defer { removeTree(home) }
         let elsewhere = try makePrivateDirectory()
         defer { removeTree(elsewhere) }
         try FileManager.default.createSymbolicLink(atPath: home.path + "/.config/blackice/agent", withDestinationPath: elsewhere.path)
-        let result = connect(home, config: config, mac: FakeAgentMac(signedIn: true, resources: resources, answer: Self.approve),
+        let result = connect(home, config: config, mac: FakeAgentMac(signedIn: true, answer: Self.approve),
                              system: Loading())
         #expect(result.status == ExitCode.cannotCreate)
         #expect(result.stderr.first?.contains("is not a directory (a symlink is not accepted either)") == true)
     }
 
     @Test func refusals() throws {
-        let (home, config, resources) = try setUp("mode = \"accept-all\"\n")
+        let (home, config) = try setUp("mode = \"accept-all\"\n")
         defer { removeTree(home) }
-        let mac = FakeAgentMac(signedIn: true, resources: resources, answer: Self.approve)
+        let mac = FakeAgentMac(signedIn: true, answer: Self.approve)
         let other = connect(home, config: config, mac: mac, system: Loading(), arguments: ["agent", "connect", "claude"])
         #expect(other.status == ExitCode.usage
-            && other.stderr.first?.hasPrefix("blackice agent connect knows fx and claude-code so far") == true)
+            && other.stderr.first == "blackice agent connect knows fx, claude-code and codex: blackice agent connect fx")
 
         let missing = connect(home, config: home.path + "/none.toml", mac: mac, system: Loading())
         #expect(missing.status == ExitCode.unreadable)
@@ -828,7 +984,7 @@ struct AgentConnectTests {
 
         var noFx = mac.machine
         noFx = AgentMachine(findExecutable: { _ in nil }, runAttached: noFx.runAttached, runCaptured: noFx.runCaptured,
-                            runHook: noFx.runHook, agentResources: resources)
+                            runHook: noFx.runHook)
         let out = Recorder<String>(), err = Recorder<String>()
         let status = CLI.run(["agent", "connect", "fx", "--config", config], stdout: { out.append($0) }, stderr: { err.append($0) },
                              system: Loading(), interaction: Interaction(ask: { _ in nil }, createFile: CLI.createFile,
@@ -846,7 +1002,7 @@ struct AgentConnectTests {
     /// A hook from 0.3, a `run` line that no signature check covers, is replaced with fx's program
     /// hook; the rest of the file stays as it was.
     @Test func aRunHookFromBeforeIsReplaced() throws {
-        let (home, config, resources) = try setUp("""
+        let (home, config) = try setUp("""
             mode = "ask"
             timeout_seconds = 60
 
@@ -867,7 +1023,7 @@ struct AgentConnectTests {
             """)
         defer { removeTree(home) }
         let system = Loading()
-        let result = connect(home, config: config, mac: FakeAgentMac(signedIn: true, resources: resources, answer: Self.approve),
+        let result = connect(home, config: config, mac: FakeAgentMac(signedIn: true, answer: Self.approve),
                              system: system)
         #expect(result.status == 0, "\(result.stderr)")
         #expect(result.stdout.contains("  ✓ The hook on line 10 now starts fx itself, once its signature checks out"))
@@ -875,7 +1031,25 @@ struct AgentConnectTests {
         let loaded = try BlackiceConfig(data: Data(written.utf8))
         #expect(loaded.hooks.map(\.program) == [Self.program(home)] && loaded.hooks[0].line == 10)
         #expect(loaded.allow.count == 2 && !written.contains("run = "))
-        #expect(written.contains("env = [\"FX_DISABLE_KEYCHAIN=1\", \"HOME=\(Self.agent(home))\"]\n# a note about the next rule\n\n[[allow]]"))
+        #expect(written.contains("env = [\"FX_DISABLE_KEYCHAIN=1\", \"HOME=\(Self.agent(home))\"]\ninstructions = \"fx\"\n" +
+                                 "# a note about the next rule\n\n[[allow]]"))
+    }
+
+    /// The test runs with the owner's notes, as the daemon would, and the [agent] table stays as it was,
+    /// a line of the notes that looks like a table header included.
+    @Test func theOwnersNotesGoWithTheTest() throws {
+        let notes = "I build with the tools in /opt/tools.\n[Not a table] Deny analytics hosts."
+        let agentTable = "[agent]\nnotes = \"\"\"\n\(notes)\"\"\"\n"
+        let (home, config) = try setUp("mode = \"ask\"\n\n[[hook]]\non = \"connection\"\nrun = 'true'\n\n" + agentTable)
+        defer { removeTree(home) }
+        let mac = FakeAgentMac(signedIn: true, answer: Self.approve)
+        let result = connect(home, config: config, mac: mac, system: Loading())
+        #expect(result.status == 0, "\(result.stderr)")
+        #expect(mac.notes == [notes])
+        let written = try String(contentsOfFile: config, encoding: .utf8)
+        let loaded = try BlackiceConfig(data: Data(written.utf8))
+        #expect(loaded.agentNotes == notes && written.contains("\n" + agentTable))
+        #expect(loaded.hooks.last?.program == Self.program(home))
     }
 
     @Test func pieces() throws {
@@ -913,7 +1087,8 @@ struct AgentConnectTests {
         try event.validate(now: Date(), maximumWait: TimeInterval(CLI.agentTestSeconds))
         // The hook reads back from blackice.toml as it was written, quotes and backslashes included.
         let program = CLI.agentHook(.fx, executable: "/Users/Jane \"Doe\"/.local/bin/fx",
-                                    agentHome: "/Users/Jane \"Doe\"/back\\slash/.config/blackice/agent", identity: Self.fx)
+                                    agentHome: "/Users/Jane \"Doe\"/back\\slash/.config/blackice/agent", identity: Self.fx,
+                                    model: AgentProfile.fx.defaultModel)
         let config = try BlackiceConfig(data: Data(("mode = \"ask\"\n" + CLI.agentAddition("fx", identity: Self.fx, hosts: ["vercel.com"],
                                                                                           hook: program)).utf8))
         #expect(config.hooks.first?.program == program && config.allowRule(for: Self.fx, host: "vercel.com") != nil)

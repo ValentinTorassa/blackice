@@ -83,6 +83,7 @@ app = "com.vercel.fx"
 team = "JW6Y669B67"
 args = ["ask", "--no-save", "--no-color", "Use the blackice skill to decide whether to approve the pending connection"]
 env = ["HOME=/Users/me/.config/blackice/agent", "FX_DISABLE_KEYCHAIN=1"]
+instructions = "fx"                   # written from blackice into the event's directory
 ```
 
 A hook answers with the last line it prints, `deny` or `approve 10m`, and the daemon passes that on for the event's
@@ -99,10 +100,17 @@ under `~/.config/blackice/agent`, one test on a sample connection, a rule that l
 - `fx`: [fx](https://github.com/vercel-labs/fx) with the blackice skill ([`integrations/fx/`](integrations/fx/)).
 - `claude-code`: [Claude Code](https://code.claude.com) in print mode, with reading the event as its only tool and a
   sign-in of its own ([`integrations/claude-code/`](integrations/claude-code/)). It ends its reply with a verdict
-  line, `approve 1h` or `deny`. On 4 November 2026 it decided the first 20 eval cases as expected, in 4 s at the median.
+  line, such as `approve 12h` or `deny`. On 5 November 2026, with `haiku`, it decided the 23 eval cases as
+  expected, in 4.2 s at the median.
+- `codex`: [Codex](https://developers.openai.com/codex/cli) with `codex exec`, signed in with a ChatGPT plan, its
+  commands able to read only the event's directory ([`integrations/codex/`](integrations/codex/)). On 5 November
+  2026, with `gpt-6-luna`, it decided the 23 eval cases as expected, in 4.6 s at the median.
 
-One agent answers at a time: connecting one replaces the other's hook.
-[`integrations/eval/run.sh`](integrations/eval/run.sh) runs either one over the same 23 cases.
+Each agent decides with a small model unless `--model NAME` names another: a decision is a short read and a
+two-line answer. The instructions approve clearly ordinary developer and vendor traffic for 8 to 24 hours and
+anything less plain for 10 minutes to an hour, so ordinary traffic is asked about once a day at most. One agent
+answers at a time: connecting one replaces another's hook.
+[`integrations/eval/run.sh`](integrations/eval/run.sh) runs any of them over the same 23 cases.
 
 ## Development
 
