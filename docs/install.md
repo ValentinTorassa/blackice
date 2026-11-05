@@ -23,14 +23,17 @@ $ curl -fsSL https://blackice-macos.vercel.app/install.sh | sh
 
 The script ([`site/lib/install.sh`](../site/lib/install.sh)) downloads the zip and its checksum from the GitHub
 release and runs the checks of step 1, except `stapler validate`, which needs Xcode's command line tools (`spctl`
-checks the notarization as well). If a check fails, it stops before touching `/Applications`. Otherwise it copies
-`Blackice.app` to `/Applications` and writes `~/.local/bin/blackice`, a small script that runs
-`/Applications/Blackice.app/Contents/MacOS/blackice` (set `BLACKICE_BIN_DIR` for another folder). It starts nothing.
-Run it as your user, without `sudo`.
+checks the notarization as well). It also checks that the app and its extension are the version the script installs,
+so an older release served under the new name does not pass. If a check fails, it stops before touching
+`/Applications`. Otherwise it copies `Blackice.app` to `/Applications` and writes `~/.local/bin/blackice`, a small
+script that runs `/Applications/Blackice.app/Contents/MacOS/blackice` (set `BLACKICE_BIN_DIR` for another folder). It
+starts nothing. Run it as your user, without `sudo`.
 
 It stops if blackice is installed with Homebrew, and if another version is in `/Applications`. To replace that one,
 run it with `--force` (`curl -fsSL https://blackice-macos.vercel.app/install.sh | sh -s -- --force`), then see **To
-upgrade** under Rollback. Then continue with step 3.
+upgrade** under Rollback. With `--force` it copies the new app into a hidden folder in `/Applications`, checks the
+copy, and then swaps it with the installed one; if the swap fails, the installed copy is put back. It does not
+replace a copy with a higher build number: see **To go back to an earlier version**. Then continue with step 3.
 
 ## With Homebrew
 
