@@ -286,8 +286,9 @@ struct HookRunnerTests {
     }
 
     /// A burst waits without a thread per hook, and every hook in it runs once slots free. Other suites
-    /// run alongside and start threads of their own, so the bound leaves room for them: a thread per
-    /// waiting hook would add at least 100.
+    /// run alongside and start threads of their own (each hook they run has a reader for its stdout and
+    /// one for its stderr), so the bound leaves room for them: a thread per waiting hook would add at
+    /// least 200.
     @Test func aBurstWaitsWithoutAThreadEach() async throws {
         let dir = try makePrivateDirectory()
         defer { removeTree(dir) }
@@ -302,13 +303,13 @@ struct HookRunnerTests {
         }
         #expect(await eventually { runner.runningCount == 2 })
         let before = threads()
-        let burst = (1...100).map { index in
+        let burst = (1...200).map { index in
             Task { await runner.run([hook("true")], for: testEvent(id: "ev-\(index)", app: "com.example.app\(index % 3)"),
                                     timeoutSeconds: 10) }
         }
-        #expect(await eventually { runner.waitingCount == 100 })
+        #expect(await eventually { runner.waitingCount == 200 })
         let during = threads()
-        #expect(before > 0 && during - before < 60, "\(before) threads before the burst, \(during) while 100 hooks wait")
+        #expect(before > 0 && during - before < 120, "\(before) threads before the burst, \(during) while 200 hooks wait")
         for task in busy + burst { #expect(await task.value.map(\.outcome) == [.exited(status: 0)]) }
         #expect(runner.waitingCount == 0 && runner.runningCount == 0)
     }
