@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+Fixed:
+- A connection held for its TLS hello in ask or block-all is no longer cut 10 s after it opens when the app has
+  written nothing yet: it may stay quiet for 2 minutes, and has 10 s from its first byte for the hello. fx and
+  Claude Code lost 175 connections in two days to the old deadline. A quiet one dropped at 2 minutes is logged
+  `idle_before_hello`, apart from `server_name_timeout`.
+
 ## 0.4.2 (5 November 2026)
 
 You choose who answers in ask mode from a smaller menu, an app updated while it runs keeps its connections, an

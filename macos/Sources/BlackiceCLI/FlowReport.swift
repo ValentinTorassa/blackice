@@ -157,6 +157,9 @@ public struct FlowReport: Equatable, Sendable {
         } else {
             lines.append("Dropped: \(drops)")
             lines += Self.byReason(dropped, indent: "  ")
+            if dropped["idle_before_hello"] != nil {
+                lines.append("  idle_before_hello: the app opened the connection and sent nothing for 2 minutes.")
+            }
         }
         if !closedEarly.isEmpty {
             lines += ["", "Closed by the app before it sent anything: \(closedEarly.values.reduce(0, +))"]

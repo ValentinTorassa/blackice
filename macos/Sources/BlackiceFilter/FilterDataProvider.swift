@@ -6,10 +6,12 @@
 // (https://github.com/ValentinTorassa/blackice-poc/blob/45a7870/macos/FilterExtension/FilterDataProvider.swift).
 // Kept: filter settings that also capture loopback; configuration snapshots replaced only by a
 // higher generation and a bad update never replacing a working one; held flows for reading the
-// TLS ClientHello, at most 256 and for 10 s, ended when the configuration changes; unified
+// TLS ClientHello, at most 256, ended when the configuration changes; unified
 // logging, which is diagnostic and can drop records. Changed: decisions come from
 // FilterPolicy (modes and [[allow]] rules) instead of blackice-poc's per-app policies, the
-// configuration is ProviderConfiguration, and every decided flow gets one log line.
+// configuration is ProviderConfiguration, and every decided flow gets one log line. A held flow
+// may stay quiet for 120 s before its first byte and has 10 s from it for the hello
+// (BlackiceCore.HelloDeadline); blackice-poc gave it 10 s from the connect.
 //
 // Phase 2 (ask mode), also compiled only: flows wait paused while their host is looked up
 // (HostAddressCache) and while an event waits for an answer (AskState). Answers and the pending
@@ -51,7 +53,6 @@ import os
 @objc(BlackiceFilterDataProvider)
 final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
     static let maximumHeld = 256
-    static let serverNameDeadline: TimeInterval = 10
     /// More than any DNS message over UDP, so each datagram comes whole in one callback: XNU's
     /// content filter copies at most the peek size of a datagram to the provider, and lets a
     /// datagram through only once all of it is passed.
@@ -87,7 +88,7 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
         let flow: NEFilterSocketFlow
         let facts: FlowFacts
         let generation: UInt64
-        let deadline: TimeInterval
+        var deadline: HelloDeadline
         var reader: TLSServerNameReader
     }
 
@@ -296,7 +297,7 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
             return .drop()
         }
         held[flow.identifier] = Held(flow: socket, facts: facts, generation: snapshot.generation,
-                                     deadline: Self.now + Self.serverNameDeadline,
+                                     deadline: HelloDeadline(heldAt: Self.now),
                                      reader: TLSServerNameReader())
         heldLock.unlock()
         // The 5-byte record header first; no byte is passed until a verdict.
@@ -313,9 +314,11 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
             heldLock.unlock()
             return .drop()
         }
+        let now = Self.now
+        if !readBytes.isEmpty { entry.deadline.bytesArrived(now: now) }
         let result: TLSHelloResult
         if snapshot?.generation != entry.generation { result = .deny("configuration_changed") }
-        else if Self.now >= entry.deadline { result = .deny("server_name_timeout") }
+        else if entry.deadline.passed(now: now) { result = .deny(entry.deadline.reason) }
         else { result = entry.reader.receive(readBytes, offset: offset) }
         if case .needMore(let total) = result {
             held[flow.identifier] = entry
@@ -617,7 +620,7 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
         timer.setEventHandler { [weak self] in
             guard let self else { return }
             let now = Self.now
-            self.dropHeld(reason: "server_name_timeout") { $0.deadline <= now }
+            self.endHeld(matching: { $0.deadline.passed(now: now) }) { .drop(reason: $0.deadline.reason) }
             self.askLock.lock()
             let (released, timedOut) = self.ask.expire(now: now)
             self.askLock.unlock()
