@@ -51,8 +51,8 @@ public enum TLSClientHello {
             cursor += 4
             let end = cursor + length
             guard end <= extensionEnd, seen.insert(kind).inserted else { return .deny("tls_unparsed") }
-            // Preserve ECH presence for diagnostics. Only the outer SNI can be
-            // checked; permitting an ECH front end is a domain-fronting limit.
+            // ECH presence is kept for the log: the outer SNI then names a
+            // public front end, not the destination (see FilterPolicy).
             if kind == 0 {
                 guard length >= 5, uint16(cursor) == length - 2 else { return .deny("tls_unparsed") }
                 cursor += 2

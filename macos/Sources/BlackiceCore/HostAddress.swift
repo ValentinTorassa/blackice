@@ -15,27 +15,37 @@ import Foundation
 // the check proves only that the name resolves to that address now, not who controls the name.
 
 /// An IPv4 or IPv6 address. IPv4-mapped IPv6 addresses become IPv4, so the two spellings of
-/// one address compare equal. Zone suffixes ("%en0") are ignored.
+/// one address compare equal. A link-local IPv6 address (fe80::/10) can name a different host
+/// on each link, so it keeps its interface (the zone, "%en0" or "%4") as `scope`, and two of
+/// them are equal only on the same interface. Other addresses ignore a zone.
 public struct IPAddress: Hashable, Sendable, CustomStringConvertible {
     /// 4 bytes for IPv4, 16 for IPv6, network order.
     public let bytes: [UInt8]
+    /// The interface index of a link-local IPv6 address, 0 when none was given or the interface
+    /// is unknown. Always 0 for other addresses.
+    public let scope: UInt32
 
     public init?(_ text: String) {
-        var text = text
-        if let percent = text.firstIndex(of: "%") { text = String(text[..<percent]) }
-        guard !text.isEmpty, text.utf8.count <= 45, !text.utf8.contains(0) else { return nil }
+        var address = text
+        var zone: String?
+        if let percent = text.firstIndex(of: "%") {
+            address = String(text[..<percent])
+            zone = String(text[text.index(after: percent)...])
+        }
+        guard !address.isEmpty, address.utf8.count <= 45, !text.utf8.contains(0) else { return nil }
+        if let zone, zone.isEmpty || zone.utf8.count >= Int(IFNAMSIZ) { return nil }
         var v4 = in_addr()
         var v6 = in6_addr()
-        if inet_pton(AF_INET, text, &v4) == 1 {
+        if inet_pton(AF_INET, address, &v4) == 1 {
             self.init(bytes: withUnsafeBytes(of: &v4) { Array($0) })
-        } else if inet_pton(AF_INET6, text, &v6) == 1 {
-            self.init(bytes: withUnsafeBytes(of: &v6) { Array($0) })
+        } else if inet_pton(AF_INET6, address, &v6) == 1 {
+            self.init(bytes: withUnsafeBytes(of: &v6) { Array($0) }, scope: zone.map(Self.interfaceIndex) ?? 0)
         } else {
             return nil
         }
     }
 
-    public init?(bytes: [UInt8]) {
+    public init?(bytes: [UInt8], scope: UInt32 = 0) {
         if bytes.count == 16, bytes[0..<10].allSatisfy({ $0 == 0 }), bytes[10] == 0xFF, bytes[11] == 0xFF {
             self.bytes = Array(bytes[12...])
         } else if bytes.count == 4 || bytes.count == 16 {
@@ -43,8 +53,17 @@ public struct IPAddress: Hashable, Sendable, CustomStringConvertible {
         } else {
             return nil
         }
+        self.scope = Self.isLinkLocal(self.bytes) ? scope : 0
     }
 
+    /// fe80::/10.
+    public var isLinkLocal: Bool { Self.isLinkLocal(bytes) }
+
+    /// False for a link-local address whose interface is not known: it may be any host on any
+    /// link, so it never shows that a flow reaches a given host.
+    public var isCheckable: Bool { !isLinkLocal || scope != 0 }
+
+    /// A link-local address ends in "%" and its interface index, which init(_:) reads back.
     public var description: String {
         let family = bytes.count == 4 ? AF_INET : AF_INET6
         var buffer = [CChar](repeating: 0, count: Int(INET6_ADDRSTRLEN))
@@ -52,7 +71,18 @@ public struct IPAddress: Hashable, Sendable, CustomStringConvertible {
             inet_ntop(family, raw.baseAddress, &buffer, socklen_t(buffer.count))
         }
         guard written != nil else { return "invalid" }
-        return String(decoding: buffer.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }, as: UTF8.self)
+        let text = String(decoding: buffer.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }, as: UTF8.self)
+        return scope == 0 ? text : "\(text)%\(scope)"
+    }
+
+    private static func isLinkLocal(_ bytes: [UInt8]) -> Bool {
+        bytes.count == 16 && bytes[0] == 0xFE && bytes[1] & 0xC0 == 0x80
+    }
+
+    /// A zone is an interface index or an interface name; 0 when there is no such interface.
+    private static func interfaceIndex(_ zone: String) -> UInt32 {
+        if zone.utf8.allSatisfy({ $0 >= 0x30 && $0 <= 0x39 }) { return UInt32(zone) ?? 0 }
+        return if_nametoindex(zone)
     }
 }
 
@@ -83,8 +113,12 @@ public struct SystemHostResolver: HostResolving {
                     var v4 = address.withMemoryRebound(to: sockaddr_in.self, capacity: 1) { $0.pointee.sin_addr }
                     if let ip = IPAddress(bytes: withUnsafeBytes(of: &v4) { Array($0) }) { addresses.append(ip) }
                 case AF_INET6:
-                    var v6 = address.withMemoryRebound(to: sockaddr_in6.self, capacity: 1) { $0.pointee.sin6_addr }
-                    if let ip = IPAddress(bytes: withUnsafeBytes(of: &v6) { Array($0) }) { addresses.append(ip) }
+                    // The scope ID is the interface of a link-local answer (from mDNS, say).
+                    let socket = address.withMemoryRebound(to: sockaddr_in6.self, capacity: 1) { $0.pointee }
+                    var v6 = socket.sin6_addr
+                    if let ip = IPAddress(bytes: withUnsafeBytes(of: &v6) { Array($0) }, scope: socket.sin6_scope_id) {
+                        addresses.append(ip)
+                    }
                 default:
                     break
                 }
@@ -133,8 +167,10 @@ public final class HostAddressCache: @unchecked Sendable {
         return Self.check(address, against: cached)
     }
 
+    /// A link-local address matches only an answer on the same interface, and never when its
+    /// interface is not known.
     public static func check(_ address: IPAddress?, against answers: Set<IPAddress>) -> AddressCheck {
-        guard let address else { return .mismatch }
+        guard let address, address.isCheckable else { return .mismatch }
         return answers.contains(address) ? .match : .mismatch
     }
 
