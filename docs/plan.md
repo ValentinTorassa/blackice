@@ -1,6 +1,6 @@
 # Plan
 
-blackice is early: 0.4.1 is its current release ([`CHANGELOG.md`](../CHANGELOG.md)), and it has run on one Mac. This file holds the phases, the decisions
+blackice is early: 0.4.2 is its current release ([`CHANGELOG.md`](../CHANGELOG.md)), and it has run on one Mac. This file holds the phases, the decisions
 taken so far and the open problems. A phase is done when its check passes on a real Mac, not when the code compiles,
 and each run on a Mac is recorded in [`evidence/`](../evidence/).
 
@@ -50,16 +50,18 @@ and each run on a Mac is recorded in [`evidence/`](../evidence/).
   reachable, with the number of waiting connections next to it. The mode is the one the extension says it decides with,
   and, as in `blackice status`, the menu says when that is not the saved configuration, or when an unfinished upgrade
   keeps the extension out of reach (`NESystemControl.unfinishedUpgrade`). Its menu shows the mode, the waiting
-  connections with Allow for 10 minutes, Allow for 1 hour and Deny, the last verdicts from the event log with who gave
-  them (a hook, from `hook_answer` records, or a person), a warning for an hour after a `hook_refused`, a mode switch,
-  the hooks and the daemon, and Open at Login (`SMAppService.mainApp`, for the signed app in `/Applications`). It reads
+  connections with Allow for 10 minutes, Allow for 1 hour and Deny, the latest verdict from the event log on one line
+  (the last five in its submenu), a warning for an hour after a `hook_refused`, a mode switch, Stop Filtering, the version and Quit Menu; a
+  line about hooks shows up only when the daemon that runs them is not running. Since 5 November 2026 (a tester's
+  "minimal and clean") it has no file, documentation or login items: opening at login is `blackice menu --login on|off`
+  (`SMAppService.mainApp`, for the signed app in `/Applications`). It reads
   the filter preference and the extension's pending list every 5 s, without Touch ID; answers and mode changes go
   through `NESystemControl`, the code behind `blackice approve`, `deny` and `mode`, and ask for Touch ID each time. It cannot
   start or stop blackice, change rules, connect an agent or install the daemon, and quitting it leaves the filter and
   the daemon running. App names and hosts come from whoever opens the connection, so the menu drops control and
   format characters (bidi overrides among them) and cuts long names. The model is in plain Swift with unit tests;
   `macos/Sources/BlackiceMenu/SystemAdapter.swift` holds every call into status, pending, mode, approve and deny.
-  Not yet run as the signed app: Touch ID from the menu, Open at Login and the XPC reads.
+  Not yet run as the signed app: Touch ID from the menu and the XPC reads.
 - **The extension** (`NEFilterDataProvider`) decides right away in accept-all and block-all. In ask mode it pauses
   the flow, sends an event to the daemon over XPC, and resumes the flow when an answer arrives or the timeout passes.
 - **`blackice daemon`** runs as a LaunchAgent for the user, receives events and runs the hooks. The extension

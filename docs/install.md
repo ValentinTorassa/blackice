@@ -13,7 +13,7 @@ With a 0.3.0 candidate, the same steps, the first `start` with its lists and fx 
 configuration and no fx ([P5-06](../evidence/P5-06-onboarding-from-zero-macos.md)).
 
 You need a Mac with Apple silicon (the build is arm64 only), macOS 14 or later, and an admin account. blackice has
-run on macOS 27.0.1 only. The commands below use 0.4.1 as the version.
+run on macOS 27.0.1 only. The commands below use 0.4.2 as the version.
 
 ## With the install script
 
@@ -54,9 +54,9 @@ continue with step 3.
 Download both files into the same folder, then, in Terminal, in that folder:
 
 ```console
-$ shasum -a 256 -c Blackice-0.4.1.zip.sha256
-Blackice-0.4.1.zip: OK
-$ ditto -x -k Blackice-0.4.1.zip .
+$ shasum -a 256 -c Blackice-0.4.2.zip.sha256
+Blackice-0.4.2.zip: OK
+$ ditto -x -k Blackice-0.4.2.zip .
 $ codesign --verify --strict --deep --verbose=2 Blackice.app
 $ codesign -dvv Blackice.app 2>&1 | grep -E '^(Identifier|TeamIdentifier)='
 Identifier=com.valentorassa.blackice
@@ -275,24 +275,25 @@ starts only when LaunchServices opens the app, with no arguments, launchd as its
 The mark is full in ask and block-all, and dimmed when blackice is off, in accept-all or not reachable. When
 connections wait, their number is next to it. The menu has:
 
-- the mode the filter decides in, or why blackice is off or not reachable, and the version. As `blackice status`
-  does, it says when the filter did not take the saved settings and when an upgrade needs `blackice start`;
+- the mode the filter decides in, or why blackice is off or not reachable. As `blackice status` does, it says when
+  the filter did not take the saved settings and when an upgrade needs `blackice start`;
 - each connection that waits, as app → host:port with the seconds left, and in its submenu Allow for 10 Minutes,
   Allow for 1 Hour and Deny: the same as `blackice approve --for` and `blackice deny`, with Touch ID;
-- the last verdicts from the event log, with whether a hook or a person answered, and for an hour a warning when the
-  daemon refused a hook program whose signature did not match;
+- Recent: the latest verdict from the event log on one line, with how long ago, and the last five in its submenu;
+  for an hour, a warning when the daemon refused a hook program whose signature did not match;
 - Mode, to switch between Accept All, Ask with an agent answering (one item per agent; those not connected are
   greyed out with the command that connects them), Ask: You (Manual) and Block All, with Touch ID, as `blackice
   mode` and `blackice mode ask --agent` do, while the filter answers;
-- the hooks in the configuration and whether the daemon runs them;
+- a warning when there are hooks and the daemon that runs them is not running;
 - Stop Filtering, with Touch ID, as `blackice stop` does: the filter and its network extension go, and `blackice
   start` turns them on again;
-- Open blackice.toml, Show Event Log in Finder, Documentation, Open at Login, and Quit Menu.
+- the version, and Quit Menu.
 
 Quitting the menu leaves the filter and the daemon running; Stop Filtering is what turns the filter off. Starting
 blackice, rules, agents and the daemon stay in the CLI. When Blackice.app is replaced by an upgrade, the menu opens the
-new one by itself, and `blackice start` does it for a menu from 0.4.0. The menu has not run as the signed app yet: Touch ID from the menu, Open at Login and its reads
-of the filter are untested on a Mac.
+new one by itself, and `blackice start` does it for a menu from 0.4.0. Opening at login is `blackice menu --login
+on|off`, which the first `blackice start` offers. The menu has not run as the signed app yet: Touch ID from the menu
+and its reads of the filter are untested on a Mac.
 
 ## Uninstall
 
@@ -344,13 +345,14 @@ allow the extension again in System Settings.
 
 **To upgrade**, check the new package as in step 1, put its `Blackice.app` in `/Applications` over the old one (with
 Homebrew, `brew upgrade --cask blackice`; with the install script, run it with `--force`) and run `blackice start`
-right away. macOS replaces the running extension with the one with the higher build number, and `start` checks that
-the new one answers over XPC. If it does not, `start` says so and exits with status 75: restart the Mac, then run
+right away. macOS replaces the running extension with the one with the higher build number. `start` waits for the
+new one to answer over XPC before it saves the configuration, and if the new one still decides with the configuration
+from before the upgrade, `start` turns the filter off and on once so that it loads the new one. If it does not answer, `start` says so and exits with status 75: restart the Mac, then run
 `blackice start` again. The daemon needs nothing: when the old extension stops, the daemon's connection ends, it
 exits, and launchd starts it again from the new app.
 
-If blackice is in the menu bar, quit it from its menu and open Blackice.app again after `start`, so that it runs the
-new binary and reaches the new extension.
+If blackice is in the menu bar, it opens the new Blackice.app by itself once the app is replaced, and `start` does it for
+a menu from 0.4.0.
 
 Upgrading to 0.3.2 or an earlier version, restart the Mac after `start` even when it succeeds. Up to 0.3.2 every
 build's extension listened on the same XPC service name. On macOS 27.0.1 the replaced build's process still held that

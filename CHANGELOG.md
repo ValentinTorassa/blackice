@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+New:
+- opencode can be the agent: `blackice agent connect opencode` asks which provider it decides with (Z.AI Coding
+  Plan, OpenAI, OpenCode Go, MiniMax Token Plan, OpenRouter or Anthropic), signs it in to that provider in a home of
+  its own, and adds a rule for that provider's hosts only. `--model PROVIDER/MODEL` skips the list. Its hook gives it
+  the read tool and no other, in the event's directory, with blackice's instructions as its whole prompt, and no
+  configuration, plugin or skill from a folder of yours. It is in the first start's list and in the menu's Mode.
+
+## 0.4.2 (5 November 2026)
+
+You choose who answers in ask mode from a smaller menu, an app updated while it runs keeps its connections, an
+upgrade loads the new configuration, and fx's hook reads less.
+
+New:
 - You choose who answers in ask mode, from the menu or the CLI. The menu's Mode lists Accept All, then Ask with
   each agent (fx, Claude Code, Codex; one that is not connected is greyed out with the command that connects it),
   Ask: You (Manual), and Block All, with a check mark on the one in force; choosing one takes Touch ID.
@@ -12,11 +25,39 @@
   the menu changes the configuration blackice holds and not the file, as `blackice mode` does. `blackice status`
   says who answers when there is a choice. An agent hook that names no `instructions` (from 0.3 or 0.4.0) is still
   replaced or removed by `agent connect`, since it would run whoever `answers` names.
-- opencode can be the agent: `blackice agent connect opencode` asks which provider it decides with (Z.AI Coding
-  Plan, OpenAI, OpenCode Go, MiniMax Token Plan, OpenRouter or Anthropic), signs it in to that provider in a home of
-  its own, and adds a rule for that provider's hosts only. `--model PROVIDER/MODEL` skips the list. Its hook gives it
-  the read tool and no other, in the event's directory, with blackice's instructions as its whole prompt, and no
-  configuration, plugin or skill from a folder of yours. It is in the first start's list and in the menu's Mode.
+
+Changed:
+- A smaller menu, asked for by the same tester. Recent decisions take one line, the latest with how long ago, and the
+  last five in its submenu. Open blackice.toml, Show Event Log in Finder, Documentation and Open at Login are gone
+  (opening at login is `blackice menu --login on|off`, which the first `start` offers); the version is at the bottom,
+  above Quit Menu; the hooks line and "Nothing waits" show only when they say something. The install script and the npm
+  package say only what to run next.
+- fx's hook replaces fx's own system prompt, written for coding, with two sentences (`fx ask --system`). Each
+  decision reads about 3,700 fewer tokens, about 17%, with the same answers in the cases tried. Run `blackice agent
+  connect fx` again to get it; the hook from 0.4.1 keeps working as it is.
+- In ask and block-all, macOS's encrypted DNS (DNS over HTTPS or TLS from `com.apple.mDNSResponder`, on port 443 or
+  853) is dropped at once as `encrypted_dns`, where it used to be asked about or dropped as `no_host`. macOS then
+  uses plain DNS, whose answers blackice reads to name the addresses apps connect to. A rule for
+  `com.apple.mDNSResponder` lets an encrypted resolver through.
+- A connection the app closed before it sent a byte is logged as `closed_before_hello`, where it was `tls_unparsed`,
+  and `blackice report` lists those apart from the drops: nothing was cut. Claude Code opens two connections at once
+  (IPv6 and IPv4), uses the first one up and closes the other, and in ask mode its report read as 7 drops.
+
+Fixed:
+- An app updated while it runs keeps its identity. When an update removed the program file of a running app, as
+  Homebrew does with the old version, macOS could no longer check its signature, and ask and block-all dropped all
+  its connections as `unknown_identity`: on 5 November 2026 that cut off a running Claude Code the minute Homebrew
+  upgraded it. blackice now keeps the identity it checked while the file was there, for as long as that process
+  runs, also across an upgrade or a stop and start of blackice in the same boot. When its cache of identities fills
+  up, it forgets the processes that ended, where it used to forget them all.
+- `blackice start` after an upgrade loads the new configuration into the new extension. macOS starts the new build
+  with the configuration saved before, and a save made while it starts could miss it: on 5 November 2026 the 0.4.1
+  build came up with the old configuration and `start` said the filter "did not load the configuration just saved".
+  `start` now waits for the new build to answer before it saves, and if the new build still has the old configuration,
+  it turns the filter off and on once.
+
+Upgrading from 0.4.1: `brew upgrade --cask blackice` or the install script with `--force`, then `blackice
+start`. Then run `blackice agent connect fx` again for its shorter prompt; the other agents' hooks need nothing.
 
 ## 0.4.1 (5 November 2026)
 

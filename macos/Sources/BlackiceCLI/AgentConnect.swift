@@ -91,7 +91,9 @@ public struct AgentProfile: Sendable {
         signedIn: { CLI.fxSignedIn($0) }, settings: { try CLI.fxSettings($0) },
         // With stdout not a terminal, fx prints its reply as plain Markdown; the skill, which fx
         // finds in its workspace's skills/ folder, ends it with the answer.
-        askArguments: { _, model in ["ask", "--no-save", "--no-color", "--model", model, prompt] },
+        // --system replaces fx's own system prompt, written for coding, with two sentences: on 5
+        // November 2026 that took 3,700 of the 22,000 tokens each decision read.
+        askArguments: { _, model in ["ask", "--no-save", "--no-color", "--model", model, "--system", CLI.fxSystemPrompt, prompt] },
         // Seen on 3 November 2026: a Vercel team with no card on file gets HTTP 403 from AI Gateway.
         // Seen on 4 November 2026: a team with no credits left gets HTTP 502, insufficient_funds.
         advice: { stderr in
@@ -733,6 +735,10 @@ extension CLI {
             return item["id"] as? String == provider && connections.contains { ($0["type"] as? String).map { $0 != "env" } ?? false }
         }
     }
+
+    /// What replaces fx's built-in system prompt in the hook (`fx ask --system`). fx still adds its
+    /// tools and the blackice skill, which says how to decide.
+    static let fxSystemPrompt = "You answer for blackice, a network filter on a Mac: one app wants to reach one host, and you decide whether to approve it. The blackice skill in this workspace says how to read the event and how to answer. Follow it exactly and answer in its format."
 
     /// `claude auth status --json` prints an object whose `loggedIn` is true once it is signed in.
     static func claudeCodeSignedIn(_ status: String) -> Bool {

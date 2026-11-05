@@ -87,15 +87,16 @@ private let blockAllCases: [(FlowFacts, FlowVerdict)] = [
     (flow(agent, nil, port: 80), .drop(reason: "no_host")),
     (flow(agent, nil, port: nil), .drop(reason: "no_host")),
     (flow(probe, nil), .drop(reason: "no_rule")),
-    // The resolver may reach DNS, nothing else; its answers are read to learn names.
+    // The resolver may reach DNS, nothing else; its answers are read to learn names. Its
+    // encrypted DNS, whose answers cannot be read, is dropped.
     (flow(resolver, nil, port: 53, tcp: false), .learnNames),
     (flow(resolver, nil, port: 53), .learnNames),
-    (flow(resolver, nil, port: 443), .drop(reason: "no_rule")),
+    (flow(resolver, nil, port: 443), .drop(reason: "encrypted_dns")),
     (flow(signed("com.apple.mDNSResponder", "ABCDE12345"), nil, port: 53, tcp: false), .drop(reason: "no_rule")),
     (flow(probe, nil, port: 53, tcp: false), .drop(reason: "no_rule")),
     // A lookup mDNSResponder makes for an app is reported under the app; it is the resolver's.
     (flow(curl, "example.com", port: 53, tcp: false, process: resolver), .learnNames),
-    (flow(probe, "example.com", port: 443, process: resolver), .drop(reason: "no_rule")),
+    (flow(probe, "example.com", port: 443, process: resolver), .drop(reason: "encrypted_dns")),
     (flow(probe, "example.com", port: 53, tcp: false, process: probe), .drop(reason: "no_rule")),
 ]
 
@@ -257,6 +258,46 @@ struct FilterPolicyTests {
         // A direction NetworkExtension did not report is treated as outbound.
         let unknown = flow(probe, "pypi.org", direction: .unknown)
         #expect(FilterPolicy.decide(unknown, snapshot: try policySnapshot(.blockAll), context: matching) == .drop(reason: "no_rule"))
+    }
+
+    @Test func theResolversEncryptedDNSIsDroppedUnlessARuleNamesIt() throws {
+        let encrypted = [
+            flow(resolver, nil, address: "8.8.8.8"),
+            flow(resolver, nil, tcp: false, address: "8.8.8.8"),
+            flow(resolver, "dns.google", address: "8.8.8.8"),
+            flow(resolver, nil, port: 853, address: "1.1.1.1"),
+            flow(resolver, nil, port: 853, tcp: false, address: "1.1.1.1"),
+            flow(agent, nil, address: "8.8.8.8", process: resolver),
+        ]
+        for mode in [Mode.ask, .blockAll] {
+            let snapshot = try policySnapshot(mode)
+            for facts in encrypted {
+                #expect(FilterPolicy.decide(facts, snapshot: snapshot, context: matching) == .drop(reason: "encrypted_dns"),
+                        "\(mode) \(facts)")
+            }
+            // Plain DNS is read as before, and the resolver's other ports are not its encrypted DNS.
+            #expect(FilterPolicy.decide(flow(resolver, nil, port: 53, tcp: false), snapshot: snapshot, context: matching)
+                == .learnNames)
+            #expect(FilterPolicy.decide(flow(resolver, nil, port: 5353, tcp: false), snapshot: snapshot, context: matching)
+                != .drop(reason: "encrypted_dns"))
+            // Another app on 443 is not the resolver.
+            #expect(FilterPolicy.decide(flow(agent, nil, address: "8.8.8.8"), snapshot: snapshot, context: matching)
+                != .drop(reason: "encrypted_dns"))
+        }
+        // Accept-all lets it through, and says ask mode would drop it.
+        let acceptAll = try policySnapshot(.acceptAll)
+        #expect(FilterPolicy.decide(encrypted[0], snapshot: acceptAll, context: matching) == .allow(reason: "accept_all"))
+        #expect(FilterPolicy.dryRun(encrypted[0], snapshot: acceptAll) == "drop:encrypted_dns")
+        // A rule for the resolver: decided as any app's flow, by that rule.
+        let ruled = try ProviderConfiguration(generation: 3, mode: .ask, configText: """
+            mode = "ask"
+
+            [[allow]]
+            app = "com.apple.mDNSResponder"
+            hosts = ["dns.google"]
+            """)
+        #expect(FilterPolicy.decide(encrypted[2], snapshot: ruled, context: matching) == .readServerName)
+        #expect(FilterPolicy.decide(encrypted[0], snapshot: ruled, context: matching) == .readServerName)
     }
 
     @Test func nothingPassesWithoutAConfiguration() {
@@ -435,9 +476,11 @@ struct FilterPolicyTests {
     @Test func serverNameReaderFeedsThePolicy() throws {
         let hello = clientHello("pypi.org")
         var reader = TLSServerNameReader()
+        #expect(reader.received == 0)
         // The extension peeks the 5-byte record header first, then the whole record.
         let first = reader.receive(hello.prefix(5), offset: 0)
         #expect(first == .needMore(hello.count))
+        #expect(reader.received == 5)
         let second = reader.receive(hello, offset: 0)
         #expect(second == .serverName("pypi.org"))
         #expect(FilterPolicy.decide(flow(curl, nil), serverName: second, snapshot: try policySnapshot(.blockAll), context: matching)

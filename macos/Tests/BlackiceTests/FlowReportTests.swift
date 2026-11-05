@@ -123,6 +123,29 @@ struct FlowReportTests {
         ])
     }
 
+    /// A connection the app closed before it wrote a byte is logged as a drop, but nothing was cut:
+    /// on 5 November 2026 Claude Code's spare connections made it look blocked as `tls_unparsed`.
+    @Test func connectionsClosedBeforeTheHelloAreNotDrops() {
+        let text = ([line("drop closed_before_hello app=\(tool) <private>"),
+                     line("allow rule_line_3;server_name app=\(tool) <private>"),
+                     line("drop closed_before_hello app=\(tool) <private>"),
+                     line("drop tls_unparsed app=\(node) <private>")])
+            .joined(separator: "\n")
+        #expect(FlowReport(logText: text).summary(last: "1h") == [
+            "blackice's filter, last 1h: 4 flow lines.",
+            "",
+            "Dropped: 1",
+            "  tls_unparsed: 1",
+            "    1  \(node)",
+            "",
+            "Closed by the app before it sent anything: 2",
+            "  Nothing was cut: an app that opens two connections at once uses one and closes the other.",
+            "  2  \(tool)",
+        ])
+        let none = FlowReport(logText: line("drop closed_before_hello app=\(tool) <private>")).summary(last: "1h")
+        #expect(none.contains("Dropped: none"))
+    }
+
     @Test func sumsUpTheDryRunOfAskMode() {
         let apps = (1...7).map { "apple/com.apple.service\($0)" }
         var lines = Array(repeating: line("allow accept_all app=\(node) would=ask <private>"), count: 12)

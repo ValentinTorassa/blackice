@@ -23,7 +23,7 @@ export const docsNav: DocsNavSection[] = [
       {
         title: 'Install',
         href: '/docs/install',
-        description: 'Install blackice 0.4.1 with the install script, Homebrew or the release zip, check it, start it, remove it and roll it back.',
+        description: 'Install blackice 0.4.2 with the install script, Homebrew or the release zip, check it, start it, remove it and roll it back.',
       },
       {
         title: 'How it works',
