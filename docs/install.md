@@ -329,13 +329,14 @@ allow the extension again in System Settings.
 
 **To upgrade**, check the new package as in step 1, put its `Blackice.app` in `/Applications` over the old one (with
 Homebrew, `brew upgrade --cask blackice`; with the install script, run it with `--force`) and run `blackice start`
-right away. macOS replaces the running extension with the one with the higher build number, and `start` checks that
-the new one answers over XPC. If it does not, `start` says so and exits with status 75: restart the Mac, then run
+right away. macOS replaces the running extension with the one with the higher build number. `start` waits for the
+new one to answer over XPC before it saves the configuration, and if the new one still decides with the configuration
+from before the upgrade, `start` turns the filter off and on once so that it loads the new one. If it does not answer, `start` says so and exits with status 75: restart the Mac, then run
 `blackice start` again. The daemon needs nothing: when the old extension stops, the daemon's connection ends, it
 exits, and launchd starts it again from the new app.
 
-If blackice is in the menu bar, quit it from its menu and open Blackice.app again after `start`, so that it runs the
-new binary and reaches the new extension.
+If blackice is in the menu bar, it opens the new Blackice.app by itself once the app is replaced, and `start` does it for
+a menu from 0.4.0.
 
 Upgrading to 0.3.2 or an earlier version, restart the Mac after `start` even when it succeeds. Up to 0.3.2 every
 build's extension listened on the same XPC service name. On macOS 27.0.1 the replaced build's process still held that

@@ -46,6 +46,10 @@ public final class NESystemControl: SystemControlling {
             OSSystemExtensionRequest.activationRequest(forExtensionWithIdentifier: BlackiceIdentifiers.filter, queue: .main),
             output)
         guard activation == ExitCode.success else { return activation }
+        // After a replacement macOS starts the new build with the configuration saved before, and a
+        // save made while it starts can miss it: on 5 November 2026 build 19 came up with generation
+        // 17 and never saw the 18 saved a moment later. Wait until the new build answers first.
+        if replaced { _ = Self.answers() }
 
         guard let (manager, current) = loadSaved(output) else { return ExitCode.software }
         if let owner = current.foreignOwner { return refuseForeign(owner, output) }
@@ -72,7 +76,17 @@ public final class NESystemControl: SystemControlling {
         // first start). Wait until it answers, so that what runs next does not lose its connection,
         // and until it names the configuration just saved: it keeps the one it has when it refuses
         // the new one, and saving says nothing about that.
-        let inForce = Self.activation(of: candidate)
+        var inForce = Self.activation(of: candidate)
+        // The new build still decides with the configuration from before the upgrade: turn the filter
+        // off and on, so that it starts again with the one just saved.
+        if replaced, case .other(let active) = inForce, (active?.generation ?? 0) < candidate.generation {
+            output.stdout("  The new build kept the configuration from before the upgrade, so the filter restarts…")
+            manager.isEnabled = false
+            guard save(manager, output) else { return ExitCode.software }
+            manager.isEnabled = true
+            guard save(manager, output) else { return ExitCode.software }
+            inForce = Self.activation(of: candidate)
+        }
         output.stdout("")
         if replaced, inForce == .noAnswer {
             output.stderr("blackice was upgraded, and macOS needs a restart to finish. Restart the Mac, then run blackice start again.")
@@ -108,6 +122,16 @@ public final class NESystemControl: SystemControlling {
             if attempt < attempts { Thread.sleep(forTimeInterval: interval) }
         }
         return last
+    }
+
+    /// Whether this build's extension answers within `attempts` × `interval`.
+    static func answers(attempts: Int = 40, interval: TimeInterval = 0.5) -> Bool {
+        guard let teamID = CodeIdentity.current()?.teamID else { return false }
+        for attempt in 1...attempts {
+            if (try? FilterClient(teamID: teamID).pending()) != nil { return true }
+            if attempt < attempts { Thread.sleep(forTimeInterval: interval) }
+        }
+        return false
     }
 
     public func stop(output: SystemOutput) -> Int32 {
