@@ -8,13 +8,20 @@ import Security
 
 /// Positive identities of running process images, keyed by the full audit
 /// token. The token carries the PID version, which changes on exec, so one key
-/// never names two images. Bounded; when full it starts over.
+/// never names two images. Bounded: when full it forgets the processes that ended, and starts over
+/// only if every entry still runs.
 public final class IdentityCache: @unchecked Sendable {
     private let lock = NSLock()
     private var entries: [Data: IdentityResolution] = [:]
     private let limit: Int
+    private let running: (Data) -> Bool
+    private var changeCount = 0
 
-    public init(limit: Int = 4096) { self.limit = limit }
+    /// `running` says whether the process a token names still runs.
+    public init(limit: Int = 4096, running: @escaping (Data) -> Bool = CodeIdentity.kernelReportsValid) {
+        self.limit = limit
+        self.running = running
+    }
 
     public func read(_ token: Data) -> IdentityResolution? {
         lock.lock(); defer { lock.unlock() }
@@ -23,20 +30,96 @@ public final class IdentityCache: @unchecked Sendable {
 
     public func store(_ token: Data, _ resolution: IdentityResolution) {
         lock.lock(); defer { lock.unlock() }
-        if entries.count >= limit { entries.removeAll(keepingCapacity: true) }
+        if entries.count >= limit {
+            // Emptying it all would also drop a long-running app's entry, which it needs once an
+            // update removes its program file (see CodeIdentity.resolve).
+            entries = entries.filter { running($0.key) }
+            if entries.count >= limit { entries.removeAll(keepingCapacity: true) }
+        }
         entries[token] = resolution
+        changeCount += 1
     }
 
     public func remove(_ token: Data) {
         lock.lock(); defer { lock.unlock() }
-        entries.removeValue(forKey: token)
+        if entries.removeValue(forKey: token) != nil { changeCount += 1 }
     }
 
     public var count: Int {
         lock.lock(); defer { lock.unlock() }
         return entries.count
     }
+
+    /// Goes up with each change, so that a caller saves only when there is something new.
+    public var changes: Int {
+        lock.lock(); defer { lock.unlock() }
+        return changeCount
+    }
+
+    /// The verified and ad hoc entries whose token `keep` accepts, for the extension's next run in
+    /// the same boot. Audit tokens are unique within a boot only: after a restart a new process can
+    /// carry a token that an old one had, so `restore` takes entries only from the boot `boot` names.
+    public func encoded(boot: String, keep: (Data) -> Bool = { _ in true }) -> Data? {
+        lock.lock()
+        let current = entries
+        lock.unlock()
+        let stored = current.compactMap { token, resolution -> StoredIdentities.Entry? in
+            guard keep(token) else { return nil }
+            switch resolution {
+            case .verified(let identity):
+                return .init(token: token, signingID: identity.signingID, teamID: identity.teamID, cdhash: nil)
+            case .adHoc(let cdhash):
+                return .init(token: token, signingID: nil, teamID: nil, cdhash: cdhash)
+            case .unresolved, .invalidSignature:
+                return nil
+            }
+        }
+        return try? JSONEncoder().encode(StoredIdentities(boot: boot, entries: stored))
+    }
+
+    /// Adds the entries `encoded` wrote in this boot, as far as the limit allows; data from another
+    /// boot, or that does not parse, adds nothing. Returns how many it added.
+    @discardableResult
+    public func restore(_ data: Data, boot: String) -> Int {
+        guard let stored = try? JSONDecoder().decode(StoredIdentities.self, from: data), stored.boot == boot else { return 0 }
+        lock.lock(); defer { lock.unlock() }
+        var added = 0
+        for entry in stored.entries where entries.count < limit && entries[entry.token] == nil {
+            guard entry.token.count == MemoryLayout<audit_token_t>.size, let resolution = entry.resolution else { continue }
+            entries[entry.token] = resolution
+            added += 1
+        }
+        return added
+    }
 }
+
+/// IdentityCache's entries on disk.
+struct StoredIdentities: Codable {
+    let boot: String
+    let entries: [Entry]
+
+    struct Entry: Codable {
+        let token: Data
+        let signingID: String?
+        let teamID: String?
+        let cdhash: String?
+
+        /// nil for an entry no resolution could have produced.
+        var resolution: IdentityResolution? {
+            if let cdhash {
+                return signingID == nil && teamID == nil && validCDHash(cdhash) ? .adHoc(cdhash: cdhash) : nil
+            }
+            guard let signingID, validSigningID(signingID) else { return nil }
+            if let teamID, !validTeamID(teamID) { return nil }
+            return .verified(SigningIdentity(signingID: signingID, teamID: teamID))
+        }
+    }
+}
+
+/// csops(2) with an audit token, from the kernel; not in the SDK's headers.
+@_silgen_name("csops_audittoken")
+private func csops_audittoken(_ pid: pid_t, _ ops: UInt32, _ useraddr: UnsafeMutableRawPointer?, _ usersize: Int,
+                              _ token: UnsafeMutablePointer<audit_token_t>?) -> Int32
 
 public enum CodeIdentity {
     public static let cache = IdentityCache()
@@ -76,12 +159,19 @@ public enum CodeIdentity {
     /// bound app would stop matching its binding. A cached result is used only
     /// while the kernel still reports the running code as valid, so code that
     /// becomes invalid falls back to full validation and is denied.
-    public static func resolve(auditToken: Data?) -> IdentityResolution {
+    public static func resolve(auditToken: Data?, cache: IdentityCache = CodeIdentity.cache) -> IdentityResolution {
         guard let auditToken, auditToken.count == MemoryLayout<audit_token_t>.size else { return .unresolved }
         var code: SecCode?
         let attributes = [kSecGuestAttributeAudit as String: auditToken] as CFDictionary
-        guard SecCodeCopyGuestWithAttributes(nil, attributes, [], &code) == errSecSuccess,
-              let code else { return .unresolved }
+        guard SecCodeCopyGuestWithAttributes(nil, attributes, [], &code) == errSecSuccess, let code else {
+            // Security finds no guest for a process whose program file was removed since it
+            // started, as when Homebrew upgrades an app that is running: on 5 November 2026 Claude
+            // Code's connections became unknown_identity the minute Homebrew removed its old
+            // version. The identity cached for this process image, checked while the file was
+            // there, stays while the kernel still reports the code valid.
+            if let cached = cache.read(auditToken), kernelReportsValid(auditToken: auditToken) { return cached }
+            return .unresolved
+        }
         if let cached = cache.read(auditToken) {
             if runningCodeIsValid(code) { return cached }
             cache.remove(auditToken)
@@ -92,6 +182,31 @@ public enum CodeIdentity {
         case .unresolved, .invalidSignature: break
         }
         return result
+    }
+
+    /// Whether the kernel reports the process behind this audit token as running valid code
+    /// (CS_VALID), with no file on disk needed. False once the process is gone, and for a token of
+    /// another image: the kernel checks the PID version in it.
+    public static func kernelReportsValid(auditToken: Data) -> Bool {
+        guard auditToken.count == MemoryLayout<audit_token_t>.size else { return false }
+        var token = audit_token_t()
+        _ = withUnsafeMutableBytes(of: &token) { auditToken.copyBytes(to: $0) }
+        var status: UInt32 = 0
+        // CS_OPS_STATUS is 0 and CS_VALID is 1 (xnu, bsd/sys/codesign.h).
+        guard csops_audittoken(pid_t(bitPattern: token.val.5), 0, &status, MemoryLayout<UInt32>.size, &token) == 0 else {
+            return false
+        }
+        return status & 1 != 0
+    }
+
+    /// This boot's session UUID (kern.bootsessionuuid), which a stored identity cache is tied to.
+    public static func bootSession() -> String? {
+        var size = 0
+        guard sysctlbyname("kern.bootsessionuuid", nil, &size, nil, 0) == 0, size > 1 else { return nil }
+        var bytes = [CChar](repeating: 0, count: size)
+        guard sysctlbyname("kern.bootsessionuuid", &bytes, &size, nil, 0) == 0 else { return nil }
+        let text = String(decoding: bytes.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }, as: UTF8.self)
+        return text.isEmpty ? nil : text
     }
 
     /// The kernel's dynamic status only: no signature or disk validation.
