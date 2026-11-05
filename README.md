@@ -8,7 +8,8 @@ any app, and has three modes:
 - `ask` pauses any connection no rule covers until someone answers. A hook can pass the question to an agent such as
   [fx](https://github.com/vercel-labs/fx), which answers with `blackice approve` or `blackice deny`.
 
-There is no window or menu bar icon. Starting, stopping and changing the mode take Touch ID.
+There is no window. A menu bar icon shows the mode and what waits, and answers by hand. Starting, stopping and
+changing the mode take Touch ID.
 
 Docs: [blackice-macos.vercel.app](https://blackice-macos.vercel.app)
 
@@ -58,8 +59,9 @@ $ brew install --cask valentintorassa/tap/blackice
 
 Or download the zip from the [release](https://github.com/ValentinTorassa/blackice/releases/tag/v0.3.2). The first
 `blackice start` asks a few questions to write your configuration, then opens System Settings so you can allow the
-extension. `blackice agent install` starts the daemon
-that runs hooks. Run `blackice stop` before you uninstall. [`docs/install.md`](docs/install.md) has the rest.
+extension, and at the end offers the menu bar icon (`blackice menu --login on` adds it later). `blackice agent install`
+starts the daemon that runs hooks. Run `blackice stop` before you uninstall. [`docs/install.md`](docs/install.md) has the
+rest.
 
 ## Configuration
 

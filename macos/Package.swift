@@ -2,8 +2,8 @@
 // Builds with the Command Line Tools alone; tests use Swift Testing, which ships with them.
 import PackageDescription
 
-// NetworkExtension, SystemExtensions, LocalAuthentication and NSXPCConnection predate Swift
-// concurrency annotations; the targets that call them use the Swift 5 language mode.
+// NetworkExtension, SystemExtensions, LocalAuthentication, ServiceManagement and NSXPCConnection
+// predate Swift concurrency annotations; the targets that call them use the Swift 5 language mode.
 let systemSettings: [SwiftSetting] = [.swiftLanguageMode(.v5)]
 
 let package = Package(
@@ -29,10 +29,15 @@ let package = Package(
         // and pending/approve/deny/daemon over XPC. Needs the signed app to do anything.
         .target(name: "BlackiceSystem", dependencies: ["BlackiceCore", "BlackiceCLI", "BlackiceXPC"],
                 swiftSettings: systemSettings),
-        .executableTarget(name: "blackice", dependencies: ["BlackiceCLI", "BlackiceSystem"]),
+        // The menu bar app: `blackice menu`, and Blackice.app opened from Finder or at login. What
+        // it shows is worked out in plain Swift; SystemAdapter.swift is its one way into status,
+        // pending, mode, approve and deny.
+        .target(name: "BlackiceMenu", dependencies: ["BlackiceCore", "BlackiceCLI", "BlackiceXPC", "BlackiceSystem"],
+                swiftSettings: systemSettings),
+        .executableTarget(name: "blackice", dependencies: ["BlackiceCLI", "BlackiceSystem", "BlackiceMenu"]),
         // The NEFilterDataProvider system extension.
         .executableTarget(name: "BlackiceFilter", dependencies: ["BlackiceCore", "BlackiceXPC"],
                           swiftSettings: systemSettings),
-        .testTarget(name: "BlackiceTests", dependencies: ["BlackiceCore", "BlackiceCLI"]),
+        .testTarget(name: "BlackiceTests", dependencies: ["BlackiceCore", "BlackiceCLI", "BlackiceMenu"]),
     ]
 )

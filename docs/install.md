@@ -151,6 +151,9 @@ Then macOS asks whether "Blackice" may filter network content: click Allow. `sta
 this. The macOS 27 steps are from 27.0.1; the others follow Apple's layout of those versions. `blackice status` then
 says which mode blackice is in, whether the daemon runs your hooks, and how many connections are waiting.
 
+At the end, the first `start` asks whether to show blackice in the menu bar and open it at login (see "The menu bar"
+under step 6).
+
 ## 5. Start the daemon
 
 The daemon runs the hooks for connections that wait in ask mode. It runs as a LaunchAgent for your user and takes
@@ -216,15 +219,43 @@ and says so.
 
 After changing `blackice.toml`, run `blackice start` again to load it (Touch ID).
 
+### The menu bar
+
+Blackice.app runs in the menu bar when you open it from Finder or Spotlight, and with `blackice menu`, which runs until
+you quit it or close the terminal. `blackice menu --login on` opens it now and at each login, where System Settings →
+General → Login Items lists it as Blackice; `blackice menu --login off` stops that. Opening at login works only for the
+signed Blackice.app in `/Applications`. `blackice` with no arguments in a terminal still prints the usage: the menu
+starts only when LaunchServices opens the app, with no arguments, launchd as its parent and no terminal.
+
+The mark is full in ask and block-all, and dimmed when blackice is off, in accept-all or not reachable. When
+connections wait, their number is next to it. The menu has:
+
+- the mode the filter decides in, or why blackice is off or not reachable, and the version. As `blackice status`
+  does, it says when the filter did not take the saved settings and when an upgrade needs `blackice start`;
+- each connection that waits, as app → host:port with the seconds left, and in its submenu Allow for 10 Minutes,
+  Allow for 1 Hour and Deny: the same as `blackice approve --for` and `blackice deny`, with Touch ID;
+- the last verdicts from the event log, with whether a hook or a person answered, and for an hour a warning when the
+  daemon refused a hook program whose signature did not match;
+- Mode, to switch between accept-all, ask and block-all, with Touch ID, as `blackice mode` does, while the filter
+  answers;
+- the hooks in the configuration and whether the daemon runs them;
+- Open blackice.toml, Show Event Log in Finder, Documentation, Open at Login, and Quit Menu.
+
+Quitting the menu leaves the filter and the daemon running. Starting and stopping blackice, rules, agents and the
+daemon stay in the CLI. The menu has not run as the signed app yet: Touch ID from the menu, Open at Login and its reads
+of the filter are untested on a Mac.
+
 ## Uninstall
 
 ```console
+$ blackice menu --login off
 $ blackice agent uninstall
 $ blackice stop
 $ rm -rf /Applications/Blackice.app
 ```
 
-If you used the install script, also remove `~/.local/bin/blackice`. With Homebrew, run the first two commands, then
+If blackice is in the menu bar, choose Quit Menu in its menu first. If you used the install script, also remove
+`~/.local/bin/blackice`. With Homebrew, run the first three commands, then
 `brew uninstall --cask blackice` instead of `rm`. Homebrew cannot deactivate the extension, so run `blackice stop`
 first. `brew uninstall --zap --cask blackice` also removes `~/Library/Logs/blackice`, but not your settings in
 `~/.config/blackice`.
@@ -268,6 +299,9 @@ right away. macOS replaces the running extension with the one with the higher bu
 the new one answers over XPC. If it does not, `start` says so and exits with status 75: restart the Mac, then run
 `blackice start` again. The daemon needs nothing: when the old extension stops, the daemon's connection ends, it
 exits, and launchd starts it again from the new app.
+
+If blackice is in the menu bar, quit it from its menu and open Blackice.app again after `start`, so that it runs the
+new binary and reaches the new extension.
 
 Upgrading to 0.3.2 or an earlier version, restart the Mac after `start` even when it succeeds. Up to 0.3.2 every
 build's extension listened on the same XPC service name. On macOS 27.0.1 the replaced build's process still held that
