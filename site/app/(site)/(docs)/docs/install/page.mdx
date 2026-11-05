@@ -4,11 +4,11 @@ export const metadata = getDocsMetadata('/docs/install')
 
 # Install
 
-Install blackice 0.4.3 with the install script, Homebrew or the release zip, check it, start it, remove it and roll it back.
+Install blackice 0.4.4 with the install script, Homebrew or the release zip, check it, start it, remove it and roll it back.
 
 <Status />
 
-The release package is `Blackice-0.4.3.zip` plus `Blackice-0.4.3.zip.sha256`, attached to the [GitHub release](https://github.com/ValentinTorassa/blackice/releases/tag/v0.4.3). On 3 November 2026 the Homebrew section ran from the published 0.1.0 release, as an upgrade over a build installed by hand ([P5-02](https://github.com/ValentinTorassa/blackice/blob/main/evidence/P5-02-homebrew-upgrade-from-release-macos.md)), and the install script checked the release and installed it into a temporary folder instead of `/Applications` ([P5-03](https://github.com/ValentinTorassa/blackice/blob/main/evidence/P5-03-curl-install-script-sandbox-macos.md)). With 0.2.1, the uninstall steps and the script installing into `/Applications` ran from the published release ([P5-04](https://github.com/ValentinTorassa/blackice/blob/main/evidence/P5-04-install-start-faults-from-release-macos.md)). With a 0.3.0 candidate, the same steps, the first `start` with its lists and fx set up by `start` ran from no configuration and no fx ([P5-06](https://github.com/ValentinTorassa/blackice/blob/main/evidence/P5-06-onboarding-from-zero-macos.md)).
+The release package is `Blackice-0.4.4.zip` plus `Blackice-0.4.4.zip.sha256`, attached to the [GitHub release](https://github.com/ValentinTorassa/blackice/releases/tag/v0.4.4). On 3 November 2026 the Homebrew section ran from the published 0.1.0 release, as an upgrade over a build installed by hand ([P5-02](https://github.com/ValentinTorassa/blackice/blob/main/evidence/P5-02-homebrew-upgrade-from-release-macos.md)), and the install script checked the release and installed it into a temporary folder instead of `/Applications` ([P5-03](https://github.com/ValentinTorassa/blackice/blob/main/evidence/P5-03-curl-install-script-sandbox-macos.md)). With 0.2.1, the uninstall steps and the script installing into `/Applications` ran from the published release ([P5-04](https://github.com/ValentinTorassa/blackice/blob/main/evidence/P5-04-install-start-faults-from-release-macos.md)). With a 0.3.0 candidate, the same steps, the first `start` with its lists and fx set up by `start` ran from no configuration and no fx ([P5-06](https://github.com/ValentinTorassa/blackice/blob/main/evidence/P5-06-onboarding-from-zero-macos.md)).
 
 You need a Mac with Apple silicon (the build is arm64 only), macOS 14 or later, and an admin account. blackice has run on macOS 27.0.1 only.
 
@@ -36,9 +36,9 @@ The first command tells Homebrew to trust this cask: Homebrew loads casks from t
 Download both files into the same folder, then, in Terminal, in that folder:
 
 ```console
-$ shasum -a 256 -c Blackice-0.4.3.zip.sha256
-Blackice-0.4.3.zip: OK
-$ ditto -x -k Blackice-0.4.3.zip .
+$ shasum -a 256 -c Blackice-0.4.4.zip.sha256
+Blackice-0.4.4.zip: OK
+$ ditto -x -k Blackice-0.4.4.zip .
 $ codesign --verify --strict --deep --verbose=2 Blackice.app
 $ codesign -dvv Blackice.app 2>&1 | grep -E '^(Identifier|TeamIdentifier)='
 Identifier=com.valentorassa.blackice
@@ -72,7 +72,7 @@ Use the folder on the `PATH`, or a script that runs the full path, rather than a
 `blackice start` reads `~/.config/blackice/blackice.toml` unless you pass `--config PATH`. If the file is not there, `start` asks a few questions and writes it. You pick the answers from lists with the arrow keys:
 
 - the mode;
-- in ask mode, who answers: fx, Claude Code, Codex, opencode, or you;
+- in ask mode, who answers: fx, Claude Code, or you (for now Codex and opencode are set up with `blackice agent connect codex` or `opencode` instead);
 - apps to trust, from the apps and system extensions running now (a VPN client's network extension, such as Tailscale's, is one). Each may reach any host, and "Another app" takes a path such as `/Applications/Slack.app` or a signing identifier.
 
 If you pick an agent, `start` also sets it up, as `blackice agent connect` does for that agent (see "Let an agent answer"). It stays in accept-all until the agent is installed, signed in and tested, and loads ask mode at the end, so nothing waits on an answer before the agent can give it. If the agent cannot be set up, or you stop the setup with Control-C, blackice stays on in accept-all, filtering nothing, as before that first start, and says so. Finish it later with `blackice agent connect` and its name, or filter without an agent with `blackice mode ask` (you answer with `blackice approve` and `deny`) or `blackice mode block-all`; until then `blackice status` says the same. `blackice init` asks the same questions without starting anything. Or write the file yourself, starting in accept-all, which lets everything through and only logs:
@@ -194,7 +194,7 @@ The mark is full in ask and block-all, and dimmed when blackice is off, in accep
 - the mode the filter decides in, or why blackice is off or not reachable. As `blackice status` does, it says when the filter did not take the saved settings and when an upgrade needs `blackice start`;
 - each connection that waits, as app → host:port with the seconds left, and in its submenu Allow for 10 Minutes, Allow for 1 Hour and Deny: the same as `blackice approve --for` and `blackice deny`, with Touch ID;
 - Recent: the latest verdict from the event log on one line, with how long ago, and the last five in its submenu; for an hour, a warning when the daemon refused a hook program whose signature did not match;
-- Mode, to switch between Accept All, Ask with an agent answering (one item per agent; those not connected are greyed out with the command that connects them), Ask: You (Manual) and Block All, with Touch ID, as `blackice mode` and `blackice mode ask --agent` do, while the filter answers;
+- Mode, to switch between Accept All, Ask with an agent answering (one item per agent; fx and Claude Code are greyed out with the command that connects them until they are connected, and for now Codex and opencode show only once connected), Ask: You (Manual) and Block All, with Touch ID, as `blackice mode` and `blackice mode ask --agent` do, while the filter answers;
 - a warning when there are hooks and the daemon that runs them is not running;
 - Stop Filtering, with Touch ID, as `blackice stop` does: the filter and its network extension go, and `blackice start` turns them on again;
 - the version, and Quit Menu.

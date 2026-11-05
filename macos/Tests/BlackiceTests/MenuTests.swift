@@ -274,8 +274,9 @@ struct MenuPresentationTests {
         #expect(!off.contains { $0.key == "hooks" })
     }
 
-    /// Mode: Accept All, Ask with each agent (only those with a hook can be chosen) and with you,
-    /// Block All; the check mark on the mode, and in ask mode on who answers.
+    /// Mode: Accept All, Ask with each agent (only those with a hook can be chosen; Codex and
+    /// opencode show only once connected) and with you, Block All; the check mark on the mode, and in
+    /// ask mode on who answers.
     @Test func theModeSubmenuSaysWhoAnswers() throws {
         let ask = try saved(.ask), accept = try saved(.acceptAll)
         let who = Answering(agents: [.fx, .claudeCode], answerer: .agent(.claudeCode))
@@ -285,13 +286,24 @@ struct MenuPresentationTests {
             Issue.record("no Mode line")
             return
         }
-        #expect(choices.map(\.title) == ["Accept All", "Ask: fx", "Ask: Claude Code", "Ask: Codex", "Ask: opencode",
-                                          "Ask: You (Manual)", "Block All"])
+        #expect(choices.map(\.title) == ["Accept All", "Ask: fx", "Ask: Claude Code", "Ask: You (Manual)", "Block All"])
         #expect(choices.filter(\.checked).map(\.title) == ["Ask: Claude Code"])
-        #expect(choices.filter(\.enabled).map(\.title) == ["Accept All", "Ask: fx", "Ask: Claude Code", "Ask: You (Manual)", "Block All"])
-        #expect(choices.map(\.detail) == [nil, nil, nil, "blackice agent connect codex", "blackice agent connect opencode", nil, nil])
-        #expect(choices.map(\.answerer) == [nil, .agent(.fx), .agent(.claudeCode), .agent(.codex), .agent(.opencode), .you, nil])
-        #expect(choices.map(\.mode) == [.acceptAll, .ask, .ask, .ask, .ask, .ask, .blockAll])
+        #expect(choices.allSatisfy(\.enabled) && choices.allSatisfy { $0.detail == nil })
+        #expect(choices.map(\.answerer) == [nil, .agent(.fx), .agent(.claudeCode), .you, nil])
+        #expect(choices.map(\.mode) == [.acceptAll, .ask, .ask, .ask, .blockAll])
+
+        // fx not connected: greyed out with its command. Codex connected: listed, after Claude Code.
+        let others = MenuSnapshot(filter: .on(saved: ask, hooks: 1), pending: answering(ask, []),
+                                  answering: Answering(agents: [.claudeCode, .codex], answerer: .agent(.codex)))
+        guard let listedEntry = MenuPresentation.menu(others, context).first(where: { $0.key == "mode" }),
+              case .modes(let listed) = listedEntry.kind else {
+            Issue.record("no Mode line")
+            return
+        }
+        #expect(listed.map(\.title) == ["Accept All", "Ask: fx", "Ask: Claude Code", "Ask: Codex", "Ask: You (Manual)", "Block All"])
+        #expect(listed.filter(\.checked).map(\.title) == ["Ask: Codex"])
+        #expect(listed.filter(\.enabled).map(\.title) == ["Accept All", "Ask: Claude Code", "Ask: Codex", "Ask: You (Manual)", "Block All"])
+        #expect(listed.map(\.detail) == [nil, "blackice agent connect fx", nil, nil, nil, nil])
 
         // In accept-all the check mark is on Accept All, whoever would answer in ask mode.
         let quiet = MenuSnapshot(filter: .on(saved: accept, hooks: 1), pending: answering(accept, []), answering: who)
