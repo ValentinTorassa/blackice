@@ -362,12 +362,33 @@ public enum FilterPolicy {
     }
 
     /// Whether a flow decided with the configuration of `generation` may still start to wait, for
-    /// a lookup or an event, or be let through by an answer. Installing a configuration drops
-    /// every paused flow (`configuration_changed`), but a flow callback that read the snapshot
+    /// a lookup or an event, or be let through by an answer. Installing a configuration ends
+    /// every paused flow (`afterChange`), but a flow callback that read the snapshot
     /// before the change can reach the pending list after that drop, and an answer taken just
     /// before the change can be applied after it. Such a flow is dropped the same way.
     public static func isCurrent(_ generation: UInt64, installed: ProviderConfiguration?) -> Bool {
         installed.map { $0.generation == generation } ?? false
+    }
+
+    /// A flow that waits, paused or held, when another configuration is installed. The new one
+    /// decides it again, with no approval (an answer given under the old configuration never lets
+    /// a flow through under the new one) and the host answers cached now, looking nothing up. A
+    /// verdict that allows it outright lets it go, with that verdict's reason and
+    /// `;configuration_changed` (`accept_all;configuration_changed`): accept-all, a rule, the Apple
+    /// services table, loopback. Anything else drops it, as every such flow was before
+    /// (`configuration_changed`): a verdict that would ask, look the host up or read the server
+    /// name first. `serverName` is the one read from a flow paused after its hello.
+    public static func afterChange(_ flow: FlowFacts, serverName: String?, echPresent: Bool,
+                                   snapshot: ProviderConfiguration?,
+                                   address: @escaping (String, IPAddress?) -> AddressCheck) -> FlowVerdict {
+        let dropped = FlowVerdict.drop(reason: "configuration_changed")
+        guard let snapshot else { return dropped }
+        let context = PolicyContext(approved: { _, _ in false }, address: address)
+        let verdict = serverName.map {
+            decide(flow, serverName: .serverName($0, echPresent: echPresent), snapshot: snapshot, context: context)
+        } ?? decide(flow, snapshot: snapshot, context: context)
+        guard case .allow = verdict else { return dropped }
+        return verdict.adding(";configuration_changed")
     }
 
     /// The releases of an answer or a deadline as they apply now: an allow for a flow decided

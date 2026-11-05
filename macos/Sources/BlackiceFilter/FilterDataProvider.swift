@@ -6,7 +6,7 @@
 // (https://github.com/ValentinTorassa/blackice-poc/blob/45a7870/macos/FilterExtension/FilterDataProvider.swift).
 // Kept: filter settings that also capture loopback; configuration snapshots replaced only by a
 // higher generation and a bad update never replacing a working one; held flows for reading the
-// TLS ClientHello, at most 256 and for 10 s, dropped when the configuration changes; unified
+// TLS ClientHello, at most 256 and for 10 s, ended when the configuration changes; unified
 // logging, which is diagnostic and can drop records. Changed: decisions come from
 // FilterPolicy (modes and [[allow]] rules) instead of blackice-poc's per-app policies, the
 // configuration is ProviderConfiguration, and every decided flow gets one log line.
@@ -14,10 +14,12 @@
 // Phase 2 (ask mode), also compiled only: flows wait paused while their host is looked up
 // (HostAddressCache) and while an event waits for an answer (AskState). Answers and the pending
 // list come in over XPC (BlackiceXPC.FilterServer); events and verdicts go out to the daemon on
-// its connection. The maintenance timer drops paused flows at their deadline. A configuration
-// change or a stop drops every paused flow; a flow decided with the configuration from before a
-// change neither starts to wait nor is let through by an answer after it, and each event carries
-// the generation it was raised under.
+// its connection. The maintenance timer drops paused flows at their deadline. A stop drops every
+// paused and held flow. A configuration change ends them too, and cancels their events: the new
+// configuration decides each one again, lets go what it allows outright and drops the rest
+// (FilterPolicy.afterChange). A flow decided with the configuration from before a change neither
+// starts to wait nor is let through by an answer after it, and each event carries the generation
+// it was raised under.
 //
 // Names from DNS answers, also compiled only: in ask and block-all the system resolver's port-53
 // flows are filtered in both directions instead of allowed outright. DNSFlowTable reads the
@@ -194,8 +196,14 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
         do {
             let candidate = try ProviderConfiguration(vendorConfiguration: filterConfiguration.vendorConfiguration)
             guard try snapshots.install(candidate) else { return }
-            dropHeld(reason: "configuration_changed") { _ in true }
-            dropPaused(reason: "configuration_changed")
+            // What waits under the old configuration is decided again by the new one: what it
+            // allows outright goes on, the rest is dropped (FilterPolicy.afterChange).
+            let decide = { [addresses] (facts: FlowFacts, serverName: String?, echPresent: Bool) in
+                FilterPolicy.afterChange(facts, serverName: serverName, echPresent: echPresent, snapshot: candidate,
+                                         address: { addresses.check(host: $0, address: $1) })
+            }
+            endHeld(matching: { _ in true }) { decide($0.facts, nil, false) }
+            endPaused { decide($0.facts, $0.serverName, $0.echPresent) }
             control("configuration_installed", candidate.summary)
         } catch {
             // A bad or stale update never replaces the configuration that works.
@@ -210,7 +218,7 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
             self.timer?.cancel(); self.timer = nil
             self.server?.stop(); self.server = nil
             self.dropHeld(reason: "provider_stopped") { _ in true }
-            self.dropPaused(reason: "provider_stopped")
+            self.endPaused { _ in .drop(reason: "provider_stopped") }
             self.askLock.lock()
             self.ask.approvals.removeAll()
             self.askLock.unlock()
@@ -400,7 +408,7 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
     private func place(_ verdict: FlowVerdict, _ paused: Paused, _ snapshot: ProviderConfiguration?,
                        now: TimeInterval, would: String? = nil) -> (Step, After) {
         let facts = paused.facts
-        // A configuration change installs the new snapshot, then drops what is paused under
+        // A configuration change installs the new snapshot, then ends what is paused under
         // askLock. A flow decided with the old snapshot that gets here after that drop must not
         // start to wait: its event would outlive the configuration it was raised under.
         switch verdict {
@@ -519,12 +527,14 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
     /// Resumes a flow paused by this provider. Called outside flow callbacks. A flow paused at
     /// the new-flow stage that still needs its server name read (TCP on the TLS port, named by
     /// the system or by a DNS answer) resumes into the hold: NEFilterDataProvider.h takes a
-    /// new-flow verdict, such as filterDataVerdict, for a flow paused in handleNewFlow.
-    private func resume(_ paused: Paused, allow: Bool) {
+    /// new-flow verdict, such as filterDataVerdict, for a flow paused in handleNewFlow. With
+    /// `outright`, the allow is a configuration's own verdict for the flow (FilterPolicy
+    /// afterChange), which reads no server name, so the flow passes at once.
+    private func resume(_ paused: Paused, allow: Bool, outright: Bool = false) {
         let verdict: NEFilterVerdict
         switch paused.stage {
         case .newFlow:
-            if allow && FilterPolicy.needsServerName(paused.facts) {
+            if allow && !outright && FilterPolicy.needsServerName(paused.facts) {
                 verdict = hold(paused.flow, paused.facts, snapshots.read())
             } else {
                 verdict = allow ? NEFilterNewFlowVerdict.allow() : NEFilterNewFlowVerdict.drop()
@@ -544,16 +554,18 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
         }
     }
 
-    /// Drops every paused flow, waiting for a lookup or for an answer, without an answer.
-    private func dropPaused(reason: String) {
+    /// Ends every paused flow, waiting for a lookup or for an answer, without an answer: each one
+    /// gets `verdict`, and an allow lets it through at once. Their events are cancelled.
+    private func endPaused(_ verdict: (Paused) -> FlowVerdict) {
         askLock.lock()
         let entries = ask.pending.removeAll()
         let waiting = lookups.removeAll()
         askLock.unlock()
         let snapshot = snapshots.read()
         for paused in waiting + entries.flatMap({ $0.flows.map(\.flow) }) {
-            resume(paused, allow: false)
-            log(paused.facts, .drop(reason: reason), snapshot, serverName: paused.serverName)
+            let decided = verdict(paused)
+            if case .allow = decided { resume(paused, allow: true, outright: true) } else { resume(paused, allow: false) }
+            log(paused.facts, decided, snapshot, serverName: paused.serverName)
         }
         for entry in entries { server?.send(.verdict(.cancelled, eventID: entry.event.id)) }
     }
@@ -607,14 +619,25 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
 
     /// Called outside flow callbacks, where NetworkExtension allows update().
     private func dropHeld(reason: String, matching predicate: (Held) -> Bool) {
+        endHeld(matching: predicate) { _ in .drop(reason: reason) }
+    }
+
+    /// Ends the held flows that match: each one gets `verdict`, and an allow lets its data
+    /// through without the server name. Called outside flow callbacks.
+    private func endHeld(matching predicate: (Held) -> Bool, verdict: (Held) -> FlowVerdict) {
         heldLock.lock()
         let removed = held.filter { predicate($0.value) }
         for id in removed.keys { held.removeValue(forKey: id) }
         heldLock.unlock()
         let snapshot = snapshots.read()
         for entry in removed.values {
-            update(entry.flow, using: .drop(), for: .outbound)
-            log(entry.facts, .drop(reason: reason), snapshot)
+            let decided = verdict(entry)
+            if case .allow = decided {
+                update(entry.flow, using: .allow(), for: .any)
+            } else {
+                update(entry.flow, using: .drop(), for: .outbound)
+            }
+            log(entry.facts, decided, snapshot)
         }
     }
 

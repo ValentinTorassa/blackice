@@ -10,6 +10,11 @@
   `would=drop:no_host`. Connections still go through at once; nothing is held, looked up or asked.
 - `blackice report [--last 1h]` sums the filter's log up: drops by reason and app, connections paused to ask by app,
   and in accept-all what ask mode would have asked about, by app. It reads `log show` and needs no Touch ID.
+- A configuration change lets the connections that wait go on when the new configuration allows them outright
+  (accept-all, a rule, the Apple services table, loopback), logged as `accept_all;configuration_changed` and the
+  like. Until now all of them were dropped (`configuration_changed`), so switching from ask mode to accept-all cut
+  what waited. The rest is still dropped, and an answer given under the old configuration still lets nothing
+  through under the new one.
 
 ## 0.4.0 (5 November 2026)
 
