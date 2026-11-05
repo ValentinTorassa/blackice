@@ -10,9 +10,10 @@ export const usage = `usage: npx blackice install [--force]
        npx blackice <command> [options]
 
   install [--force]   Download Blackice.app from the GitHub release for this package's version,
-                      check the zip's SHA-256, the app's signature (team M294LK997M) and
-                      Gatekeeper's assessment (notarized), and copy it to /Applications.
-                      --force replaces an installed Blackice.app.
+                      check the zip's SHA-256, the app's signature (team M294LK997M),
+                      Gatekeeper's assessment (notarized) and the app's version, and put it
+                      in /Applications. --force replaces an installed Blackice.app, unless it
+                      has a higher build.
   <command>           Anything else runs ${INSTALLED_BINARY}
                       with the same arguments, for example \`npx blackice help\`.
 

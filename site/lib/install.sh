@@ -4,16 +4,17 @@
 #   curl -fsSL https://blackice-macos.vercel.app/install.sh | sh
 #
 # Downloads the release zip and its checksum from GitHub, checks the checksum, the app's signature
-# and Gatekeeper's assessment (the checks of docs/install.md, step 1), copies Blackice.app to
-# /Applications and writes a `blackice` command to ~/.local/bin. It starts nothing: no extension,
-# no daemon. Options go after `sh -s --`:
+# and Gatekeeper's assessment (the checks of docs/install.md, step 1) and that the app is version
+# VERSION, copies Blackice.app to /Applications and writes a `blackice` command to ~/.local/bin.
+# It starts nothing: no extension, no daemon. Options go after `sh -s --`:
 #
-#   --force   replace an installed Blackice.app of another version
+#   --force   replace an installed Blackice.app of another version, unless it has a higher build
 #
 # BLACKICE_BIN_DIR picks another folder for the command. BLACKICE_ZIP=/path/to/Blackice-<version>.zip
 # installs a build that is not published yet, from that zip and the .sha256 file next to it, with
-# the same checks. The site serves this file at
-# /install.sh, and its build fails when VERSION differs from site/lib/release.ts.
+# the same checks. BLACKICE_APPLICATIONS=/absolute/folder puts Blackice.app there instead of
+# /Applications, for tests: macOS activates the extension only from /Applications. The site serves
+# this file at /install.sh, and its build fails when VERSION differs from site/lib/release.ts.
 
 set -eu
 
@@ -21,7 +22,9 @@ VERSION=0.3.2
 REPOSITORY=ValentinTorassa/blackice
 TEAM_ID=M294LK997M
 IDENTIFIER=com.valentorassa.blackice
-APP=/Applications/Blackice.app
+EXTENSION=Contents/Library/SystemExtensions/com.valentorassa.blackice.filter.systemextension
+APPLICATIONS=${BLACKICE_APPLICATIONS:-/Applications}
+APP=$APPLICATIONS/Blackice.app
 EXECUTABLE=$APP/Contents/MacOS/blackice
 SCRIPT_URL=https://blackice-macos.vercel.app/install.sh
 GUIDE=https://blackice-macos.vercel.app/docs/install
@@ -40,8 +43,12 @@ usage() {
   say ""
   say "BLACKICE_BIN_DIR sets the folder for the blackice command (default ~/.local/bin)."
   say "BLACKICE_ZIP installs an unpublished Blackice-$VERSION.zip, with its .sha256 beside it."
+  say "BLACKICE_APPLICATIONS puts Blackice.app in another folder, for tests."
   say "Guide: $GUIDE"
 }
+
+# Prints the value of key $2 in the Info.plist of bundle $1, or nothing.
+plist() { /usr/libexec/PlistBuddy -c "Print :$2" "$1/Contents/Info.plist" 2>/dev/null || true; }
 
 check_system() {
   [ "$(uname -s)" = Darwin ] || fail "blackice runs on macOS only"
@@ -65,7 +72,8 @@ fetch() {
     || fail "could not download $1"
 }
 
-# Downloads the release into $work and checks it. Sets $app to the checked Blackice.app.
+# Downloads the release into $work and checks it. Sets $app to the checked Blackice.app and
+# $build to its build number.
 download_and_check() {
   zip=Blackice-$VERSION.zip
   base=https://github.com/$REPOSITORY/releases/download/v$VERSION
@@ -131,17 +139,78 @@ download_and_check() {
     *) fail "Gatekeeper names another origin: $origin" ;;
   esac
   say "  Gatekeeper: accepted, source=Notarized Developer ID"
+
+  # The signature covers Info.plist, so these are the versions the release was signed with. Another
+  # validly signed build under this zip's name, such as an older release, stops here.
+  version=$(plist "$app" CFBundleShortVersionString)
+  build=$(plist "$app" CFBundleVersion)
+  [ "$version" = "$VERSION" ] || fail "the zip holds Blackice.app ${version:-of no version}, not $VERSION"
+  case $build in
+    '' | 0* | *[!0-9]*) fail "the app's build number is ${build:-missing}, not a positive whole number" ;;
+  esac
+  if [ "$(plist "$app/$EXTENSION" CFBundleShortVersionString)" != "$VERSION" ] \
+    || [ "$(plist "$app/$EXTENSION" CFBundleVersion)" != "$build" ]; then
+    fail "the network extension inside the app is not version $VERSION, build $build, as the app is"
+  fi
+  say "  version: $VERSION, build $build"
 }
 
-# Copies the checked app to /Applications, replacing an installed copy if $replace is 1.
+# Stops if the installed app has a higher build number than the checked one: macOS replaces an
+# activated extension only with the same or a higher build, so the older app could not start.
+check_not_older() {
+  case $installed_build in
+    '' | *[!0-9]*) return ;;
+  esac
+  [ "$installed_build" -le "$build" ] || fail "$APP is build $installed_build, newer than build $build of" \
+    "$VERSION. To go back to an older build, uninstall blackice first, as the guide says: $GUIDE"
+}
+
+# Puts the checked app at $APP, replacing an installed copy if $replace is 1. The app is copied
+# into a new folder beside $APP, $stage, and the copy is checked there. Then the installed copy is
+# renamed into $stage and the new one renamed to $APP. Renaming within a folder is one step, and if
+# anything stops the script after the installed copy was renamed, cleanup renames it back. The
+# previous copy is removed only once the new one is in place.
 install_app() {
+  stage=$(mktemp -d "$APPLICATIONS/.blackice-install.XXXXXX") \
+    || fail "could not write to $APPLICATIONS (it needs an admin account)"
+  /usr/bin/ditto "$app" "$stage/Blackice.app" || fail "could not copy Blackice.app to $APPLICATIONS"
+  verify=$(/usr/bin/codesign --verify --strict --deep "$stage/Blackice.app" 2>&1) \
+    || fail "the copy of Blackice.app in $APPLICATIONS does not verify: $verify"
+
   if [ "$replace" = 1 ]; then
-    say "Removing the installed $APP"
-    rm -rf "$APP" || fail "could not remove $APP. Replacing an app needs App Management for your terminal:" \
-      "System Settings > Privacy & Security > App Management."
+    say "Replacing the installed $APP"
+    # Set before the rename, so that cleanup finds it whenever the rename happened.
+    previous=$stage/previous.app
+    if ! mv "$APP" "$previous"; then
+      previous=''
+      fail "could not move $APP. Replacing an app needs App Management for your terminal:" \
+        "System Settings > Privacy & Security > App Management."
+    fi
   fi
-  /usr/bin/ditto "$app" "$APP" || fail "could not copy Blackice.app to /Applications (it needs an admin account)"
-  say "Blackice.app $VERSION is in /Applications."
+  # mv onto a folder would move the app into it.
+  if [ -e "$APP" ] || [ -L "$APP" ]; then
+    fail "something else is at $APP now; left it as it is"
+  fi
+  mv "$stage/Blackice.app" "$APP" || fail "could not move the new Blackice.app to $APP"
+  previous=''
+  rm -rf "$stage" || say "Could not remove $stage, which holds the previous Blackice.app; move it to the Trash."
+  stage=''
+  say "Blackice.app $VERSION is in $APPLICATIONS."
+}
+
+# Runs on exit. If the installed app was renamed aside and the new one is not in its place, it
+# renames the installed app back; if it cannot, it says where that app is and leaves it there.
+cleanup() {
+  if [ -n "$previous" ] && { [ -e "$previous" ] || [ -L "$previous" ]; }; then
+    if [ ! -e "$APP" ] && [ ! -L "$APP" ] && mv "$previous" "$APP"; then
+      printf 'blackice install: put the previous Blackice.app back at %s\n' "$APP" >&2
+    else
+      printf 'blackice install: the previous Blackice.app is at %s\n' "$previous" >&2
+      stage=''
+    fi
+  fi
+  [ -z "$stage" ] || rm -rf "$stage" || true
+  rm -rf "$work" || true
 }
 
 # Writes the blackice command: a script that runs the app's executable by its full path, since
@@ -203,26 +272,33 @@ main() {
     esac
   done
 
+  case $APPLICATIONS in
+    /*) ;;
+    *) fail "BLACKICE_APPLICATIONS should be an absolute path, not $APPLICATIONS" ;;
+  esac
   check_system
 
-  replace=0
+  replace=0 installed_build=''
   if [ -e "$APP" ]; then
-    installed=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Contents/Info.plist" 2>/dev/null || true)
+    installed=$(plist "$APP" CFBundleShortVersionString)
     if [ "$installed" = "$VERSION" ] && [ "$force" = 0 ]; then
-      say "Blackice.app $VERSION is already in /Applications."
+      say "Blackice.app $VERSION is already in $APPLICATIONS."
       install_command
       exit 0
     fi
     [ "$force" = 1 ] || fail "$APP ${installed:-(unknown version)} is already there. To replace it with $VERSION, run" \
       "\`curl -fsSL $SCRIPT_URL | sh -s -- --force\`, then \`blackice start\`, and restart the Mac."
     replace=1
+    installed_build=$(plist "$APP" CFBundleVersion)
   fi
 
   work=$(mktemp -d "${TMPDIR:-/tmp}/blackice-install.XXXXXX")
-  trap 'rm -rf "$work"' EXIT
+  stage='' previous=''
+  trap cleanup EXIT
   trap 'exit 1' HUP INT TERM
 
   download_and_check
+  check_not_older
   install_app
   install_command
   next_steps
