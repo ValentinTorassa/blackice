@@ -123,6 +123,14 @@ Most connections carry a name: the host name the app asked for, a name from the 
 - UDP with no name (WebRTC, games, network discovery, QUIC) is dropped with no event, as are connections to multicast and broadcast addresses: they would fill the queue of questions with ones that get denied anyway. An address entry, `*` or loopback still lets UDP through.
 - Block-all drops connections with no name unless an address entry or `*` covers them.
 
+**Encrypted DNS.** When a DNS server offers it, macOS tries DNS over HTTPS or TLS on its own, on port 443 or 853. blackice can't read those answers, and they are what names the addresses apps connect to. So in ask and block-all it drops the resolver's (`com.apple.mDNSResponder`) encrypted DNS at once, with no event, as `encrypted_dns`, and macOS falls back to plain DNS on port 53. If you set up an encrypted resolver on purpose, give the resolver a rule for it. Its lookups then go encrypted, so blackice no longer learns names from them, and more connections are asked about by address.
+
+```toml
+[[allow]]
+app = "com.apple.mDNSResponder"
+hosts = ["dns.google"]
+```
+
 ## When blackice drops a connection
 
 The app sees the connection fail with "Bad file descriptor" (EBADF) when it connects. `ssh` and the Tailscale CLI print `connect: Bad file descriptor`. That means blackice dropped the connection: it is not a network fault or a bug in the app. macOS gives a filter no way to refuse a connection with another error. The filter's log in [Use it](/docs/install#6-use-it) shows the reason.
