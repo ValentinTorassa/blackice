@@ -15,12 +15,17 @@ blackice.toml, the event a hook receives and how it answers. The format can stil
 mode = "ask"            # "accept-all", "ask" or "block-all"
 timeout_seconds = 10    # no answer in time means deny
 apple_services = true   # macOS's own services reach Apple's hosts without a rule (the default)
+loopback = true         # connections to 127.0.0.0/8 and ::1 pass in every mode (the default)
 
 # Permanent rules. Checked before anything is asked.
 [[allow]]
 app = "com.example.agent"      # signing identifier
 team = "ABCDE12345"            # Team ID
 hosts = ["api.example.com"]
+
+[[allow]]
+app = "com.apple.ssh"          # Apple's own ssh, signed without a Team ID
+hosts = ["100.64.0.0/10", "fd7a:115c:a1e0::/48", "*.ts.net"]
 
 # Asked about each connection that waits. It answers on its last line of output.
 [[hook]]
@@ -41,7 +46,7 @@ The parser is strict: an unknown key or a value of the wrong type stops blackice
 Each `[[allow]]` rule names one app and the hosts it may reach, in every mode.
 
 - `app` is the signing identifier and `team` the Team ID, both checked against the signature of the running code. Leave `team` out only for Apple's own programs, which macOS signs without one; such a rule matches only code Apple signed.
-- `hosts` lists exact host names (`api.example.com`) and `*.domain` patterns. `*.example.com` covers every subdomain of `example.com` but not `example.com` itself.
+- `hosts` lists exact host names (`api.example.com`), `*.domain` patterns, and IP addresses and CIDR ranges (see [addresses and ranges](#addresses-and-ranges)). `*.example.com` covers every subdomain of `example.com` but not `example.com` itself.
 - A host counts only when the address the app connects to is among the host's answers from the system resolver. Otherwise ask mode asks and block-all drops, and the log says `address_mismatch`.
 - Rules say nothing about ports.
 - On port 443 a rule or an approval also needs the TLS server name the app sends to match: it must be the same host, or another host the app may reach. Otherwise the connection is dropped and the log says `server_name_mismatch`. A `*` rule skips this check.
@@ -61,7 +66,7 @@ TeamIdentifier=W5364U7YZB
 
 It is meant for two kinds of app.
 
-**VPN clients and DNS proxies.** They connect by address. With Tailscale's DNS on, macOS sends its lookups to 100.100.100.100, and Tailscale's network extension forwards them with its own sockets. Without a rule, blackice drops those connections because they have no host name, so in ask and block-all names stop resolving and Tailscale goes offline. This rule is for the standalone Tailscale build, downloaded from tailscale.com; other builds may use another identifier, so check yours with `codesign -dv`.
+**VPN clients and DNS proxies.** They connect by address. With Tailscale's DNS on, macOS sends its lookups to 100.100.100.100, and Tailscale's network extension forwards them with its own sockets. Without a rule, block-all drops those connections because they have no host name, so names stop resolving and Tailscale goes offline, and ask mode asks about each of them by its address, so lookups wait for answers. This rule is for the standalone Tailscale build, downloaded from tailscale.com; other builds may use another identifier, so check yours with `codesign -dv`.
 
 ```toml
 [[allow]]
@@ -77,6 +82,49 @@ hosts = ["*"]
 **The risk.** Everything that app does is allowed, with no host or address check. An agent that can drive the app, by opening a URL in the browser for example, can use it to reach anything and to send data anywhere. Give `*` only to an app you would allow in accept-all anyway.
 
 </Callout>
+
+## Addresses and ranges
+
+`hosts` also takes IPv4 and IPv6 addresses and CIDR ranges, next to host names. For an app that reaches a few networks you know, such as `ssh` to the machines on your Tailscale network, they are narrower than `*`:
+
+```toml
+[[allow]]
+app = "com.apple.ssh"
+hosts = ["100.64.0.0/10", "fd7a:115c:a1e0::/48", "10.0.0.5", "*.ts.net"]
+```
+
+- An address entry matches a connection to an address it holds, with or without a host name, and the log says `rule_line_N;address`. No lookup applies: the rule names the address itself. Name entries in the same rule keep their checks.
+- On port 443 an address entry does not check the TLS server name. An entry for an address many sites share, such as a CDN's, lets the app reach all of them there.
+- IPv4 is four numbers from 0 to 255 with no leading zeros. `010.0.0.1`, `10.1` and `0x0a.0.0.1` are errors, because programs disagree on what they mean. IPv6 may be written in any standard form.
+- A range's prefix is a number from 1 to 32 for IPv4 and from 1 to 128 for IPv6, and the address must have no bit set after it: `10.0.0.5/8` is an error that says to write `10.0.0.0/8`.
+- `0.0.0.0/0` and `::/0` are errors: write `hosts = ["*"]` for any destination.
+- An entry names no interface, so `%en0` is an error and a link-local entry such as `fe80::/10` matches on every interface. An IPv4-mapped address such as `::ffff:10.0.0.5` is an error: write `10.0.0.5`.
+- Addresses count toward the 256 entries of a rule, and the same address or range twice is an error.
+
+## Loopback
+
+With `loopback = true`, the default, connections to 127.0.0.0/8 and ::1 pass in every mode, before any rule, and the log says `loopback`. Command-line tools often talk to a service on the same Mac this way, such as the Tailscale CLI to the Tailscale app.
+
+`loopback = false` filters them like any other connection: ask mode asks about them, by address when they have no host name, and block-all needs a rule for them, such as `hosts = ["127.0.0.1"]`.
+
+<Callout>
+
+**The trade-off.** With loopback allowed, any app can use a proxy or relay that listens on the Mac. The proxy's own connections out are still filtered, under its own identity, so this matters when the proxy's app may reach more than the first app: a VPN client with a `*` rule that offers a local SOCKS or HTTP proxy relays for every app.
+
+</Callout>
+
+## Connections with no name
+
+Most connections carry a name: the host name the app asked for, a name from the DNS answers the Mac received for that address, or the TLS server name on port 443. In ask mode a connection with none of these, such as `ssh` to `100.66.32.75`, is asked about by its address: the event's `host` is the address, the same text as `ip`.
+
+- An approval of the address, `blackice approve --app com.apple.ssh --host 100.66.32.75 --for 1h` or a hook's answer to that event, covers only connections from that app to exactly that address that have no name. A connection with a name is asked about by its name.
+- On port 443 blackice reads the TLS server name first. A client that connects to an address sends none, and the connection is then asked about by its address.
+- QUIC, on UDP port 443, is not asked about: blackice does not read its name, and apps try again over TCP.
+- Block-all drops connections with no name unless an address entry or `*` covers them.
+
+## When blackice drops a connection
+
+The app sees the connection fail with "Bad file descriptor" (EBADF) when it connects. `ssh` and the Tailscale CLI print `connect: Bad file descriptor`. That means blackice dropped the connection: it is not a network fault or a bug in the app. macOS gives a filter no way to refuse a connection with another error. The filter's log in [Use it](/docs/install#6-use-it) shows the reason.
 
 ## macOS's own services
 
@@ -135,7 +183,7 @@ The hook gets the event as JSON on stdin. The daemon also writes it to `event.js
 }
 ```
 
-Ad hoc signed code has `"cdhash"` in `app` instead of `signing_id` and `team_id`. The event carries no token: the token that answers it stays in the extension and the daemon.
+Ad hoc signed code has `"cdhash"` in `app` instead of `signing_id` and `team_id`. For a [connection with no name](#connections-with-no-name), `host` is the address, the same text as `ip`. The event carries no token: the token that answers it stays in the extension and the daemon.
 
 ## How a hook answers
 

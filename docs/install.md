@@ -128,7 +128,7 @@ $ blackice validate ~/.config/blackice/blackice.toml
 For ask mode, add a `[[hook]]` that asks an agent and a rule that lets the agent reach its model provider, bound to its
 signature; [`integrations/fx/README.md`](../integrations/fx/README.md) has the one for fx. Before turning ask mode on,
 read the open problems in [`plan.md`](plan.md): with no rules for them, the Mac's own services wait and are dropped,
-and Tailscale's DNS stops name lookups in ask and block-all.
+and Tailscale's DNS stops name lookups in block-all and makes them wait for answers in ask mode.
 
 ## 4. Start the filter
 
@@ -204,6 +204,10 @@ goes to fx, and the setup stops once fx has quit. It knows fx only, so far.
   ```
 
   The app and host of each line show as `<private>`; the verdict and reason are public.
+- A connection blackice drops fails in the app with "Bad file descriptor" (EBADF) when it connects: `ssh` and the
+  Tailscale CLI print `connect: Bad file descriptor`. That is blackice, not the network or a bug in the app, and the
+  filter's log above shows why (`flow drop` and the reason). macOS gives a filter no way to refuse with another
+  error.
 
 After changing `blackice.toml`, run `blackice start` again to load it (Touch ID).
 
