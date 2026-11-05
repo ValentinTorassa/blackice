@@ -58,5 +58,20 @@
     "id": "12",
     "expect": "deny",
     "why": "ad hoc binary in a hidden cache dir to dynamic DNS"
+  },
+  {
+    "id": "13",
+    "expect": "approve",
+    "why": "ssh to a Tailscale address, IP as host"
+  },
+  {
+    "id": "14",
+    "expect": "deny",
+    "why": "unknown binary in Downloads to a public IP on 4444"
+  },
+  {
+    "id": "15",
+    "expect": "deny",
+    "why": "curl to a public IP with no name"
   }
 ]

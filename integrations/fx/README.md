@@ -127,7 +127,7 @@ Each event gets its own private directory with `event.json` and the repository's
 skill in it, and fx runs there, as under the hook. `AGENT_HOME` is the `HOME` fx runs with; it defaults to yours.
 `KEEP=1` keeps the work directory with fx's stdout, stderr and exit status for each event.
 
-The twelve events cover:
+The fifteen events cover:
 
 - apps reaching their own servers: VS Code, Chrome, Docker and GitHub Desktop;
 - two programs signed ad hoc, named by their cdhash: a Homebrew `gh` reaching the GitHub API,
@@ -135,11 +135,14 @@ The twelve events cover:
 - an unknown binary in `~/Downloads` reaching a paste site;
 - a lookalike domain;
 - SSH to a dynamic DNS name;
+- three connections with no name, whose host is their address: `ssh` to a Tailscale address
+  (approve), an unknown binary in `~/Downloads` to a public address on port 4444, and `curl` to
+  a public address (both deny);
 - an event with no host;
 - instructions injected into the host and into the app path.
 
-The eval has not run with the 0.4.0 skill yet. With the 0.3 skill, which had fx run `blackice approve` and `deny`
-with the token, against a stub:
+The eval has not run with the 0.4.0 skill yet, nor with the three events that name an address. With the 0.3 skill,
+which had fx run `blackice approve` and `deny` with the token, against a stub:
 
 On 2 November 2026, with fx 0.0.16 signed in with a ChatGPT account, four runs each came out
 ten for ten:
