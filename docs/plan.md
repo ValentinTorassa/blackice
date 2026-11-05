@@ -196,11 +196,12 @@ and each run on a Mac is recorded in [`evidence/`](../evidence/).
    should reach it only as the file it reads. One agent answers at a time: since 0.4.2 each connected agent keeps
    its hook, and `answers` in `[agent]` names the one that runs (or `you`), switched with `blackice mode ask --agent`
    or the menu's Mode.
-   Another decider, written on 5 November 2026 for 0.4.2 and not yet run with a model that answers: opencode 2.2.5
+   Another decider, written on 5 November 2026 after 0.4.2: opencode 2.2.5
    ([`integrations/opencode/`](../integrations/opencode/README.md)), with a provider picked at `agent connect`,
    a `HOME` of its own for that provider's sign-in, reading the event's directory as its only tool, and a rule for
    that provider's hosts. Each provider's host was checked with a key that was not one, through a proxy that
-   logged what opencode reached; the hosts of OpenAI's ChatGPT sign-in have not been seen under the hook.
+   logged what opencode reached. With a ChatGPT sign-in and `gpt-6-luna` it decided the 23 eval cases as expected,
+   reaching `chatgpt.com` only; with Z.AI's `glm-5.3-flash` it decided 22, and approved Slack on port 6667.
    [`integrations/eval/run.sh`](../integrations/eval/run.sh) runs any decider over the same 20 events the way the
    daemon runs a program hook; Claude Code 2.1.317 with Sonnet decided all 20 as expected, twice (as a `run` line,
    then as a program hook), in 3 to 8 s each.

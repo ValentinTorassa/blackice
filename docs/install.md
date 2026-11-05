@@ -216,8 +216,10 @@ Its home is a `HOME` of its own, `~/.config/blackice/agent/.opencode`, signed in
 its whole prompt, loads no opencode configuration, plugin or skill from a folder of yours, and keeps the event
 off its stdin. Its rule covers that provider's hosts only, such as `api.z.ai` for Z.AI. Connecting it again with
 another provider adds that provider's hosts and leaves the old provider's in the rule; remove those by hand if
-you want the rule narrow. Not verified yet: the eval has not been run with a model that answers, and the hosts
-of OpenAI's ChatGPT sign-in, `chatgpt.com` and `auth.openai.com`, have not been seen under the hook.
+you want the rule narrow. On 5 November 2026 it decided the 23 eval cases as expected with OpenAI's `gpt-6-luna`
+on a ChatGPT plan, in 3.9 s at the median, reaching `chatgpt.com` only; with Z.AI's `glm-5.3-flash` it decided 22,
+in 12.8 s, and approved Slack on port 6667. The renewal of a ChatGPT sign-in at `auth.openai.com` has not been seen
+under the hook.
 [`integrations/opencode/README.md`](../integrations/opencode/README.md) has the details.
 
 Each agent decides with a small model, since a decision is a short read and a two-line answer: fx with Claude

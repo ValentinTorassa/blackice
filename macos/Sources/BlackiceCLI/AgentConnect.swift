@@ -241,7 +241,8 @@ public struct AgentProvider: Equatable, Sendable {
     /// what it reached: each reached only its host here, and stopped at the provider's refusal.
     /// OpenAI's are three: api.openai.com for an API key, which that run reached, and, for a
     /// ChatGPT sign-in, chatgpt.com (opencode 2.2.5 holds its backend-api/codex address) and
-    /// auth.openai.com, where the sign-in is renewed; those two have not been seen under the hook.
+    /// auth.openai.com, where the sign-in is renewed. Later that day, decisions with a ChatGPT sign-in
+    /// reached chatgpt.com only; the renewal at auth.openai.com has not been seen.
     /// The models are the plans' small ones: the coding plans' are included, the others cost $0.10
     /// and $0.50 per million tokens in and out in models.dev's list that day.
     public static let openCode = [

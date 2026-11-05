@@ -8,6 +8,8 @@ New:
   its own, and adds a rule for that provider's hosts only. `--model PROVIDER/MODEL` skips the list. Its hook gives it
   the read tool and no other, in the event's directory, with blackice's instructions as its whole prompt, and no
   configuration, plugin or skill from a folder of yours. It is in the first start's list and in the menu's Mode.
+  On 5 November 2026 it decided the 23 eval cases as expected with `openai/gpt-6-luna` on a ChatGPT plan, and 22
+  with Z.AI's `glm-5.3-flash`, which approved Slack on port 6667.
 
 ## 0.4.2 (5 November 2026)
 
