@@ -197,13 +197,69 @@ struct MessagesTests {
     }
 
     @Test func peersAreNamedByTeam() {
-        #expect(Peers.machServiceName(teamID: "ABCDE12345") == "ABCDE12345.com.valentorassa.blackice.filter")
+        #expect(Peers.machServiceName(teamID: "ABCDE12345", build: "16") == "ABCDE12345.com.valentorassa.blackice.filter.16")
         #expect(Peers.clientRequirement(teamID: "ABCDE12345")
             == #"anchor apple generic and identifier "com.valentorassa.blackice" and certificate leaf[subject.OU] = "ABCDE12345""#)
         #expect(Peers.filterRequirement(teamID: "ABCDE12345")
             == #"anchor apple generic and identifier "com.valentorassa.blackice.filter" and certificate leaf[subject.OU] = "ABCDE12345""#)
-        #expect(Peers.machServiceName(teamID: "abc") == nil)
+        #expect(Peers.machServiceName(teamID: "abc", build: "16") == nil)
         #expect(Peers.clientRequirement(teamID: "ABCDE1234\"") == nil)
+    }
+
+    /// Each build has its own Mach service, under the app group, so a new build's launchd job never
+    /// asks for the name the replaced build's job still holds.
+    @Test func eachBuildHasItsOwnMachService() {
+        let fifteen = Peers.machServiceName(teamID: "ABCDE12345", build: "15")
+        #expect(fifteen != nil && fifteen != Peers.machServiceName(teamID: "ABCDE12345", build: "16"))
+        #expect(fifteen?.hasPrefix("ABCDE12345." + BlackiceIdentifiers.host + ".") == true)
+        #expect(Peers.machServiceName(teamID: "ABCDE12345", build: "999999999") == "ABCDE12345.com.valentorassa.blackice.filter.999999999")
+        for build in ["", "0", "016", "1.2", "1a", "-1", "1000000000", "16\""] {
+            #expect(Peers.machServiceName(teamID: "ABCDE12345", build: build) == nil, "build \(build)")
+        }
+    }
+
+    /// The extension's Info.plist as sign.sh leaves it, and what each side accepts from it.
+    @Test func theNameComesFromTheExtensionInfoPlist() {
+        func info(_ build: Any?, _ service: Any?) -> [String: Any] {
+            var info: [String: Any] = ["CFBundleIdentifier": BlackiceIdentifiers.filter]
+            if let build { info["CFBundleVersion"] = build }
+            if let service { info["NetworkExtension"] = ["NEMachServiceName": service] }
+            return info
+        }
+        let signed = "ABCDE12345.com.valentorassa.blackice.filter.16"
+        #expect(Peers.machServiceName(teamID: "ABCDE12345", extensionInfo: info("16", signed)) == signed)
+        // 0.3.2 and earlier: one name for every build.
+        #expect(Peers.machServiceName(teamID: "ABCDE12345", extensionInfo: info("15", "ABCDE12345.com.valentorassa.blackice.filter")) == nil)
+        // Another build's name, another team's, the unsigned template, or parts missing.
+        #expect(Peers.machServiceName(teamID: "ABCDE12345", extensionInfo: info("17", signed)) == nil)
+        #expect(Peers.machServiceName(teamID: "VWXYZ67890", extensionInfo: info("16", signed)) == nil)
+        #expect(Peers.machServiceName(teamID: "ABCDE12345",
+                                      extensionInfo: info("1", "TEAM_ID.com.valentorassa.blackice.filter.BUILD")) == nil)
+        #expect(Peers.machServiceName(teamID: "ABCDE12345", extensionInfo: info(nil, signed)) == nil)
+        #expect(Peers.machServiceName(teamID: "ABCDE12345", extensionInfo: info(16, signed)) == nil)
+        #expect(Peers.machServiceName(teamID: "ABCDE12345", extensionInfo: info("16", nil)) == nil)
+    }
+
+    /// The CLI and the daemon read the Info.plist of the extension inside their app.
+    @Test func theClientReadsTheEmbeddedExtension() throws {
+        let app = try makePrivateDirectory().appendingPathComponent("Blackice.app", isDirectory: true)
+        defer { removeTree(app.deletingLastPathComponent()) }
+        #expect(Peers.machServiceName(teamID: "ABCDE12345", app: app) == nil)
+        #expect(Peers.extensionBuild(app: app) == nil)
+
+        let plist = app.appendingPathComponent(Peers.embeddedExtensionInfo)
+        #expect(plist.path.hasSuffix("Blackice.app/Contents/Library/SystemExtensions/" +
+                                     "com.valentorassa.blackice.filter.systemextension/Contents/Info.plist"))
+        try FileManager.default.createDirectory(at: plist.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let info: [String: Any] = ["CFBundleVersion": "16",
+                                   "NetworkExtension": ["NEMachServiceName": "ABCDE12345.com.valentorassa.blackice.filter.16"]]
+        try PropertyListSerialization.data(fromPropertyList: info, format: .xml, options: 0).write(to: plist)
+        #expect(Peers.machServiceName(teamID: "ABCDE12345", app: app) == "ABCDE12345.com.valentorassa.blackice.filter.16")
+        #expect(Peers.extensionBuild(app: app) == "16")
+
+        try Data("not a plist".utf8).write(to: plist)
+        #expect(Peers.machServiceName(teamID: "ABCDE12345", app: app) == nil)
+        #expect(Peers.extensionBuild(app: app) == nil)
     }
 }
 

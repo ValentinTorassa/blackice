@@ -178,7 +178,9 @@ and each run on a Mac is recorded in [`evidence/`](../evidence/).
    and checks it, not published. On 3 November 2026 the cask installed 0.1.0 from the published release over build 4
    ([P5-02](../evidence/P5-02-homebrew-upgrade-from-release-macos.md)): the app verified as signed, notarized and
    accepted, `blackice start` found the upgraded extension unreachable and exited with 75, and after a restart it
-   answered. Build 4 replaces the token in the hooks' stderr (P2-02), which the builds of the earlier fx runs did
+   answered. The logs of later failed upgrades show why: the replaced build's process still held the XPC service
+   name that every build shared. After 0.3.2 each build has its own (see "Upgrades in place" under the open
+   problems). Build 4 replaces the token in the hooks' stderr (P2-02), which the builds of the earlier fx runs did
    not.
    *Done* on 3 November 2026, with the published 0.2.1 ([P5-04](../evidence/P5-04-install-start-faults-from-release-macos.md)): the uninstall steps of
    `install.md` removed the previous install, the curl one-liner checked the release and installed it into
@@ -286,11 +288,33 @@ and each run on a Mac is recorded in [`evidence/`](../evidence/).
   daemon, `pending`, `approve` and `deny` could not reach it, so ask mode dropped everything it paused at the
   deadline. A restart fixed it; P2-02 is the same build after the restart. `blackice start` now checks, after macOS
   replaces a running extension, that its XPC service answers, and if it does not, says to restart and exits with
-  status 75. [`install.md`](install.md)'s upgrade steps include the restart. The upgrade from build 4 to build 5
-  with Homebrew did the same, and the check caught it ([P5-02](../evidence/P5-02-homebrew-upgrade-from-release-macos.md)):
-  two upgrades out of two. Why is not known; for now an upgrade means a restart. The upgrade to build 15 answered
-  at once, but the build 14 it replaced had been activated over build 13 that morning and had never been reachable,
-  with no restart in between ([P5-09](../evidence/P5-09-hook-queue-faults-0.3.2-candidate-macos.md)).
+  status 75. The upgrade from build 4 to build 5 with Homebrew did the same, and the check caught it
+  ([P5-02](../evidence/P5-02-homebrew-upgrade-from-release-macos.md)). The upgrade to build 15 answered at once, but
+  the build 14 it replaced had been activated over build 13 that morning and had never been reachable, with no
+  restart in between ([P5-09](../evidence/P5-09-hook-queue-faults-0.3.2-candidate-macos.md)).
+  The cause, from the Mac's logs of three failed upgrades (4 November 2026): nesessionmanager runs each version of
+  the extension as its own launchd job, labelled with the version
+  (`NetworkExtension.com.valentorassa.blackice.filter.0.3.1.14`), and up to 0.3.2 every version's job declared the
+  same Mach service, `M294LK997M.com.valentorassa.blackice.filter`. During a replace it ends the old job and
+  submits the new one 4 to 6 ms later. The old process still holds XPC transactions open and lives until launchd's
+  5 s exit timeout, so launchd refuses the new job's endpoint ("The endpoint … already exists and is owned by" the
+  old version, then "failed activation … error = 1: Operation not permitted"). The new extension's listener has no
+  endpoint, though it logs `xpc_listening ok` (`resume()` reports nothing); then the old job is removed, the name
+  is gone, and every lookup fails with "No such process" until a restart. When the old process had already exited at
+  submit time, nobody held the name and the upgrade worked, so upgrades alternated between failing and working.
+  The fix, after 0.3.2: each build has its own name, ending in its `CFBundleVersion`
+  (`M294LK997M.com.valentorassa.blackice.filter.16`), still under the app group as NetworkExtension requires.
+  `sign.sh` writes it into the extension's Info.plist and `package.sh` checks it. The extension listens on the name
+  in its own Info.plist; the CLI and the daemon look up the one in the Info.plist of the extension inside their
+  `Blackice.app`, and both sides check it with `Peers.machServiceName`, so they read one value from one file. The
+  extension now logs `xpc_listening` with the name. Until `start` activates the new build, the new CLI cannot reach
+  the old extension, so a hook's `approve` or `deny` fails too and in ask mode its connection waits for the
+  deadline. `status`, `pending`, `approve` and `deny` then compare the build macOS runs with the app's and say to
+  run `blackice start` to finish the upgrade. The daemon already exits when its connection to the old
+  extension ends, and launchd starts the new binary, which looks up the new name. The check after `start` stays.
+  [`install.md`](install.md) says to restart only when it fails, and always for 0.3.2 and earlier. It needs a signed
+  run to confirm: two consecutive signed builds, the second put over the first, with `start` exiting 0 and the
+  daemon registering again, no restart.
 - **Events with no connection left.** In P5-01, `blackice pending` failed with "the network extension sent an
   invalid reply: events has an invalid entry": an event whose paused flows were all dropped with `hold_expired`
   stays pending, by design, and is listed with 0 connections, while the CLI's check of the reply required at

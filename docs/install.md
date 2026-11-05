@@ -245,9 +245,17 @@ runs.
 allow the extension again in System Settings.
 
 **To upgrade**, check the new package as in step 1, put its `Blackice.app` in `/Applications` over the old one (with
-Homebrew, `brew upgrade --cask blackice`; with the install script, run it with `--force`) and run `blackice start`:
-macOS replaces the running extension with the one with the higher build number. Then restart the Mac. On 3 November
-2026, on macOS 27.0.1, an extension upgraded this way kept filtering but had no XPC service until the Mac restarted,
-so the daemon, `pending`, `approve` and `deny` could not reach it and ask mode dropped everything it paused.
-`blackice start` checks for this after an upgrade, says so and exits with status 75. After the restart, run
-`blackice agent uninstall` and `blackice agent install`, so that the daemon runs the new binary.
+Homebrew, `brew upgrade --cask blackice`; with the install script, run it with `--force`) and run `blackice start`
+right away. macOS replaces the running extension with the one with the higher build number, and `start` checks that
+the new one answers over XPC. If it does not, `start` says so and exits with status 75: restart the Mac, then run
+`blackice start` again. The daemon needs nothing: when the old extension stops, the daemon's connection ends, it
+exits, and launchd starts it again from the new app.
+
+Upgrading to 0.3.2 or an earlier version, restart the Mac after `start` even when it succeeds. Up to 0.3.2 every
+build's extension listened on the same XPC service name. On macOS 27.0.1 the replaced build's process still held that
+name for up to 5 s after macOS started the new build, launchd refused the name to the new one, and the new extension
+kept filtering but could not be reached until the Mac restarted: the daemon, `pending`, `approve` and `deny` failed,
+and ask mode dropped everything it paused. That happened in about every other upgrade. After 0.3.2 each build has its
+own name. Until `start` runs, the new `blackice` then cannot reach the old extension, so hooks' answers fail and ask
+mode denies what waits for them; `status`, `pending`, `approve` and `deny` say to run `blackice start` to finish the
+upgrade. Not yet run on a Mac.

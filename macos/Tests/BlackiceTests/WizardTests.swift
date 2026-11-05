@@ -359,6 +359,28 @@ struct ReportTests {
         let unreachable = CLI.statusLines(StatusReport(filter: .on(try snapshot(.ask, withHook)), daemonRunning: true, pending: nil))
         #expect(unreachable[2] == "  hooks      1, run by the daemon")
         #expect(unreachable.last == "  filter     not answering. If blackice was just upgraded, restart the Mac.")
+        let upgraded = CLI.statusLines(StatusReport(filter: .on(try snapshot(.ask, withHook)), daemonRunning: true, pending: nil,
+                                                    upgrade: UnfinishedUpgrade(app: "16", running: ["15"])))
+        #expect(upgraded.last == "  filter     still build 15, and this app is build 16: run blackice start to finish the upgrade")
+    }
+
+    /// The app was replaced and start has not activated its extension: macOS still runs another build.
+    @Test func anUnfinishedUpgradeIsTold() throws {
+        let upgrade = try #require(UnfinishedUpgrade(app: "16", running: ["15"]))
+        #expect(upgrade.running == "15")
+        #expect(upgrade.hint == "blackice was upgraded to build 16, but macOS still runs the network extension of build 15. " +
+                "Run blackice start to finish the upgrade.")
+        #expect(UnfinishedUpgrade(app: "10", running: ["9"])?.running == "9")
+        // The app's build runs (also next to an older one), a newer one runs (start would refuse it), none runs,
+        // or a build is unknown.
+        #expect(UnfinishedUpgrade(app: "16", running: ["16"]) == nil)
+        #expect(UnfinishedUpgrade(app: "16", running: ["15", "16"]) == nil)
+        #expect(UnfinishedUpgrade(app: "16", running: ["16.0"]) == nil)
+        #expect(UnfinishedUpgrade(app: "16", running: ["17"]) == nil)
+        #expect(UnfinishedUpgrade(app: "16", running: []) == nil)
+        #expect(UnfinishedUpgrade(app: "16", running: ["x"]) == nil)
+        #expect(UnfinishedUpgrade(app: nil, running: ["15"]) == nil)
+        #expect(UnfinishedUpgrade(app: "x", running: ["15"]) == nil)
     }
 
     @Test func modeAndFirstStartHints() throws {

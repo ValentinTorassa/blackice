@@ -159,14 +159,14 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
     }
 
     /// The XPC listener on NEMachServiceName, accepting only the blackice binary of our team.
-    /// Without it ask mode still pauses flows, and their deadline drops them.
+    /// Without it ask mode still pauses flows, and their deadline drops them. The name is this
+    /// build's own (Peers.machServiceName), read from this extension's Info.plist. resume()
+    /// reports nothing, so xpc_listening names the service but does not prove launchd gave it.
     private func startServer() {
         server?.stop()
         server = nil
-        let info = Bundle.main.object(forInfoDictionaryKey: "NetworkExtension") as? [String: Any]
-        guard let service = info?["NEMachServiceName"] as? String,
-              let teamID = CodeIdentity.current()?.teamID,
-              Peers.machServiceName(teamID: teamID) == service,
+        guard let teamID = CodeIdentity.current()?.teamID,
+              let service = Peers.machServiceName(teamID: teamID, extensionInfo: Bundle.main.infoDictionary ?? [:]),
               let server = FilterServer(machServiceName: service, teamID: teamID, handler: self,
                                         report: { [weak self] line in self?.control("xpc", line) }) else {
             control("xpc_unavailable", "no_team_or_mach_service")
@@ -174,7 +174,7 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
         }
         self.server = server
         server.start()
-        control("xpc_listening", "ok")
+        control("xpc_listening", service)
     }
 
     private func reloadConfiguration() {
