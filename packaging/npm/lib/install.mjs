@@ -263,8 +263,8 @@ export function nextSteps(version, replaced) {
     lines.push(
       '',
       'You replaced an installed copy: run `blackice start` now to finish the upgrade. If it exits',
-      'with 75, restart the Mac and run it again. Coming from 0.3, also run `blackice agent connect fx`',
-      '(or claude-code) again: hooks now answer on their output, and a 0.3 hook gets no answer through.',
+      'with 75, restart the Mac and run it again. Then run `blackice agent connect` with your agent',
+      '(fx, claude-code or codex) again, so that its hook is the one this version expects.',
     )
   }
   lines.push('', `Install guide: ${INSTALL_GUIDE}`)
