@@ -2,46 +2,26 @@
 
 ## 1.0.0 (6 November 2026)
 
-The first stable release. A `blackice.toml` that works in 1.0 keeps working in every 1.x. It has run on one Mac, with
-macOS 27.0.1; macOS 14 and 15 are not tested yet. Since 0.4.7: the first `blackice start` ticks the VPN tunnels and common
-apps, with their helpers, the agents read the owner's notes as additions, and `blackice report` says when macOS
-dropped lines.
+The first stable release: a `blackice.toml` that works in 1.0 keeps working in every 1.x. It has run on one Mac,
+with macOS 27.0.1; macOS 14 and 15 are not tested yet.
 
 Changed:
-- The first `start`'s list of apps to trust starts with the VPN tunnels macOS has activated, ticked, whether they
-  run or not (`systemextensionsctl list` names them, and each one's Info.plist says it is a packet tunnel). Until now
-  it showed a system extension only while it ran, so a VPN that was off at that moment was missing, and its extension
-  then waited in ask mode and was dropped in block-all. Other network extensions, such as a VPN's split tunneling,
-  which is a proxy for other apps' connections, are listed unticked.
-- The same list ticks the common apps running now: browsers, chat and video-call apps, each named by its signing
-  identifier and Team ID, so a program that only takes a common app's name is not ticked. Safari is not among them:
-  its connections come from WebKit's networking process, which every app's web views share.
-- The agents' instructions say that the owner's notes add to them: a connection the instructions approve stays
-  approved when the notes do not mention it, or name other hosts for the same tool, and only a note that says to
-  deny something narrows them. With notes that listed `node`'s hosts, Codex read the list as all `node` may reach
-  and denied it Google Fonts.
-- A language toolchain in the hidden folder its manager keeps (`~/.local/bin`, uv's Pythons, `~/.cargo/bin`,
-  `~/.bun/bin`, nvm's and pyenv's versions and a few more) counts as an ordinary place to run from; any other hidden
-  folder is still not. Codex had denied a uv-managed Python reaching AWS for running from `~/.local/share/uv`.
-- GitHub Actions' log and artifact storage (`productionresultssaN.blob.core.windows.net`) joins the source hosts
-  developer tools may reach, so `gh run view --log` is approved.
-- The install script pins the zip's SHA-256 next to its version, and checks the release's `.sha256` file against it
-  before it downloads the zip: the script and the GitHub release must agree. Until now its checksum came only from
-  that file, which is on the same release as the zip, so it caught only a broken download. It also checks the app, and
-  its copy in `/Applications`, against the Developer ID code requirement of team M294LK997M. The install guide says
-  how to read the script before running it, or run the copy at the release's tag on GitHub instead of the site's.
+- The first `blackice start` ticks the VPN tunnels macOS has activated, even when they are off, and the common apps
+  running (browsers, chat and video-call apps), matched by signing identifier and Team ID. Proxy extensions, such as
+  a VPN's split tunneling, and the other apps are listed unticked.
+- The agents read the owner's notes as additions: only a note that says to deny something narrows what their
+  instructions approve.
+- Toolchain folders (`~/.local/bin`, uv's Pythons, `~/.cargo/bin`, nvm, pyenv and others) count as ordinary places to
+  run from, and GitHub Actions' log storage joins the source hosts developer tools may reach.
+- The install script pins the zip's SHA-256 and checks the Developer ID requirement of team M294LK997M. The install
+  guide says how to read the script first, or run the tag's copy from GitHub.
 
 Fixed:
-- A picked app's rule now covers its helpers signed by the same team. Until now picking Chrome or Slack in the first
-  `start` wrote a rule for the app alone, while its connections come from its helper (`com.google.Chrome.helper`),
-  so they still waited in ask mode.
-- `blackice report` says when macOS dropped the filter's lines, instead of printing low counts as if they were all.
-  Each event in the daemon's log comes from a connection asked about, so when the daemon logged more events over
-  the span than `log show` has asks, the report ends with `These counts are low: the daemon logged 40 events, more
-  than the 12 asked about.` On a Mac whose data volume was 99% full, `log show` kept none of the filter's lines.
+- A picked app's rule covers its helpers signed by the same team. Until now Chrome's and Slack's connections, which
+  come from their helpers, still waited in ask mode.
+- `blackice report` says when macOS dropped the filter's log lines, instead of printing low counts.
 
-Upgrading from 0.4.7: `brew upgrade --cask blackice` for the cask, or the install script again with `--force`, then
-`blackice start`. Nothing else changes.
+Upgrading from 0.4.7: `brew upgrade --cask blackice`, or the install script with `--force`, then `blackice start`.
 
 ## 0.4.7 (6 November 2026)
 
