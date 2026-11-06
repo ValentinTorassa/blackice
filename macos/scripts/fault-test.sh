@@ -221,11 +221,12 @@ max_hooks() {
 }
 
 # From `blackice pending` output: is nscurl's event for HOST listed, and with how many connections.
+# `blackice pending` lists a waiting connection as "  com.apple.nscurl → HOST:443  N connections, 25s left".
 listed() {
-    awk -v needle="apple/$NSCURL_ID -> $2:443 " 'index($0, needle) {found = 1} END {exit !found}' "$1"
+    awk -v needle=" $NSCURL_ID → $2:443 " 'index($0, needle) {found = 1} END {exit !found}' "$1"
 }
 connections() {
-    awk -v needle="apple/$NSCURL_ID -> $2:443 " 'index($0, needle) && match($0, /, [0-9]+ connections?, /) {
+    awk -v needle=" $NSCURL_ID → $2:443 " 'index($0, needle) && match($0, /  [0-9]+ connections?, /) {
         n = substr($0, RSTART + 2, RLENGTH - 2); sub(/ .*/, "", n); print n; exit }' "$1"
 }
 
@@ -356,9 +357,12 @@ ev-00000007 plain invalid"
     verdict "burst_summary counts events, waits, starts and drops ($got)" \
         "$(is test "$got" == "$(printf '6\t6\t2\t5\t1\t1\t0\t5\t0\t0')")"
     verdict "max_hooks sees 4 at once, an end and a start in the same ms counted once" "$(is test "$(max_hooks "$S")" -eq 4)"
-    printf '%s\n' 'Waiting:' \
-        "  ev-91fd1910  apple/$NSCURL_ID -> $SAME_HOST:443 (2606:4700:10::ac42:9ded), 64 connections, 25 s left" \
-        "  ev-e072fe41  apple/$NSCURL_ID -> $HUNG_HOST:443 (192.0.2.1), 1 connection, 25 s left" 'No approvals.' > "$OUT/dry/pending.txt"
+    printf '%s\n' 'Waiting' \
+        "  $NSCURL_ID → $SAME_HOST:443  64 connections, 25s left" \
+        "    blackice approve --app $NSCURL_ID --host $SAME_HOST" \
+        "  $NSCURL_ID → $HUNG_HOST:443  1 connection, 25s left" \
+        "    blackice approve --app $NSCURL_ID --host $HUNG_HOST" '' 'Approvals' \
+        "  $NSCURL_ID → www.$DOWN_HOST  10m" > "$OUT/dry/pending.txt"
     verdict "connections reads 64 from the pending list" "$(is test "$(connections "$OUT/dry/pending.txt" "$SAME_HOST")" == 64)"
     verdict "connections reads 1 connection" "$(is test "$(connections "$OUT/dry/pending.txt" "$HUNG_HOST")" == 1)"
     verdict "listed is false for a host not waiting" "$(is test "$(is listed "$OUT/dry/pending.txt" "$DOWN_HOST")" == 0)"
@@ -398,15 +402,15 @@ until_true() {  # SECONDS COMMAND...: polls once a second
     done
 }
 log_now() { date '+%Y-%m-%d %H:%M:%S'; }
+# The filter's lines from START on, from the run's own `log stream` copy (STREAM, started below):
+# `log show` does not always keep them, as on a nearly full disk on 6 November 2026.
 filter_log() {  # START FILE
-    sleep 2  # the newest lines can take a moment to show
-    /usr/bin/log show --start "$1" --style compact --predicate "subsystem == \"$FILTER_ID\"" > "$2" 2>&1 || true
+    sleep 2  # the newest lines can take a moment to arrive
+    awk -v from="$1" 'substr($0, 1, 19) >= from' "$STREAM" > "$2"
 }
 registered_since() {
-    local text
-    text=$(/usr/bin/log show --start "$1" --style compact \
-        --predicate "subsystem == \"$FILTER_ID\" AND category == \"control\"" 2>/dev/null) || text=
-    grep -qF 'control xpc daemon_registered' <<<"$text"
+    awk -v from="$1" 'substr($0, 1, 19) >= from && index($0, "control xpc daemon_registered") {found = 1}
+        END {exit !found}' "$STREAM"
 }
 event_offset() { if [[ -f "$EVENTS" ]]; then stat -f %z "$EVENTS"; else echo 0; fi; }
 slice() { if [[ -f "$EVENTS" ]]; then tail -c +"$(($1 + 1))" "$EVENTS" > "$2"; else : > "$2"; fi; }
@@ -442,12 +446,13 @@ result_of() {
 }
 hook_called() { awk -v e="$1" -v c="$2" '$1 == e && $2 == c {found = 1} END {exit !found}' "$OUT/hook-calls.log" 2>/dev/null; }
 
-started='' restored='' agent_before='' agent_touched=''
+started='' restored='' agent_before='' agent_touched='' STREAM=''
 cleanup() {
     local status=$?
     trap '' INT TERM HUP
     trap - EXIT
     stop_jobs
+    if [[ -n "$STREAM" && -f "$OUT/stream.pid" ]]; then kill "$(cat "$OUT/stream.pid")" 2>/dev/null || true; fi
     if [[ -n "$started" && -z "$restored" ]]; then
         echo "Switching back to accept-all: Touch ID."
         if "$BIN" mode accept-all; then restored=1; else
@@ -486,6 +491,11 @@ state='not loaded'
 if agent_loaded; then agent_before=1 state=loaded; fi
 echo "LaunchAgent $AGENT_LABEL: $state; it is left that way at the end."
 echo "Work files: $OUT"
+# Started in a subshell, so stop_jobs between the cases leaves it running; cleanup stops it.
+STREAM="$OUT/stream.log"
+( /usr/bin/log stream --style compact --predicate "subsystem == \"$FILTER_ID\"" > "$STREAM" 2>&1 &
+  echo $! > "$OUT/stream.pid" )
+sleep 2
 OFF0=$(event_offset)
 
 step "Stop the daemon before ask mode starts"

@@ -161,7 +161,8 @@ and each run on a Mac is recorded in [`evidence/`](../evidence/).
    (P2-01, P2-02).
    In 0.4.0 hooks get no token and answer on stdout (see "Who can approve" and "Hook answers" under the
    decisions), so the runner no longer replaces anything in their stderr, and `program` hooks are started only
-   when their signature checks out. Not yet run on a Mac.
+   when their signature checks out. On 6 November 2026, with 0.4.5, both agents' `program` hooks answered real
+   connections on the Mac ([P5-10](../evidence/P5-10-live-decisions-0.4.5-macos.md)).
 4. **The agent decides.** An fx skill that says what to look at, when to approve and how to call `approve`. A fixed
    allow rule for the deciding agent and its model provider, bound to their signatures. *Done when* fx decides ten
    test connections with nobody touching the keyboard.
@@ -188,14 +189,16 @@ and each run on a Mac is recorded in [`evidence/`](../evidence/).
    In 0.4.0 fx runs nothing: it reads the event with its file tool and ends its reply with the answer line, and its
    rules refuse every command. `agent connect` writes a `program` hook for fx, with the signing identifier and Team
    ID read from fx's binary, and its test reads fx's last line. The eval reads the same line with the daemon's
-   rules. Neither has run with a model yet: on 4 November 2026 the one run against the sample event stopped at AI
-   Gateway, whose team had no credits left (HTTP 502, `insufficient_funds`), with nothing on stdout.
-   A second decider, written on 4 November 2026 and not yet run under the daemon: Claude Code in print mode
+   rules. On 4 November 2026 the one run against the sample event stopped at AI Gateway, whose team had no credits
+   left (HTTP 502, `insufficient_funds`), with nothing on stdout. With credits, fx answered 26 events on the Mac in
+   the 24 h before 6 November 12:40 UTC, and denied a `curl` to registry.npmjs.org in 6.6 s during P5-10.
+   A second decider, written on 4 November 2026: Claude Code in print mode
    ([`integrations/claude-code/`](../integrations/claude-code/README.md)), with reading the event as its only tool,
    a sign-in of its own (its own `CLAUDE_CONFIG_DIR`, kept in the login keychain, so the hook keeps `HOME`) and a
    rule for `api.anthropic.com` and `platform.claude.com`. `blackice agent connect claude-code` writes its
    `program` hook as `connect fx` does, with `stdin = "none"`: `claude -p` adds stdin to its prompt, and the event
-   should reach it only as the file it reads. One agent answers at a time: since 0.4.2 each connected agent keeps
+   should reach it only as the file it reads. Under the daemon it answered 350 events on the Mac in the same 24 h,
+   at a median of 3.8 s (P5-10). One agent answers at a time: since 0.4.2 each connected agent keeps
    its hook, and `answers` in `[agent]` names the one that runs (or `you`), switched with `blackice mode ask --agent`
    or the menu's Mode.
    Another decider, written on 5 November 2026 after 0.4.2: opencode 2.2.5
@@ -225,7 +228,8 @@ and each run on a Mac is recorded in [`evidence/`](../evidence/).
    configuration change while connections wait drops them (`configuration_changed`) and cancels their events.
    Since 5 November 2026 that change, the switch to accept-all, lets them go instead
    (`accept_all;configuration_changed`; see "Configuration change" under the decisions), and the script checks
-   that; not yet run on a Mac.
+   that. With the published 0.4.5 on 6 November 2026 all 29 checks passed, that one and the two `example.com` cases
+   included ([P5-11](../evidence/P5-11-faults-0.4.5-macos.md)).
    *On a Mac*, 3 November 2026, with build 4 ([P5-01](../evidence/P5-01-faults-macos.md)): 24 checks passed and 4
    failed. Daemon down, hook hung, the burst and the restart passed; after `launchctl kill`, the daemon was running
    and registered again within 1 s. The last four checks, the configuration change, failed. The second Touch ID was
@@ -360,7 +364,8 @@ and each run on a Mac is recorded in [`evidence/`](../evidence/).
     connection on port 443, once a rule or an approval allows it, is held until its ClientHello is read (see "Host
     and address"). Not yet run on a Mac.
   - A TCP connection with no name at all, and no server name, was dropped as `no_host` with no event until 4
-    November 2026; ask mode now asks about its address (see "Connections by address"). Not yet run on a Mac. Off port 443
+    November 2026; ask mode now asks about its address (see "Connections by address"). On the Mac on 6 November,
+    `nc` to 1.1.1.1 port 80 raised an event for `1.1.1.1` and Claude Code denied it (P5-10). Off port 443
     nothing is read before the event, so a TCP connection waits up to the whole timeout; whether the server keeps
     it that long depends on the protocol (an SSH server waits two minutes for the login by default).
   - A connection blackice drops fails in the app with "Bad file descriptor" (EBADF) when it connects. On the Mac on
@@ -392,7 +397,8 @@ and each run on a Mac is recorded in [`evidence/`](../evidence/).
 - **Repeated denials.** After a deny, the app's next try (`curl` moving on to another address) raised a new event,
   and the agent was asked again: on the Mac on 3 and 4 November, one ad hoc binary was asked about 52 times and
   another 45 times, mostly denied each time. Since 5 November 2026 a deny is remembered for 10 minutes (see
-  "Remembered denials" under the decisions). Not yet run on a Mac. What remains: no answer in time is not
+  "Remembered denials" under the decisions). On the Mac on 6 November, an app's connections after its deny were
+  dropped as `denied;remembered` with no new event, and an approval replaced the denial (P5-10). What remains: no answer in time is not
   remembered, on purpose, so a broken or slow agent still costs one question per deadline, and a pair is asked
   about again 10 minutes after its deny.
 - **Touch ID count.** `start`, `stop` and `mode` each ask for Touch ID, so a demo takes two. A short unlock
