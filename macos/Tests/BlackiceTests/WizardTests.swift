@@ -81,6 +81,7 @@ private func answers(_ script: [String], paths: Set<String> = [], identities: [S
 
 /// The wizard with lists: `picks` answers each list in turn, `script` each typed question.
 private func pickedAnswers(_ picks: [[Int]?], script: [String] = [], running: [String] = [], extensions: [String] = [],
+                           helpers: [String: [String]] = [:], proxies: Set<String> = [],
                            paths: Set<String> = [], identities: [String: SigningIdentity] = [:],
                            choices: Recorder<Choice> = Recorder<Choice>(), said: Recorder<String> = Recorder<String>())
     -> ConfigWizard.Answers? {
@@ -90,7 +91,8 @@ private func pickedAnswers(_ picks: [[Int]?], script: [String] = [], running: [S
                         say: said.append, identify: { identities[$0] }, fileExists: { paths.contains($0) },
                         home: "/Users/test",
                         choose: { choice in choices.append(choice); return picks.isEmpty ? nil : picks.removeFirst() },
-                        runningApps: { running }, networkExtensions: { extensions }).run()
+                        runningApps: { running }, networkExtensions: { extensions },
+                        helpers: { helpers[$0] ?? [] }, isTunnel: { !proxies.contains($0) }).run()
 }
 
 struct WizardTests {
@@ -117,25 +119,14 @@ struct WizardTests {
         #expect(asked.items[2].answer([]) == "none")
         #expect(said.items.isEmpty)
 
-        // ask, Claude Code answers; ask, Codex answers; ask, opencode answers; ask, answered by the
-        // person, no apps.
+        // ask, Claude Code answers; ask, answered by the person, no apps. Codex and opencode are not
+        // offered for now: `blackice agent connect` sets them up.
         let agents = Recorder<Choice>()
         #expect(pickedAnswers([[1], [1], []], choices: agents) == ConfigWizard.Answers(mode: .ask, agent: "claude-code"))
-        #expect(agents.items[1].options.count == 5 && agents.items[1].options[1].hasPrefix("Claude Code: "))
-        #expect(agents.items[1].options[2] == "Codex, with your ChatGPT plan: install it first")
-        #expect(agents.items[1].options[3].hasPrefix("opencode, with a provider you pick"))
-        #expect(agents.items[1].options[4].hasPrefix("Me, "))
-        #expect(agents.items[1].answer([2]) == "Codex" && agents.items[1].answer([3]) == "opencode")
+        #expect(agents.items[1].options.count == 3 && agents.items[1].options[1].hasPrefix("Claude Code: "))
+        #expect(agents.items[1].options[2].hasPrefix("Me, "))
         #expect(agents.items[1].options.allSatisfy { $0.count <= 74 })
-        #expect(pickedAnswers([[1], [2], []]) == ConfigWizard.Answers(mode: .ask, agent: "codex"))
-        #expect(pickedAnswers([[1], [3], []]) == ConfigWizard.Answers(mode: .ask, agent: "opencode"))
-        #expect(pickedAnswers([[1], [4], []]) == ConfigWizard.Answers(mode: .ask))
-        // Typed, the questions name every agent `agent connect` takes.
-        let typed = Recorder<String>()
-        #expect(answers(["2", "", ""], said: typed)?.mode == .ask)
-        #expect(typed.items.suffix(2) == ["  An agent can answer for you: blackice agent connect fx, claude-code, codex",
-                                          "  or opencode"])
-        #expect(typed.items.allSatisfy { $0.count <= 78 })
+        #expect(pickedAnswers([[1], [2], []]) == ConfigWizard.Answers(mode: .ask))
 
         // block-all with another app, typed.
         let other = pickedAnswers([[2], [0]], script: ["/usr/bin/curl", "pypi.org", ""], paths: ["/usr/bin/curl"],
@@ -261,17 +252,100 @@ struct WizardTests {
         let answers = try #require(picked)
         #expect(choices.items[1].options == ["io.tailscale.ipn.macsys.network-extension", "ch.protonvpn.mac.WireGuard-Extension",
                                              "Slack", "Another app: type its path or name"])
-        #expect(choices.items[1].initial == [0, 1] && choices.items[1].multiple)
+        // Slack is a common app, so it is ticked too.
+        #expect(choices.items[1].initial == [0, 1, 2] && choices.items[1].multiple)
         #expect(answers.rules == [.init(identity: tailscale, hosts: ["*"]), .init(identity: Self.slack, hosts: ["*"])])
         let text = ConfigWizard.render(answers)
         #expect(text.contains("[[allow]]\napp = \"io.tailscale.ipn.macsys.network-extension\"\nteam = \"W5364U7YZB\"\nhosts = [\"*\"]\n"))
         #expect(try BlackiceConfig(data: Data(text.utf8)).anyHostRule(for: tailscale) != nil)
 
-        // Unticked, it gets no rule; with none activated, nothing is ticked.
+        // Unticked, it gets no rule; with none activated and no common app, nothing is ticked.
         #expect(pickedAnswers([[2], []], extensions: [tailscalePath], identities: identities)?.rules == [])
         let plain = Recorder<Choice>()
-        _ = pickedAnswers([[2], []], running: ["/Applications/Slack.app"], identities: identities, choices: plain)
+        _ = pickedAnswers([[2], []], running: ["/Applications/Notes Tool.app"],
+                          identities: ["/Applications/Notes Tool.app": SigningIdentity(signingID: "com.example.notes", teamID: "ABCDE12345")],
+                          choices: plain)
         #expect(plain.items[1].initial.isEmpty)
+    }
+
+    /// The common apps that run come right after the network extensions, ticked; a picked app's rules
+    /// cover its helpers signed by the same team, since the helper is what connects.
+    @Test func commonAppsAreTickedWithTheirHelpers() throws {
+        let chrome = SigningIdentity(signingID: "com.google.Chrome", teamID: "EQHXZ8M8AV")
+        let chromeHelper = SigningIdentity(signingID: "com.google.Chrome.helper", teamID: "EQHXZ8M8AV")
+        let renderer = SigningIdentity(signingID: "com.google.Chrome.helper.renderer", teamID: "EQHXZ8M8AV")
+        let foreign = SigningIdentity(signingID: "com.example.bundled", teamID: "ZZZZZ99999")
+        let fake = SigningIdentity(signingID: "com.google.Chrome", teamID: "ABCDE12345")
+        let notes = SigningIdentity(signingID: "com.example.notes", teamID: "ABCDE12345")
+        let chromePath = "/Applications/Google Chrome.app"
+        let helperPath = chromePath + "/Contents/Frameworks/Google Chrome Framework.framework/Helpers/Google Chrome Helper.app"
+        let rendererPath = chromePath + "/Contents/Frameworks/Google Chrome Framework.framework/Helpers/Google Chrome Helper (Renderer).app"
+        let foreignPath = chromePath + "/Contents/Frameworks/Bundled.app"
+        let again = chromePath + "/Contents/Frameworks/Copy.app"
+        let identities = [chromePath: chrome, helperPath: chromeHelper, rendererPath: renderer, foreignPath: foreign,
+                          again: chromeHelper, "/Applications/Notes Tool.app": notes, "/Applications/Not Chrome.app": fake,
+                          "/Applications/Slack.app": Self.slack]
+        let choices = Recorder<Choice>()
+        let picked = pickedAnswers([[2], [0, 1, 2, 3]],
+                                   running: ["/Applications/Not Chrome.app", chromePath, "/Applications/Notes Tool.app", "/Applications/Slack.app"],
+                                   helpers: [chromePath: [helperPath, rendererPath, foreignPath, again],
+                                             "/Applications/Not Chrome.app": [helperPath]],
+                                   identities: identities, choices: choices)
+        let answers = try #require(picked)
+        // Chrome and Slack first and ticked; the lookalike with another Team ID and Notes after, unticked.
+        #expect(choices.items[1].options == ["Google Chrome", "Slack", "Not Chrome", "Notes Tool", "Another app: type its path or name"])
+        #expect(choices.items[1].initial == [0, 1])
+        // Chrome's helpers of its own team, once each; a bundled helper of another team gets nothing, and
+        // so does the lookalike's helper, whose team is not the lookalike's.
+        #expect(answers.rules == [chrome, chromeHelper, renderer, Self.slack, fake, notes].map { .init(identity: $0, hosts: ["*"]) })
+        let config = try BlackiceConfig(data: Data(ConfigWizard.render(answers).utf8))
+        #expect(config.anyHostRule(for: chromeHelper) != nil && config.anyHostRule(for: foreign) == nil)
+    }
+
+    /// The helpers are the outermost .app, .xpc and .appex bundles inside the app's Contents.
+    @Test func helperBundlesAreTheOutermostNestedBundles() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("blackice-helpers-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let app = root.appendingPathComponent("Tool.app").path
+        for folder in ["Contents/MacOS", "Contents/Frameworks/Tool Framework.framework/Helpers/Tool Helper.app/Contents/PlugIns/Inner.appex",
+                       "Contents/XPCServices/Fetch.xpc", "Contents/PlugIns/Share.appex", "Contents/Resources/Icons"] {
+            try FileManager.default.createDirectory(atPath: app + "/" + folder, withIntermediateDirectories: true)
+        }
+        #expect(Interaction.helperBundles(inside: app).allSatisfy { $0.hasPrefix(app + "/Contents/") })
+        let found = Set(Interaction.helperBundles(inside: app).map { String($0.dropFirst(app.count)) })
+        #expect(found == ["/Contents/Frameworks/Tool Framework.framework/Helpers/Tool Helper.app",
+                          "/Contents/XPCServices/Fetch.xpc", "/Contents/PlugIns/Share.appex"])
+        #expect(Interaction.helperBundles(inside: root.path).isEmpty)
+    }
+
+    /// A network extension that is a proxy, such as a VPN client's split tunneling, carries other apps'
+    /// connections: it is listed after the tunnels and common apps, unticked. Its Info.plist says which.
+    @Test func proxyExtensionsAreListedUnticked() throws {
+        let tunnelPath = "/Library/SystemExtensions/00000000-0000-4000-8000-000000000001/io.tailscale.ipn.macsys.network-extension.systemextension"
+        let proxyPath = "/Library/SystemExtensions/00000000-0000-4000-8000-000000000003/ch.protonvpn.mac.Transparent-Proxy.systemextension"
+        let tunnel = SigningIdentity(signingID: "io.tailscale.ipn.macsys.network-extension", teamID: "W5364U7YZB")
+        let proxy = SigningIdentity(signingID: "ch.protonvpn.mac.Transparent-Proxy", teamID: "J6S6Q257EK")
+        let choices = Recorder<Choice>()
+        let picked = pickedAnswers([[2], [0]], running: ["/Applications/Slack.app"], extensions: [proxyPath, tunnelPath],
+                                   proxies: [proxyPath], identities: [tunnelPath: tunnel, proxyPath: proxy, "/Applications/Slack.app": Self.slack],
+                                   choices: choices)
+        #expect(choices.items[1].options.prefix(3) == ["io.tailscale.ipn.macsys.network-extension", "Slack", "ch.protonvpn.mac.Transparent-Proxy"])
+        #expect(choices.items[1].initial == [0, 1])
+        #expect(try #require(picked).rules == [.init(identity: tunnel, hosts: ["*"])])
+
+        // The plist: a packet tunnel provider is a tunnel; an app proxy, or no plist, is not.
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("blackice-tunnel-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        func bundle(_ name: String, _ classes: [String]) throws -> String {
+            let path = root.appendingPathComponent(name).path
+            try FileManager.default.createDirectory(atPath: path + "/Contents", withIntermediateDirectories: true)
+            let info: NSDictionary = ["NetworkExtension": ["NEProviderClasses": Dictionary(uniqueKeysWithValues: classes.map { ($0, "X") })]]
+            #expect(info.write(toFile: path + "/Contents/Info.plist", atomically: true))
+            return path
+        }
+        #expect(Interaction.isTunnel(try bundle("t.systemextension", ["com.apple.networkextension.packet-tunnel"])))
+        #expect(!Interaction.isTunnel(try bundle("p.systemextension", ["com.apple.networkextension.app-proxy"])))
+        #expect(!Interaction.isTunnel(root.appendingPathComponent("none.systemextension").path))
     }
 
     @Test func enterTakesTheDefaults() throws {

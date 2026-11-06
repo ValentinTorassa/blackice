@@ -21,7 +21,7 @@ export function Status() {
   return (
     <Callout>
       <p>
-        <strong>Early.</strong> {docsStatus}
+        {docsStatus}
       </p>
     </Callout>
   )

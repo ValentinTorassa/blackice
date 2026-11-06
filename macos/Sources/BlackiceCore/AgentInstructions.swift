@@ -45,10 +45,10 @@ public enum AgentInstructions: String, CaseIterable, Sendable {
         }
     }
 
-    /// Whether the menu's Mode shows this agent before it is connected. Codex and opencode are left
-    /// out for now (decided 5 November 2026), to keep it short: `blackice agent connect
-    /// codex|opencode` and `blackice mode ask --agent` still take them, and the menu lists one once
-    /// its hook is in the configuration. Until 0.4.7 the first start's list left them out too.
+    /// Whether the menu's Mode and the first start's list show this agent before it is connected.
+    /// Codex and opencode are left out of both for now (decided 5 November 2026), to keep them
+    /// short: `blackice agent connect codex|opencode` and `blackice mode ask --agent` still take
+    /// them, and the menu lists one once its hook is in the configuration.
     public var listedBeforeConnecting: Bool {
         switch self {
         case .fx, .claudeCode: return true

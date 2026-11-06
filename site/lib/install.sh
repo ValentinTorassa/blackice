@@ -3,25 +3,34 @@
 #
 #   curl -fsSL https://blackice-macos.vercel.app/install.sh | sh
 #
-# Downloads the release zip and its checksum from GitHub, checks the checksum, the app's signature
-# and Gatekeeper's assessment (the checks in docs/install.md) and that the app is version
-# VERSION, copies Blackice.app to /Applications and writes a `blackice` command to ~/.local/bin.
-# It starts nothing: no extension, no daemon. Options go after `sh -s --`:
+# Downloads the release zip and its checksum from GitHub, checks that the zip has the SHA-256 this
+# script pins and the release's .sha256 file names, then the app's signature and Gatekeeper's
+# assessment (the checks in docs/install.md) and that the app is version VERSION, copies
+# Blackice.app to /Applications and writes a `blackice` command to ~/.local/bin. It starts nothing:
+# no extension, no daemon. Options go after `sh -s --`:
 #
 #   --force   replace an installed Blackice.app of another version, unless it has a higher build
 #
 # BLACKICE_BIN_DIR picks another folder for the command. BLACKICE_ZIP=/path/to/Blackice-<version>.zip
 # installs a build that is not published yet, from that zip and the .sha256 file next to it, with
-# the same checks. BLACKICE_APPLICATIONS=/absolute/folder puts Blackice.app there instead of
-# /Applications, for tests: macOS activates the extension only from /Applications. The site serves
-# this file at /install.sh, and its build fails when VERSION differs from site/lib/release.ts.
+# the same checks except the pin. BLACKICE_APPLICATIONS=/absolute/folder puts Blackice.app there
+# instead of /Applications, for tests: macOS activates the extension only from /Applications. The
+# site serves this file at /install.sh, and its build fails when VERSION differs from
+# site/lib/release.ts or SHA256 is not a SHA-256.
 
 set -eu
 
-VERSION=0.4.7
+VERSION=1.0.0
+# The SHA-256 of Blackice-$VERSION.zip, the file package.sh wrote and the release holds. The zip
+# must match it and the release's .sha256 file, so this script and the GitHub release must agree.
+# Each release sets it with VERSION.
+SHA256=911b5fab9dd2f8e7f41a996a4dd041e3df28cf7c646fb47780802d7c7fec11d1
 REPOSITORY=ValentinTorassa/blackice
 TEAM_ID=M294LK997M
 IDENTIFIER=com.valentorassa.blackice
+# The code requirement a Developer ID Application signature of TEAM_ID meets, as in the app's own
+# designated requirement: codesign checks it on the unpacked app and again on its copy.
+REQUIREMENT="=identifier \"$IDENTIFIER\" and anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] exists and certificate leaf[field.1.2.840.113635.100.6.1.13] exists and certificate leaf[subject.OU] = \"$TEAM_ID\""
 EXTENSION=Contents/Library/SystemExtensions/com.valentorassa.blackice.filter.systemextension
 APPLICATIONS=${BLACKICE_APPLICATIONS:-/Applications}
 APP=$APPLICATIONS/Blackice.app
@@ -83,6 +92,9 @@ download_and_check() {
     say "Using $BLACKICE_ZIP, a build that is not published"
     /bin/cp "$BLACKICE_ZIP.sha256" "$work/$zip.sha256" || fail "could not read $BLACKICE_ZIP.sha256"
   else
+    pin=$SHA256
+    case $pin in *[!0-9a-f]*) pin='' ;; esac
+    [ ${#pin} -eq 64 ] || fail "this script pins no SHA-256 for $zip (SHA256=$SHA256), so it cannot check the download"
     say "Downloading $base/$zip"
     fetch "$base/$zip.sha256" "$work/$zip.sha256"
   fi
@@ -95,10 +107,21 @@ download_and_check() {
   fi
 
   if [ -n "${BLACKICE_ZIP:-}" ]; then
+    # An unpublished build has a SHA-256 of its own: the pin is for the published zip.
+    if [ "$expected" = "$SHA256" ]; then
+      say "Its SHA-256 is the one this script pins for the published $zip"
+    else
+      say "Its SHA-256 is not the one this script pins for the published $zip, so the pin is not used:" \
+        "the zip is checked against $BLACKICE_ZIP.sha256, then its signature"
+    fi
     /bin/cp "$BLACKICE_ZIP" "$work/$zip" || fail "could not read $BLACKICE_ZIP"
   else
+    # Before the zip is downloaded: the release's checksum file and this script must name the same zip.
+    [ "$expected" = "$pin" ] || fail "the release's $zip.sha256 says $expected, but this script pins $pin." \
+      "The GitHub release and this script disagree, so nothing was downloaded or installed."
     fetch "$base/$zip" "$work/$zip"
   fi
+  # Here $expected is the pin too, unless BLACKICE_ZIP is set.
   actual=$(/usr/bin/shasum -a 256 "$work/$zip")
   actual=${actual%% *}
   [ "$actual" = "$expected" ] || fail "$zip has SHA-256 $actual, but $zip.sha256 says $expected"
@@ -108,8 +131,8 @@ download_and_check() {
   [ "$entries" = Blackice.app ] || fail "the zip should hold only Blackice.app; it holds: $entries"
   app=$work/unpacked/Blackice.app
 
-  verify=$(/usr/bin/codesign --verify --strict --deep --verbose=2 "$app" 2>&1) \
-    || fail "codesign --verify failed: $verify"
+  verify=$(/usr/bin/codesign --verify --strict --deep --verbose=2 "-R$REQUIREMENT" "$app" 2>&1) \
+    || fail "codesign --verify failed, or the app is not signed with the Developer ID of team $TEAM_ID: $verify"
 
   details=$(/usr/bin/codesign -dvv "$app" 2>&1) || fail "codesign -dvv failed: $details"
   identifier=$(printf '%s\n' "$details" | sed -n 's/^Identifier=//p' | head -n 1)
@@ -167,7 +190,7 @@ install_app() {
   stage=$(mktemp -d "$APPLICATIONS/.blackice-install.XXXXXX") \
     || fail "could not write to $APPLICATIONS (it needs an admin account)"
   /usr/bin/ditto "$app" "$stage/Blackice.app" || fail "could not copy Blackice.app to $APPLICATIONS"
-  verify=$(/usr/bin/codesign --verify --strict --deep "$stage/Blackice.app" 2>&1) \
+  verify=$(/usr/bin/codesign --verify --strict --deep "-R$REQUIREMENT" "$stage/Blackice.app" 2>&1) \
     || fail "the copy of Blackice.app in $APPLICATIONS does not verify: $verify"
 
   if [ "$replace" = 1 ]; then

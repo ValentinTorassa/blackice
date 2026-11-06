@@ -123,7 +123,6 @@ private final class FakeCodexMac: @unchecked Sendable {
     var signedIn: Bool
     var printed: String
     var status: Int32 = 0
-    var installed = true
     var logins: [[String: String]] = []
     var hookRuns: [Hook] = []
 
@@ -134,7 +133,7 @@ private final class FakeCodexMac: @unchecked Sendable {
 
     var machine: AgentMachine {
         AgentMachine(
-            findExecutables: { name, _ in name == "codex" && self.installed ? ["/opt/fake/codex"] : [] },
+            findExecutables: { name, _ in name == "codex" ? ["/opt/fake/codex"] : [] },
             runAttached: { _, arguments, environment in
                 if arguments == ["login"] { self.logins.append(environment); self.signedIn = true }
                 return 0
@@ -1204,72 +1203,6 @@ struct AgentConnectTests {
             "", "blackice is on in accept-all mode: every connection goes through.",
             "The fx setup was interrupted." + retry, without,
         ])
-    }
-
-    /// The first start offers Codex and opencode as well, and sets the one picked up as agent connect
-    /// does: in accept-all until it works, then the file as written, in ask mode. opencode's provider
-    /// is asked in its step. blackice cannot install Codex, so without it blackice stays in accept-all.
-    @Test func startPicksCodexOrOpenCode() throws {
-        func firstStart(_ picks: [[Int]], machine: AgentMachine, identity: SigningIdentity,
-                        choices: Recorder<Choice> = Recorder<Choice>())
-            throws -> (status: Int32, system: Loading, stdout: [String], stderr: [String], home: URL, written: String) {
-            let home = try makePrivateDirectory()
-            defer { removeTree(home) }
-            let config = home.path + "/.config/blackice/blackice.toml"
-            let system = Loading()
-            var picks = picks
-            let interaction = Interaction(
-                ask: { _ in nil }, createFile: CLI.createFile,
-                identify: { $0.hasPrefix("/opt/fake/") ? identity : nil },
-                fileExists: { FileManager.default.fileExists(atPath: $0) }, home: home.path, version: nil,
-                choose: { choice in choices.append(choice); return picks.isEmpty ? nil : picks.removeFirst() })
-            let out = Recorder<String>(), err = Recorder<String>()
-            let status = CLI.run(["start", "--config", config], stdout: { out.append($0) }, stderr: { err.append($0) },
-                                 system: system, interaction: interaction, agents: machine)
-            return (status, system, out.items, err.items, home, try String(contentsOfFile: config, encoding: .utf8))
-        }
-        let approves = "com.microsoft.VSCode -> update.code.visualstudio.com: its update server\napprove 12h\n"
-
-        // ask, Codex answers, no apps.
-        let codexMac = FakeCodexMac(signedIn: false, printed: approves)
-        let codex = try firstStart([[1], [2], []], machine: codexMac.machine, identity: Self.codex)
-        #expect(codex.status == 0, "\(codex.stderr)")
-        #expect(codex.system.texts.count == 2 && codex.system.agentInstalls == 1 && codex.system.modes.isEmpty)
-        #expect(try BlackiceConfig(data: Data(codex.system.texts[0].utf8)).mode == .acceptAll)
-        let codexFinal = try BlackiceConfig(data: Data(codex.system.texts[1].utf8))
-        #expect(codexFinal.mode == .ask && codexFinal.hooks.map(\.program) == [Self.codexProgram(codex.home)])
-        #expect(codex.written == codex.system.texts[1] && codexMac.logins.count == 1)
-        #expect(codex.stdout.contains("4 · Connect codex") && codex.stdout.contains("  ✓ approved it in 5 s"))
-
-        // ask, opencode answers, no apps, then the OpenAI provider in its step.
-        let openCodeMac = FakeOpenCodeMac(printed: approves)
-        let asked = Recorder<Choice>()
-        let openCode = try firstStart([[1], [3], [], [0]], machine: openCodeMac.machine, identity: Self.opencode, choices: asked)
-        #expect(openCode.status == 0, "\(openCode.stderr)")
-        #expect(asked.items.map(\.prompt) == ["  How should blackice treat new connections?", "  Who answers the connections that wait?",
-                                              "  Which apps may connect anywhere, in every mode?",
-                                              "  Which provider should opencode decide with?"])
-        let openCodeFinal = try BlackiceConfig(data: Data(openCode.system.texts[1].utf8))
-        #expect(openCodeFinal.mode == .ask && openCode.system.texts.count == 2)
-        #expect(openCodeFinal.hooks.map(\.program) == [Self.openCodeProgram(openCode.home, model: "openai/gpt-6-luna")])
-        for host in AgentProvider.openCode[0].hosts { #expect(openCodeFinal.allowRule(for: Self.opencode, host: host) != nil) }
-        #expect(openCodeMac.logins == [["auth", "login", "--standalone", "openai"]])
-        #expect(openCode.stdout.contains("4 · Connect opencode"))
-
-        // Codex is not installed: blackice stays in accept-all, and says how to finish.
-        let missing = FakeCodexMac(signedIn: false, printed: approves)
-        missing.installed = false
-        let stopped = try firstStart([[1], [2], []], machine: missing.machine, identity: Self.codex)
-        #expect(stopped.status == ExitCode.unavailable)
-        #expect(stopped.system.texts.count == 1 && stopped.system.running == .acceptAll && stopped.system.modes.isEmpty)
-        #expect(stopped.stderr.contains("  codex is not installed. Install it (\(AgentProfile.codex.installHint)), then: " +
-                                        "blackice agent connect codex --config ~/.config/blackice/blackice.toml"))
-        #expect(Array(stopped.stderr.suffix(3)) == [
-            "blackice is on in accept-all mode: every connection goes through.",
-            "The codex setup failed, as above. To finish it: blackice agent connect codex --config ~/.config/blackice/blackice.toml",
-            "To filter without an agent: blackice mode ask, or blackice mode block-all",
-        ])
-        #expect(try BlackiceConfig(text: stopped.written).mode == .ask)
     }
 
     /// An edit to blackice.toml while fx is set up is kept: the file is read again before fx's rule

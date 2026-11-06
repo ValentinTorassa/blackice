@@ -137,4 +137,8 @@ if [[ -n "$DRY" ]]; then
     echo 'DRY run finished. Ad hoc signature: this package is for checking the script, not for release.'
 else
     echo "Publish both files together; docs/install.md says how to check and install them."
+    # The pins come from this file, not from the release: they are what the release must match.
+    SHA=$(cut -d' ' -f1 < "$OUT/$NAME.zip.sha256")
+    echo "Then pin this zip: VERSION=$VERSION and SHA256=$SHA in site/lib/install.sh, the version in"
+    echo "site/lib/release.ts, and in the tap: scripts/update-cask.sh $VERSION $SHA"
 fi

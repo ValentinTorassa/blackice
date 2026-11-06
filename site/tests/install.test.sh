@@ -3,7 +3,8 @@
 # there. A copy of the script calls stand-ins for the macOS tools it runs by full path (codesign,
 # spctl, ditto, PlistBuddy, sw_vers, sysctl, curl), installs into the temporary folder through
 # BLACKICE_APPLICATIONS, and has /nonexistent/Applications as its default, so a run that loses the
-# variable fails instead of touching /Applications. curl's stand-in fails: nothing is downloaded.
+# variable fails instead of touching /Applications. curl's stand-in fails, so nothing is downloaded,
+# except in the download cases, where it copies from the case's own release folder.
 #
 #   sh tests/install.test.sh                          # from site/, with /bin/sh
 #   TEST_SHELL=/bin/dash sh tests/install.test.sh     # the script under another shell
@@ -30,24 +31,53 @@ stub() {
 stub uname 'case ${1:-} in -m) echo arm64 ;; *) echo Darwin ;; esac'
 stub sw_vers 'echo 27.0.1'
 stub sysctl 'echo 1'
-stub curl 'echo "curl must not run in this test: $*" >&2; exit 1'
+# curl fails unless SERVE names a folder. Then it copies the file the URL ends with from there to
+# the --output file, as a download would, and adds the URL to the file REQUESTS.
+stub curl 'eval "url=\${$#}"
+[ -n "${SERVE:-}" ] || { echo "curl must not run in this test: $*" >&2; exit 1; }
+out=""
+while [ $# -gt 0 ]; do
+  [ "$1" != --output ] || out=$2
+  shift
+done
+echo "$url" >> "$REQUESTS"
+[ -f "$SERVE/${url##*/}" ] || { echo "curl: (22) The requested URL returned error: 404" >&2; exit 22; }
+exec cp "$SERVE/${url##*/}" "$out"'
 # STUB=codesign-fail-copy: the copy beside the installed app does not verify.
+# STUB=codesign-requirement: the unpacked app does not meet the code requirement (-R) the script
+# gives; STUB=codesign-requirement-copy: the copy beside the installed app does not.
+# STUB=codesign-other-team: the app is signed by another team.
 stub codesign 'eval "last=\${$#}"
+team=M294LK997M
+[ "${STUB:-}" != codesign-other-team ] || team=ABCDE12345
 case $1 in
   --verify)
+    for arg; do
+      case ${STUB:-}:$arg:$last in
+        codesign-requirement:-R*:*/unpacked/Blackice.app | codesign-requirement-copy:-R*:*/.blackice-install.*)
+          echo "$last: test-requirement: code failed to satisfy specified code requirement(s)" >&2; exit 3 ;;
+      esac
+    done
     case ${STUB:-}:$last in
       codesign-fail-copy:*/.blackice-install.*) echo "$last: code object is not signed at all" >&2; exit 1 ;;
     esac
     exit 0 ;;
   -dvv)
     printf "%s\n" "Executable=$last/Contents/MacOS/blackice" Identifier=com.valentorassa.blackice \
-      "Authority=Developer ID Application: Test (M294LK997M)" "Authority=Developer ID Certification Authority" \
-      TeamIdentifier=M294LK997M >&2
+      "Authority=Developer ID Application: Test ($team)" "Authority=Developer ID Certification Authority" \
+      TeamIdentifier=$team >&2
     exit 0 ;;
 esac
 exit 64'
+# STUB=spctl-rejected: Gatekeeper rejects the app. STUB=spctl-not-notarized: it accepts a Developer
+# ID app that is not notarized.
 stub spctl 'eval "last=\${$#}"
-printf "%s\n" "$last: accepted" "source=Notarized Developer ID" "origin=Developer ID Application: Test (M294LK997M)" >&2'
+case ${STUB:-} in
+  spctl-rejected) printf "%s\n" "$last: rejected" "source=Unnotarized Developer ID" >&2; exit 3 ;;
+  spctl-not-notarized) source="Developer ID" ;;
+  *) source="Notarized Developer ID" ;;
+esac
+printf "%s\n" "$last: accepted" "source=$source" "origin=Developer ID Application: Test (M294LK997M)" >&2'
 # ditto -x -k ZIP DIR unpacks; ditto SRC DST copies. STUB=ditto-fail-copy: the copy beside the
 # installed app stops halfway.
 stub ditto 'if [ "$1" = -x ]; then mkdir -p "$4" && cd "$4" && exec unzip -q "$3"; fi
@@ -141,6 +171,25 @@ run() {
   status=$?
   set -e
 }
+
+# download PIN [OPTION...]: runs, without BLACKICE_ZIP, a copy that pins SHA-256 PIN and downloads
+# the box's release folder through curl's stand-in, which lists the URLs in $box/requests. Sets
+# $status and $output.
+download() {
+  sed "s/^SHA256=.*/SHA256=$1/" "$copy" > "$box/install.sh"
+  shift
+  set +e
+  output=$(env -u BLACKICE_ZIP PATH="$stubs:$PATH" HOME="$box/home" TMPDIR="$box/tmp" STUB="$STUB" \
+    SERVE="$box/release" REQUESTS="$box/requests" BLACKICE_APPLICATIONS="$box/Applications" \
+    BLACKICE_BIN_DIR="$box/bin" "$shell" "$box/install.sh" "$@" 2>&1)
+  status=$?
+  set -e
+}
+
+# The SHA-256 of the box's release zip, and a new .sha256 file for it.
+zip_sha() { shasum -a 256 "$box/release/Blackice-$version.zip" | cut -d' ' -f1; }
+rehash() { (cd "$box/release" && shasum -a 256 "Blackice-$version.zip" > "Blackice-$version.zip.sha256"); }
+downloaded_zip() { grep -q "/v$version/Blackice-$version.zip\$" "$box/requests" 2>/dev/null; }
 
 failures=0 passed=0
 problem() {
@@ -328,6 +377,128 @@ set -e
 expect_status 1
 expect_app none
 expect_output 'absolute path'
+done_case
+
+start 'a download that matches the pin and the .sha256 on the release is installed'
+new_box download
+download "$(zip_sha)"
+expect_status 0
+expect_app new
+expect_no_leftovers
+expect_output "version: $version, build 15"
+downloaded_zip || problem 'it did not download the zip'
+done_case
+
+start 'a release whose .sha256 is not the pin is refused before the zip is downloaded'
+new_box pinmismatch
+download "$(printf '%064d' 0)"
+expect_status 1
+expect_app none
+expect_no_leftovers
+expect_output 'but this script pins 0000'
+expect_output 'nothing was downloaded'
+! downloaded_zip || problem 'it downloaded the zip'
+done_case
+
+start 'a zip that is not the pinned one is refused, though the .sha256 is'
+new_box zipswapped
+pin=$(zip_sha)
+printf x >> "$box/release/Blackice-$version.zip"
+download "$pin"
+expect_status 1
+expect_app none
+expect_no_leftovers
+expect_output "but Blackice-$version.zip.sha256 says $pin"
+done_case
+
+start 'a script that pins no SHA-256 downloads nothing'
+new_box nopin
+download ''
+expect_status 1
+expect_app none
+expect_no_leftovers
+expect_output 'pins no SHA-256'
+[ ! -e "$box/requests" ] || problem 'it downloaded something'
+done_case
+
+start 'BLACKICE_ZIP says when the pin is not used'
+new_box localzip
+run
+expect_status 0
+expect_app new
+expect_output 'so the pin is not used'
+done_case
+
+start 'a zip that holds more than the app is refused'
+new_box extra
+(cd "$box/build" && echo extra > extra && zip -qry "$box/release/Blackice-$version.zip" extra)
+rehash
+run
+expect_status 1
+expect_app none
+expect_no_leftovers
+expect_output 'should hold only Blackice.app'
+done_case
+
+start 'a .sha256 of more than one line is refused'
+new_box twolines
+echo "$(zip_sha)  Blackice-0.0.1.zip" >> "$box/release/Blackice-$version.zip.sha256"
+run
+expect_status 1
+expect_app none
+expect_no_leftovers
+expect_output 'should be one line'
+done_case
+
+start 'an app that does not meet the Developer ID requirement is refused'
+new_box requirement
+STUB=codesign-requirement
+run
+expect_status 1
+expect_app none
+expect_no_leftovers
+expect_output 'not signed with the Developer ID of team M294LK997M'
+done_case
+
+start 'a copy that does not meet the Developer ID requirement leaves the installed app'
+new_box requirementcopy
+installed 0.0.9 1
+STUB=codesign-requirement-copy
+run --force
+expect_status 1
+expect_app old
+expect_no_leftovers
+expect_output 'does not verify'
+done_case
+
+start 'an app signed by another team is refused'
+new_box team
+STUB=codesign-other-team
+run
+expect_status 1
+expect_app none
+expect_no_leftovers
+expect_output 'signed by team ABCDE12345, not M294LK997M'
+done_case
+
+start 'an app Gatekeeper rejects is refused'
+new_box rejected
+STUB=spctl-rejected
+run
+expect_status 1
+expect_app none
+expect_no_leftovers
+expect_output 'Gatekeeper rejects the app'
+done_case
+
+start 'an app that is not notarized is refused'
+new_box notarized
+STUB=spctl-not-notarized
+run
+expect_status 1
+expect_app none
+expect_no_leftovers
+expect_output 'does not see a notarized Developer ID app'
 done_case
 
 echo "$passed passed, $failures failed ($shell)"

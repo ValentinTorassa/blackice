@@ -2,7 +2,8 @@
 
 Install blackice, start it, answer what waits, let an agent answer, upgrade and uninstall.
 
-Early: blackice 0.4.7 has run on one Mac, with macOS 27.0.1, and the configuration format can still change.
+blackice 1.0.0 has run on one Mac, with macOS 27.0.1; macOS 14 and 15 are not tested yet. A `blackice.toml` that
+works in 1.0 keeps working in every 1.x.
 
 You need a Mac with Apple silicon, macOS 14 or later, and an admin account.
 
@@ -12,10 +13,31 @@ You need a Mac with Apple silicon, macOS 14 or later, and an admin account.
 $ curl -fsSL https://blackice-macos.vercel.app/install.sh | sh
 ```
 
-The [script](../site/lib/install.sh) checks the release's checksum, signature, notarization and version, copies
-Blackice.app to `/Applications` and writes `~/.local/bin/blackice` (`BLACKICE_BIN_DIR` picks another folder). It starts
-nothing. Run it as your user, without `sudo`. To replace another installed version, add `--force`:
-`curl -fsSL https://blackice-macos.vercel.app/install.sh | sh -s -- --force`.
+The [script](../site/lib/install.sh) downloads the zip from the GitHub release and checks it: its SHA-256 against the
+one the script pins and the release's `.sha256` file, then the signature (Developer ID, Team ID M294LK997M), the
+notarization and the version. Then it copies Blackice.app to `/Applications` and writes `~/.local/bin/blackice`
+(`BLACKICE_BIN_DIR` picks another folder). It starts nothing. Run it as your user, without `sudo`. To replace another
+installed version, add `--force`: `curl -fsSL https://blackice-macos.vercel.app/install.sh | sh -s -- --force`.
+
+The script's checks hold only if the script is the real one, and the site serves it: whoever controls the site
+controls what runs. To read it before it runs:
+
+```console
+$ curl -fsSL -o install.sh https://blackice-macos.vercel.app/install.sh
+$ less install.sh
+$ sh install.sh
+```
+
+The site serves the copy on the repository's `main` branch, so this prints nothing:
+`curl -fsSL https://raw.githubusercontent.com/ValentinTorassa/blackice/main/site/lib/install.sh | diff - install.sh`.
+To skip the site, run the copy at the release's tag on GitHub instead:
+
+```console
+$ curl -fsSL https://raw.githubusercontent.com/ValentinTorassa/blackice/v1.0.0/site/lib/install.sh | sh
+```
+
+That one trusts GitHub and whoever can push the tag. The steps [by hand](#by-hand) trust neither the site nor the
+script: you check Apple's signature, the notarization and the Team ID yourself.
 
 ## With Homebrew
 
@@ -29,13 +51,13 @@ that, run the `codesign` and `spctl` lines below on `/Applications/Blackice.app`
 
 ## By hand
 
-Download `Blackice-0.4.7.zip` and `Blackice-0.4.7.zip.sha256` from the
-[GitHub release](https://github.com/ValentinTorassa/blackice/releases/tag/v0.4.7). In that folder:
+Download `Blackice-1.0.0.zip` and `Blackice-1.0.0.zip.sha256` from the
+[GitHub release](https://github.com/ValentinTorassa/blackice/releases/tag/v1.0.0). In that folder:
 
 ```console
-$ shasum -a 256 -c Blackice-0.4.7.zip.sha256
-Blackice-0.4.7.zip: OK
-$ ditto -x -k Blackice-0.4.7.zip .
+$ shasum -a 256 -c Blackice-1.0.0.zip.sha256
+Blackice-1.0.0.zip: OK
+$ ditto -x -k Blackice-1.0.0.zip .
 $ codesign --verify --strict --deep --verbose=2 Blackice.app
 $ codesign -dvv Blackice.app 2>&1 | grep -E '^(Identifier|TeamIdentifier)='
 Identifier=com.valentorassa.blackice
@@ -56,16 +78,25 @@ Then put the command's folder on your `PATH`, for example in `~/.zshrc`. Not a s
 export PATH="/Applications/Blackice.app/Contents/MacOS:$PATH"
 ```
 
+The `.sha256` file comes from the same release as the zip, so on its own it only catches a broken download. The
+signature, the Team ID and the notarization show that the app is blackice's. The SHA-256 should also be the one on the
+`SHA256=` line of the [install script](https://github.com/ValentinTorassa/blackice/blob/v1.0.0/site/lib/install.sh)
+at the release's tag (releases before 1.0.0 have no such line).
+
 ## Start
 
 ```console
 $ blackice start
 ```
 
-The first time, `start` asks a few questions and writes `~/.config/blackice/blackice.toml`: the mode, who answers in ask
-mode (fx, Claude Code, Codex, opencode or you), and, unless you pick accept-all, which apps may connect anywhere. That
-list starts with the network extensions macOS has activated, ticked, whether they run or not, then the apps running
-now. Leave a VPN client's network extension, such as Tailscale's, ticked, or names stop resolving in ask and block-all.
+The first time, `start` asks a few questions and writes `~/.config/blackice/blackice.toml`: the mode, who answers in
+ask mode (fx, Claude Code or you), and, unless you pick accept-all, which apps may connect anywhere. That list starts
+with the VPN tunnels macOS has activated and the common apps running now (browsers, chat and video-call apps, named by
+their signature), ticked, then the other network extensions, such as a VPN's split tunneling, which carries other
+apps' connections, and the other apps running now, unticked. A picked app's rule covers its helpers signed by the same
+team, since a browser's or a chat app's connections come from its helper. Leave a VPN tunnel, such as Tailscale's,
+ticked, or names stop resolving in ask and block-all. Codex and opencode answer once you run `blackice agent connect
+codex` or `opencode`.
 
 Then `start` asks for Touch ID (or your login password), and macOS asks you to allow the extension. `start` opens System
 Settings and prints the steps:
@@ -76,9 +107,8 @@ Settings and prints the steps:
 - macOS 14: Privacy & Security. Under Security, click Allow where it says Blackice was blocked from loading.
 
 Then click Allow when macOS asks whether "Blackice" may filter network content. If you picked an agent, `start` then
-sets it up, as [`agent connect`](#let-an-agent-answer) does (opencode asks for its provider; install Codex yourself
-first), and turns on ask mode only once the agent works; if the setup fails, blackice stays in accept-all. At the end
-it offers to open blackice in the menu bar at each login.
+sets it up, as [`agent connect`](#let-an-agent-answer) does, and turns on ask mode only once the agent works; if the
+setup fails, blackice stays in accept-all. At the end it offers to open blackice in the menu bar at each login.
 
 After editing `blackice.toml`, run `blackice start` again to load it (Touch ID).
 
