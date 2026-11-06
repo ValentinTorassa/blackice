@@ -2,11 +2,17 @@
 
 ## Unreleased
 
+The first `blackice start` offers every agent, and ticks the VPN clients' network extensions in its list of apps.
+
 Changed:
 - The first `blackice start` offers Codex and opencode as well as fx, Claude Code and you to answer in ask mode, and
   sets the one picked up as `blackice agent connect` does. opencode asks for its provider. blackice cannot install
   Codex: without it, blackice stays in accept-all and says how to finish. The menu's Mode still shows Codex and
   opencode only once they are connected.
+- The first `start`'s list of apps to trust starts with the network extensions macOS has activated, ticked, whether
+  they run or not (`systemextensionsctl list` names them). Until now it showed a system extension only while it ran,
+  so a VPN that was off at that moment was missing, and its extension then waited in ask mode and was dropped in
+  block-all. A picked extension may reach any host, as a tunnel needs.
 
 ## 0.4.7 (6 November 2026)
 

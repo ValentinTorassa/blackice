@@ -80,7 +80,7 @@ private func answers(_ script: [String], paths: Set<String> = [], identities: [S
 }
 
 /// The wizard with lists: `picks` answers each list in turn, `script` each typed question.
-private func pickedAnswers(_ picks: [[Int]?], script: [String] = [], running: [String] = [],
+private func pickedAnswers(_ picks: [[Int]?], script: [String] = [], running: [String] = [], extensions: [String] = [],
                            paths: Set<String> = [], identities: [String: SigningIdentity] = [:],
                            choices: Recorder<Choice> = Recorder<Choice>(), said: Recorder<String> = Recorder<String>())
     -> ConfigWizard.Answers? {
@@ -90,7 +90,7 @@ private func pickedAnswers(_ picks: [[Int]?], script: [String] = [], running: [S
                         say: said.append, identify: { identities[$0] }, fileExists: { paths.contains($0) },
                         home: "/Users/test",
                         choose: { choice in choices.append(choice); return picks.isEmpty ? nil : picks.removeFirst() },
-                        runningApps: { running }).run()
+                        runningApps: { running }, networkExtensions: { extensions }).run()
 }
 
 struct WizardTests {
@@ -182,6 +182,96 @@ struct WizardTests {
         #expect(Interaction.appBundle("/Library/SystemExtensions/db.plist", home: home) == nil)
         // With no Info.plist to read, a system extension is named by its file.
         #expect(Interaction.appName(tailscale) == "io.tailscale.ipn.macsys.network-extension")
+    }
+
+    /// `systemextensionsctl list` on the owner's Mac on 6 November 2026, shortened: blackice's filter,
+    /// with older builds waiting for a restart to go, two VPN clients' and a camera extension.
+    static let listing = """
+        7 extension(s)
+        --- com.apple.system_extension.network_extension (Go to 'System Settings > General > Login Items & Extensions > Network Extensions' to modify these system extension(s))
+        enabled\tactive\tteamID\tbundleID (version)\tname\t[state]
+        \t\tM294LK997M\tcom.valentorassa.blackice.filter (0.4.2/23)\tBlackice Filter\t[terminated waiting to uninstall on reboot]
+        *\t*\tJ6S6Q257EK\tch.protonvpn.mac.WireGuard-Extension (6.2.0/2791919.2512111400)\tProton VPN WireGuard\t[activated enabled]
+        *\t*\tJ6S6Q257EK\tch.protonvpn.mac.Transparent-Proxy (6.2.0/2791919.2512111400)\tProton VPN Split Tunneling (experimental)\t[activated enabled]
+        *\t*\tW5364U7YZB\tio.tailscale.ipn.macsys.network-extension (1.104.2/101.104.2)\tTailscale Network Extension\t[activated enabled]
+        *\t*\tM294LK997M\tcom.valentorassa.blackice.filter (0.4.7/28)\tBlackice Filter\t[activated enabled]
+        --- com.apple.system_extension.cmio (Go to 'System Settings > General > Login Items & Extensions > Camera Extensions' to modify these system extension(s))
+        enabled\tactive\tteamID\tbundleID (version)\tname\t[state]
+        \t*\t2MMRE5MTB8\tcom.obsproject.obs-studio.mac-camera-extension (32.2.2/31845296735)\tOBS Virtual Camera\t[activated waiting for user]
+
+        """
+
+    @Test func activatedNetworkExtensionsAreRead() {
+        let wireGuard = Interaction.ListedExtension(teamID: "J6S6Q257EK", bundleID: "ch.protonvpn.mac.WireGuard-Extension",
+                                                    name: "Proton VPN WireGuard")
+        let tailscale = Interaction.ListedExtension(teamID: "W5364U7YZB", bundleID: "io.tailscale.ipn.macsys.network-extension",
+                                                    name: "Tailscale Network Extension")
+        let listed = Interaction.activatedNetworkExtensions(Self.listing)
+        #expect(listed.map(\.bundleID) == ["ch.protonvpn.mac.WireGuard-Extension", "ch.protonvpn.mac.Transparent-Proxy",
+                                           "io.tailscale.ipn.macsys.network-extension"])
+        #expect(listed.first == wireGuard && listed.last == tailscale)
+        #expect(listed[1].name == "Proton VPN Split Tunneling (experimental)")
+
+        // Older macOS prints the category alone. Only activated and enabled network extensions count,
+        // with a Team ID and a bundle ID a path can hold; anything else is skipped.
+        let other = """
+            --- com.apple.system_extension.network_extension
+            enabled\tactive\tteamID\tbundleID (version)\tname\t[state]
+            *\t*\tW5364U7YZB\tio.tailscale.ipn.macsys.network-extension (1.104.2/101.104.2)\tTailscale Network Extension\t[activated enabled]
+            \t\tABCDE12345\tcom.example.off (1.0/1)\tTurned Off\t[activated disabled]
+            \t*\tABCDE12345\tcom.example.waiting (1.0/1)\tWaiting\t[activated waiting for user]
+            *\t*\t-\tcom.example.noteam (1.0/1)\tNo Team\t[activated enabled]
+            *\t*\tABCDE12345\t../evil (1.0/1)\tSlash\t[activated enabled]
+            *\t*\tABCDE12345\tcom.example.short (1.0/1)\t[activated enabled]
+            not a row
+            --- com.apple.system_extension.endpoint_security
+            enabled\tactive\tteamID\tbundleID (version)\tname\t[state]
+            *\t*\tABCDE12345\tcom.example.security (1.0/1)\tSecurity\t[activated enabled]
+            """
+        #expect(Interaction.activatedNetworkExtensions(other) == [tailscale])
+        #expect(Interaction.activatedNetworkExtensions("").isEmpty)
+        #expect(Interaction.activatedNetworkExtensions("0 extension(s)\n").isEmpty)
+
+        // Each one's bundle, in one of the folders macOS names by UUIDs; an upgrade keeps the old
+        // folder until a restart, and an extension with no bundle there is left out.
+        let old = "0F657535-8EDF-4212-AD21-316A5D5CC550", new = "E0C0FCB8-C157-44E5-97F8-E978DC5FDB1F"
+        let bundles: Set = ["/Library/SystemExtensions/\(new)/io.tailscale.ipn.macsys.network-extension.systemextension",
+                            "/Library/SystemExtensions/\(old)/io.tailscale.ipn.macsys.network-extension.systemextension"]
+        #expect(Interaction.extensionBundles([tailscale, wireGuard], folders: ["db.plist", new, old, ".staging"],
+                                             fileExists: { bundles.contains($0) })
+            == ["/Library/SystemExtensions/\(old)/io.tailscale.ipn.macsys.network-extension.systemextension"])
+        #expect(Interaction.extensionBundles([tailscale], folders: [], fileExists: { _ in true }).isEmpty)
+    }
+
+    /// The network extensions macOS has activated come first in the list of apps to trust, ticked,
+    /// whether they run or not; each picked one may reach any host, as a VPN client's needs.
+    @Test func networkExtensionsAreListedFirstAndTicked() throws {
+        // Folders no Mac has, so the names come from the bundles' file names.
+        let tailscalePath = "/Library/SystemExtensions/00000000-0000-4000-8000-000000000001/" +
+            "io.tailscale.ipn.macsys.network-extension.systemextension"
+        let protonPath = "/Library/SystemExtensions/00000000-0000-4000-8000-000000000002/" +
+            "ch.protonvpn.mac.WireGuard-Extension.systemextension"
+        let tailscale = SigningIdentity(signingID: "io.tailscale.ipn.macsys.network-extension", teamID: "W5364U7YZB")
+        let proton = SigningIdentity(signingID: "ch.protonvpn.mac.WireGuard-Extension", teamID: "J6S6Q257EK")
+        let identities = [tailscalePath: tailscale, protonPath: proton, "/Applications/Slack.app": Self.slack]
+        let choices = Recorder<Choice>()
+        // Tailscale's runs, so it is among the running apps too; it is listed once.
+        let picked = pickedAnswers([[2], [0, 2]], running: ["/Applications/Slack.app", tailscalePath],
+                                   extensions: [tailscalePath, protonPath], identities: identities, choices: choices)
+        let answers = try #require(picked)
+        #expect(choices.items[1].options == ["io.tailscale.ipn.macsys.network-extension", "ch.protonvpn.mac.WireGuard-Extension",
+                                             "Slack", "Another app: type its path or name"])
+        #expect(choices.items[1].initial == [0, 1] && choices.items[1].multiple)
+        #expect(answers.rules == [.init(identity: tailscale, hosts: ["*"]), .init(identity: Self.slack, hosts: ["*"])])
+        let text = ConfigWizard.render(answers)
+        #expect(text.contains("[[allow]]\napp = \"io.tailscale.ipn.macsys.network-extension\"\nteam = \"W5364U7YZB\"\nhosts = [\"*\"]\n"))
+        #expect(try BlackiceConfig(data: Data(text.utf8)).anyHostRule(for: tailscale) != nil)
+
+        // Unticked, it gets no rule; with none activated, nothing is ticked.
+        #expect(pickedAnswers([[2], []], extensions: [tailscalePath], identities: identities)?.rules == [])
+        let plain = Recorder<Choice>()
+        _ = pickedAnswers([[2], []], running: ["/Applications/Slack.app"], identities: identities, choices: plain)
+        #expect(plain.items[1].initial.isEmpty)
     }
 
     @Test func enterTakesTheDefaults() throws {

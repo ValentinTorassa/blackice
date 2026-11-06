@@ -58,7 +58,7 @@ export PATH="/Applications/Blackice.app/Contents/MacOS:$PATH"
 $ blackice start
 ```
 
-The first time, `start` asks a few questions and writes `~/.config/blackice/blackice.toml`: the mode, who answers in ask mode (fx, Claude Code, Codex, opencode or you), and, unless you pick accept-all, which running apps may connect anywhere. A VPN client's network extension, such as Tailscale's, is in that list: pick it, or names stop resolving in ask and block-all.
+The first time, `start` asks a few questions and writes `~/.config/blackice/blackice.toml`: the mode, who answers in ask mode (fx, Claude Code, Codex, opencode or you), and, unless you pick accept-all, which apps may connect anywhere. That list starts with the network extensions macOS has activated, ticked, whether they run or not, then the apps running now. Leave a VPN client's network extension, such as Tailscale's, ticked, or names stop resolving in ask and block-all.
 
 Then `start` asks for Touch ID (or your login password), and macOS asks you to allow the extension. `start` opens System Settings and prints the steps:
 
