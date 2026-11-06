@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.4.5 (5 November 2026)
 
 A quieter command line: each command says what happened in a line or two.
 
@@ -21,6 +21,9 @@ Changed:
   reason in words, such as "sent nothing for 2 minutes" for `idle_before_hello`.
 - The first `start`'s lists stay on screen as one line each, the question and what was picked.
 - `agent install` and `uninstall`, and `menu --login`, say what they did in one line.
+
+Upgrading from 0.4.4: `brew upgrade --cask blackice` or the install script with `--force`, then `blackice
+start`. Nothing else changes.
 
 ## 0.4.4 (5 November 2026)
 
