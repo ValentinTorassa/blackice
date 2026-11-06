@@ -228,7 +228,8 @@ and each run on a Mac is recorded in [`evidence/`](../evidence/).
    configuration change while connections wait drops them (`configuration_changed`) and cancels their events.
    Since 5 November 2026 that change, the switch to accept-all, lets them go instead
    (`accept_all;configuration_changed`; see "Configuration change" under the decisions), and the script checks
-   that; not yet run on a Mac.
+   that. With the published 0.4.5 on 6 November 2026 all 29 checks passed, that one and the two `example.com` cases
+   included ([P5-11](../evidence/P5-11-faults-0.4.5-macos.md)).
    *On a Mac*, 3 November 2026, with build 4 ([P5-01](../evidence/P5-01-faults-macos.md)): 24 checks passed and 4
    failed. Daemon down, hook hung, the burst and the restart passed; after `launchctl kill`, the daemon was running
    and registered again within 1 s. The last four checks, the configuration change, failed. The second Touch ID was
