@@ -221,11 +221,12 @@ max_hooks() {
 }
 
 # From `blackice pending` output: is nscurl's event for HOST listed, and with how many connections.
+# `blackice pending` lists a waiting connection as "  com.apple.nscurl → HOST:443  N connections, 25s left".
 listed() {
-    awk -v needle="apple/$NSCURL_ID -> $2:443 " 'index($0, needle) {found = 1} END {exit !found}' "$1"
+    awk -v needle=" $NSCURL_ID → $2:443 " 'index($0, needle) {found = 1} END {exit !found}' "$1"
 }
 connections() {
-    awk -v needle="apple/$NSCURL_ID -> $2:443 " 'index($0, needle) && match($0, /, [0-9]+ connections?, /) {
+    awk -v needle=" $NSCURL_ID → $2:443 " 'index($0, needle) && match($0, /  [0-9]+ connections?, /) {
         n = substr($0, RSTART + 2, RLENGTH - 2); sub(/ .*/, "", n); print n; exit }' "$1"
 }
 
@@ -356,9 +357,12 @@ ev-00000007 plain invalid"
     verdict "burst_summary counts events, waits, starts and drops ($got)" \
         "$(is test "$got" == "$(printf '6\t6\t2\t5\t1\t1\t0\t5\t0\t0')")"
     verdict "max_hooks sees 4 at once, an end and a start in the same ms counted once" "$(is test "$(max_hooks "$S")" -eq 4)"
-    printf '%s\n' 'Waiting:' \
-        "  ev-91fd1910  apple/$NSCURL_ID -> $SAME_HOST:443 (2606:4700:10::ac42:9ded), 64 connections, 25 s left" \
-        "  ev-e072fe41  apple/$NSCURL_ID -> $HUNG_HOST:443 (192.0.2.1), 1 connection, 25 s left" 'No approvals.' > "$OUT/dry/pending.txt"
+    printf '%s\n' 'Waiting' \
+        "  $NSCURL_ID → $SAME_HOST:443  64 connections, 25s left" \
+        "    blackice approve --app $NSCURL_ID --host $SAME_HOST" \
+        "  $NSCURL_ID → $HUNG_HOST:443  1 connection, 25s left" \
+        "    blackice approve --app $NSCURL_ID --host $HUNG_HOST" '' 'Approvals' \
+        "  $NSCURL_ID → www.$DOWN_HOST  10m" > "$OUT/dry/pending.txt"
     verdict "connections reads 64 from the pending list" "$(is test "$(connections "$OUT/dry/pending.txt" "$SAME_HOST")" == 64)"
     verdict "connections reads 1 connection" "$(is test "$(connections "$OUT/dry/pending.txt" "$HUNG_HOST")" == 1)"
     verdict "listed is false for a host not waiting" "$(is test "$(is listed "$OUT/dry/pending.txt" "$DOWN_HOST")" == 0)"
