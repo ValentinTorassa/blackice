@@ -348,7 +348,7 @@ struct RunTests {
                      PendingSummary(id: "ev-0000002b", app: AppReference(signingID: nil, teamID: nil, cdhash: testCDHash),
                                     path: nil, host: "pypi.org", ip: "2001:db8::1", port: 80, secondsLeft: 2, connections: 1)],
             approvals: [ApprovalSummary(app: tool, host: "api.example.com", secondsLeft: 3599)])
-        let adHoc = "ad hoc " + testCDHash.prefix(8)
+        let adHoc = "cdhash " + testCDHash.prefix(8)
         #expect(CLI.pendingLines(reply) == [
             "Waiting",
             "  com.example.tool (ABCDE12345) → example.com:443  3 connections, 8s left",

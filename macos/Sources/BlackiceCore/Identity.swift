@@ -67,12 +67,14 @@ public enum AppIdentity: Hashable, Sendable {
     }
 
     /// For people: "com.apple.curl" for Apple code, "com.tinyspeck.slackmacgap (BQR82RBBHL)" with
-    /// the team for everyone else, or "ad hoc 8fbec897". The team stays because any developer can
-    /// pick any signing identifier, com.apple.Safari included.
+    /// the team for everyone else, or "cdhash 8fbec897" for code known only by its cdhash: ad hoc
+    /// code, or code whose file the filter cannot read (CodeIdentity.kernelResolution), which a
+    /// developer may well have signed. The team stays because any developer can pick any signing
+    /// identifier, com.apple.Safari included.
     public var name: String {
         switch self {
         case .signed(let identity): return identity.signingID + (identity.teamID.map { " (\($0))" } ?? "")
-        case .cdhash(let hash): return "ad hoc " + hash.prefix(8)
+        case .cdhash(let hash): return "cdhash " + hash.prefix(8)
         }
     }
 

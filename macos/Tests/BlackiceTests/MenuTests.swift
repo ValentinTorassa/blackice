@@ -95,7 +95,7 @@ struct MenuTextTests {
                 == "io.tailscale.ipn.macsys.network-extension")
         #expect(MenuText.appName(path: "/usr/bin/curl", identity: nil) == "curl")
         #expect(MenuText.appName(path: nil, identity: .signed(SigningIdentity(signingID: "com.apple.curl", teamID: nil))) == "com.apple.curl")
-        #expect(MenuText.appName(path: nil, identity: .cdhash(String(repeating: "a", count: 40))) == "ad hoc code")
+        #expect(MenuText.appName(path: nil, identity: .cdhash(String(repeating: "a", count: 40))) == "code by cdhash")
         #expect(MenuText.appName(path: "/tmp/\u{202E}gpj.app/x", identity: nil) == "gpj")
     }
 }

@@ -128,14 +128,14 @@ struct FlowReportTests {
             "",
             "Dropped",
             "  5  nobody answered in time",
-            "       3  ad hoc 3f1c6a0b",
+            "       3  cdhash 3f1c6a0b",
             "       1  (app not logged)",
             "       1  com.example.tool (ABCDE12345)",
             "  1  held past macOS's limit while asking",
-            "       1  ad hoc 3f1c6a0b",
+            "       1  cdhash 3f1c6a0b",
             "",
             "Asked about",
-            "  2  ad hoc 3f1c6a0b",
+            "  2  cdhash 3f1c6a0b",
         ])
     }
 
@@ -152,7 +152,7 @@ struct FlowReportTests {
             "",
             "Dropped",
             "  1  hello not readable as TLS",
-            "       1  ad hoc 3f1c6a0b",
+            "       1  cdhash 3f1c6a0b",
             "",
             "Closed by the app before it sent anything, so nothing was cut: 2",
         ])
@@ -172,7 +172,7 @@ struct FlowReportTests {
             "",
             "Dropped",
             "  2  sent nothing for 2 minutes",
-            "       2  ad hoc 3f1c6a0b",
+            "       2  cdhash 3f1c6a0b",
             "  1  no server name within 10 s",
             "       1  com.example.tool (ABCDE12345)",
         ])
@@ -195,7 +195,7 @@ struct FlowReportTests {
             "",
             "In ask mode, of these 24",
             "  19  would wait for an answer",
-            "        12  ad hoc 3f1c6a0b",
+            "        12  cdhash 3f1c6a0b",
             "         1  com.apple.service1",
             "         1  com.apple.service2",
             "         1  com.apple.service3",
@@ -246,10 +246,10 @@ struct FlowReportTests {
             "",
             "Dropped",
             "  1  nobody answered in time",
-            "       1  ad hoc 3f1c6a0b",
+            "       1  cdhash 3f1c6a0b",
             "",
             "Asked about",
-            "  12  ad hoc 3f1c6a0b",
+            "  12  cdhash 3f1c6a0b",
         ]
         #expect(report.summary(last: "1h", received: 40) == counts + [
             "",

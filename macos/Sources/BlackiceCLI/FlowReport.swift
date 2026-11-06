@@ -261,7 +261,7 @@ public struct FlowReport: Equatable, Sendable {
         guard let slash = label.firstIndex(of: "/") else { return label }
         let owner = label[..<slash], rest = label[label.index(after: slash)...]
         switch owner {
-        case "cdhash": return "ad hoc " + rest.prefix(8)
+        case "cdhash": return "cdhash " + rest.prefix(8)
         case "apple": return String(rest)
         default: return String(rest) + " (" + owner + ")"
         }
