@@ -2,7 +2,7 @@
 
 Install blackice, start it, answer what waits, let an agent answer, upgrade and uninstall.
 
-Early: blackice 0.4.5 has run on one Mac, with macOS 27.0.1, and the configuration format can still change.
+Early: blackice 0.4.6 has run on one Mac, with macOS 27.0.1, and the configuration format can still change.
 
 You need a Mac with Apple silicon, macOS 14 or later, and an admin account.
 
@@ -29,13 +29,13 @@ that, run the `codesign` and `spctl` lines below on `/Applications/Blackice.app`
 
 ## By hand
 
-Download `Blackice-0.4.5.zip` and `Blackice-0.4.5.zip.sha256` from the
-[GitHub release](https://github.com/ValentinTorassa/blackice/releases/tag/v0.4.5). In that folder:
+Download `Blackice-0.4.6.zip` and `Blackice-0.4.6.zip.sha256` from the
+[GitHub release](https://github.com/ValentinTorassa/blackice/releases/tag/v0.4.6). In that folder:
 
 ```console
-$ shasum -a 256 -c Blackice-0.4.5.zip.sha256
-Blackice-0.4.5.zip: OK
-$ ditto -x -k Blackice-0.4.5.zip .
+$ shasum -a 256 -c Blackice-0.4.6.zip.sha256
+Blackice-0.4.6.zip: OK
+$ ditto -x -k Blackice-0.4.6.zip .
 $ codesign --verify --strict --deep --verbose=2 Blackice.app
 $ codesign -dvv Blackice.app 2>&1 | grep -E '^(Identifier|TeamIdentifier)='
 Identifier=com.valentorassa.blackice
@@ -76,7 +76,7 @@ Settings and prints the steps:
 
 Then click Allow when macOS asks whether "Blackice" may filter network content. If you picked an agent, `start` then
 sets it up, as [`agent connect`](#let-an-agent-answer) does, and turns on ask mode only once the agent works; if the
-setup fails, blackice stays in accept-all. At the end it offers to show blackice in the menu bar at each login.
+setup fails, blackice stays in accept-all. At the end it offers to open blackice in the menu bar at each login.
 
 After editing `blackice.toml`, run `blackice start` again to load it (Touch ID).
 
@@ -92,8 +92,8 @@ After editing `blackice.toml`, run `blackice start` again to load it (Touch ID).
 
 ### The menu bar
 
-`blackice menu`, or opening Blackice.app, shows blackice in the menu bar. `blackice menu --login on` also opens it at
-each login, and `--login off` stops that. The mark is full in ask and block-all and dimmed otherwise, with the number of
+`blackice start` shows blackice in the menu bar, as do `blackice menu` and opening Blackice.app. `blackice menu
+--login on` also opens it at each login, and `--login off` stops that. The mark is full in ask and block-all and dimmed otherwise, with the number of
 connections that wait. From the menu you can allow a waiting connection for 10 minutes or an hour, deny it, switch the
 mode and who answers, and stop filtering, each with Touch ID. Quit Menu leaves the filter running.
 
