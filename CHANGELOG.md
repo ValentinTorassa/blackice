@@ -25,6 +25,11 @@ Changed:
   folder is still not. Codex had denied a uv-managed Python reaching AWS for running from `~/.local/share/uv`.
 - GitHub Actions' log and artifact storage (`productionresultssaN.blob.core.windows.net`) joins the source hosts
   developer tools may reach, so `gh run view --log` is approved.
+- The install script pins the zip's SHA-256 next to its version, and checks the release's `.sha256` file against it
+  before it downloads the zip: the script and the GitHub release must agree. Until now its checksum came only from
+  that file, which is on the same release as the zip, so it caught only a broken download. It also checks the app, and
+  its copy in `/Applications`, against the Developer ID code requirement of team M294LK997M. The install guide says
+  how to read the script before running it, or run the copy at the release's tag on GitHub instead of the site's.
 
 Fixed:
 - A picked app's rule now covers its helpers signed by the same team. Until now picking Chrome or Slack in the first
