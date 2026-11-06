@@ -36,6 +36,15 @@ private func request(_ kind: AnswerRequest.Kind, _ identity: AppIdentity = tool,
 }
 
 struct ApprovalTableTests {
+    /// The filter's clock counts sleep: since boot it is never behind the uptime, which does not,
+    /// and it does not go back.
+    @Test func theFiltersClockCountsSleep() {
+        let uptime = ProcessInfo.processInfo.systemUptime
+        let first = continuousSeconds()
+        #expect(first >= uptime - 1)
+        #expect(continuousSeconds() >= first)
+    }
+
     @Test func approvalsExpire() {
         var table = ApprovalTable()
         let key = ApprovalKey(identity: tool, host: "example.com")

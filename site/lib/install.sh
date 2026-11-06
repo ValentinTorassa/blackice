@@ -20,11 +20,11 @@
 
 set -eu
 
-VERSION=1.0.1
+VERSION=1.0.2
 # The SHA-256 of Blackice-$VERSION.zip, the file package.sh wrote and the release holds. The zip
 # must match it and the release's .sha256 file, so this script and the GitHub release must agree.
 # Each release sets it with VERSION.
-SHA256=91b81cfb2ebb0e2748aad6b70d7a5291f868105ed27833c64a01e8a2e6bcb2ce
+SHA256=7386b3d7e462baaa2e47178237004f9e6685783aa58843868e3973a941995576
 REPOSITORY=ValentinTorassa/blackice
 TEAM_ID=M294LK997M
 IDENTIFIER=com.valentorassa.blackice
@@ -288,6 +288,10 @@ main() {
   if [ -e "$APP" ]; then
     installed=$(plist "$APP" CFBundleShortVersionString)
     if [ "$installed" = "$VERSION" ] && [ "$force" = 0 ]; then
+      # Its Info.plist names the version; only the signature says whose app it is.
+      verify=$(/usr/bin/codesign --verify --strict --deep "-R$REQUIREMENT" "$APP" 2>&1) \
+        || fail "$APP says it is $VERSION, but it is not an app signed with the Developer ID of team $TEAM_ID:" \
+          "$verify. To replace it, run \`curl -fsSL $SCRIPT_URL | sh -s -- --force\`, then \`blackice start\`."
       say "✓ Blackice.app $VERSION is already in $APPLICATIONS"
       install_command
       exit 0

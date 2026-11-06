@@ -54,7 +54,7 @@ jobs:
             printf 'Changed files:\n%s\n' "$files"
           else
             echo "No usable range ($range); running every job."
-            files="macos/ site/"
+            files=$'macos/\nsite/'
           fi
           swift=false; site=false
           grep -qE '^(macos/|integrations/|\.github/workflows/ci\.yml$)' <<<"$files" && swift=true

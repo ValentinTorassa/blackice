@@ -416,10 +416,10 @@ public final class DNSNameTable: @unchecked Sendable {
     private let lock = NSLock()
     private var entries: [IPAddress: [String: TimeInterval]] = [:]
 
-    /// `clock` returns seconds on a monotonic scale; the default is the system uptime.
+    /// `clock` returns seconds on a monotonic scale; the default counts sleep (continuousSeconds).
     public init(maximumAddresses: Int = defaultMaximumAddresses,
                 maximumNamesPerAddress: Int = defaultMaximumNamesPerAddress,
-                clock: @escaping @Sendable () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }) {
+                clock: @escaping @Sendable () -> TimeInterval = { continuousSeconds() }) {
         self.maximumAddresses = maximumAddresses
         self.maximumNamesPerAddress = maximumNamesPerAddress
         self.clock = clock

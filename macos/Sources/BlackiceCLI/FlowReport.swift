@@ -206,7 +206,7 @@ public struct FlowReport: Equatable, Sendable {
         if passes > 0 {
             var groups: [String: Int] = [:]
             for (reason, count) in wouldPass { groups[Self.passGroup(reason), default: 0] += count }
-            lines.append(row(passes, "would go through (" + Self.sorted(groups).map { "\($0.key) \($0.value)" }.joined(separator: ", ") + ")"))
+            lines.append(row(passes, "would go through (" + Self.sorted(groups).map { "\(Self.shown($0.key)) \($0.value)" }.joined(separator: ", ") + ")"))
         }
         lines.append("  An estimate: accept-all reads no DNS answers.")
         return lines

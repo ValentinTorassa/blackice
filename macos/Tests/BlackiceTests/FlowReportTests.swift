@@ -214,6 +214,11 @@ struct FlowReportTests {
     @Test func whatOtherProgramsLogIsEscaped() {
         let report = FlowReport(logText: line("drop timeout app=evil\u{1B}[2J <private>"))
         #expect(report.summary(last: "1h").contains("       1  evil\\u{1b}[2J"))
+        // A dry run's reason for letting a flow through, too: any program can log in this subsystem.
+        let dry = FlowReport(logText: line("allow accept_all app=\(geod) would=evil\u{1B}[2J <private>"))
+        let summary = dry.summary(last: "1h")
+        #expect(!summary.joined().unicodeScalars.contains { $0.value == 0x1B })
+        #expect(summary.contains { $0.contains("would go through (evil\\u{1b}[2J 1)") })
     }
 
     @Test func reportRunsLogShowAndPrintsTheSummary() {
