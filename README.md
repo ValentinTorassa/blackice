@@ -45,7 +45,7 @@ sample connection, a rule that lets it reach its model, and its hook. Its tools 
 - `codex`: [Codex](https://developers.openai.com/codex/cli), with a ChatGPT plan ([`integrations/codex/`](integrations/codex/))
 - `opencode`: [opencode](https://opencode.ai/docs), with a provider you pick ([`integrations/opencode/`](integrations/opencode/))
 
-[`integrations/eval/run.sh`](integrations/eval/run.sh) runs any of them over the same 23 cases.
+[`integrations/eval/run.sh`](integrations/eval/run.sh) runs any of them over the same 28 cases.
 
 ## Development
 

@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+Changed:
+- The agents' instructions say when to approve a developer tool. `node`, `python3`, `curl`, `git` and the
+  package managers and builds they run are approved, for 1 to 8 hours, when they reach a package registry, a source
+  host or a public asset CDN such as Google Fonts, and still denied anywhere else. Until now Claude Code and fx
+  denied `curl` to the npm registry. Agents already connected use the new text after the upgrade, with nothing to
+  run: the daemon writes the instructions for each event.
+
 Fixed:
 - `blackice start` keeps a mode or answerer switched with `blackice mode` or the menu only while the file is the one
   started then, unchanged. Until now it compared only the file's `mode` line, so starting another file, or the same

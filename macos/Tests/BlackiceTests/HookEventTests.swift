@@ -69,7 +69,7 @@ struct HookEventTests {
         let cases = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: folder.deletingLastPathComponent()
             .appendingPathComponent("cases.json"))) as? [[String: Any]])
         #expect(Set(names) == Set(cases.compactMap { ($0["id"] as? String).map { $0 + ".json" } }))
-        #expect(names.count == 23)
+        #expect(names.count == 28)
         for name in names {
             var object = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: folder.appendingPathComponent(name)))
                 as? [String: Any])
