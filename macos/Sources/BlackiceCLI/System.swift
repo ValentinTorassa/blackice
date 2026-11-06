@@ -1,3 +1,4 @@
+import Foundation
 import BlackiceCore
 
 /// Where a system command writes its lines.
@@ -53,6 +54,9 @@ public protocol SystemControlling {
     /// `blackice report`: what `log show` prints of the filter's flow lines over the last
     /// `minutes`. Reading the log needs neither Touch ID nor the signed app.
     func flowLog(minutes: Int) -> LogShowResult
+    /// `blackice report`: the daemon's `event_received` records stamped in `window`, from its event
+    /// log (ReceivedEvents); nil when there is no log, or it cannot be read.
+    func receivedEvents(in window: ClosedRange<Date>) -> Int?
 }
 
 extension SystemControlling {
@@ -70,6 +74,11 @@ extension SystemControlling {
     public func runningMode() -> Mode? { nil }
     /// /usr/bin/log, from any build.
     public func flowLog(minutes: Int) -> LogShowResult { FlowLog.show(minutes: minutes) }
+    /// The user's own ~/Library/Logs/blackice/events.jsonl, from any build.
+    public func receivedEvents(in window: ClosedRange<Date>) -> Int? {
+        guard let account = try? UserAccount.current() else { return nil }
+        return ReceivedEvents.count(url: DaemonPaths.eventLog(home: account.homeURL), in: window)
+    }
 }
 
 /// What every build says that is not Blackice.app signed with the Developer ID.

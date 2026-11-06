@@ -143,7 +143,8 @@ repository has each agent's hook and what it may do: [fx](../integrations/fx/REA
 
 ## Upgrade
 
-Run `brew upgrade --cask blackice`, or the install script with `--force`, then right away:
+Upgrade the way you installed: `brew upgrade --cask blackice` for the cask (it says "Cask 'blackice' is not installed"
+after an install with the script), or the install script again with `--force`. Then right away:
 
 ```console
 $ blackice start
