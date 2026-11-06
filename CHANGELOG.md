@@ -1,8 +1,11 @@
 # Changelog
 
-## Unreleased
+## 1.0.0 (6 November 2026)
 
-The first `blackice start` offers every agent, and ticks the VPN clients' network extensions in its list of apps.
+The first stable release. A `blackice.toml` that works in 1.0 keeps working in every 1.x. It has run on one Mac, with
+macOS 27.0.1; macOS 14 and 15 are not tested yet. Since 0.4.7: the first `blackice start` offers every agent and ticks
+the VPN clients' network extensions, the agents read the owner's notes as additions, and `blackice report` says when
+macOS dropped lines.
 
 Changed:
 - The first `blackice start` offers Codex and opencode as well as fx, Claude Code and you to answer in ask mode, and
@@ -28,6 +31,9 @@ Fixed:
   Each event in the daemon's log comes from a connection asked about, so when the daemon logged more events over
   the span than `log show` has asks, the report ends with `These counts are low: the daemon logged 40 events, more
   than the 12 asked about.` On a Mac whose data volume was 99% full, `log show` kept none of the filter's lines.
+
+Upgrading from 0.4.7: `brew upgrade --cask blackice` for the cask, or the install script again with `--force`, then
+`blackice start`. Nothing else changes.
 
 ## 0.4.7 (6 November 2026)
 

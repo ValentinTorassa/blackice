@@ -2,7 +2,8 @@
 
 Install blackice, start it, answer what waits, let an agent answer, upgrade and uninstall.
 
-Early: blackice 0.4.7 has run on one Mac, with macOS 27.0.1, and the configuration format can still change.
+blackice 1.0.0 has run on one Mac, with macOS 27.0.1; macOS 14 and 15 are not tested yet. A `blackice.toml` that
+works in 1.0 keeps working in every 1.x.
 
 You need a Mac with Apple silicon, macOS 14 or later, and an admin account.
 
@@ -29,13 +30,13 @@ that, run the `codesign` and `spctl` lines below on `/Applications/Blackice.app`
 
 ## By hand
 
-Download `Blackice-0.4.7.zip` and `Blackice-0.4.7.zip.sha256` from the
-[GitHub release](https://github.com/ValentinTorassa/blackice/releases/tag/v0.4.7). In that folder:
+Download `Blackice-1.0.0.zip` and `Blackice-1.0.0.zip.sha256` from the
+[GitHub release](https://github.com/ValentinTorassa/blackice/releases/tag/v1.0.0). In that folder:
 
 ```console
-$ shasum -a 256 -c Blackice-0.4.7.zip.sha256
-Blackice-0.4.7.zip: OK
-$ ditto -x -k Blackice-0.4.7.zip .
+$ shasum -a 256 -c Blackice-1.0.0.zip.sha256
+Blackice-1.0.0.zip: OK
+$ ditto -x -k Blackice-1.0.0.zip .
 $ codesign --verify --strict --deep --verbose=2 Blackice.app
 $ codesign -dvv Blackice.app 2>&1 | grep -E '^(Identifier|TeamIdentifier)='
 Identifier=com.valentorassa.blackice

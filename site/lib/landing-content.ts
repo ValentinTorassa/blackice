@@ -42,7 +42,7 @@ export const details = [
   'There is no window: a menu bar icon shows the mode and what waits.',
 ]
 
-export const status = `Early: ${release.version} has run on one Mac, with macOS 27.0.1. It needs macOS 14 or later on Apple silicon.`
+export const status = `${release.version} has run on one Mac, with macOS 27.0.1. It needs macOS 14 or later on Apple silicon.`
 
 export const install = {
   curl: release.curl,
