@@ -2,7 +2,14 @@
 
 ## Unreleased
 
+New:
+- `blackice approve` takes `--host` up to 16 times: one app's hosts under one Touch ID, whose dialog names them all.
+  Until now each host took its own command and Touch ID, seven for a mail CLI that signs in to Google and Microsoft.
+
 Fixed:
+- `pending` lists the apps and hosts denied a moment ago first, each app's hosts with one `blackice approve` line,
+  and `status` counts them. Until now `pending` opened with "Nothing waiting" while a remembered denial dropped the
+  app's connections without an event, so there seemed to be nothing to approve.
 - An approval that lands while the configuration changes no longer lets its connections through under the new one.
   Until now a switch to block-all at that moment missed them, and the old approval let them go.
 - One app holds at most 64 of the 256 connections waiting for their TLS hello, and a new one replaces the oldest

@@ -557,6 +557,19 @@ struct ReportTests {
             "  timeout    60 s",
             "  daemon     not running, so no hook runs: blackice agent install",
         ])
+        // A denial remembered a moment ago drops the app's connections with no event: status says so.
+        let denied = PendingReply(events: [], approvals: [],
+                                  denials: [ApprovalSummary(app: tool, host: "example.com", secondsLeft: 540),
+                                            ApprovalSummary(app: tool, host: "pypi.org", secondsLeft: 60)])
+            .deciding(with: try snapshot(.ask, withHook))
+        #expect(CLI.statusLines(StatusReport(filter: .on(try snapshot(.ask, withHook)), daemonRunning: true, pending: denied))
+            .prefix(5) == [
+                "blackice is on in ask mode",
+                "  answers    your hooks",
+                "  waiting    nothing",
+                "  denied     2 apps and hosts a moment ago, dropped without asking: blackice pending",
+                "  rules      1",
+            ])
         let unreachable = CLI.statusLines(StatusReport(filter: .on(try snapshot(.ask, withHook)), daemonRunning: true, pending: nil))
         #expect(unreachable[2] == "  rules      1")
         #expect(unreachable.last == "  filter     not answering; if blackice was just upgraded, restart the Mac")
