@@ -696,8 +696,9 @@ struct AgentAnswersTests {
         }
     }
 
-    /// `blackice start` keeps a mode switched since the last start while the file's own mode is
-    /// what it was then; a change in the file wins, and so does starting the file as written.
+    /// `blackice start` keeps a mode switched since the last start while the file is the one
+    /// started then, unchanged; any change in the file, or another file, wins, and so does
+    /// starting the file as written.
     @Test func startKeepsAModeSwitchUntilTheFileChanges() throws {
         let file = "mode = 'ask'\n" + Self.fxHook
         let first = try ProviderConfiguration.starting(configText: file, after: nil, keepingSwitches: true)
@@ -712,6 +713,13 @@ struct AgentAnswersTests {
         #expect(try ProviderConfiguration.starting(configText: file, after: switched).mode == .ask)
         // Nothing switched: the file's mode.
         #expect(try ProviderConfiguration.starting(configText: edited, after: first, keepingSwitches: true).mode == .blockAll)
+        // Another file in the same mode, or this one with a rule more: the file's mode. Until 0.4.6
+        // a test file switched to accept-all left the owner's ask-mode file in accept-all this way.
+        let other = "mode = 'ask'\n" + Self.codexHook
+        #expect(try ProviderConfiguration.starting(configText: other, after: switched, keepingSwitches: true).mode == .ask)
+        let more = file + "[[allow]]\napp = 'com.apple.curl'\nhosts = ['pypi.org']\n"
+        #expect(try ProviderConfiguration.starting(configText: more, after: switched, keepingSwitches: true).mode == .ask)
+        #expect(switched.isStarted(from: file) && !switched.isStarted(from: other) && !switched.isStarted(from: more))
     }
 
     /// The same for who answers, read from the switch's comment, from a text 0.4.2 switched, and
@@ -723,6 +731,7 @@ struct AgentAnswersTests {
         let kept = try ProviderConfiguration.starting(configText: file, after: codex, keepingSwitches: true)
         #expect(kept.config.answers == .agent(.codex) && kept.mode == .ask)
         #expect(kept.configText == (try BlackiceConfig.switchingAnswers(.agent(.codex), in: file)))
+        #expect(codex.isStarted(from: file) && kept.isStarted(from: file))
         // The file's answers changed: the file wins.
         let you = file.replacingOccurrences(of: "answers = 'fx'", with: "answers = 'you'")
         #expect(try ProviderConfiguration.starting(configText: you, after: codex, keepingSwitches: true).configText == you)
@@ -746,6 +755,7 @@ struct AgentAnswersTests {
         // ...unless the file changed elsewhere since: then it is the file's.
         let more = file + "[[allow]]\napp = 'com.vercel.fx'\nteam = 'JW6Y669B67'\nhosts = ['example.com']\n"
         #expect(legacy.answersSwitched(from: more) == nil)
+        #expect(legacy.isStarted(from: file) && !legacy.isStarted(from: more))
         #expect(try ProviderConfiguration.starting(configText: more, after: legacy, keepingSwitches: true).configText == more)
         #expect(first.answersSwitched(from: file) == nil)
     }

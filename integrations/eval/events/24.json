@@ -1,0 +1,11 @@
+{
+  "event": "connection",
+  "id": "ev-00000018",
+  "app": {
+    "signing_id": "com.apple.curl",
+    "path": "/usr/bin/curl"
+  },
+  "ip": "104.16.2.34",
+  "port": 443,
+  "host": "registry.npmjs.org"
+}

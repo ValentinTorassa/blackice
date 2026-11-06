@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.4.7 (6 November 2026)
+
+`blackice start` loads the file's mode again after a test file, and the agents let developer tools reach developer
+infrastructure.
+
+Changed:
+- The agents' instructions say when to approve a developer tool. `node`, `python3`, `curl`, `git` and the
+  package managers and builds they run are approved, for 1 to 8 hours, when they reach a package registry, a source
+  host or a public asset CDN such as Google Fonts, and still denied anywhere else. Until now Claude Code and fx
+  denied `curl` to the npm registry. Agents already connected use the new text after the upgrade, with nothing to
+  run: the daemon writes the instructions for each event.
+
+Fixed:
+- `blackice start` keeps a mode or answerer switched with `blackice mode` or the menu only while the file is the one
+  started then, unchanged. Until now it compared only the file's `mode` line, so starting another file, or the same
+  file with a rule more, in the same mode kept the switch: after a test file was switched to accept-all, the owner's
+  own ask-mode file started in accept-all.
+
+Upgrading from 0.4.6: `brew upgrade --cask blackice` or the install script with `--force`, then `blackice start`.
+Nothing else changes.
+
 ## 0.4.6 (6 November 2026)
 
 `blackice start` opens blackice in the menu bar, and the site and docs are a third as long.

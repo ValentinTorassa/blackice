@@ -88,6 +88,20 @@ Approve only when the connection is clearly what this app is for. Look at:
 - **Whether this app talks to this host.** A package manager reaching its registry, an editor
   reaching its update server and a CLI reaching its own API are expected. The same app reaching
   an unrelated service is not.
+- **Developer tools reaching developer infrastructure.** Runtimes and fetch tools such as `node`,
+  `bun`, `deno`, `python3`, `ruby`, `curl`, `wget`, `nscurl` and `git`, and the package managers
+  and builds they run, can reach anything, so the host decides. Approve them, for `1h` to `8h`,
+  when the host is public developer infrastructure that serves code and assets: a package
+  registry (`registry.npmjs.org`, `registry.yarnpkg.com`, `pypi.org`, `files.pythonhosted.org`,
+  `crates.io`, `index.crates.io`, `static.crates.io`, `rubygems.org`, `proxy.golang.org`,
+  `sum.golang.org`, `repo.maven.apache.org`), a source host read for code and releases
+  (`github.com`, `codeload.github.com`, `objects.githubusercontent.com`,
+  `raw.githubusercontent.com`, `release-assets.githubusercontent.com`, `gitlab.com`), or a public
+  asset CDN a build fetches from (`fonts.googleapis.com`, `fonts.gstatic.com`, `cdn.jsdelivr.net`,
+  `unpkg.com`, `cdnjs.cloudflare.com`). The same tools reaching any other host, a public address,
+  a paste or file-sharing site or a lookalike of these names stay a deny unless the owner's notes
+  say otherwise, and so do these tools run from `/tmp`, `~/Downloads` or a hidden or cache
+  directory.
 - **The host.** Deny lookalike names (`githuh.com`, `apple-support-login.net`), random-looking
   subdomains, dynamic DNS names, and paste and file-sharing sites.
 - **A host that is an IP address** (`host` is the same as `ip`). Suspicious by default:
@@ -221,6 +235,20 @@ Approve only when the connection is clearly what this app is for. Look at:
 - **Whether this app talks to this host.** A package manager reaching its registry, an editor
   reaching its update server and a CLI reaching its own API are expected. The same app reaching
   an unrelated service is not.
+- **Developer tools reaching developer infrastructure.** Runtimes and fetch tools such as `node`,
+  `bun`, `deno`, `python3`, `ruby`, `curl`, `wget`, `nscurl` and `git`, and the package managers
+  and builds they run, can reach anything, so the host decides. Approve them, for `1h` to `8h`,
+  when the host is public developer infrastructure that serves code and assets: a package
+  registry (`registry.npmjs.org`, `registry.yarnpkg.com`, `pypi.org`, `files.pythonhosted.org`,
+  `crates.io`, `index.crates.io`, `static.crates.io`, `rubygems.org`, `proxy.golang.org`,
+  `sum.golang.org`, `repo.maven.apache.org`), a source host read for code and releases
+  (`github.com`, `codeload.github.com`, `objects.githubusercontent.com`,
+  `raw.githubusercontent.com`, `release-assets.githubusercontent.com`, `gitlab.com`), or a public
+  asset CDN a build fetches from (`fonts.googleapis.com`, `fonts.gstatic.com`, `cdn.jsdelivr.net`,
+  `unpkg.com`, `cdnjs.cloudflare.com`). The same tools reaching any other host, a public address,
+  a paste or file-sharing site or a lookalike of these names stay a deny unless the owner's notes
+  say otherwise, and so do these tools run from `/tmp`, `~/Downloads` or a hidden or cache
+  directory.
 - **The host.** Deny lookalike names (`githuh.com`, `apple-support-login.net`), random-looking
   subdomains, dynamic DNS names, and paste and file-sharing sites.
 - **A host that is an IP address** (`host` is the same as `ip`). Suspicious by default:
@@ -341,6 +369,20 @@ Approve only when the connection is clearly what this app is for. Look at:
 - **Whether this app talks to this host.** A package manager reaching its registry, an editor
   reaching its update server and a CLI reaching its own API are expected. The same app reaching
   an unrelated service is not.
+- **Developer tools reaching developer infrastructure.** Runtimes and fetch tools such as `node`,
+  `bun`, `deno`, `python3`, `ruby`, `curl`, `wget`, `nscurl` and `git`, and the package managers
+  and builds they run, can reach anything, so the host decides. Approve them, for `1h` to `8h`,
+  when the host is public developer infrastructure that serves code and assets: a package
+  registry (`registry.npmjs.org`, `registry.yarnpkg.com`, `pypi.org`, `files.pythonhosted.org`,
+  `crates.io`, `index.crates.io`, `static.crates.io`, `rubygems.org`, `proxy.golang.org`,
+  `sum.golang.org`, `repo.maven.apache.org`), a source host read for code and releases
+  (`github.com`, `codeload.github.com`, `objects.githubusercontent.com`,
+  `raw.githubusercontent.com`, `release-assets.githubusercontent.com`, `gitlab.com`), or a public
+  asset CDN a build fetches from (`fonts.googleapis.com`, `fonts.gstatic.com`, `cdn.jsdelivr.net`,
+  `unpkg.com`, `cdnjs.cloudflare.com`). The same tools reaching any other host, a public address,
+  a paste or file-sharing site or a lookalike of these names stay a deny unless the owner's notes
+  say otherwise, and so do these tools run from `/tmp`, `~/Downloads` or a hidden or cache
+  directory.
 - **The host.** Deny lookalike names (`githuh.com`, `apple-support-login.net`), random-looking
   subdomains, dynamic DNS names, and paste and file-sharing sites.
 - **A host that is an IP address** (`host` is the same as `ip`). Suspicious by default:
@@ -460,6 +502,20 @@ Approve only when the connection is clearly what this app is for. Look at:
 - **Whether this app talks to this host.** A package manager reaching its registry, an editor
   reaching its update server and a CLI reaching its own API are expected. The same app reaching
   an unrelated service is not.
+- **Developer tools reaching developer infrastructure.** Runtimes and fetch tools such as `node`,
+  `bun`, `deno`, `python3`, `ruby`, `curl`, `wget`, `nscurl` and `git`, and the package managers
+  and builds they run, can reach anything, so the host decides. Approve them, for `1h` to `8h`,
+  when the host is public developer infrastructure that serves code and assets: a package
+  registry (`registry.npmjs.org`, `registry.yarnpkg.com`, `pypi.org`, `files.pythonhosted.org`,
+  `crates.io`, `index.crates.io`, `static.crates.io`, `rubygems.org`, `proxy.golang.org`,
+  `sum.golang.org`, `repo.maven.apache.org`), a source host read for code and releases
+  (`github.com`, `codeload.github.com`, `objects.githubusercontent.com`,
+  `raw.githubusercontent.com`, `release-assets.githubusercontent.com`, `gitlab.com`), or a public
+  asset CDN a build fetches from (`fonts.googleapis.com`, `fonts.gstatic.com`, `cdn.jsdelivr.net`,
+  `unpkg.com`, `cdnjs.cloudflare.com`). The same tools reaching any other host, a public address,
+  a paste or file-sharing site or a lookalike of these names stay a deny unless the owner's notes
+  say otherwise, and so do these tools run from `/tmp`, `~/Downloads` or a hidden or cache
+  directory.
 - **The host.** Deny lookalike names (`githuh.com`, `apple-support-login.net`), random-looking
   subdomains, dynamic DNS names, and paste and file-sharing sites.
 - **A host that is an IP address** (`host` is the same as `ip`). Suspicious by default:

@@ -1,0 +1,11 @@
+{
+  "event": "connection",
+  "id": "ev-0000001a",
+  "app": {
+    "cdhash": "e2a7c4f19b03d85e6a1c7b2f90d4e8a3c6b5f201",
+    "path": "/opt/homebrew/Cellar/python@3.13/3.13.5/Frameworks/Python.framework/Versions/3.13/bin/python3.13"
+  },
+  "ip": "151.101.0.223",
+  "port": 443,
+  "host": "files.pythonhosted.org"
+}
