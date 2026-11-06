@@ -13,7 +13,7 @@
     <key>CFBundlePackageType</key><string>SYSX</string>
     <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
     <key>CFBundleVersion</key><string>1</string>
-    <key>CFBundleShortVersionString</key><string>1.0.0</string>
+    <key>CFBundleShortVersionString</key><string>1.0.1</string>
     <key>LSMinimumSystemVersion</key><string>14.0</string>
     <key>NSSystemExtensionUsageDescription</key>
     <string>Blackice filters outgoing connections so each app reaches only the hosts you, or the agent you chose, approve.</string>

@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.0.1 (6 November 2026)
 
 Fixed:
 - A program that runs from a folder macOS keeps the filter from reading (`~/Documents`, `~/Desktop`, `~/Downloads`,
@@ -8,6 +8,8 @@ Fixed:
   so ask mode asks about it. Until now the filter could not check its signature and dropped its connections as
   `unknown_identity`, with no question: a tool a project keeps in `node_modules`, such as the Codex that deepsec runs,
   could not connect in ask mode. A rule still cannot name such a program, and block-all still drops it.
+
+Upgrading from 1.0.0: `brew upgrade --cask blackice`, or the install script with `--force`, then `blackice start`.
 
 ## 1.0.0 (6 November 2026)
 
