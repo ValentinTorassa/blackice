@@ -3,7 +3,8 @@ import BlackiceCore
 
 // `blackice report`: the filter's flow lines over the last while, summed up from the public part
 // of each line (FlowLogLine.publicText). The host is private in unified logging, so the report
-// counts by reason and app, never by host.
+// counts by reason and app, never by host. The ask lines are checked against the daemon's event
+// log (ReceivedEvents), since macOS does not keep every line.
 
 /// What a program printed (stdout and stderr together) and its exit status.
 public struct LogShowResult: Equatable, Sendable {
@@ -148,11 +149,30 @@ public struct FlowReport: Equatable, Sendable {
         }
     }
 
-    /// What `blackice report` prints; `last` is the span as typed back, "1h" or "30m".
-    public func summary(last: String) -> [String] {
-        guard total > 0 else {
-            return ["blackice's filter logged nothing in the last \(last). Is it on? blackice status"]
+    /// What `blackice report` prints; `last` is the span as typed back, "1h" or "30m". `received` is
+    /// how many events the daemon logged over the same span (ReceivedEvents), nil when its log could
+    /// not be read. Each comes from an ask line, so more events than ask lines means macOS dropped
+    /// some of the filter's lines, and the summary says its counts are low.
+    public func summary(last: String, received: Int? = nil) -> [String] {
+        let asks = asked.values.reduce(0, +)
+        guard let received, received > asks else {
+            return total > 0 ? counts(last: last)
+                : ["blackice's filter logged nothing in the last \(last). Is it on? blackice status"]
         }
+        let events = Describe.count(received, "event")
+        guard total > 0 else {
+            return ["macOS kept none of the filter's lines from the last \(last), but the daemon logged \(events).",
+                    "It drops lines when the disk is nearly full."]
+        }
+        return counts(last: last) + [
+            "",
+            "These counts are low: the daemon logged \(events), more than the \(asks) asked about.",
+            "macOS drops some of the filter's lines when the disk is nearly full.",
+        ]
+    }
+
+    /// The summary of the lines read: the total, then the drops, the asks and the dry run.
+    func counts(last: String) -> [String] {
         let drops = dropped.values.reduce(0) { $0 + $1.values.reduce(0, +) }
         let asks = asked.values.reduce(0, +)
         var lines = ["Last \(last): \(Describe.count(decided, "connection")), \(drops) dropped" + (asks > 0 ? ", \(asks) asked about" : "")]

@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+Fixed:
+- `blackice report` says when macOS dropped the filter's lines, instead of printing low counts as if they were all.
+  Each event in the daemon's log comes from a connection asked about, so when the daemon logged more events over
+  the span than `log show` has asks, the report ends with `These counts are low: the daemon logged 40 events, more
+  than the 12 asked about.` On a Mac whose data volume was 99% full, `log show` kept none of the filter's lines.
+
 ## 0.4.7 (6 November 2026)
 
 `blackice start` loads the file's mode again after a test file, and the agents let developer tools reach developer

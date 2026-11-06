@@ -15,16 +15,27 @@ private let tool = "ABCDE12345/com.example.tool"
 private let node = "cdhash/3f1c6a0b9e2d4c5a7b8f9e0d1c2b3a4f5e6d7c8b"
 private let geod = "apple/com.apple.geod"
 
-/// Stands in for NESystemControl: only `report` is expected.
+/// Stands in for NESystemControl: only `report` is expected. With no `received` there is no event
+/// log, and the real one is never read.
 private final class LogOnly: SystemControlling {
     var asked: [Int] = []
+    var windows: [ClosedRange<Date>] = []
     let result: LogShowResult
+    let received: Int?
 
-    init(_ result: LogShowResult) { self.result = result }
+    init(_ result: LogShowResult, received: Int? = nil) {
+        self.result = result
+        self.received = received
+    }
 
     func flowLog(minutes: Int) -> LogShowResult {
         asked.append(minutes)
         return result
+    }
+
+    func receivedEvents(in window: ClosedRange<Date>) -> Int? {
+        windows.append(window)
+        return received
     }
 
     func start(configText: String, output: SystemOutput) -> Int32 { ExitCode.unavailable }
@@ -36,6 +47,11 @@ private final class LogOnly: SystemControlling {
     func runDaemon(output: SystemOutput) -> Int32 { ExitCode.unavailable }
     func installAgent(output: SystemOutput) -> Int32 { ExitCode.unavailable }
     func uninstallAgent(output: SystemOutput) -> Int32 { ExitCode.unavailable }
+}
+
+/// One record of the daemon's event log, as it writes it.
+private func record(_ record: LogRecord, at date: Date) throws -> String {
+    String(decoding: try EventLog.encode(record, at: date), as: UTF8.self)
 }
 
 private func run(_ arguments: [String], _ system: SystemControlling) -> (status: Int32, stdout: [String], stderr: [String]) {
@@ -210,6 +226,124 @@ struct FlowReportTests {
         let quiet = run(["report"], LogOnly(LogShowResult(status: 0, output: "Timestamp               Ty Process[PID:TID]\n")))
         #expect(quiet.status == ExitCode.success)
         #expect(quiet.stdout == ["blackice's filter logged nothing in the last 1h. Is it on? blackice status"])
+    }
+
+    /// On 6 November 2026, on a Mac whose data volume was 99% full, `log show` kept none of the
+    /// filter's lines, and the report counted far too few. Each event the daemon logs comes from an
+    /// ask line, so more events than ask lines means lines are missing.
+    @Test func saysWhenMacOSKeptFewerAsksThanTheDaemonLogged() {
+        let text = ([line("drop timeout app=\(node) <private>")]
+            + Array(repeating: line("ask no_rule app=\(node) <private>"), count: 12))
+            .joined(separator: "\n")
+        let report = FlowReport(logText: text)
+        let counts = [
+            "Last 1h: 1 connection, 1 dropped, 12 asked about",
+            "",
+            "Dropped",
+            "  1  nobody answered in time",
+            "       1  ad hoc 3f1c6a0b",
+            "",
+            "Asked about",
+            "  12  ad hoc 3f1c6a0b",
+        ]
+        #expect(report.summary(last: "1h", received: 40) == counts + [
+            "",
+            "These counts are low: the daemon logged 40 events, more than the 12 asked about.",
+            "macOS drops some of the filter's lines when the disk is nearly full.",
+        ])
+        // As many events as asks, fewer (several flows wait on one event), none, or no event log.
+        for received in [12, 5, 0, nil] as [Int?] {
+            #expect(report.summary(last: "1h", received: received) == counts, "\(String(describing: received))")
+        }
+        let noAsks = FlowReport(logText: line("allow rule_line_3 app=\(tool) <private>")).summary(last: "1h", received: 1)
+        #expect(noAsks.suffix(2) == ["These counts are low: the daemon logged 1 event, more than the 0 asked about.",
+                                     "macOS drops some of the filter's lines when the disk is nearly full."])
+    }
+
+    /// `log show` printed only its header, though the daemon logged events, so the filter was on.
+    @Test func noFlowLinesButEventsSaysMacOSKeptNone() {
+        let header = FlowReport(logText: "Timestamp               Ty Process[PID:TID]\n")
+        #expect(header.summary(last: "30m", received: 3) == [
+            "macOS kept none of the filter's lines from the last 30m, but the daemon logged 3 events.",
+            "It drops lines when the disk is nearly full.",
+        ])
+        for received in [0, nil] as [Int?] {
+            #expect(header.summary(last: "30m", received: received)
+                    == ["blackice's filter logged nothing in the last 30m. Is it on? blackice status"])
+        }
+    }
+
+    @Test func reportChecksTheAsksAgainstTheDaemonsEvents() throws {
+        let asks = Array(repeating: line("ask no_rule app=\(node) <private>"), count: 2).joined(separator: "\n") + "\n"
+        let system = LogOnly(LogShowResult(status: 0, output: asks), received: 5)
+        let before = Date()
+        let result = run(["report", "--last", "30m"], system)
+        let after = Date()
+        #expect(result.status == ExitCode.success && result.stderr.isEmpty)
+        #expect(result.stdout.suffix(2) == ["These counts are low: the daemon logged 5 events, more than the 2 asked about.",
+                                            "macOS drops some of the filter's lines when the disk is nearly full."])
+        // The span `log show` reads, less its first seconds, up to the time taken before it ran.
+        let window = try #require(system.windows.first)
+        #expect(system.windows.count == 1 && (before...after).contains(window.upperBound))
+        #expect(abs(window.upperBound.timeIntervalSince(window.lowerBound) - (30 * 60 - ReceivedEvents.margin)) < 0.001)
+
+        let even = run(["report"], LogOnly(LogShowResult(status: 0, output: asks), received: 2))
+        #expect(even.status == ExitCode.success && !even.stdout.contains { $0.contains("counts are low") })
+        // A failed `log show` reads no event log.
+        let failed = LogOnly(LogShowResult(status: 64, output: "log: Couldn't parse predicate\n"), received: 5)
+        #expect(run(["report"], failed).status == ExitCode.software && failed.windows.isEmpty)
+    }
+
+    @Test func countsTheEventsTheDaemonLoggedInTheWindow() throws {
+        let start = Date(timeIntervalSince1970: 1_793_000_000), end = start.addingTimeInterval(3600)
+        let lines = [
+            try record(.eventReceived(testEvent(id: "ev-before")), at: start.addingTimeInterval(-0.001)),
+            try record(.eventReceived(testEvent()), at: start),
+            try record(.hookStarted(eventID: "ev-0a1b2c3d", hookLine: 3, pid: 42), at: start.addingTimeInterval(1)),
+            try record(.verdict(eventID: "ev-0a1b2c3d", .approved), at: start.addingTimeInterval(2)),
+            try record(.eventReceived(testEvent(id: "ev-middle")), at: start.addingTimeInterval(1800)),
+            // No time stamp, one that is not ISO 8601, not a record, a piece of one.
+            #"{"type":"event_received"}"#, #"{"ts":"yesterday","type":"event_received"}"#, "not json", "",
+            #"{"ts":"2026-11-1"#,
+            try record(.eventReceived(testEvent(id: "ev-end")), at: end),
+            try record(.eventReceived(testEvent(id: "ev-after")), at: end.addingTimeInterval(0.001)),
+        ].map { Data($0.utf8) }
+        #expect(ReceivedEvents.tally(lines, in: start...end) == .init(received: 3, reachedStart: true))
+        #expect(ReceivedEvents.tally(Array(lines.dropFirst()), in: start...end) == .init(received: 3, reachedStart: false))
+        #expect(ReceivedEvents.window(minutes: 60, before: end) == start.addingTimeInterval(ReceivedEvents.margin)...end)
+    }
+
+    @Test func readsTheEventLogFromItsEndBackToTheWindow() throws {
+        let directory = try makePrivateDirectory()
+        defer { removeTree(directory) }
+        let url = directory.appendingPathComponent("events.jsonl")
+        let start = Date(timeIntervalSince1970: 1_793_000_000)
+        // An event a minute for two hours, each with its hook and its verdict.
+        var text = ""
+        for minute in 0..<120 {
+            let at = start.addingTimeInterval(TimeInterval(minute * 60)), id = "ev-\(minute)"
+            text += try record(.eventReceived(testEvent(id: id)), at: at) + "\n"
+            text += try record(.hookStarted(eventID: id, hookLine: 3, pid: 42), at: at.addingTimeInterval(0.5)) + "\n"
+            text += try record(.verdict(eventID: id, .denied), at: at.addingTimeInterval(1)) + "\n"
+        }
+        // The second hour, and a line the daemon is still writing.
+        let window = start.addingTimeInterval(3600)...start.addingTimeInterval(7200)
+        try Data((text + #"{"app_path":"/Applications/To"#).utf8).write(to: url)
+        // Chunks shorter than a record, and records across chunks.
+        for chunk in [7, 100, 333, 4096, ReceivedEvents.chunkBytes] {
+            #expect(ReceivedEvents.count(url: url, in: window, chunkBytes: chunk) == 60, "\(chunk)")
+        }
+        // Reading stops at the chunk with a record from before the window: an event of the window
+        // put at the start of the file is not reached.
+        let early = try record(.eventReceived(testEvent(id: "ev-early")), at: start.addingTimeInterval(4000))
+        try Data((early + "\n" + text).utf8).write(to: url)
+        #expect(ReceivedEvents.count(url: url, in: window, chunkBytes: 4096) == 60)
+        #expect(ReceivedEvents.count(url: url, in: window, chunkBytes: 1 << 20) == 61)
+        // No event log, or not a file.
+        #expect(ReceivedEvents.count(url: directory.appendingPathComponent("missing.jsonl"), in: window) == nil)
+        #expect(ReceivedEvents.count(url: directory, in: window) == nil)
+        try Data().write(to: url)
+        #expect(ReceivedEvents.count(url: url, in: window) == 0)
     }
 
     @Test func aFailedLogShowSaysWhy() {
