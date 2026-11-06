@@ -402,15 +402,15 @@ until_true() {  # SECONDS COMMAND...: polls once a second
     done
 }
 log_now() { date '+%Y-%m-%d %H:%M:%S'; }
+# The filter's lines from START on, from the run's own `log stream` copy (STREAM, started below):
+# `log show` does not always keep them, as on a nearly full disk on 6 November 2026.
 filter_log() {  # START FILE
-    sleep 2  # the newest lines can take a moment to show
-    /usr/bin/log show --start "$1" --style compact --predicate "subsystem == \"$FILTER_ID\"" > "$2" 2>&1 || true
+    sleep 2  # the newest lines can take a moment to arrive
+    awk -v from="$1" 'substr($0, 1, 19) >= from' "$STREAM" > "$2"
 }
 registered_since() {
-    local text
-    text=$(/usr/bin/log show --start "$1" --style compact \
-        --predicate "subsystem == \"$FILTER_ID\" AND category == \"control\"" 2>/dev/null) || text=
-    grep -qF 'control xpc daemon_registered' <<<"$text"
+    awk -v from="$1" 'substr($0, 1, 19) >= from && index($0, "control xpc daemon_registered") {found = 1}
+        END {exit !found}' "$STREAM"
 }
 event_offset() { if [[ -f "$EVENTS" ]]; then stat -f %z "$EVENTS"; else echo 0; fi; }
 slice() { if [[ -f "$EVENTS" ]]; then tail -c +"$(($1 + 1))" "$EVENTS" > "$2"; else : > "$2"; fi; }
@@ -446,12 +446,13 @@ result_of() {
 }
 hook_called() { awk -v e="$1" -v c="$2" '$1 == e && $2 == c {found = 1} END {exit !found}' "$OUT/hook-calls.log" 2>/dev/null; }
 
-started='' restored='' agent_before='' agent_touched=''
+started='' restored='' agent_before='' agent_touched='' STREAM=''
 cleanup() {
     local status=$?
     trap '' INT TERM HUP
     trap - EXIT
     stop_jobs
+    if [[ -n "$STREAM" && -f "$OUT/stream.pid" ]]; then kill "$(cat "$OUT/stream.pid")" 2>/dev/null || true; fi
     if [[ -n "$started" && -z "$restored" ]]; then
         echo "Switching back to accept-all: Touch ID."
         if "$BIN" mode accept-all; then restored=1; else
@@ -490,6 +491,11 @@ state='not loaded'
 if agent_loaded; then agent_before=1 state=loaded; fi
 echo "LaunchAgent $AGENT_LABEL: $state; it is left that way at the end."
 echo "Work files: $OUT"
+# Started in a subshell, so stop_jobs between the cases leaves it running; cleanup stops it.
+STREAM="$OUT/stream.log"
+( /usr/bin/log stream --style compact --predicate "subsystem == \"$FILTER_ID\"" > "$STREAM" 2>&1 &
+  echo $! > "$OUT/stream.pid" )
+sleep 2
 OFF0=$(event_offset)
 
 step "Stop the daemon before ask mode starts"
