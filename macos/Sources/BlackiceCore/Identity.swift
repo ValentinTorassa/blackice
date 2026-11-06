@@ -63,6 +63,16 @@ public enum AppIdentity: Hashable, Sendable {
         }
     }
 
+    /// For people: "com.apple.curl" for Apple code, "com.tinyspeck.slackmacgap (BQR82RBBHL)" with
+    /// the team for everyone else, or "ad hoc 8fbec897". The team stays because any developer can
+    /// pick any signing identifier, com.apple.Safari included.
+    public var name: String {
+        switch self {
+        case .signed(let identity): return identity.signingID + (identity.teamID.map { " (\($0))" } ?? "")
+        case .cdhash(let hash): return "ad hoc " + hash.prefix(8)
+        }
+    }
+
     /// Every field in the form that messages and log lines may carry.
     public var isValid: Bool {
         switch self {

@@ -145,41 +145,42 @@ struct ConfigWizard {
         if let choose { return picked(choose) }
         var answers = Answers()
         say("  How should blackice treat new connections?")
-        say("")
         say("    1  accept-all  Let everything through and log it. Start here.")
         say("    2  ask         Hold what no rule allows until you or an agent answers.")
         say("    3  block-all   Let through only what your rules allow.")
-        say("")
         guard let mode = chooseMode() else { return nil }
         answers.mode = mode
         if mode == .ask {
-            say("")
-            say("  A connection nobody answers in time is denied.")
             guard let seconds = askSeconds() else { return nil }
             answers.timeoutSeconds = seconds
         }
         if mode != .acceptAll {
-            say("")
-            say("  Apps you trust can connect in every mode. Name one by its path")
-            say("  (/Applications/Slack.app, /usr/bin/curl) or its signing identifier.")
-            say("  Press Enter on an empty line when you are done.")
-            say("")
-            while answers.rules.count < Self.maximumRules {
-                guard let line = ask("  App: ") else { return nil }
-                let input = line.trimmingCharacters(in: .whitespaces)
-                if input.isEmpty { break }
-                guard let identity = resolveApp(input) else { continue }
-                guard let hosts = askHosts(identity) else { return nil }
-                if hosts.isEmpty { say("    Skipped \(identity.signingID)."); continue }
-                answers.rules.append(Rule(identity: identity, hosts: hosts))
-                say("    " + Style.done("\(identity.signingID) may reach \(hosts == ["*"] ? "any host" : hosts.joined(separator: ", "))"))
-            }
+            say("  Apps to trust in every mode, one per line: a path (/Applications/Slack.app)")
+            say("  or a signing identifier (com.apple.curl). An empty line ends the list.")
+            guard let rules = typedRules(from: []) else { return nil }
+            answers.rules = rules
         }
         if mode == .ask {
-            say("")
-            say("  To have an agent answer for you: blackice agent connect fx or claude-code")
+            say("  An agent can answer for you: blackice agent connect fx or claude-code")
         }
         return answers
+    }
+
+    /// Apps typed one per line, each with its hosts, after `rules`; nil when the input ended.
+    private func typedRules(from rules: [Rule]) -> [Rule]? {
+        var rules = rules
+        while rules.count < Self.maximumRules {
+            guard let line = ask("  App: ") else { return nil }
+            let input = line.trimmingCharacters(in: .whitespaces)
+            if input.isEmpty { break }
+            guard let identity = resolveApp(input) else { continue }
+            guard let hosts = askHosts(identity) else { return nil }
+            if hosts.isEmpty { say("    Skipped \(identity.signingID)."); continue }
+            rules.append(Rule(identity: identity, hosts: hosts))
+            say("    " + Style.done("\(identity.signingID) may reach \(hosts == ["*"] ? "any host" : hosts.joined(separator: ", "))") +
+                " (\(identity.teamID.map { "team \($0)" } ?? "signed by Apple"))")
+        }
+        return rules
     }
 
     static let modes: [(Mode, String)] = [
@@ -192,23 +193,21 @@ struct ConfigWizard {
     /// to trust, from the ones running now. Nothing to type unless the person picks "another app".
     private func picked(_ choose: (Choice) -> [Int]?) -> Answers? {
         var answers = Answers()
-        say("  How should blackice treat new connections?")
-        say("")
-        guard let mode = choose(Choice(options: Self.modes.map(\.1), multiple: false))?.first else { return nil }
+        guard let mode = choose(Choice(options: Self.modes.map(\.1), multiple: false,
+                                       prompt: "  How should blackice treat new connections?",
+                                       labels: Self.modes.map(\.0.rawValue)))?.first else { return nil }
         answers.mode = Self.modes[mode].0
         if answers.mode == .ask {
-            say("")
-            say("  Who answers the connections that wait?")
-            say("")
             // Codex and opencode are not offered here for now (AgentInstructions.listedBeforeConnecting);
             // `blackice agent connect codex|opencode` sets them up.
-            let agents = [("fx", "fx, a coding agent: blackice installs it if needed and sets it up"),
-                          ("claude-code", "Claude Code: blackice installs it if needed and sets it up"),
-                          ("codex", "Codex, with your ChatGPT plan: blackice sets it up once installed"),
-                          ("opencode", "opencode, with a provider you pick: blackice installs and sets it up")]
+            let agents = [("fx", "fx", "fx: blackice installs it if needed and signs it in"),
+                          ("claude-code", "Claude Code", "Claude Code: blackice installs it if needed and signs it in"),
+                          ("codex", "Codex", "Codex, with your ChatGPT plan, once installed"),
+                          ("opencode", "opencode", "opencode, with a provider you pick")]
                 .filter { AgentInstructions(rawValue: $0.0)?.listedBeforeConnecting ?? true }
-            let options = agents.map(\.1) + ["Me, with blackice pending, approve and deny"]
-            guard let who = choose(Choice(options: options, multiple: false))?.first else { return nil }
+            let options = agents.map(\.2) + ["Me, with blackice pending, approve and deny"]
+            guard let who = choose(Choice(options: options, multiple: false, prompt: "  Who answers the connections that wait?",
+                                          labels: agents.map(\.1) + ["you"]))?.first else { return nil }
             answers.agent = who < agents.count ? agents[who].0 : nil
         }
         if answers.mode != .acceptAll {
@@ -227,40 +226,18 @@ struct ConfigWizard {
             guard let identity = identify(path), seen.insert(identity).inserted else { return nil }
             return (Describe.terminalSafe(Interaction.appName(path)), identity)
         }.prefix(Self.maximumRules)
-        say("")
-        say("  Apps you trust connect to any host, in every mode, without waiting.")
-        say(running.isEmpty ? "  Pick \"Another app\" to name one, or go to Continue for none."
-                            : "  Pick any of the apps running now with Enter, then go to Continue.")
-        say("")
         let other = "Another app: type its path or name"
-        guard let picks = choose(Choice(options: running.map(\.name) + [other], multiple: true)) else { return nil }
+        guard let picks = choose(Choice(options: running.map(\.name) + [other], multiple: true,
+                                        prompt: "  Which apps may connect anywhere, in every mode?",
+                                        labels: running.map(\.name) + ["another app"])) else { return nil }
         var rules: [Rule] = []
         for index in picks where index < running.count {
             let app = running[running.startIndex + index]
             rules.append(Rule(identity: app.identity, hosts: ["*"]))
         }
-        if !rules.isEmpty { say("") }
-        for (index, rule) in rules.enumerated() {
-            let name = running[running.startIndex + picks[index]].name
-            say("    " + Style.done("\(name) may reach any host") + " (\(rule.identity.signingID))")
-        }
-        if picks.contains(running.count) {
-            say("")
-            say("  Name the app by its path (/Applications/Slack.app, /usr/bin/curl) or its")
-            say("  signing identifier. Press Enter on an empty line when you are done.")
-            say("")
-            while rules.count < Self.maximumRules {
-                guard let line = ask("  App: ") else { return nil }
-                let input = line.trimmingCharacters(in: .whitespaces)
-                if input.isEmpty { break }
-                guard let identity = resolveApp(input) else { continue }
-                guard let hosts = askHosts(identity) else { return nil }
-                if hosts.isEmpty { say("    Skipped \(identity.signingID)."); continue }
-                rules.append(Rule(identity: identity, hosts: hosts))
-                say("    " + Style.done("\(identity.signingID) may reach \(hosts == ["*"] ? "any host" : hosts.joined(separator: ", "))"))
-            }
-        }
-        return rules
+        guard picks.contains(running.count) else { return rules }
+        say("  Other apps: a path or signing identifier per line, then an empty line.")
+        return typedRules(from: rules)
     }
 
     private func chooseMode() -> Mode? {
@@ -278,7 +255,7 @@ struct ConfigWizard {
     private func askSeconds() -> Int? {
         let range = BlackiceConfig.timeoutRange
         while true {
-            guard let line = ask("  Seconds to wait for an answer [60]: ") else { return nil }
+            guard let line = ask("  Seconds to wait for an answer before denying [60]: ") else { return nil }
             let text = line.trimmingCharacters(in: .whitespaces)
             if text.isEmpty { return 60 }
             if let seconds = Int(text), range.contains(seconds) { return seconds }
@@ -308,7 +285,6 @@ struct ConfigWizard {
                 say("    In ask mode you can approve it when it connects instead.")
                 return nil
             }
-            say("    \(path) is \(Self.describe(identity))")
             return identity
         }
         guard validSigningID(input) else {

@@ -110,8 +110,12 @@ struct WizardTests {
         #expect(ask == ConfigWizard.Answers(mode: .ask, rules: [.init(identity: Self.slack, hosts: ["*"])], agent: "fx"))
         #expect(asked.items.map(\.multiple) == [false, false, true])
         #expect(asked.items[2].options == ["Slack", "Another app: type its path or name"])
-        #expect(said.items.contains("    ✓ Slack may reach any host (com.tinyspeck.slackmacgap)"))
-        #expect(said.items.allSatisfy { $0.count <= 78 })
+        // Each list carries its question, and once picked the question stays with the answer.
+        #expect(asked.items.map(\.prompt) == ["  How should blackice treat new connections?", "  Who answers the connections that wait?",
+                                              "  Which apps may connect anywhere, in every mode?"])
+        #expect(asked.items[0].answer([1]) == "ask" && asked.items[1].answer([0]) == "fx" && asked.items[2].answer([0]) == "Slack")
+        #expect(asked.items[2].answer([]) == "none")
+        #expect(said.items.isEmpty)
 
         // ask, Claude Code answers; ask, answered by the person, no apps. Codex and opencode are not
         // offered for now: `blackice agent connect` sets them up.
@@ -142,7 +146,7 @@ struct WizardTests {
         let picked = pickedAnswers([[2], [0]], running: [bundle], identities: [bundle: evil], choices: choices, said: said)
         #expect(picked?.rules == [.init(identity: evil, hosts: ["*"])])
         #expect(choices.items[1].options.first == "Evil\\u{1b}[2K\\u{d}Slack")
-        #expect(said.items.contains("    ✓ Evil\\u{1b}[2K\\u{d}Slack may reach any host (com.example.evil)"))
+        #expect(choices.items[1].answer([0]) == "Evil\\u{1b}[2K\\u{d}Slack")
         #expect(!said.items.joined().unicodeScalars.contains("\u{1B}"))
     }
 
@@ -242,17 +246,8 @@ struct WizardTests {
         #expect(system.setups == [true])
         // The file just written is loaded as written, mode and answers included.
         #expect(system.asWritten == [true])
-        #expect(Array(result.stdout.prefix(5)) == [
-            "Setting up blackice: pick a mode, confirm with Touch ID, then allow its",
-            "network extension if macOS asks.",
-            "",
-            "1 · Pick a mode",
-            "",
-        ])
-        #expect(Array(result.stdout.suffix(2)) == [
-            "  ✓ Saved ~/.config/blackice/blackice.toml",
-            "    Accept-all mode, no rules, no hooks. Edit it any time.",
-        ])
+        #expect(Array(result.stdout.prefix(2)) == ["1 · Pick a mode", "  How should blackice treat new connections?"])
+        #expect(result.stdout.last == "  ✓ Saved ~/.config/blackice/blackice.toml: accept-all mode, no rules")
         #expect(!result.stdout.contains { $0.hasPrefix("Using ") })
         #expect(result.stdout.allSatisfy { $0.count <= 78 })
         #expect(terminal.prompts == ["  Mode [1]: "])
@@ -262,7 +257,7 @@ struct WizardTests {
         #expect(again.status == 0 && system.setups == [true, false])
         // A later start keeps a switch made with blackice mode or the menu.
         #expect(system.asWritten == [true, false])
-        #expect(again.stdout == ["Using ~/.config/blackice/blackice.toml: accept-all mode, no rules, no hooks."])
+        #expect(again.stdout.isEmpty)
 
         // Control-D: nothing written, nothing started.
         let quit = FakeTerminal([])
@@ -276,16 +271,16 @@ struct WizardTests {
         let terminal = FakeTerminal(["1"])
         let first = run(["init"], terminal)
         #expect(first.status == 0 && terminal.files[CLI.defaultConfigPath] != nil)
-        #expect(first.stdout.last == "Start filtering with it: blackice start")
+        #expect(first.stdout.suffix(2) == ["  ✓ Saved ~/.config/blackice/blackice.toml: accept-all mode, no rules", "Next: blackice start"])
 
         let again = run(["init"], terminal)
         #expect(again.status == ExitCode.cannotCreate)
-        #expect(again.stderr == ["~/.config/blackice/blackice.toml is already there. Edit it, then check it with: " +
+        #expect(again.stderr == ["~/.config/blackice/blackice.toml is already there. Check it with: " +
                                  "blackice validate ~/.config/blackice/blackice.toml"])
 
         let other = FakeTerminal(["3", ""])
         let custom = run(["init", "--config", NSHomeDirectory() + "/strict.toml"], other)
-        #expect(custom.status == 0 && custom.stdout.last == "Start filtering with it: blackice start --config ~/strict.toml")
+        #expect(custom.status == 0 && custom.stdout.last == "Next: blackice start --config ~/strict.toml")
 
         let out = Recorder<String>(), err = Recorder<String>()
         let status = CLI.run(["init"], stdout: { out.append($0) }, stderr: { err.append($0) }, interaction: .none)
@@ -358,16 +353,14 @@ struct ReportTests {
 
     @Test func statusSaysWhatIsGoingOn() throws {
         #expect(CLI.statusLines(StatusReport(filter: .notConfigured, daemonRunning: false, pending: nil))
-            == ["blackice is off. Start it with: blackice start"])
-        #expect(CLI.statusLines(StatusReport(filter: .disabled, daemonRunning: false, pending: nil)).count == 2)
+            == ["blackice is off. Start it: blackice start"])
+        #expect(CLI.statusLines(StatusReport(filter: .disabled, daemonRunning: false, pending: nil)).count == 1)
 
         let empty = PendingReply(events: [], approvals: []).deciding(with: try snapshot(.acceptAll))
         #expect(CLI.statusLines(StatusReport(filter: .on(try snapshot(.acceptAll)), daemonRunning: false, pending: empty)) == [
-            "blackice is on, in accept-all mode: every connection goes through and is logged.",
+            "blackice is on in accept-all mode",
             "  rules      none",
-            "  hooks      none",
-            "  next       blackice agent connect fx, or blackice mode ask to answer by hand",
-            "  waiting    nothing",
+            "  next       blackice agent connect fx, or blackice mode ask",
         ])
         // With a hook, accept-all is a choice made after an agent was connected: no hint.
         let hooked = try snapshot(.acceptAll, withHook)
@@ -381,27 +374,28 @@ struct ReportTests {
                                     port: 443, secondsLeft: 8, connections: 3)],
             approvals: [ApprovalSummary(app: tool, host: "pypi.org", secondsLeft: 60)]).deciding(with: try snapshot(.ask, withHook))
         #expect(CLI.statusLines(StatusReport(filter: .on(try snapshot(.ask, withHook)), daemonRunning: false, pending: busy)) == [
-            "blackice is on, in ask mode: connections no rule covers wait until you, or a hook, answers.",
-            "  rules      1 app allowed in every mode",
-            "  hooks      1, but the daemon is not running: blackice agent install",
-            "  answer in  60 s, or the connection is denied",
-            "  waiting    1 app and host (3 connections): blackice pending",
-            "  approvals  1 approval",
+            "blackice is on in ask mode",
+            "  answers    your hooks",
+            "  waiting    1 app and host: blackice pending",
+            "  rules      1",
+            "  approvals  1",
+            "  timeout    60 s",
+            "  daemon     not running, so no hook runs: blackice agent install",
         ])
         let unreachable = CLI.statusLines(StatusReport(filter: .on(try snapshot(.ask, withHook)), daemonRunning: true, pending: nil))
-        #expect(unreachable[2] == "  hooks      1, run by the daemon")
-        #expect(unreachable.last == "  filter     not answering. If blackice was just upgraded, restart the Mac.")
+        #expect(unreachable[2] == "  rules      1")
+        #expect(unreachable.last == "  filter     not answering; if blackice was just upgraded, restart the Mac")
         let upgraded = CLI.statusLines(StatusReport(filter: .on(try snapshot(.ask, withHook)), daemonRunning: true, pending: nil,
                                                     upgrade: UnfinishedUpgrade(app: "16", running: ["15"])))
-        #expect(upgraded.last == "  filter     still build 15, and this app is build 16: run blackice start to finish the upgrade")
+        #expect(upgraded.last == "  filter     still build 15, and this app is build 16: blackice start finishes the upgrade")
     }
 
     /// The app was replaced and start has not activated its extension: macOS still runs another build.
     @Test func anUnfinishedUpgradeIsTold() throws {
         let upgrade = try #require(UnfinishedUpgrade(app: "16", running: ["15"]))
         #expect(upgrade.running == "15")
-        #expect(upgrade.hint == "blackice was upgraded to build 16, but macOS still runs the network extension of build 15. " +
-                "Run blackice start to finish the upgrade.")
+        #expect(upgrade.hint == "blackice was upgraded to build 16, but macOS still runs build 15's network extension. " +
+                "blackice start finishes the upgrade.")
         #expect(UnfinishedUpgrade(app: "10", running: ["9"])?.running == "9")
         // The app's build runs (also next to an older one), a newer one runs (start would refuse it), none runs,
         // or a build is unknown.
@@ -423,7 +417,7 @@ struct ReportTests {
         let other = PendingReply(events: [], approvals: []).deciding(with: held)
         #expect(CLI.statusLines(StatusReport(filter: .on(saved), daemonRunning: false, pending: other)).prefix(2) == [
             "blackice is on, but its filter decides in accept-all mode (generation 5), not with the saved block-all mode (generation 6).",
-            "  Load yours again with: blackice start",
+            "  Load yours again: blackice start",
         ])
         let none = CLI.statusLines(StatusReport(filter: .on(saved), daemonRunning: false, pending: PendingReply(events: [], approvals: [])))
         #expect(none.first == "blackice is on, but its filter holds no configuration.")
@@ -443,7 +437,7 @@ struct ReportTests {
 
         #expect(CLI.notActiveLines(saved, .active).isEmpty && CLI.activationStatus(.active) == 0)
         #expect(CLI.notActiveLines(saved, refusedOne).first
-            == "blackice's filter did not load the configuration just saved (generation 6): it decides in accept-all mode (generation 5). Its log says why:")
+            == "blackice's filter did not load generation 6: it decides in accept-all mode (generation 5). Its log says why:")
         #expect(CLI.notActiveLines(saved, refusedOne).last?.contains("subsystem == \"com.valentorassa.blackice.filter\"") == true)
         #expect(CLI.activationStatus(refusedOne) == ExitCode.software)
         #expect(CLI.notActiveLines(saved, .noAnswer).first
@@ -461,52 +455,51 @@ struct ReportTests {
         let switched = try ProviderConfiguration(generation: 4, mode: .ask, configText: text).with(mode: .acceptAll, answerer: .agent(.codex))
         let kept = try ProviderConfiguration.starting(configText: text, after: switched, keepingSwitches: true)
         #expect(CLI.keptLines(kept, file: file) == [
-            "Keeping accept-all mode, switched with blackice mode or the menu; the file says ask. blackice mode ask switches to it.",
-            "Keeping Codex answering, picked with blackice mode or the menu; the file says fx. blackice mode ask --agent fx switches to it.",
+            "Keeping accept-all mode from blackice mode or the menu; the file says ask.",
+            "Keeping Codex answering from blackice mode or the menu; the file says fx.",
         ])
         let none = try BlackiceConfig(text: "mode = 'ask'\n" + fx + codex)
         let you = try ProviderConfiguration(generation: 2, mode: .ask, configText: try BlackiceConfig.switchingAnswers(.you, in: "mode = 'ask'\n" + fx + codex))
-        #expect(CLI.keptLines(you, file: none) == ["Keeping you answering, picked with blackice mode or the menu; the file names no one."])
+        #expect(CLI.keptLines(you, file: none) == ["Keeping you answering from blackice mode or the menu; the file says no one."])
         #expect(CLI.keptLines(try ProviderConfiguration.starting(configText: text, after: nil), file: file).isEmpty)
     }
 
     @Test func modeAndFirstStartHints() throws {
-        #expect(CLI.modeChangedLines(try snapshot(.blockAll), daemonRunning: false)
-            == ["✓ Now in block-all mode: only connections your rules allow go through."])
-        #expect(CLI.modeChangedLines(try snapshot(.ask), daemonRunning: false).last
-            == "See what is waiting with blackice pending, and answer with blackice approve or deny.")
+        #expect(CLI.modeChangedLines(try snapshot(.blockAll), daemonRunning: false) == ["✓ Now in block-all mode"])
+        #expect(CLI.modeChangedLines(try snapshot(.ask), daemonRunning: false) == ["✓ Now in ask mode, you answer: blackice pending"])
         #expect(CLI.modeChangedLines(try snapshot(.ask, withHook), daemonRunning: false).last
-            == "Your hooks need the daemon, which is not running: blackice agent install")
+            == "  The hooks need the daemon, which is not running: blackice agent install")
         #expect(CLI.modeChangedLines(try snapshot(.ask, withHook), daemonRunning: true).count == 1)
+        #expect(CLI.alreadyLine(try snapshot(.blockAll)) == "Already in block-all mode.")
 
         // Who answers, when there is a choice.
         let fx = "[[hook]]\non = 'connection'\nprogram = '/opt/fx'\napp = 'com.vercel.fx'\nteam = 'JW6Y669B67'\ninstructions = 'fx'\n"
         let codex = "[[hook]]\non = 'connection'\nprogram = '/opt/codex'\napp = 'codex'\nteam = '2DC432GLL2'\ninstructions = 'codex'\n"
         let two = try ProviderConfiguration(generation: 2, mode: .ask, configText: "mode = 'ask'\n" + fx + codex + "[agent]\nanswers = 'codex'\n")
-        #expect(CLI.modeChangedLines(two, daemonRunning: true) == ["✓ Now in ask mode: \(Mode.ask.explanation).", "Codex answers them."])
-        #expect(CLI.answeringLine(two.config) == "Codex; fx has a hook too")
+        #expect(CLI.modeChangedLines(two, daemonRunning: true) == ["✓ Now in ask mode, Codex answers"])
+        #expect(CLI.answeringLine(two.config) == "Codex; also connected: fx")
         let you = try BlackiceConfig(text: "mode = 'ask'\n" + fx + codex + "[agent]\nanswers = 'you'\n")
-        #expect(CLI.answeringLine(you) == "you, with blackice approve or deny; fx and Codex have a hook too")
-        #expect(CLI.answeringLine(try BlackiceConfig(text: "mode = 'ask'\n" + fx + codex)) == "every agent with a hook")
-        #expect(CLI.answeringLine(try BlackiceConfig(text: "mode = 'ask'\n" + fx)) == nil)
+        #expect(CLI.answeringLine(you) == "you, with blackice pending; connected: fx and Codex")
+        #expect(CLI.answeringLine(try BlackiceConfig(text: "mode = 'ask'\n" + fx + codex)) == "fx and Codex, each with a hook")
+        #expect(CLI.answeringLine(try BlackiceConfig(text: "mode = 'ask'\n" + fx)) == "fx")
+        #expect(CLI.modeSummary(try ProviderConfiguration(generation: 2, mode: .ask, configText: "mode = 'ask'\n" + fx + codex))
+            == "ask mode, fx and Codex answer")
         #expect(CLI.answererRefusal(.agent(.claudeCode), config: two.config)
-            == "Claude Code has no hook in the configuration blackice holds. Connect it first: blackice agent connect claude-code")
+            == "Claude Code is not connected. Connect it first: blackice agent connect claude-code")
         #expect(CLI.answererRefusal(.agent(.fx), config: two.config) == nil && CLI.answererRefusal(.you, config: two.config) == nil)
 
         let first = CLI.firstStartLines(try snapshot(.acceptAll), daemonRunning: false)
-        #expect(first.contains("  blackice mode ask          hold new connections until you or a hook answers"))
+        #expect(first.contains("  blackice mode ask          hold what no rule covers until you or an agent answers"))
         #expect(CLI.firstStartLines(try snapshot(.ask, withHook), daemonRunning: false)
-            .contains("  blackice agent install     run your hooks for those connections"))
+            .contains("  blackice agent install     run your hooks"))
         let ask = CLI.firstStartLines(try snapshot(.ask), daemonRunning: false)
-        #expect(ask.contains("  blackice agent connect fx  let fx answer them"))
+        #expect(ask.contains("  blackice agent connect fx  let fx answer"))
         #expect(!CLI.firstStartLines(try snapshot(.ask, withHook), daemonRunning: false).contains { $0.contains("agent connect") })
     }
 
-    @Test func startSaysWhatItDidOnTwoLines() throws {
-        #expect(CLI.onLines(try snapshot(.blockAll)) == [
-            "✓ blackice is on, in block-all mode.",
-            "  Only connections your rules allow go through.",
-        ])
+    @Test func startSaysWhatItDidOnOneLine() throws {
+        #expect(CLI.onLines(try snapshot(.blockAll)) == ["✓ blackice is on in block-all mode"])
+        #expect(CLI.onLines(try snapshot(.ask)) == ["✓ blackice is on in ask mode, you answer: blackice pending"])
     }
 
     @Test func approvalStepsFollowTheMacOSVersion() {
@@ -514,20 +507,17 @@ struct ReportTests {
         #expect(tahoe == [
             "",
             "3 · Allow the network extension",
-            "",
-            "  System Settings is open at General › Login Items. There:",
-            "",
+            "  System Settings is open at General › Login Items:",
             "    1. Scroll to Blackice in the list and click ⓘ next to it.",
             "    2. Turn on Network Extension, then click Done.",
-            "",
             "  Waiting for you (up to 10 minutes)…",
         ])
-        #expect(ExtensionApproval.lines(macOS: 26, opened: false, setup: false)[1...3] == [
-            "Allow the network extension", "", "  Open System Settings › General › Login Items. There:"])
+        #expect(ExtensionApproval.lines(macOS: 26, opened: false, setup: false)[1...2] == [
+            "Allow the network extension", "  Open System Settings › General › Login Items:"])
         #expect(ExtensionApproval.lines(macOS: 15, opened: true, setup: true)
             .contains("    1. Under Extensions, click ⓘ next to Network Extensions."))
         #expect(ExtensionApproval.lines(macOS: 14, opened: true, setup: true)
-            .contains("  System Settings is open at Privacy & Security. There:"))
+            .contains("  System Settings is open at Privacy & Security:"))
         for major in [14, 15, 26, 27] {
             #expect(ExtensionApproval.lines(macOS: major, opened: true, setup: true).allSatisfy { $0.count <= 78 })
         }

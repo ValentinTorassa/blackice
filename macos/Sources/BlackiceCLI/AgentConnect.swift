@@ -38,7 +38,7 @@ public struct AgentProfile: Sendable {
     /// Its own installer, as a shell command line, offered when it is not installed.
     let installer: String?
     /// What signing in looks like, said before its login runs.
-    let loginHint: [String]
+    let loginHint: String
     /// What it runs with in its home, on top of the hook's environment: for its sign-in, its
     /// status and the hook's `env`.
     let environment: @Sendable (_ agentHome: String) -> [String: String]
@@ -83,8 +83,7 @@ public struct AgentProfile: Sendable {
         // fx's README; it puts fx in ~/.local/bin.
         installer: "curl -fsSL https://fx.sh/setup.sh | bash",
         // fx 0.0.16 waits for Enter before it opens the page and starts checking for the answer.
-        loginHint: ["fx prints a code. Press Enter to open the page in your browser, allow",
-                    "access there, then come back here."],
+        loginHint: "fx prints a code: press Enter, allow access in your browser, then come back.",
         // fx v0.0.16 reads HOME, not FX_HOME; with its keychain off its sign-in is a file in that home.
         environment: { ["HOME": $0, "FX_DISABLE_KEYCHAIN": "1"] },
         statusArguments: ["status"], loginArguments: ["login", "vercel"],
@@ -125,8 +124,7 @@ public struct AgentProfile: Sendable {
         installHint: "https://code.claude.com/docs/en/setup",
         // Anthropic's native installer; it puts claude in ~/.local/bin.
         installer: "curl -fsSL https://claude.ai/install.sh | bash",
-        loginHint: ["Claude Code opens a sign-in page in your browser. Sign in with the account whose",
-                    "usage its decisions should count against, then come back here."],
+        loginHint: "Sign in, in your browser, with the account its decisions should count against.",
         // HOME stays the account's own: Claude Code keeps its sign-in in the login keychain, and
         // macOS finds that keychain through HOME. The keychain item is named after
         // CLAUDE_CONFIG_DIR, so this sign-in is apart from yours. No telemetry, error reports or
@@ -146,7 +144,7 @@ public struct AgentProfile: Sendable {
                 : []
         },
         hookMarker: CLI.claudeCodePrompt,
-        limits: "Its hook gives it one tool, reading the event: no shell, no web, no MCP servers",
+        limits: "reads the event only: no shell, no web, no MCP servers",
         // claude -p adds what comes on stdin to its prompt. The event reaches it only through the
         // Read tool, as data.
         eventOnStdin: false)
@@ -162,8 +160,7 @@ public struct AgentProfile: Sendable {
         defaultModel: "gpt-6-luna",
         installHint: "brew install --cask codex, or https://developers.openai.com/codex/cli",
         installer: nil,
-        loginHint: ["Codex opens a sign-in page in your browser. Sign in with the ChatGPT account whose",
-                    "plan its decisions should count against, then come back here."],
+        loginHint: "Sign in, in your browser, with the ChatGPT account whose plan it should use.",
         // HOME stays the account's own, as the daemon sets it; CODEX_HOME keeps the sign-in apart.
         environment: { ["CODEX_HOME": CLI.codexHome(agentHome: $0)] },
         statusArguments: ["login", "status"], loginArguments: ["login"],
@@ -178,7 +175,7 @@ public struct AgentProfile: Sendable {
                 : []
         },
         hookMarker: CLI.codexPrompt,
-        limits: "Its hook lets it read only the event's directory: no writes, no network, no web search, no MCP servers",
+        limits: "reads the event only: no writes, no network, no MCP servers",
         // codex exec adds what comes on stdin to its prompt. The event reaches it only as a file.
         eventOnStdin: false)
 
@@ -195,9 +192,7 @@ public struct AgentProfile: Sendable {
             installHint: "https://opencode.ai/docs",
             // opencode's own installer; it puts opencode in ~/.opencode/bin.
             installer: "curl -fsSL https://opencode.ai/install | bash",
-            loginHint: ["opencode signs in to \(provider.title): it asks for an API key, or opens a sign-in",
-                        "page in your browser. Use the account whose plan its decisions should count",
-                        "against, then come back here."],
+            loginHint: "Give it a \(provider.title) API key, or sign in in your browser, with the account it should use.",
             environment: { CLI.openCodeEnvironment(agentHome: $0) },
             statusArguments: ["auth", "list", "--standalone", "--format", "json"],
             loginArguments: ["auth", "login", "--standalone", provider.id],
@@ -213,7 +208,7 @@ public struct AgentProfile: Sendable {
                     : []
             },
             hookMarker: CLI.openCodePrompt,
-            limits: "Its hook lets it read the event's directory and nothing else: no shell, no edits, no web, no MCP servers",
+            limits: "reads the event only: no shell, no edits, no web, no MCP servers",
             // opencode run adds what comes on stdin to its message. The event reaches it only as a file.
             eventOnStdin: false,
             installFolders: [".opencode/bin"],
@@ -492,17 +487,15 @@ extension CLI {
             }
             return provider
         }
-        stdout("")
-        stdout("  Which provider should \(profile.name) decide with? Its rule lets it reach that")
-        stdout("  provider's hosts and nothing else, and you sign it in to that provider.")
-        stdout("")
+        let question = "  Which provider should \(profile.name) decide with?"
         let lines = providers.map { "\($0.title) (\($0.id)/\($0.model))" }
         var picked: Int?
         if let choose {
-            picked = choose(Choice(options: lines, multiple: false))?.first.flatMap { providers.indices.contains($0) ? $0 : nil }
+            picked = choose(Choice(options: lines, multiple: false, prompt: question, labels: providers.map(\.title)))?
+                .first.flatMap { providers.indices.contains($0) ? $0 : nil }
         } else {
+            stdout(question)
             for (index, line) in lines.enumerated() { stdout("    \(index + 1)  \(line)") }
-            stdout("")
             while picked == nil, let line = ask("  Provider [1]: ") {
                 let text = line.trimmingCharacters(in: .whitespaces)
                 if text.isEmpty {
@@ -520,7 +513,7 @@ extension CLI {
             stderr("  No provider chosen, so nothing changed.")
             return nil
         }
-        stdout("  " + Style.done("\(providers[picked].title), through \(listed(providers[picked].hosts))"))
+        if choose == nil { stdout("  " + Style.done(providers[picked].title)) }
         return providers[picked]
     }
 
@@ -757,12 +750,12 @@ extension CLI {
     static func testAnswer(_ result: HookResult, seconds: Int) -> TestAnswer {
         switch result.answer {
         case .success(let answer)?: return .answered(answer)
-        case .failure(.output(.noLine))?: return .none("exited with status 0 and gave no answer")
+        case .failure(.output(.noLine))?: return .none("exited with status 0 and no answer")
         case .failure(.output(.unrecognized(let prefix)))?:
             return .none("ended with a line that is not an answer (\"\(prefix)\")")
         case .failure(.output(.outputTooLong))?:
             return .none("printed more than \(HookAnswer.maximumOutputBytes / 1024) KiB, so its last line is not known")
-        case .failure(.exitStatus(let status))?: return .none("exited with status \(status) and gave no answer")
+        case .failure(.exitStatus(let status))?: return .none("exited with status \(status) and no answer")
         case .failure(.signaled(let signal))?: return .none("died from signal \(signal)")
         case .failure(.deadline)?: return .none("gave no answer in \(seconds) s")
         case nil:
@@ -827,12 +820,12 @@ extension CLI {
 
     // MARK: - The command
 
-    /// `firstStep` numbers the steps on from where `blackice start` left off when it runs this
-    /// right after the first start (`fromFirstStart`), which loaded the file in accept-all.
+    /// `heading` is the step's title when `blackice start` runs this right after the first start
+    /// (`fromFirstStart`), which loaded the file in accept-all; otherwise "Connecting NAME".
     static func connectAgent(_ name: String, configPath: String?, model chosenModel: String? = nil, readFile: (String) throws -> Data,
                              system: SystemControlling, interaction: Interaction, machine: AgentMachine,
                              stdout: @escaping (String) -> Void, stderr: @escaping (String) -> Void,
-                             firstStep: Int = 1, fromFirstStart: Bool = false) -> Int32 {
+                             heading: String? = nil, fromFirstStart: Bool = false) -> Int32 {
         // Control-C and the other stop signals end the setup at its next check instead of ending
         // blackice, so that what follows can put things back. Released last: defers run last first.
         let releaseInterrupts = machine.catchInterrupts()
@@ -843,19 +836,16 @@ extension CLI {
         // says so.
         var putOff: Mode?
         var loadedFile = false
-        var reached: String?
         defer {
             if !loadedFile, let putOff {
                 leaveAcceptAll(for: putOff, system: system, stdout: stdout, stderr: stderr)
             } else if !loadedFile, fromFirstStart {
                 let retry = "blackice agent connect \(name)" + (configPath.map { " --config \(Describe.path($0, home: interaction.home))" } ?? "")
-                reportAcceptAll(name, reached: reached, interrupted: machine.interrupted(), retry: retry,
-                                system: system, stderr: stderr)
+                reportAcceptAll(name, interrupted: machine.interrupted(), retry: retry, system: system, stderr: stderr)
             }
         }
         guard var profile = AgentProfile.known.first(where: { $0.name == name }) else {
-            stderr("blackice agent connect knows \(listed(AgentProfile.known.map(\.name))): " +
-                   "blackice agent connect fx")
+            stderr("blackice: agent connect takes \(listed(AgentProfile.known.map(\.name), or: true))")
             return ExitCode.usage
         }
         let name = profile.name
@@ -881,24 +871,20 @@ extension CLI {
             text = loaded.text
             config = loaded.config
         }
-        var number = firstStep
-        func step(_ title: String) {
-            stdout(""); stdout(Style.heading("\(number) · \(title)")); stdout("")
-            reached = "step \(number) (\(title))"
-            number += 1
-        }
+        // Everything under the title is indented: what was done, with a check mark, and the questions.
+        func say(_ line: String) { stdout("  " + line) }
+        func done(_ line: String) { stdout("  " + Style.done(line)) }
         func fail(_ status: Int32, _ lines: String...) -> Int32 { lines.forEach { stderr("  " + $0) }; return status }
+        let indented = SystemOutput(stdout: { stdout("  " + $0) }, stderr: { stderr("  " + $0) })
         // Checked after each wait: a prompt, a program, Touch ID.
         func interruption() -> Int32? {
             guard machine.interrupted() else { return nil }
             stderr("  Interrupted, so the setup stops here.")
             return ExitCode.interrupted
         }
+        if heading != nil { stdout("") }
+        stdout(Style.heading(heading ?? "Connecting \(name)"))
 
-        if firstStep == 1 {
-            stdout("Connecting \(name) to blackice: it will answer the connections that wait in")
-            stdout("ask mode, with nobody at the keyboard.")
-        }
         // An agent that decides with a provider of your choice: `--model PROVIDER/MODEL` names it,
         // or a list asks. Its rule names that provider's hosts.
         if let forProvider = profile.forProvider {
@@ -922,21 +908,16 @@ extension CLI {
         // Filtering in ask or block-all, the agent's installer, sign-in and test would wait for an
         // answer nobody gives yet: accept-all until the last step loads the file again.
         if let running = system.runningMode(), running != .acceptAll {
-            stdout("")
-            stdout("blackice is in \(running.rawValue) mode, so \(name)'s installer, its sign-in and the test")
-            stdout("would wait for an answer nobody gives yet. It switches to accept-all while")
-            stdout("\(name) is set up; the last step loads \(shown) again. If the setup stops")
-            stdout("before that, it switches back to \(running.rawValue) mode.")
+            say("In \(running.rawValue) mode \(name)'s own connections would wait, so accept-all until it is set up.")
             putOff = running
-            let switched = system.setMode(.acceptAll, output: SystemOutput(stdout: stdout, stderr: stderr))
+            let switched = system.setMode(.acceptAll, output: indented)
             guard switched == ExitCode.success else { return switched }
             if let stop = interruption() { return stop }
         }
 
-        // 1. Find it and read its signature. A development build first on PATH may be unsigned or
-        // ad hoc signed, which no rule can name: the first signed copy is the one used, and
-        // blackice can install one for itself where the agent's installer allows it.
-        step("Find \(name)")
+        // Find it and read its signature. A development build first on PATH may be unsigned or ad
+        // hoc signed, which no rule can name: the first signed copy is the one used, and blackice
+        // can install one for itself where the agent's installer allows it.
         let paths = AgentPaths(userHome: interaction.home, profile: profile)
         let binShown = Describe.path(paths.bin, home: interaction.home)
         let alsoIn = [paths.bin] + profile.installFolders.map { interaction.home + "/" + $0 }
@@ -947,19 +928,25 @@ extension CLI {
             }
             return nil
         }
+        // y, n, or the default for an empty line; nil at the end of input.
+        func yes(_ question: String, default answer: Bool) -> Bool? {
+            while true {
+                guard let line = ask("  \(question) [\(answer ? "Y/n" : "y/N")]: ") else { return nil }
+                switch line.trimmingCharacters(in: .whitespaces).lowercased() {
+                case "": return answer
+                case "y", "yes": return true
+                case "n", "no": return false
+                default: say("  Type y or n.")
+                }
+            }
+        }
         var found = lookUp()
         if found.isEmpty, let installer = profile.installer {
-            stdout("  \(name) is not installed. Its installer, from \(profile.installHint):")
-            stdout("    " + Style.command(installer))
-            while found.isEmpty {
-                guard let line = ask("  Install \(name) now? [Y/n]: ") else { break }
-                let answer = line.trimmingCharacters(in: .whitespaces).lowercased()
-                if ["n", "no"].contains(answer) { break }
-                guard ["", "y", "yes"].contains(answer) else { stdout("    Type y or n."); continue }
-                stdout("")
+            say("\(name) is not installed. Its installer, from \(profile.installHint):")
+            say("  " + Style.command(installer))
+            if yes("Install \(name) now?", default: true) == true {
                 // pipefail: in `curl … | bash` a failed download is curl's status, not bash's 0.
                 let status = machine.runAttached("/bin/bash", ["-o", "pipefail", "-c", installer], [:])
-                stdout("")
                 if let stop = interruption() { return stop }
                 found = lookUp()
                 if found.isEmpty {
@@ -970,20 +957,13 @@ extension CLI {
         }
         if let stop = interruption() { return stop }
         guard let first = found.first else {
-            return fail(ExitCode.unavailable, "\(name) is not installed. Install it (\(profile.installHint)),",
-                        "then: \(retry)")
+            return fail(ExitCode.unavailable, "\(name) is not installed. Install it (\(profile.installHint)), then: \(retry)")
         }
         let shownFirst = Describe.terminalSafe(Describe.path(first, home: interaction.home))
         var signed = firstSigned(found)
         if signed == nil, let installer = profile.installer, let privateInstall = profile.privateInstall {
-            stdout("  \(shownFirst) is unsigned or ad hoc signed, as development builds are, so a rule")
-            stdout("  cannot name it. blackice can install \(name)'s signed release for itself only, in")
-            stdout("  \(binShown). Yours stays as it is, and so does your PATH.")
-            while signed == nil {
-                guard let line = ask("  Install it there? [Y/n]: ") else { break }
-                let answer = line.trimmingCharacters(in: .whitespaces).lowercased()
-                if ["n", "no"].contains(answer) { break }
-                guard ["", "y", "yes"].contains(answer) else { stdout("    Type y or n."); continue }
+            say("\(shownFirst) is unsigned or ad hoc signed, as development builds are, so no rule can name it.")
+            if yes("Install \(name)'s signed release in \(binShown), for blackice only?", default: true) == true {
                 do {
                     let parent = (paths.home as NSString).deletingLastPathComponent
                     if !FileManager.default.fileExists(atPath: parent) {
@@ -995,9 +975,7 @@ extension CLI {
                 } catch {
                     return fail(ExitCode.cannotCreate, "Cannot set up \(binShown): \(describe(error))")
                 }
-                stdout("")
                 let status = machine.runAttached("/bin/bash", ["-o", "pipefail", "-c", installer], privateInstall(paths.bin))
-                stdout("")
                 if let stop = interruption() { return stop }
                 signed = firstSigned(lookUp())
                 if signed == nil {
@@ -1014,14 +992,11 @@ extension CLI {
         guard fitsConfig(executable) else {
             return fail(ExitCode.unavailable, "\(shownExecutable) has a control character in its path, which blackice.toml cannot hold.")
         }
-        if executable != first {
-            stdout("  \(shownFirst) is unsigned or ad hoc signed, so blackice uses \(shownExecutable).")
-        }
-        stdout("  " + Style.done("\(shownExecutable) is \(ConfigWizard.describe(identity))"))
+        if executable != first { say("\(shownFirst) is unsigned or ad hoc signed, so blackice uses \(shownExecutable).") }
+        done("\(shownExecutable) (\(ConfigWizard.describe(identity)))")
 
-        // 2. Its own home: a sign-in, and the rules. The instructions are not there: the daemon
-        // writes them, from blackice itself, into each event's directory.
-        step("Give \(name) a home of its own")
+        // Its own home: a sign-in, and the rules. The instructions are not there: the daemon writes
+        // them, from blackice itself, into each event's directory.
         let homeShown = Describe.path(paths.home, home: interaction.home)
         guard fitsConfig(paths.home) else {
             return fail(ExitCode.unavailable, "\(homeShown) has a control character in its path, which blackice.toml cannot hold.")
@@ -1036,31 +1011,25 @@ extension CLI {
         } catch {
             return fail(ExitCode.cannotCreate, "Cannot set up \(homeShown): \(describe(error))")
         }
-        stdout("  " + Style.done("Its home is \(homeShown); its instructions come with blackice"))
         let environment = profile.environment(paths.home)
         func signedIn() -> Bool { profile.signedIn(machine.runCaptured(executable, profile.statusArguments, environment).output) }
         if signedIn() {
-            stdout("  " + Style.done("\(name) is signed in there"))
+            done("signed in, in its own home (\(homeShown))")
         } else {
-            stdout("  Sign \(name) in for blackice.")
-            profile.loginHint.forEach { stdout("  " + $0) }
+            say("Sign \(name) in for blackice, in its own home (\(homeShown)), apart from yours.")
+            say(profile.loginHint)
             // A sign-in can fail on its own (a closed page, a connection cut as the filter came up):
             // offer it again instead of making the person start over.
-            var signed = false
-            while !signed {
-                stdout("")
+            while true {
                 _ = machine.runAttached(executable, profile.loginArguments, environment)
-                stdout("")
                 if let stop = interruption() { return stop }
-                signed = signedIn()
-                if signed { break }
-                guard let line = ask("  \(name) is not signed in yet. Try again? [Y/n]: "),
-                      !["n", "no"].contains(line.trimmingCharacters(in: .whitespaces).lowercased()) else {
+                if signedIn() { break }
+                guard yes("\(name) is not signed in yet. Try again?", default: true) == true else {
                     if let stop = interruption() { return stop }
                     return fail(ExitCode.software, "\(name) is still not signed in, so nothing else changed. To retry: \(retry)")
                 }
             }
-            stdout("  " + Style.done("\(name) is signed in"))
+            done("signed in")
         }
         if let settingsPath = paths.settings, let makeSettings = profile.settings {
             do {
@@ -1069,13 +1038,12 @@ extension CLI {
             } catch {
                 return fail(ExitCode.cannotCreate, "Cannot write \(Describe.path(settingsPath, home: interaction.home)): \(describe(error))")
             }
-            stdout("  " + Style.done("There, \(name) may read files and nothing else: no shell, no edits, no web"))
+            done("reads files only: no shell, no edits, no web")
         } else if let limits = profile.limits {
-            stdout("  " + Style.done(limits))
+            done(limits)
         }
 
-        // 3. One sample event through the hook runner. The answer is only read, never passed on.
-        step("Try it on a sample connection")
+        // One sample event through the hook runner. The answer is only read, never passed on.
         let event: HookEvent
         do {
             if files.fileExists(atPath: paths.test) { try files.removeItem(atPath: paths.test) }
@@ -1085,11 +1053,7 @@ extension CLI {
             return fail(ExitCode.cannotCreate, "Cannot set up the test in \(homeShown): \(describe(error))")
         }
         defer { try? files.removeItem(atPath: paths.test) }
-        stdout("  It decides with \(model)" + (chosenModel != nil ? "."
-            : profile.provider == nil ? "; --model NAME picks another." : "; --model PROVIDER/MODEL picks another."))
-        stdout("  \(name) is deciding whether Visual Studio Code may reach")
-        stdout("  update.code.visualstudio.com. Its answer is only read for this test, so")
-        stdout("  nothing is let through…")
+        say("Testing with \(model) on a sample connection…")
         let program = agentHook(profile, executable: executable, agentHome: paths.home, identity: identity, model: model)
         let result = machine.runHook(Hook(program: program, line: 0), event, config.agentNotes, paths.test + "/work",
                                      agentTestSeconds)
@@ -1097,9 +1061,9 @@ extension CLI {
         let seconds = Int(result.duration.rounded())
         switch testAnswer(result, seconds: agentTestSeconds) {
         case .answered(.approve):
-            stdout("  " + Style.done("\(name) approved it in \(seconds) s"))
+            done("approved it in \(seconds) s")
         case .answered(.deny):
-            stdout("  " + Style.done("\(name) answered in \(seconds) s (it denied it; any answer shows the wiring works)"))
+            done("answered in \(seconds) s (it denied; any answer shows it works)")
         case .none(let why):
             stderr("  \(name) \(why), so blackice.toml was left as it was.")
             // What it wrote to stderr, then to stdout: Claude Code prints its errors ("Not logged
@@ -1111,25 +1075,18 @@ extension CLI {
                 stderr("  \(name)'s last lines:")
                 tail.forEach { stderr("    " + Describe.terminalSafe(String($0.prefix(200)))) }
             }
-            let advice = profile.advice(output)
-            if advice.isEmpty {
-                stderr("  If blackice is in ask or block-all mode, \(name)'s own connections wait too: switch to")
-                stderr("  accept-all (blackice mode accept-all), then: \(retry)")
-            } else {
-                advice.forEach { stderr("  " + $0) }
-                stderr("  To retry: \(retry)")
-            }
+            profile.advice(output).forEach { stderr("  " + $0) }
+            stderr("  To retry: \(retry)")
             return ExitCode.software
         }
 
-        // 4. The rule for its model, the hook, and time enough to answer. The file is read again:
+        // The rule for its model, the hook, and time enough to answer. The file is read again:
         // edits made during the sign-in and the test are kept, and the additions go on top of them.
-        step("Add \(name) to \(shown)")
         switch loadConfig(path, readFile: readFile, stderr: stderr, shown: shown, hint: true) {
         case .failure(let status):
             return status.code
         case .success(let current):
-            if current.text != text { stdout("  \(shown) changed while \(name) was set up; the additions go on top of that.") }
+            if current.text != text { say("\(shown) changed meanwhile; the additions go on top.") }
             text = current.text
             config = current.config
         }
@@ -1174,73 +1131,60 @@ extension CLI {
         }
         // Three times what the test took, in whole tens: 21 s on the test Mac asks for 70.
         let neededSeconds = max(60, (seconds * 3 + 9) / 10 * 10)
+        let timeout = min(neededSeconds, BlackiceConfig.timeoutRange.upperBound)
         var raisedTimeout = false
         if config.timeoutSeconds < neededSeconds, config.timeoutSeconds < BlackiceConfig.timeoutRange.upperBound {
-            updated = settingRootKey(updated, "timeout_seconds", to: "\(min(neededSeconds, BlackiceConfig.timeoutRange.upperBound))")
+            updated = settingRootKey(updated, "timeout_seconds", to: "\(timeout)")
             raisedTimeout = true
         }
-        if missing.isEmpty {
-            stdout("  \(name) could already reach its model's hosts.")
-        } else {
-            stdout("  " + Style.done("A rule lets \(name) reach its model in every mode:"))
-            stdout("    " + listed(missing))
-        }
-        if let existingHook, keptHook {
-            stdout("  A hook already starts \(name) (line \(existingHook.line)); it stays as it is.")
+        if !missing.isEmpty { done("rule: \(name) may reach \(listed(missing)) in every mode") }
+        if existingHook != nil, keptHook {
+            if updated == text { done("\(shown) has \(name)'s rule and hook already") }
         } else if let existingHook, let other = agentRunning(existingHook), other.name != name {
-            stdout("  " + Style.done("The hook on line \(existingHook.line) ran \(other.name) without naming its instructions;"))
-            stdout("    it now starts \(name) instead, once its signature checks out")
+            done("hook on line \(existingHook.line): was \(other.name), now \(name)")
         } else if let existingHook, existingHook.program?.instructions == profile.instructions {
-            stdout("  " + Style.done("The hook on line \(existingHook.line) now starts \(name) with \(model)"))
+            done("hook on line \(existingHook.line): now \(name) with \(model)")
         } else if let existingHook {
-            stdout("  " + Style.done("The hook on line \(existingHook.line) now starts \(name) itself, once its signature checks out"))
+            done("hook on line \(existingHook.line): now starts \(name) directly")
         } else {
-            stdout("  " + Style.done("A hook starts \(name) for each connection that waits, once its signature checks out"))
+            done("hook: \(name) answers each connection that waits")
         }
         for extra in goners {
-            stdout("  " + Style.done("The hook on line \(extra.line), which ran \(agentRunning(extra)?.name ?? "an agent"), is gone"))
+            done("removed the hook on line \(extra.line), which ran \(agentRunning(extra)?.name ?? "an agent")")
         }
         if answersSet {
             let others = staying.compactMap { agentRunning($0)?.name }
-            stdout("  " + Style.done("\(name) answers ([agent] answers = \"\(name)\")") +
-                   (others.isEmpty ? "" : "; \(listed(others))'s hook stays,"))
-            if let first = others.first {
-                stdout("    for: blackice mode ask --agent \(first), or the menu's Mode")
-            }
+            done("answers = \"\(name)\"" + (others.first.map {
+                "; \(listed(others)) \(others.count == 1 ? "stays" : "stay") connected: blackice mode ask --agent \($0)"
+            } ?? ""))
         }
-        if raisedTimeout {
-            stdout("  " + Style.done("timeout_seconds is now \(min(neededSeconds, BlackiceConfig.timeoutRange.upperBound)), " +
-                                     "so \(name) has time to answer"))
-        }
+        if raisedTimeout { done("timeout_seconds = \(timeout), time for \(name) to answer") }
         let saved = save(updated, over: text, at: path, shown: shown, stdout: stdout, stderr: stderr)
         guard var loaded = saved.text else { return saved.status }
 
-        // 5. Load it, in ask mode if the person wants, and make sure the daemon runs.
-        step("Turn it on")
+        // Load it, in ask mode if the person wants, and make sure the daemon runs.
         var mode = config.mode
         if mode != .ask {
-            stdout("  In ask mode, a connection no rule covers waits until \(name) answers (\(seconds) s on")
-            stdout("  the test); with no answer in time it is denied.")
-            while true {
-                guard let line = ask("  Switch to ask mode now? [y/N]: ") else {
-                    if let stop = interruption() { return stop }
-                    break // The end of input: no, the default.
-                }
-                let answer = line.trimmingCharacters(in: .whitespaces).lowercased()
-                if ["y", "yes"].contains(answer) {
-                    let switched = save(settingRootKey(loaded, "mode", to: "\"ask\""), over: loaded, at: path,
-                                        shown: shown, stdout: stdout, stderr: stderr)
-                    guard let written = switched.text else { return switched.status }
-                    loaded = written
-                    mode = .ask
-                    break
-                }
-                if ["", "n", "no"].contains(answer) { break }
-                stdout("    Type y or n.")
+            // The end of input is no, the default.
+            if yes("Switch to ask mode, so \(name) answers what no rule covers?", default: false) == true {
+                let switched = save(settingRootKey(loaded, "mode", to: "\"ask\""), over: loaded, at: path,
+                                    shown: shown, stdout: stdout, stderr: stderr, quiet: true)
+                guard let written = switched.text else { return switched.status }
+                loaded = written
+                mode = .ask
             }
         }
-        stdout("")
         if let stop = interruption() { return stop }
+        return finish(name, mode: mode, loaded: loaded, system: system, files: files, paths: paths, homeShown: homeShown,
+                      stdout: stdout, stderr: stderr, loadedFile: &loadedFile)
+    }
+
+    /// The last step of `agent connect`: loads the file as written, removes the copies of the
+    /// instructions from before 0.4.1, and makes sure the daemon runs.
+    private static func finish(_ name: String, mode: Mode, loaded: String, system: SystemControlling, files: FileManager,
+                               paths: AgentPaths, homeShown: String, stdout: @escaping (String) -> Void,
+                               stderr: @escaping (String) -> Void, loadedFile: inout Bool) -> Int32 {
+        stdout("")
         // The file as written: the hook and `answers` just written win over any earlier switch.
         let started = system.start(configText: loaded, output: SystemOutput(stdout: stdout, stderr: stderr, asWritten: true))
         guard started == ExitCode.success else { return started }
@@ -1250,16 +1194,12 @@ extension CLI {
         // load, the configuration in force could still be a hook that reads them.
         let removed = paths.oldCopies.filter { files.fileExists(atPath: $0) && (try? files.removeItem(atPath: $0)) != nil }
         if !removed.isEmpty {
-            stdout("  " + Style.done("Removed the copies of the instructions earlier versions put in \(homeShown)"))
+            stdout(Style.done("Removed the copies of the instructions earlier versions put in \(homeShown)"))
         }
-        stdout("")
         let daemon = system.installAgent(output: SystemOutput(stdout: stdout, stderr: stderr))
         guard daemon == ExitCode.success else { return daemon }
-        stdout("")
-        if mode == .ask {
-            stdout(Style.done("\(name) answers what no rule covers. See what waits with: ") + Style.command("blackice pending"))
-        } else {
-            stdout(Style.done("\(name) is ready. When you want it answering: ") + Style.command("blackice mode ask"))
+        if mode != .ask {
+            stdout("\(name) is ready. When you want it answering: " + Style.command("blackice mode ask"))
         }
         return ExitCode.success
     }
@@ -1272,7 +1212,7 @@ extension CLI {
                                stderr: @escaping (String) -> Void) {
         guard mode != .acceptAll, system.runningMode() == .acceptAll else { return }
         stdout("")
-        stdout("The setup did not finish, so blackice leaves accept-all for \(mode.rawValue) mode.")
+        stdout("The setup did not finish, so blackice goes back to \(mode.rawValue) mode.")
         guard system.setMode(mode, output: SystemOutput(stdout: stdout, stderr: stderr)) != ExitCode.success else { return }
         stderr("blackice is still in accept-all mode: every connection goes through. To leave it: blackice mode \(mode.rawValue)")
     }
@@ -1280,14 +1220,12 @@ extension CLI {
     /// After a first start whose agent setup did not load the file. That start left blackice on in
     /// accept-all, and nothing was filtered before it, so it stays that way rather than hold each
     /// connection no rule covers until someone answers by hand. Says so plainly, and how to go on.
-    static func reportAcceptAll(_ name: String, reached: String?, interrupted: Bool, retry: String,
-                                system: SystemControlling, stderr: (String) -> Void) {
+    static func reportAcceptAll(_ name: String, interrupted: Bool, retry: String, system: SystemControlling,
+                                stderr: (String) -> Void) {
         guard system.runningMode() == .acceptAll else { return }
-        let at = reached.map { " at \($0)" } ?? ""
         stderr("")
-        stderr("blackice is on in accept-all mode and filters nothing: every connection goes through.")
-        stderr(interrupted ? "The \(name) setup was interrupted\(at)." : "The \(name) setup failed\(at), for the reason above.")
-        stderr("To finish it: \(retry)")
+        stderr("blackice is on in accept-all mode: every connection goes through.")
+        stderr((interrupted ? "The \(name) setup was interrupted." : "The \(name) setup failed, as above.") + " To finish it: \(retry)")
         stderr("To filter without an agent: blackice mode ask, or blackice mode block-all")
     }
 
@@ -1307,16 +1245,16 @@ extension CLI {
         (error as? FileSafetyError)?.description ?? error.localizedDescription
     }
 
-    /// "a", "a and b", "a, b and c".
-    static func listed(_ items: [String]) -> String {
-        items.count <= 1 ? items.joined() : items.dropLast().joined(separator: ", ") + " and " + items.last!
+    /// "a", "a and b", "a, b and c"; with `or`, "a, b or c".
+    static func listed(_ items: [String], or: Bool = false) -> String {
+        items.count <= 1 ? items.joined() : items.dropLast().joined(separator: ", ") + (or ? " or " : " and ") + items.last!
     }
 
     /// Writes the new text if it parses and the file still holds `previous`, keeping the file's
     /// mode. The text written (or `previous`, when there is nothing to change), or nil and the exit
     /// status. Whatever else wrote the file meanwhile, an editor or another agent connect, stays.
     private static func save(_ text: String, over previous: String, at path: String, shown: String,
-                             stdout: (String) -> Void, stderr: (String) -> Void) -> (text: String?, status: Int32) {
+                             stdout: (String) -> Void, stderr: (String) -> Void, quiet: Bool = false) -> (text: String?, status: Int32) {
         func changed() -> (text: String?, status: Int32) {
             stderr("  Something else changed \(shown) meanwhile, so blackice agent connect left it as it is. Run it again.")
             return (nil, ExitCode.tempFail)
@@ -1339,7 +1277,7 @@ extension CLI {
             stderr("  Cannot write \(shown): \(error.localizedDescription)")
             return (nil, ExitCode.cannotCreate)
         }
-        stdout("    Saved \(shown)")
+        if !quiet { stdout("  " + Style.done("saved \(shown)")) }
         return (text, ExitCode.success)
     }
 

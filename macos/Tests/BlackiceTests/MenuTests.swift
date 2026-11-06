@@ -527,7 +527,7 @@ struct MenuCommandTests {
         for bad in [["menu", "--login", "yes"], ["menu", "now"], ["menu", "--login"], ["menu", "--quit"]] {
             #expect(throws: UsageError.self) { try CLI.parse(bad) }
         }
-        #expect(CLI.usage.contains("menu [--login on|off]"))
+        #expect(CLI.usage.contains("  menu ") && CLI.commandHelp["menu"]?.first == "Usage: blackice menu [--login on|off]")
     }
 
     @Test func theCommandReachesTheMenuBar() {

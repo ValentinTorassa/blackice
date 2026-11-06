@@ -95,8 +95,7 @@ struct LaunchAgentInstallerTests {
         #expect(try permissions(plist) == 0o644)
         #expect(try permissions(logs) == 0o700)
         #expect(calls.items == [["bootout", service], ["bootstrap", "gui/501", plist.path]])
-        #expect(lines.items.prefix(2) == ["✓ The daemon is running, and starts again at each login.",
-                                          "  It runs your hooks for connections that wait."])
+        #expect(lines.items == ["✓ The daemon runs your hooks, now and at each login (logs in ~/Library/Logs/blackice)"])
 
         // Again, as after moving the app: the loaded copy is booted out first, the file replaced.
         let moved = "/Users/test/Apps/Blackice.app/Contents/MacOS/blackice"
@@ -147,13 +146,13 @@ struct LaunchAgentInstallerTests {
         try installer(home, calls, status: { _ in 0 }).uninstall(say: lines.append)
         #expect(calls.items.last == ["bootout", service])
         #expect(!fileExists(plist))
-        #expect(lines.items == ["✓ The daemon is stopped.", "✓ Removed its LaunchAgent; it no longer starts at login."])
+        #expect(lines.items == ["✓ The daemon is stopped and no longer starts at login"])
 
         // Not loaded and no file: still a success, and it says so.
         for status: Int32 in [3, 113] {
             let quiet = Recorder<String>()
             try installer(home, calls, status: { _ in status }).uninstall(say: quiet.append)
-            #expect(quiet.items == ["The daemon was not running.", "There was no LaunchAgent to remove."])
+            #expect(quiet.items == ["The daemon was not installed."])
         }
         // The log directory and the event log in it stay.
         #expect(fileExists(home.appendingPathComponent("Library/Logs/blackice")))
@@ -199,7 +198,7 @@ struct AgentCommandTests {
         let commands = AgentCommands(account: { try fakeAccount(home: home.path) }, binary: { bundled },
                                      launchctl: fakeLaunchctl(calls))
         let installed = run(commands, install: true)
-        #expect(installed.status == 0 && installed.stderr.isEmpty && installed.stdout.count == 3)
+        #expect(installed.status == 0 && installed.stderr.isEmpty && installed.stdout.count == 1)
         let removed = run(commands, install: false)
         #expect(removed.status == 0 && removed.stderr.isEmpty)
 

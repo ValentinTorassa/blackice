@@ -56,7 +56,7 @@ struct FlowReportTests {
         #expect(throws: UsageError.self) { try CLI.parse(["report", "1h"]) }
         #expect(throws: UsageError.self) { try CLI.parse(["report", "--for", "1h"]) }
         #expect(CLI.reportSpan(60) == "1h" && CLI.reportSpan(90) == "90m" && CLI.reportSpan(10_080) == "168h")
-        #expect(CLI.usage.contains("report [--last 1h]"))
+        #expect(CLI.commandHelp["report"]?.first == "Usage: blackice report [--last 1h]")
     }
 
     @Test func asksLogShowForTheFilterFlowLines() {
@@ -108,18 +108,18 @@ struct FlowReportTests {
             + [line("allow rule_line_3 app=\(tool) <private>"), line("hold reading_server_name app=\(geod) <private>")])
             .joined(separator: "\n")
         #expect(FlowReport(logText: text).summary(last: "1h") == [
-            "blackice's filter, last 1h: 10 flow lines.",
+            "Last 1h: 7 connections, 6 dropped, 2 asked about",
             "",
-            "Dropped: 6",
-            "  timeout: 5",
-            "    3  \(node)",
-            "    1  (app not logged)",
-            "    1  \(tool)",
-            "  hold_expired: 1",
-            "    1  \(node)",
+            "Dropped",
+            "  5  nobody answered in time",
+            "       3  ad hoc 3f1c6a0b",
+            "       1  (app not logged)",
+            "       1  com.example.tool (ABCDE12345)",
+            "  1  held past macOS's limit while asking",
+            "       1  ad hoc 3f1c6a0b",
             "",
-            "Paused to ask: 2",
-            "  2  \(node)",
+            "Asked about",
+            "  2  ad hoc 3f1c6a0b",
         ])
     }
 
@@ -132,18 +132,16 @@ struct FlowReportTests {
                      line("drop tls_unparsed app=\(node) <private>")])
             .joined(separator: "\n")
         #expect(FlowReport(logText: text).summary(last: "1h") == [
-            "blackice's filter, last 1h: 4 flow lines.",
+            "Last 1h: 4 connections, 1 dropped",
             "",
-            "Dropped: 1",
-            "  tls_unparsed: 1",
-            "    1  \(node)",
+            "Dropped",
+            "  1  hello not readable as TLS",
+            "       1  ad hoc 3f1c6a0b",
             "",
-            "Closed by the app before it sent anything: 2",
-            "  Nothing was cut: an app that opens two connections at once uses one and closes the other.",
-            "  2  \(tool)",
+            "Closed by the app before it sent anything, so nothing was cut: 2",
         ])
         let none = FlowReport(logText: line("drop closed_before_hello app=\(tool) <private>")).summary(last: "1h")
-        #expect(none.contains("Dropped: none"))
+        #expect(none.first == "Last 1h: 1 connection, 0 dropped" && !none.contains("Dropped"))
     }
 
     /// A connection held for its hello that stayed quiet for 2 minutes is a drop of its own reason,
@@ -154,14 +152,13 @@ struct FlowReportTests {
                      line("drop server_name_timeout app=\(tool) <private>")])
             .joined(separator: "\n")
         #expect(FlowReport(logText: text).summary(last: "1h") == [
-            "blackice's filter, last 1h: 3 flow lines.",
+            "Last 1h: 3 connections, 3 dropped",
             "",
-            "Dropped: 3",
-            "  idle_before_hello: 2",
-            "    2  \(node)",
-            "  server_name_timeout: 1",
-            "    1  \(tool)",
-            "  idle_before_hello: the app opened the connection and sent nothing for 2 minutes.",
+            "Dropped",
+            "  2  sent nothing for 2 minutes",
+            "       2  ad hoc 3f1c6a0b",
+            "  1  no server name within 10 s",
+            "       1  com.example.tool (ABCDE12345)",
         ])
     }
 
@@ -178,43 +175,41 @@ struct FlowReportTests {
                   line("allow accept_all <private>")]
         let summary = FlowReport(logText: lines.joined(separator: "\n")).summary(last: "30m")
         #expect(summary == [
-            "blackice's filter, last 30m: 25 flow lines.",
+            "Last 30m: 25 connections, 0 dropped",
             "",
-            "Dropped: none",
-            "",
-            "In accept-all, what ask mode would have done with 24 of them:",
-            "  asked about: 19",
-            "    12  \(node)",
-            "     1  apple/com.apple.service1",
-            "     1  apple/com.apple.service2",
-            "     1  apple/com.apple.service3",
-            "     4  4 more apps",
-            "  dropped: 1",
-            "    no_host: 1",
-            "      1  \(tool)",
-            "  read the server name first, then decided on it: 1",
-            "    1  apple/com.apple.curl",
-            "  passed without asking: 3 (apple_service 2, loopback 1)",
-            "  Accept-all looks nothing up and reads no DNS answers: every address is taken to match its",
-            "  host, and a connection with no host name from the system is judged by its address.",
+            "In ask mode, of these 24",
+            "  19  would wait for an answer",
+            "        12  ad hoc 3f1c6a0b",
+            "         1  com.apple.service1",
+            "         1  com.apple.service2",
+            "         1  com.apple.service3",
+            "         4  4 more apps",
+            "   1  would be dropped",
+            "        1  no host name",
+            "             1  com.example.tool (ABCDE12345)",
+            "   1  would be decided on their server name",
+            "        1  com.apple.curl",
+            "   3  would go through (Apple services 2, loopback 1)",
+            "  An estimate: accept-all reads no DNS answers.",
         ])
+        #expect(summary.allSatisfy { $0.count <= 78 })
     }
 
     @Test func whatOtherProgramsLogIsEscaped() {
         let report = FlowReport(logText: line("drop timeout app=evil\u{1B}[2J <private>"))
-        #expect(report.summary(last: "1h").contains("    1  evil\\u{1b}[2J"))
+        #expect(report.summary(last: "1h").contains("       1  evil\\u{1b}[2J"))
     }
 
     @Test func reportRunsLogShowAndPrintsTheSummary() {
         let system = LogOnly(LogShowResult(status: 0, output: line("drop timeout app=\(tool) <private>") + "\n"))
         let result = run(["report", "--last", "2h"], system)
         #expect(result.status == ExitCode.success && result.stderr.isEmpty && system.asked == [120])
-        #expect(result.stdout.first == "blackice's filter, last 2h: 1 flow line.")
-        #expect(result.stdout.contains("    1  \(tool)"))
+        #expect(result.stdout.first == "Last 2h: 1 connection, 1 dropped")
+        #expect(result.stdout.contains("       1  com.example.tool (ABCDE12345)"))
 
         let quiet = run(["report"], LogOnly(LogShowResult(status: 0, output: "Timestamp               Ty Process[PID:TID]\n")))
         #expect(quiet.status == ExitCode.success)
-        #expect(quiet.stdout == ["blackice's filter logged no connection in the last 1h. Is it on? blackice status"])
+        #expect(quiet.stdout == ["blackice's filter logged nothing in the last 1h. Is it on? blackice status"])
     }
 
     @Test func aFailedLogShowSaysWhy() {
