@@ -19,11 +19,14 @@ public struct Interaction {
     /// The apps running now, as paths to their .app bundles in /Applications or ~/Applications,
     /// and the system extensions running now, as their bundles in /Library/SystemExtensions.
     public let runningApps: () -> [String]
+    /// The network extensions macOS has activated and enabled, running or not, as their bundles in
+    /// /Library/SystemExtensions. A VPN client's runs only while the VPN is on.
+    public let networkExtensions: () -> [String]
 
     public init(ask: ((String) -> String?)?, createFile: @escaping (String, Data) throws -> Void,
                 identify: @escaping (String) -> SigningIdentity?, fileExists: @escaping (String) -> Bool,
                 home: String, version: String?, choose: ((Choice) -> [Int]?)? = nil,
-                runningApps: @escaping () -> [String] = { [] }) {
+                runningApps: @escaping () -> [String] = { [] }, networkExtensions: @escaping () -> [String] = { [] }) {
         self.ask = ask
         self.createFile = createFile
         self.identify = identify
@@ -32,6 +35,7 @@ public struct Interaction {
         self.version = version
         self.choose = choose
         self.runningApps = runningApps
+        self.networkExtensions = networkExtensions
     }
 
     /// No terminal: nothing is asked and nothing is written.
@@ -61,7 +65,8 @@ public struct Interaction {
         let home = NSHomeDirectory()
         return Interaction(ask: ask, createFile: CLI.createFile, identify: CodeIdentity.identity(atPath:),
                            fileExists: { FileManager.default.fileExists(atPath: $0) }, home: home, version: version,
-                           choose: choose, runningApps: { runningAppBundles(home: home) })
+                           choose: choose, runningApps: { runningAppBundles(home: home) },
+                           networkExtensions: { activatedNetworkExtensionBundles() })
     }
 
     /// The .app bundles in /Applications and ~/Applications that have a process running, by the
@@ -109,6 +114,80 @@ public struct Interaction {
         }
         return file
     }
+
+    /// A system extension as `systemextensionsctl list` names it.
+    struct ListedExtension: Equatable {
+        let teamID: String
+        let bundleID: String
+        /// "Tailscale Network Extension".
+        let name: String
+    }
+
+    static let networkExtensionCategory = "com.apple.system_extension.network_extension"
+
+    /// The network extensions `systemextensionsctl list` shows as activated and enabled, in its
+    /// order. Its rows are tab-separated (enabled, active, Team ID, "bundle ID (version)", name,
+    /// "[state]"), under a "--- category" line for each kind of extension. Left out: blackice's own
+    /// filter, the other kinds (a camera extension), the other states (one waiting for the person
+    /// in System Settings, one turned off there, one left until a restart uninstalls it), and a row
+    /// with no Team ID or with a bundle ID a path could not hold.
+    static func activatedNetworkExtensions(_ listing: String) -> [ListedExtension] {
+        var category = ""
+        var listed: [ListedExtension] = []
+        for line in listing.split(whereSeparator: \.isNewline) {
+            if line.hasPrefix("--- ") {
+                category = String(line.dropFirst(4).prefix { $0 != " " })
+                continue
+            }
+            let fields = line.split(separator: "\t", omittingEmptySubsequences: false)
+            guard category == networkExtensionCategory, fields.count >= 6,
+                  fields[fields.count - 1].trimmingCharacters(in: .whitespaces) == "[activated enabled]" else { continue }
+            let team = String(fields[2])
+            let bundleID = String(fields[3].prefix { $0 != " " })
+            guard validTeamID(team), validSigningID(bundleID), bundleID != BlackiceIdentifiers.filter else { continue }
+            listed.append(ListedExtension(teamID: team, bundleID: bundleID,
+                                          name: fields[4..<(fields.count - 1)].joined(separator: "\t")))
+        }
+        return listed
+    }
+
+    /// Each extension's bundle: `<bundle ID>.systemextension` in one of the folders macOS makes for
+    /// extensions in /Library/SystemExtensions, `folders` being their names. One upgraded in place
+    /// keeps its old folder until the Mac restarts; both have the same signing identifier and team,
+    /// so the first one found is taken. An extension with no bundle there is left out.
+    static func extensionBundles(_ extensions: [ListedExtension], folders: [String],
+                                 fileExists: (String) -> Bool) -> [String] {
+        let folders = folders.sorted()
+        return extensions.compactMap { item in
+            folders.lazy.map { systemExtensions + $0 + "/" + item.bundleID + ".systemextension" }.first(where: fileExists)
+        }
+    }
+
+    /// The bundles of the network extensions macOS has activated and enabled, by their names; none
+    /// when `systemextensionsctl` cannot be run.
+    static func activatedNetworkExtensionBundles() -> [String] {
+        let listed = activatedNetworkExtensions(systemExtensionList())
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        guard !listed.isEmpty, let folders = try? FileManager.default.contentsOfDirectory(atPath: systemExtensions) else {
+            return []
+        }
+        return extensionBundles(listed, folders: folders, fileExists: { FileManager.default.fileExists(atPath: $0) })
+    }
+
+    /// What `systemextensionsctl list` prints, which needs no administrator; empty when it fails.
+    static func systemExtensionList() -> String {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/systemextensionsctl")
+        process.arguments = ["list"]
+        let pipe = Pipe()
+        process.standardInput = FileHandle.nullDevice
+        process.standardOutput = pipe
+        process.standardError = FileHandle.nullDevice
+        do { try process.run() } catch { return "" }
+        let output = pipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        return process.terminationStatus == 0 ? String(decoding: output, as: UTF8.self) : ""
+    }
 }
 
 /// `blackice init`, and `blackice start` when there is no blackice.toml yet: a few questions,
@@ -138,6 +217,7 @@ struct ConfigWizard {
     /// The arrow-key list; nil, and every answer is typed.
     var choose: ((Choice) -> [Int]?)? = nil
     var runningApps: () -> [String] = { [] }
+    var networkExtensions: () -> [String] = { [] }
 
     /// nil when the input ended (Control-D) before the last answer. Everything is indented under
     /// the step's title, which the caller prints.
@@ -161,7 +241,8 @@ struct ConfigWizard {
             answers.rules = rules
         }
         if mode == .ask {
-            say("  An agent can answer for you: blackice agent connect fx or claude-code")
+            say("  An agent can answer for you: blackice agent connect fx, claude-code, codex")
+            say("  or opencode")
         }
         return answers
     }
@@ -198,13 +279,12 @@ struct ConfigWizard {
                                        labels: Self.modes.map(\.0.rawValue)))?.first else { return nil }
         answers.mode = Self.modes[mode].0
         if answers.mode == .ask {
-            // Codex and opencode are not offered here for now (AgentInstructions.listedBeforeConnecting);
-            // `blackice agent connect codex|opencode` sets them up.
+            // The agent picked is set up right after, as `blackice agent connect` does: blackice cannot
+            // install Codex, and opencode's step asks for its provider first.
             let agents = [("fx", "fx", "fx: blackice installs it if needed and signs it in"),
                           ("claude-code", "Claude Code", "Claude Code: blackice installs it if needed and signs it in"),
-                          ("codex", "Codex", "Codex, with your ChatGPT plan, once installed"),
-                          ("opencode", "opencode", "opencode, with a provider you pick")]
-                .filter { AgentInstructions(rawValue: $0.0)?.listedBeforeConnecting ?? true }
+                          ("codex", "Codex", "Codex, with your ChatGPT plan: install it first"),
+                          ("opencode", "opencode", "opencode, with a provider you pick: blackice installs it if needed")]
             let options = agents.map(\.2) + ["Me, with blackice pending, approve and deny"]
             guard let who = choose(Choice(options: options, multiple: false, prompt: "  Who answers the connections that wait?",
                                           labels: agents.map(\.1) + ["you"]))?.first else { return nil }
@@ -217,25 +297,32 @@ struct ConfigWizard {
         return answers
     }
 
-    /// Apps to trust, picked from the apps running now; each may reach any host. "Another app"
-    /// asks for a path or name and its hosts, as the typed questions do.
+    /// Apps to trust, each to reach any host: first the network extensions macOS has activated,
+    /// ticked, then the apps running now. A VPN client's extension carries its tunnel, and often the
+    /// Mac's DNS lookups: with no rule its connections wait in ask mode and are dropped in block-all,
+    /// and on 3 November 2026 Tailscale's sent most of the events in ask mode. The person can untick
+    /// one. "Another app" asks for a path or name and its hosts, as the typed questions do.
     private func pickApps(_ choose: (Choice) -> [Int]?) -> [Rule]? {
         var seen = Set<SigningIdentity>()
         // Each app named its own bundle, so the name is escaped, in the list and in what follows.
-        let running = runningApps().compactMap { path -> (name: String, identity: SigningIdentity)? in
-            guard let identity = identify(path), seen.insert(identity).inserted else { return nil }
-            return (Describe.terminalSafe(Interaction.appName(path)), identity)
-        }.prefix(Self.maximumRules)
-        let other = "Another app: type its path or name"
-        guard let picks = choose(Choice(options: running.map(\.name) + [other], multiple: true,
-                                        prompt: "  Which apps may connect anywhere, in every mode?",
-                                        labels: running.map(\.name) + ["another app"])) else { return nil }
-        var rules: [Rule] = []
-        for index in picks where index < running.count {
-            let app = running[running.startIndex + index]
-            rules.append(Rule(identity: app.identity, hosts: ["*"]))
+        func listed(_ paths: [String]) -> [(name: String, identity: SigningIdentity)] {
+            paths.compactMap { path in
+                guard let identity = identify(path), seen.insert(identity).inserted else { return nil }
+                return (Describe.terminalSafe(Interaction.appName(path)), identity)
+            }
         }
-        guard picks.contains(running.count) else { return rules }
+        let extensions = listed(networkExtensions())
+        let apps = Array((extensions + listed(runningApps())).prefix(Self.maximumRules))
+        let other = "Another app: type its path or name"
+        guard let picks = choose(Choice(options: apps.map(\.name) + [other], multiple: true,
+                                        initial: Array(apps.indices.prefix(extensions.count)),
+                                        prompt: "  Which apps may connect anywhere, in every mode?",
+                                        labels: apps.map(\.name) + ["another app"])) else { return nil }
+        var rules: [Rule] = []
+        for index in picks where index < apps.count {
+            rules.append(Rule(identity: apps[index].identity, hosts: ["*"]))
+        }
+        guard picks.contains(apps.count) else { return rules }
         say("  Other apps: a path or signing identifier per line, then an empty line.")
         return typedRules(from: rules)
     }

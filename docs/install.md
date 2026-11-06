@@ -63,8 +63,9 @@ $ blackice start
 ```
 
 The first time, `start` asks a few questions and writes `~/.config/blackice/blackice.toml`: the mode, who answers in ask
-mode (fx, Claude Code or you), and, unless you pick accept-all, which running apps may connect anywhere. A VPN client's
-network extension, such as Tailscale's, is in that list: pick it, or names stop resolving in ask and block-all.
+mode (fx, Claude Code, Codex, opencode or you), and, unless you pick accept-all, which apps may connect anywhere. That
+list starts with the network extensions macOS has activated, ticked, whether they run or not, then the apps running
+now. Leave a VPN client's network extension, such as Tailscale's, ticked, or names stop resolving in ask and block-all.
 
 Then `start` asks for Touch ID (or your login password), and macOS asks you to allow the extension. `start` opens System
 Settings and prints the steps:
@@ -75,8 +76,9 @@ Settings and prints the steps:
 - macOS 14: Privacy & Security. Under Security, click Allow where it says Blackice was blocked from loading.
 
 Then click Allow when macOS asks whether "Blackice" may filter network content. If you picked an agent, `start` then
-sets it up, as [`agent connect`](#let-an-agent-answer) does, and turns on ask mode only once the agent works; if the
-setup fails, blackice stays in accept-all. At the end it offers to open blackice in the menu bar at each login.
+sets it up, as [`agent connect`](#let-an-agent-answer) does (opencode asks for its provider; install Codex yourself
+first), and turns on ask mode only once the agent works; if the setup fails, blackice stays in accept-all. At the end
+it offers to open blackice in the menu bar at each login.
 
 After editing `blackice.toml`, run `blackice start` again to load it (Touch ID).
 
