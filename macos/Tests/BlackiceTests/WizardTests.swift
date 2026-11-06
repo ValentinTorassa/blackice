@@ -117,14 +117,25 @@ struct WizardTests {
         #expect(asked.items[2].answer([]) == "none")
         #expect(said.items.isEmpty)
 
-        // ask, Claude Code answers; ask, answered by the person, no apps. Codex and opencode are not
-        // offered for now: `blackice agent connect` sets them up.
+        // ask, Claude Code answers; ask, Codex answers; ask, opencode answers; ask, answered by the
+        // person, no apps.
         let agents = Recorder<Choice>()
         #expect(pickedAnswers([[1], [1], []], choices: agents) == ConfigWizard.Answers(mode: .ask, agent: "claude-code"))
-        #expect(agents.items[1].options.count == 3 && agents.items[1].options[1].hasPrefix("Claude Code: "))
-        #expect(agents.items[1].options[2].hasPrefix("Me, "))
+        #expect(agents.items[1].options.count == 5 && agents.items[1].options[1].hasPrefix("Claude Code: "))
+        #expect(agents.items[1].options[2] == "Codex, with your ChatGPT plan: install it first")
+        #expect(agents.items[1].options[3].hasPrefix("opencode, with a provider you pick"))
+        #expect(agents.items[1].options[4].hasPrefix("Me, "))
+        #expect(agents.items[1].answer([2]) == "Codex" && agents.items[1].answer([3]) == "opencode")
         #expect(agents.items[1].options.allSatisfy { $0.count <= 74 })
-        #expect(pickedAnswers([[1], [2], []]) == ConfigWizard.Answers(mode: .ask))
+        #expect(pickedAnswers([[1], [2], []]) == ConfigWizard.Answers(mode: .ask, agent: "codex"))
+        #expect(pickedAnswers([[1], [3], []]) == ConfigWizard.Answers(mode: .ask, agent: "opencode"))
+        #expect(pickedAnswers([[1], [4], []]) == ConfigWizard.Answers(mode: .ask))
+        // Typed, the questions name every agent `agent connect` takes.
+        let typed = Recorder<String>()
+        #expect(answers(["2", "", ""], said: typed)?.mode == .ask)
+        #expect(typed.items.suffix(2) == ["  An agent can answer for you: blackice agent connect fx, claude-code, codex",
+                                          "  or opencode"])
+        #expect(typed.items.allSatisfy { $0.count <= 78 })
 
         // block-all with another app, typed.
         let other = pickedAnswers([[2], [0]], script: ["/usr/bin/curl", "pypi.org", ""], paths: ["/usr/bin/curl"],

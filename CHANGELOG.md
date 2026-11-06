@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+Changed:
+- The first `blackice start` offers Codex and opencode as well as fx, Claude Code and you to answer in ask mode, and
+  sets the one picked up as `blackice agent connect` does. opencode asks for its provider. blackice cannot install
+  Codex: without it, blackice stays in accept-all and says how to finish. The menu's Mode still shows Codex and
+  opencode only once they are connected.
+
 ## 0.4.7 (6 November 2026)
 
 `blackice start` loads the file's mode again after a test file, and the agents let developer tools reach developer

@@ -161,7 +161,8 @@ struct ConfigWizard {
             answers.rules = rules
         }
         if mode == .ask {
-            say("  An agent can answer for you: blackice agent connect fx or claude-code")
+            say("  An agent can answer for you: blackice agent connect fx, claude-code, codex")
+            say("  or opencode")
         }
         return answers
     }
@@ -198,13 +199,12 @@ struct ConfigWizard {
                                        labels: Self.modes.map(\.0.rawValue)))?.first else { return nil }
         answers.mode = Self.modes[mode].0
         if answers.mode == .ask {
-            // Codex and opencode are not offered here for now (AgentInstructions.listedBeforeConnecting);
-            // `blackice agent connect codex|opencode` sets them up.
+            // The agent picked is set up right after, as `blackice agent connect` does: blackice cannot
+            // install Codex, and opencode's step asks for its provider first.
             let agents = [("fx", "fx", "fx: blackice installs it if needed and signs it in"),
                           ("claude-code", "Claude Code", "Claude Code: blackice installs it if needed and signs it in"),
-                          ("codex", "Codex", "Codex, with your ChatGPT plan, once installed"),
-                          ("opencode", "opencode", "opencode, with a provider you pick")]
-                .filter { AgentInstructions(rawValue: $0.0)?.listedBeforeConnecting ?? true }
+                          ("codex", "Codex", "Codex, with your ChatGPT plan: install it first"),
+                          ("opencode", "opencode", "opencode, with a provider you pick: blackice installs it if needed")]
             let options = agents.map(\.2) + ["Me, with blackice pending, approve and deny"]
             guard let who = choose(Choice(options: options, multiple: false, prompt: "  Who answers the connections that wait?",
                                           labels: agents.map(\.1) + ["you"]))?.first else { return nil }
