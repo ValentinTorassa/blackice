@@ -4,16 +4,14 @@ export const metadata = getDocsMetadata('/docs/configuration')
 
 # Configuration
 
-blackice.toml, the event a hook receives and how it answers. The format can still change.
-
-<Status />
+blackice.toml, and the event a hook gets and how it answers. The format can still change.
 
 ## blackice.toml
 
 ```toml
-# blackice.toml
+# ~/.config/blackice/blackice.toml
 mode = "ask"            # "accept-all", "ask" or "block-all"
-timeout_seconds = 10    # no answer in time means deny
+timeout_seconds = 10    # 1 to 120; no answer in time means deny
 apple_services = true   # macOS's own services reach Apple's hosts without a rule (the default)
 loopback = true         # connections to 127.0.0.0/8 and ::1 pass in every mode (the default)
 
@@ -22,10 +20,6 @@ loopback = true         # connections to 127.0.0.0/8 and ::1 pass in every mode 
 app = "com.example.agent"      # signing identifier
 team = "ABCDE12345"            # Team ID
 hosts = ["api.example.com"]
-
-[[allow]]
-app = "com.apple.ssh"          # Apple's own ssh, signed without a Team ID
-hosts = ["100.64.0.0/10", "fd7a:115c:a1e0::/48", "*.ts.net"]
 
 # Asked about each connection that waits. It answers on its last line of output.
 [[hook]]
@@ -38,22 +32,19 @@ env = ["HOME=/Users/me/.config/blackice/agent", "FX_DISABLE_KEYCHAIN=1"]
 instructions = "fx"            # the daemon writes fx's skill from blackice into the event's directory
 ```
 
-The parser is strict: an unknown key or a value of the wrong type stops blackice from starting instead of being guessed at.
-
-`blackice start` reads the file once and, after Touch ID, saves its text in the extension's configuration. The daemon reads no file: it takes the hooks and `timeout_seconds` from the extension when it registers, and asks again when the extension's configuration changes. Editing `blackice.toml` changes nothing until the next `blackice start`. `blackice mode` and the menu's Mode change the mode, and who answers in ask mode, in the configuration blackice holds and not in the file. `start` keeps such a switch, and says so before Touch ID, as long as the file still has what it had at the last start: once the file's own `mode` or `answers` changes, the file wins. `agent connect`, and the first `start` right after its questions, load the file as written.
+The first `blackice start` writes this file, and `blackice agent connect` adds its agent's hook and rule. `start` loads the file after Touch ID; an edit changes nothing until the next `start`. `blackice mode` and the menu's Mode switch the mode, and who answers, in what blackice holds and not in the file, and `start` keeps that switch until the file's own `mode` or `answers` changes. An unknown key or a value of the wrong type is an error, never a guess. `blackice validate PATH` checks a file.
 
 ## Rules
 
-Each `[[allow]]` rule names one app and the hosts it may reach, in every mode.
+Each `[[allow]]` rule names one app and the hosts it may reach, in every mode and on any port.
 
-- `app` is the signing identifier and `team` the Team ID, both checked against the signature of the running code. Leave `team` out only for Apple's own programs, which macOS signs without one; such a rule matches only code Apple signed.
-- `hosts` lists exact host names (`api.example.com`), `*.domain` patterns, and IP addresses and CIDR ranges (see [addresses and ranges](#addresses-and-ranges)). `*.example.com` covers every subdomain of `example.com` but not `example.com` itself.
-- A host counts only when the address the app connects to is among the host's answers from the system resolver. Otherwise ask mode asks and block-all drops, and the log says `address_mismatch`.
-- Rules say nothing about ports.
-- On port 443 a rule or an approval also needs the TLS server name the app sends to match: it must be the same host, or another host the app may reach. Otherwise the connection is dropped and the log says `server_name_mismatch`. A `*` rule skips this check.
-- With Encrypted Client Hello, blackice sees only the server name in the clear, which is the provider's front end, such as `cloudflare-ech.com`. A rule or an approval for such a name lets the app reach every site behind it.
+- `app` and `team` are checked against the signature of the running code. Leave `team` out only for Apple's own programs, which macOS signs without one.
+- `hosts` takes host names (`api.example.com`), `*.example.com` (every subdomain, not `example.com` itself), and [addresses and ranges](#addresses-and-ranges), at most 256 entries.
+- A host name counts only when the address the app connects to was among that name's DNS answers. Otherwise ask mode asks and block-all drops, as `address_mismatch`.
+- On port 443 the TLS server name the app sends must match too, or the connection is dropped as `server_name_mismatch`.
+- With Encrypted Client Hello, blackice sees only the provider's front end, such as `cloudflare-ech.com`. A rule or approval for that name lets the app reach every site behind it.
 
-`codesign -dv` shows an app's identity. Apple's own programs show `TeamIdentifier=not set`. Apple's developer tools, installed with the Command Line Tools or Xcode, show `TeamIdentifier=59GAB85EFG`, and a rule names them with that Team ID; git over HTTPS connects as `com.apple.git-remote-http`. Mac App Store apps show their developer's Team ID.
+`codesign -dv` shows an app's identity. Apple's own programs show `TeamIdentifier=not set`; Apple's developer tools, from the Command Line Tools or Xcode, show `59GAB85EFG` (git over HTTPS connects as `com.apple.git-remote-http`).
 
 ```console
 $ codesign -dv /Applications/Tailscale.app/Contents/Library/SystemExtensions/*.systemextension 2>&1 | grep -E '^(Identifier|TeamIdentifier)='
@@ -63,11 +54,9 @@ TeamIdentifier=W5364U7YZB
 
 ## Any destination
 
-`hosts = ["*"]` lets the app reach any destination: any host, any address and any port, including connections made to an address with no host name. blackice skips the host and address checks for such a rule and logs `rule_line_N`, the line of its `[[allow]]`. The `*` must be alone in the list; next to other hosts it is an error.
+`hosts = ["*"]`, alone in the list, lets the app reach anything: any host, address and port, with no checks.
 
-It is meant for two kinds of app.
-
-**VPN clients and DNS proxies.** They connect by address. With Tailscale's DNS on, macOS sends its lookups to 100.100.100.100, and Tailscale's network extension forwards them with its own sockets. Without a rule, blackice drops those connections because they have no host name, so in ask and block-all names stop resolving and Tailscale goes offline. This rule is for the standalone Tailscale build, downloaded from tailscale.com; other builds may use another identifier, so check yours with `codesign -dv`.
+It is for VPN clients and DNS proxies, which connect by address. With Tailscale's DNS on, macOS sends its lookups through Tailscale's network extension with no host name, so without this rule names stop resolving in ask and block-all and Tailscale goes offline. This is the rule for the standalone Tailscale build, from tailscale.com; check yours with `codesign -dv`:
 
 ```toml
 [[allow]]
@@ -76,17 +65,17 @@ team = "W5364U7YZB"
 hosts = ["*"]
 ```
 
-**A browser you would let go anywhere.** A browser's traffic comes from its network process, not from the app. Brave's comes from `com.brave.Browser.helper` (team `KL8N8XSYF4`). Safari's comes from `com.apple.WebKit.Networking`, with no team, which also carries the web views of every other app that shows web pages.
+A browser's traffic comes from its network process: Brave's from `com.brave.Browser.helper` (team `KL8N8XSYF4`), Safari's from `com.apple.WebKit.Networking`, which also carries the web views of every other app.
 
 <Callout>
 
-**The risk.** Everything that app does is allowed, with no host or address check. An agent that can drive the app, by opening a URL in the browser for example, can use it to reach anything and to send data anywhere. Give `*` only to an app you would allow in accept-all anyway.
+**The risk.** Everything that app does is allowed. An agent that can drive it, by opening a URL in the browser for example, can use it to reach anything and send data anywhere. Give `*` only to an app you would allow in accept-all anyway.
 
 </Callout>
 
 ## Addresses and ranges
 
-`hosts` also takes IPv4 and IPv6 addresses and CIDR ranges, next to host names. For an app that reaches a few networks you know, such as `ssh` to the machines on your Tailscale network, they are narrower than `*`:
+For an app that reaches a few networks you know, such as `ssh` to your Tailscale machines, addresses and CIDR ranges are narrower than `*`:
 
 ```toml
 [[allow]]
@@ -94,36 +83,25 @@ app = "com.apple.ssh"
 hosts = ["100.64.0.0/10", "fd7a:115c:a1e0::/48", "10.0.0.5", "*.ts.net"]
 ```
 
-- An address entry matches a connection to an address it holds, with or without a host name, and the log says `rule_line_N;address`. No lookup applies: the rule names the address itself. Name entries in the same rule keep their checks.
-- On port 443 an address entry does not check the TLS server name. An entry for an address many sites share, such as a CDN's, lets the app reach all of them there.
-- IPv4 is four numbers from 0 to 255 with no leading zeros. `010.0.0.1`, `10.1` and `0x0a.0.0.1` are errors, because programs disagree on what they mean. IPv6 may be written in any standard form.
-- A range's prefix is a number from 1 to 32 for IPv4 and from 1 to 128 for IPv6, and the address must have no bit set after it: `10.0.0.5/8` is an error that says to write `10.0.0.0/8`.
-- `0.0.0.0/0` and `::/0` are errors: write `hosts = ["*"]` for any destination.
-- An entry names no interface, so `%en0` is an error and a link-local entry such as `fe80::/10` matches on every interface. An IPv4-mapped address such as `::ffff:10.0.0.5` is an error: write `10.0.0.5`.
-- Addresses count toward the 256 entries of a rule, and the same address or range twice is an error.
+- An address entry matches a connection to that address, named or not, with no lookup. On port 443 it does not check the server name, so an address many sites share, such as a CDN's, lets the app reach all of them.
+- IPv4 has no leading zeros (`010.0.0.1` is an error). A range has no bits set after its prefix: `10.0.0.0/8`, not `10.0.0.5/8`.
+- `0.0.0.0/0` and `::/0` are errors: write `*`. So are interfaces (`%en0`) and IPv4-mapped addresses (`::ffff:10.0.0.5`).
 
 ## Loopback
 
-With `loopback = true`, the default, connections to 127.0.0.0/8 and ::1 pass in every mode, before any rule, and the log says `loopback`. Command-line tools often talk to a service on the same Mac this way, such as the Tailscale CLI to the Tailscale app.
-
-`loopback = false` filters them like any other connection: ask mode asks about them, a TCP one with no host name by its address, and block-all needs a rule for them, such as `hosts = ["127.0.0.1"]`.
+With `loopback = true`, the default, connections to 127.0.0.0/8 and ::1 pass in every mode, before any rule. `loopback = false` filters them like any other connection.
 
 <Callout>
 
-**The trade-off.** With loopback allowed, any app can use a proxy or relay that listens on the Mac. The proxy's own connections out are still filtered, under its own identity, so this matters when the proxy's app may reach more than the first app: a VPN client with a `*` rule that offers a local SOCKS or HTTP proxy relays for every app.
+**The trade-off.** With loopback allowed, any app can use a proxy that listens on the Mac. The proxy's own connections are still filtered under its identity, but a VPN client with a `*` rule that offers a local proxy relays for every app.
 
 </Callout>
 
 ## Connections with no name
 
-Most connections carry a name: the host name the app asked for, a name from the DNS answers the Mac received for that address, or the TLS server name on port 443. In ask mode a TCP connection with none of these, such as `ssh` to `100.66.32.75`, is asked about by its address: the event's `host` is the address, the same text as `ip`.
+A connection is named by the host the app asked for, by the Mac's DNS answers for its address, or by its TLS server name on port 443. In ask mode a TCP connection with none of these, such as `ssh` to `100.66.32.75`, is asked about by its address, and an approval of that address covers only connections to it that have no name. Block-all drops them unless an address entry or `*` covers them. UDP with no name (WebRTC, games, network discovery, QUIC) and multicast and broadcast connections are dropped with no question.
 
-- An approval of the address, `blackice approve --app com.apple.ssh --host 100.66.32.75 --for 1h` or a hook's answer to that event, covers only connections from that app to exactly that address that have no name. A connection with a name is asked about by its name.
-- On port 443 blackice reads the TLS server name first. A client that connects to an address sends none, and the connection is then asked about by its address.
-- UDP with no name (WebRTC, games, network discovery, QUIC) is dropped with no event, as are connections to multicast and broadcast addresses: they would fill the queue of questions with ones that get denied anyway. An address entry, `*` or loopback still lets UDP through.
-- Block-all drops connections with no name unless an address entry or `*` covers them.
-
-**Encrypted DNS.** When a DNS server offers it, macOS tries DNS over HTTPS or TLS on its own, on port 443 or 853. blackice can't read those answers, and they are what names the addresses apps connect to. So in ask and block-all it drops the resolver's (`com.apple.mDNSResponder`) encrypted DNS at once, with no event, as `encrypted_dns`, and macOS falls back to plain DNS on port 53. If you set up an encrypted resolver on purpose, give the resolver a rule for it. Its lookups then go encrypted, so blackice no longer learns names from them, and more connections are asked about by address.
+**Encrypted DNS.** In ask and block-all, macOS's encrypted DNS (from `com.apple.mDNSResponder`, on port 443 or 853) is dropped as `encrypted_dns`, and macOS falls back to plain DNS, whose answers name the addresses apps connect to. To use an encrypted resolver on purpose, give it a rule; more connections are then asked about by address.
 
 ```toml
 [[allow]]
@@ -131,74 +109,48 @@ app = "com.apple.mDNSResponder"
 hosts = ["dns.google"]
 ```
 
-## When blackice drops a connection
-
-The app sees the connection fail with "Bad file descriptor" (EBADF) when it connects. `ssh` and the Tailscale CLI print `connect: Bad file descriptor`. That means blackice dropped the connection: it is not a network fault or a bug in the app. macOS gives a filter no way to refuse a connection with another error. The filter's log in [Use it](/docs/install#6-use-it) shows the reason.
-
-**An app updated while it runs.** An update that removes the program file of a running app, as Homebrew does with the old version, leaves macOS unable to check that app's signature. blackice keeps the identity it checked while the file was there, for as long as that process runs, also when blackice itself is upgraded or stopped and started. A restart of the Mac ends the process anyway. An app that blackice first sees after its file was removed is `unknown_identity`, and ask and block-all drop its connections: restart the app.
+**An app updated while it runs** keeps the identity blackice checked, for as long as that process runs. An app that blackice first sees after its file was removed is `unknown_identity`, and ask and block-all drop its connections: restart the app.
 
 ## macOS's own services
 
-With `apple_services = true`, the default, a built-in list lets macOS's own services through in ask and block-all without a rule. Flows it allows are logged as `apple_service`. It covers iCloud (including iCloud calendars and contacts, settings, storage and Keychain escrow), Apple Account sign-in, push notifications, iMessage and FaceTime identities and key transparency, Find My, Software Update and system downloads, the App Store and Apple Media Services (Music's library and artwork among them), Siri and Spotlight suggestions, Private Cloud Compute's gateway, Maps and location, network time, Gatekeeper's notarization check, captive portal detection, iCloud Private Relay's configuration, Safari's Safe Browsing service (not Safari itself), aerial wallpapers, Help, content cache discovery, diagnostics submission, and certificate checks.
+With `apple_services = true`, the default, a built-in list lets macOS's own services reach Apple's hosts in ask and block-all without a rule: iCloud, Apple Account, push notifications, iMessage and FaceTime, Find My, Software Update, the App Store, Siri and Spotlight suggestions, Maps, network time, Gatekeeper, certificate checks and others.
 
-- Each entry is one Apple program, by its signing identifier, and the Apple domains it uses, such as `*.icloud.com` for `com.apple.cloudd`. It matches only code Apple signed as part of macOS. The same identifier with a Team ID is someone else's code and gets nothing.
-- The address check applies as for a rule.
-- Tools that run commands or fetch whatever they are given are never on the list: curl, nscurl, python3, perl, ruby, the shells, ssh, scp, nc, git, osascript, Safari, WebKit's networking process, and nsurlsessiond, which downloads for any app. An agent that uses them still needs a rule or an approval.
-- trustd and ocspd check certificates, fetching revocation data and missing intermediate certificates from URLs written in the certificate itself. They may reach Apple's hosts and those of the authorities behind most public certificates (DigiCert, Entrust, Let's Encrypt, Sectigo, GlobalSign, GoDaddy, Google, Amazon and Microsoft), not any host: since a certificate names its own URLs, any app could otherwise send data to a host of its choosing through trustd. A lookup for another authority is asked about in ask mode and dropped in block-all.
-- The list comes from the ask-mode runs on a Mac (3 and 4 November 2026) and from well-known macOS services. Most services seen there get only the hosts they reached. A service that is not on it is asked about, or dropped in block-all. So is an account added for another provider, such as a Google calendar synced by `com.apple.dataaccess.dataaccessd`, which needs its own rule; `com.apple.accountsd`, which signs in to such accounts, is not on the list.
+- Each entry is one program Apple signed as part of macOS, and the Apple domains it uses. The same identifier with a Team ID is someone else's code and gets nothing.
+- Tools that run commands or fetch whatever they are given are never on it: curl, nscurl, python3, perl, ruby, the shells, ssh, scp, nc, git, osascript, Safari, WebKit's networking process and nsurlsessiond.
+- trustd and ocspd, which check certificates, may reach Apple and the main certificate authorities (DigiCert, Entrust, Let's Encrypt, Sectigo, GlobalSign, GoDaddy, Google, Amazon and Microsoft), not any host.
+- A service missing from the list is asked about, or dropped in block-all. So is an account for another provider, such as a Google calendar synced by `com.apple.dataaccess.dataaccessd`, which needs its own rule.
 
-`apple_services = false` turns the list off, and those services then need rules like any other app. In block-all that stops iCloud, updates and push notifications until rules for them are added.
+`apple_services = false` turns the list off. In block-all, iCloud, updates and push notifications then stop until you add rules for them.
 
 ## Hooks
 
-In ask mode the daemon runs each `[[hook]]` with `on = "connection"` for a connection that waits. A hook starts a program in one of two ways.
+In ask mode the daemon runs each `[[hook]]` with `on = "connection"` for a connection that waits. The agent a hook runs needs a rule to reach its model, or it waits on its own approval; `agent connect` adds both.
 
-**`program`, checked.** The daemon starts the program directly, with no shell, and only when its code signature names `app` and `team`:
-
-- `program` is an absolute path.
-- `app` and `team` are the signing identifier and Team ID, as in an `[[allow]]` rule, and `codesign -dv` shows them. Leave `team` out only for Apple's own programs.
+- `program` is an absolute path. The daemon starts it with no shell, and only when its signature names `app` and `team`; otherwise it is killed before it runs, and the log says `hook_refused`.
 - `args` lists the arguments, as strings. Nothing from the event is ever put in them.
-- `env` lists `NAME=value` strings added to the [environment](#the-hooks-environment). A name may not start with `BLACKICE_`.
-- `stdin = "none"` gives the program an empty stdin, so the event is only in its file. The default, `"event"`, sends the event on stdin too. The hooks of Claude Code, Codex and opencode say `"none"`: `claude -p`, `codex exec` and `opencode run` add whatever comes on stdin to their prompt, and the event should reach them only as a file they read.
-- `instructions` names the agent whose instructions the daemon writes into the event's directory before the program starts, from the copy inside blackice: `"fx"` writes the blackice skill as `skills/blackice/SKILL.md`, `"claude-code"`, `"codex"` and `"opencode"` write `instructions.md`. The hook names them by that relative path, as in `--system-prompt-file instructions.md`. A file in the agent's home could be rewritten by any program running as you; this one comes with blackice.
+- `env` adds `NAME=value` strings to the [environment](#the-hooks-environment). A name may not start with `BLACKICE_`.
+- `stdin = "none"` keeps the event off stdin, so it is only in its file. The default, `"event"`, sends it on stdin too.
+- `instructions` (`"fx"`, `"claude-code"`, `"codex"` or `"opencode"`) has the daemon write that agent's instructions, from blackice itself, into the event's directory.
 
-The daemon starts the program suspended, checks the signature of the process it started, and kills it before it runs if the signature does not name both. The log says `hook_refused`, with the identity it found. So a program that something else put at that path never runs, and an update of the program that keeps its identity needs no change.
+`run = '…'`, in place of `program`, is a line for `/bin/sh -c`. Nothing checks what it starts, so any program running as you can put something else in its place. It takes no `app`, `team`, `args`, `env`, `stdin` or `instructions`.
 
-**`run`, unchecked.** `run = '…'` is a line for `/bin/sh -c`, as before 0.4.0. Nothing checks what it starts, so any program running as you can put something else in its place, for example earlier in `PATH`. Only `program` hooks are protected that way. `run` takes no `app`, `team`, `args`, `env`, `stdin` or `instructions`.
-
-## Notes for the agent
-
-`notes` in an `[agent]` table is your own guidance for the agent that answers in ask mode: what you use for work, what you never want reached. It is the one value in the file that may span lines:
+## The agent table
 
 ```toml
 [agent]
+answers = "claude-code"
 notes = """
 For work I run a cloud CLI with Homebrew's python (/opt/homebrew/bin/python3); it reaches api.cloud.example.
 Deny analytics and tracking hosts, such as stats.example.com, whatever the app.
 """
 ```
 
-The daemon writes the notes as `notes.md` beside `event.json` in each event's directory, and the instructions of fx, Claude Code, Codex and opencode say to follow them for judgment calls. They never override the instructions' safety rules: the event's fields stay untrusted, lookalike hosts are still denied and no approval is longer than 24 hours, and text in the event that claims to be a note is a reason to deny. The notes are part of `blackice.toml`, so they change only with your Touch ID, like the hooks.
-
-- `"""` takes the escapes of a `"…"` string; `'''` takes the text as written. A line break right after the opening quotes is left out.
-- At most 4 KiB, of plain text: lines and tabs, but no other control characters and none of the Unicode controls that change the order text reads in.
-- A backslash at the end of a line, which TOML uses to join lines, is refused. Write the text as it should read.
-- Blank notes are no notes: there is no `notes.md`.
-
-## Who answers
-
-A hook with `instructions` is an agent's. With several of them, `answers` in `[agent]` names the one whose hook runs: `"fx"`, `"claude-code"`, `"codex"`, `"opencode"`, or `"you"` for none, so that you answer with `blackice approve` and `deny` or the menu. Hooks without `instructions` run either way.
-
-```toml
-[agent]
-answers = "claude-code"
-```
-
-`blackice agent connect` writes it when another agent's hook stays in the file. With no `answers`, every hook runs, as before 0.4.2. Naming an agent whose hook is not in the file is refused. `blackice mode ask --agent NAME` and the menu's Mode switch it in the configuration blackice holds, and leave the file as it is.
+- `answers` names the agent whose hook runs: `"fx"`, `"claude-code"`, `"codex"`, `"opencode"`, or `"you"` for none. Hooks without `instructions` run either way. With no `answers`, every hook runs.
+- `notes` is your guidance for the agent: what you use for work, what you never want reached. The daemon writes it as `notes.md` beside the event, and the agent follows it for judgment calls, never over its safety rules. Plain text, at most 4 KiB, and the only value that may span lines. Like the hooks, it changes only with your Touch ID.
 
 ## The hook's environment
 
-The daemon builds the environment a hook starts with instead of passing on its own:
+The daemon builds the environment a hook starts with:
 
 | Variable | Value |
 | --- | --- |
@@ -208,11 +160,11 @@ The daemon builds the environment a hook starts with instead of passing on its o
 | `LANG` | `en_US.UTF-8` |
 | `BLACKICE_EVENT_FILE`, `BLACKICE_EVENT_ID` | The event's file and ID. |
 
-A `program` hook's `env` is added on top and may replace any of these but the last two. In the example above, `HOME` gives fx a home of its own, with its own login and rules.
+A `program` hook's `env` may replace any of these but the last two.
 
 ## The event a hook receives
 
-The hook gets the event as JSON on stdin, unless its hook says `stdin = "none"`. The daemon also writes it to `event.json`, in a private directory that is the hook's working directory and is deleted afterwards, and names the file in `BLACKICE_EVENT_FILE`, because `fx ask` does not read stdin when the prompt is on the command line.
+The daemon writes the event to `event.json`, in a private directory that is the hook's working directory and is deleted afterwards, and names the file in `BLACKICE_EVENT_FILE`. Unless the hook says `stdin = "none"`, it gets the event on stdin too.
 
 ```json
 {
@@ -226,11 +178,11 @@ The hook gets the event as JSON on stdin, unless its hook says `stdin = "none"`.
 }
 ```
 
-Ad hoc signed code has `"cdhash"` in `app` instead of `signing_id` and `team_id`. For a [connection with no name](#connections-with-no-name), `host` is the address, the same text as `ip`. The event carries no token: the token that answers it stays in the extension and the daemon.
+Ad hoc signed code has `"cdhash"` in `app` in place of `signing_id` and `team_id`. For a [connection with no name](#connections-with-no-name), `host` is the address, the same as `ip`. The event carries no token: that stays with the extension and the daemon.
 
 ## How a hook answers
 
-A hook answers on its stdout. When it exits with status 0 before the deadline, the daemon reads its last non-empty line, trimmed. That line must be exactly one of these, in lowercase:
+When the hook exits with status 0 before the deadline, the daemon reads its last non-empty line. It must be exactly one of these:
 
 | Line | Answer |
 | --- | --- |
@@ -238,14 +190,8 @@ A hook answers on its stdout. When it exits with status 0 before the deadline, t
 | `approve <N>m` | Approve for N minutes, from 1 to 1440. |
 | `approve <N>h` | Approve for N hours, from 1 to 24. |
 
-The daemon answers for the event's app and host, which it takes from the event, never from the hook's output, and sends the answer to the extension with the event's token. Before that line the hook can print anything, such as its reasons.
+The answer is for the event's app and host, never for anything the hook prints. Anything else is no answer, and the connection is dropped at its deadline: a line such as `approve 1h.` or `**deny**`, more than 64 KiB on stdout, an exit status other than 0, or a hook still running at the deadline.
 
-A deny is remembered for 10 minutes, whoever gave it (a hook, `blackice deny` or the menu): the app's new connections to that host, on any port, are dropped at once as `denied;remembered`, with no event and no hook, so a tool that retries is not asked about again and again. A rule still allows what it names. An approval of that app and host replaces the denial, and a configuration change forgets them all. No answer in time is not a deny and is not remembered. `blackice pending` lists the denials under "Denied, dropped without asking".
+A deny is remembered for 10 minutes, whoever gave it: the app's new connections to that host are dropped at once, with no hook. A rule still allows what it names, and an approval replaces the denial. No answer in time is not remembered.
 
-Anything else is no answer, and the connection waits until its deadline and is dropped:
-
-- a last line that is not exactly one of those, such as `approve 1h.`, `**deny**` or `Approve 10m`;
-- more than 64 KiB on stdout;
-- an exit status other than 0, or a hook still running at the deadline.
-
-The event log, `~/Library/Logs/blackice/events.jsonl`, records `hook_answer` with the answer and its seconds, or `hook_no_answer` with the reason (`exit_status`, `signaled`, `deadline`, `no_line`, `unrecognized_line` or `output_too_long`). Of an unrecognized line it keeps only the first 24 characters, printable ASCII only. It never records the rest of a hook's stdout. When the extension does not take an answer, for example because a person answered first, the log says `answer_refused` with the reason.
+The event log, `~/Library/Logs/blackice/events.jsonl`, records each `hook_answer`, or `hook_no_answer` with the reason. Of an unrecognized line it keeps only the first 24 characters, and nothing else of a hook's output.

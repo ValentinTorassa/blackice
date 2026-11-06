@@ -78,7 +78,7 @@ export function createLlmsText(): string {
     '',
     `> ${site.description}`,
     '',
-    `blackice ${release.version} is early: it has run on one Mac, with macOS 27.0.1. What has run is recorded in the repository's evidence folder (${release.evidence}).`,
+    `blackice ${release.version} is early: it has run on one Mac, with macOS 27.0.1.`,
     '',
     `- [Home](${canonicalSiteUrl}/index.md): What blackice is, in one page.`,
     `- [All documentation](${canonicalSiteUrl}/llms-full.txt): Every page below in one file.`,

@@ -49,10 +49,8 @@ test('production documentation metadata, Markdown exports and HTML 404s', { time
   const pages = [
     ['/docs', 'Introduction', '/docs.md'],
     ['/docs/install', 'Install', '/docs/install.md'],
-    ['/docs/how-it-works', 'How it works', '/docs/how-it-works.md'],
     ['/docs/configuration', 'Configuration', '/docs/configuration.md'],
     ['/docs/cli', 'CLI', '/docs/cli.md'],
-    ['/docs/changelog', 'Changelog', '/docs/changelog.md'],
   ]
   for (const [path, title, markdownPath] of pages) {
     const { response, body } = await request(path)
@@ -69,6 +67,19 @@ test('production documentation metadata, Markdown exports and HTML 404s', { time
     assert.match(markdown.response.headers.get('content-type'), /text\/markdown/)
     assert.ok(markdown.body.startsWith(`# ${title}\n`), markdownPath)
     assert.doesNotMatch(markdown.body, /getDocsMetadata|export const metadata|<Status\s*\/>/)
+  }
+
+  // Removed pages still lead somewhere.
+  const changelog = 'https://github.com/ValentinTorassa/blackice/blob/main/CHANGELOG.md'
+  for (const [path, location] of [
+    ['/docs/how-it-works', '/docs'],
+    ['/docs/how-it-works.md', '/docs.md'],
+    ['/docs/changelog', changelog],
+    ['/docs/changelog.md', changelog],
+  ]) {
+    const response = await fetch(`http://127.0.0.1:${port}${path}`, { redirect: 'manual', signal: AbortSignal.timeout(5000) })
+    assert.equal(response.status, 307, path)
+    assert.equal(new URL(response.headers.get('location'), `http://127.0.0.1:${port}`).href, new URL(location, `http://127.0.0.1:${port}`).href, path)
   }
 
   for (const path of ['/docs/missing', '/docs/missing/nested', '/missing']) {
@@ -90,7 +101,7 @@ test('production documentation metadata, Markdown exports and HTML 404s', { time
   assert.doesNotMatch(full.body, /getDocsMetadata|export const metadata/)
 
   const manifest = JSON.parse(await readFile('.next/prerender-manifest.json', 'utf8'))
-  for (const path of ['/docs.md', '/llms-full.txt', '/markdown/docs/cli', '/markdown/docs/configuration', '/markdown/docs/install', '/markdown/docs/how-it-works']) {
+  for (const path of ['/docs.md', '/llms-full.txt', '/markdown/docs/cli', '/markdown/docs/configuration', '/markdown/docs/install']) {
     assert.ok(manifest.routes[path], `Not prerendered: ${path}`)
   }
 })

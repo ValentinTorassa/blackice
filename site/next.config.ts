@@ -35,8 +35,14 @@ const nextConfig: NextConfig = {
   rewrites: async () => [
     { source: '/docs/:slug(.+)\\.md', destination: '/markdown/docs/:slug' },
   ],
+  /* How it works is part of the introduction now, and the changelog is the
+     repository's CHANGELOG.md. */
   redirects: async () => [
     { source: '/source', destination: 'https://github.com/ValentinTorassa/blackice', permanent: false },
+    { source: '/docs/how-it-works', destination: '/docs', permanent: false },
+    { source: '/docs/how-it-works.md', destination: '/docs.md', permanent: false },
+    { source: '/docs/changelog', destination: 'https://github.com/ValentinTorassa/blackice/blob/main/CHANGELOG.md', permanent: false },
+    { source: '/docs/changelog.md', destination: 'https://github.com/ValentinTorassa/blackice/blob/main/CHANGELOG.md', permanent: false },
   ],
 }
 

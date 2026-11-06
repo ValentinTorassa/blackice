@@ -16,18 +16,11 @@ export const release = {
   /* Two commands: Homebrew loads a cask from a tap other than its own only
      after `brew trust`. */
   brew: 'brew trust --cask valentintorassa/tap/blackice\nbrew install --cask valentintorassa/tap/blackice',
-  evidence: `${site.repo}/tree/main/evidence`,
 } as const
 
-/* The note at the top of each docs page, as text with the evidence link
-   kept apart so the page and the markdown twin can each render it. */
-export const docsStatus = {
-  lead: 'Early.',
-  before: `blackice ${version} has run on one Mac, with macOS 27.0.1. Something counts as working only when a run in the repository's`,
-  link: 'evidence',
-  after: 'folder records it, and the configuration format can still change.',
-} as const
+/* The note at the top of the introduction and the install page. */
+export const docsStatus = `blackice ${version} has run on one Mac, with macOS 27.0.1, and the configuration format can still change.`
 
 export function docsStatusMarkdown(): string {
-  return `> **${docsStatus.lead}** ${docsStatus.before} [${docsStatus.link}](${release.evidence}) ${docsStatus.after}`
+  return `> **Early.** ${docsStatus}`
 }

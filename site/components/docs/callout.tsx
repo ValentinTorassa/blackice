@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react'
 
-import { docsStatus, release } from '@/lib/release'
+import { docsStatus } from '@/lib/release'
 import { cn } from '@/lib/utils'
 
 export function Callout({ children, className }: { children: ReactNode; className?: string }) {
@@ -16,21 +16,12 @@ export function Callout({ children, className }: { children: ReactNode; classNam
   )
 }
 
-/* Every docs page opens with this: how far blackice has run. */
+/* The introduction and the install page open with this: how far blackice has run. */
 export function Status() {
   return (
     <Callout>
       <p>
-        <strong>{docsStatus.lead}</strong> {docsStatus.before}{' '}
-        <a
-          href={release.evidence}
-          target="_blank"
-          rel="noreferrer"
-          className="text-foreground underline decoration-border-strong underline-offset-4 hover:decoration-foreground"
-        >
-          {docsStatus.link}
-        </a>{' '}
-        {docsStatus.after}
+        <strong>Early.</strong> {docsStatus}
       </p>
     </Callout>
   )

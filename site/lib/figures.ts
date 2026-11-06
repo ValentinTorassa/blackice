@@ -2,9 +2,9 @@
    text an agent reads is the text a person reads under the drawing. */
 export const figureText = {
   FigArchitecture:
-    'The parts. The extension sees every new connection on the Mac and is the only part that allows or drops one. It cannot start processes, so a user-level daemon runs the hooks. A hook answers on its last line of output, and the daemon passes the answer to the extension with the event\'s one-time token. A person answers through the CLI, with Touch ID.',
+    'The parts. The extension is the only part that allows or drops a connection. The daemon runs the hooks and passes their answers on. A person answers through the CLI or the menu bar, with Touch ID.',
   FigAsk:
-    "Ask mode. A connection that no rule or approval covers waits while the hook asks an agent. The agent ends its reply with approve 1h or deny, and the daemon sends that answer to the extension, for the event's app and host and with its one-time token. With no answer before the timeout, the connection is dropped.",
+    'Ask mode. A connection no rule covers waits while the hook asks an agent, which ends its reply with approve 1h or deny. With no answer before the timeout, the connection is dropped.',
 } as const
 
 export const figureLabel = {
