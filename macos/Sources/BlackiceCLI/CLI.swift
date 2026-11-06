@@ -372,7 +372,7 @@ public enum CLI {
                     let started = system.start(configText: loaded.text,
                                                output: SystemOutput(stdout: stdout, stderr: stderr, setup: justWritten,
                                                                     asWritten: justWritten))
-                    if started == ExitCode.success { menuBar.reopenIfOutdated(output: SystemOutput(stdout: stdout, stderr: stderr)) }
+                    if started == ExitCode.success { menuBar.openAfterStart(output: SystemOutput(stdout: stdout, stderr: stderr)) }
                     if justWritten, started == ExitCode.success {
                         offerMenuBar(menuBar, interaction: interaction, stdout: stdout, stderr: stderr)
                     }
@@ -385,7 +385,7 @@ public enum CLI {
                                            output: SystemOutput(stdout: stdout, stderr: stderr, setup: true, next: false,
                                                                 asWritten: true))
                 guard started == ExitCode.success else { return started }
-                menuBar.reopenIfOutdated(output: SystemOutput(stdout: stdout, stderr: stderr))
+                menuBar.openAfterStart(output: SystemOutput(stdout: stdout, stderr: stderr))
                 stdout("  " + Style.done("blackice is on in accept-all mode until \(agent) is set up"))
                 let connected = connectAgent(agent, configPath: configPath, readFile: readFile, system: system,
                                              interaction: interaction, machine: agents, stdout: stdout, stderr: stderr,

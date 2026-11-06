@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+`blackice start` opens blackice in the menu bar.
+
+Changed:
+- Each `start` that turns blackice on opens the menu bar app when it is not running, as it already did for a menu
+  from before an upgrade. The first `start` asks only whether it also opens at each login.
+
 ## 0.4.5 (5 November 2026)
 
 A quieter command line: each command says what happened in a line or two.
