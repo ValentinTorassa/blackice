@@ -687,6 +687,11 @@ struct AgentAnswersTests {
         let crlf = try BlackiceConfig.switchingAnswers(.agent(.fx), in: crlfFile)
         #expect(crlf.hasSuffix("[agent]\r\nanswers = \"fx\"  # set by blackice mode; blackice.toml has none\r\n"))
         #expect(try BlackiceConfig.switchedAnswers(in: crlf) == BlackiceConfig.SwitchedAnswers(fileHas: nil))
+        // Switched again, it still has none. Until 1.0.3 the second switch wrote the first one's
+        // answerer as the file's: `has "fx"`.
+        let crlfYou = try BlackiceConfig.switchingAnswers(.you, in: crlf)
+        #expect(crlfYou.hasSuffix("[agent]\r\nanswers = \"you\"  # set by blackice mode; blackice.toml has none\r\n"))
+        #expect(try BlackiceConfig.switchedAnswers(in: crlfYou) == BlackiceConfig.SwitchedAnswers(fileHas: nil))
         // The file's own text has none, and neither has a line that only looks like one.
         #expect(try BlackiceConfig.switchedAnswers(in: file) == nil)
         #expect(try BlackiceConfig.settingAnswers(.agent(.codex), in: file) == base + "[agent]\nanswers = \"codex\"\n")
@@ -758,5 +763,19 @@ struct AgentAnswersTests {
         #expect(legacy.isStarted(from: file) && !legacy.isStarted(from: more))
         #expect(try ProviderConfiguration.starting(configText: more, after: legacy, keepingSwitches: true).configText == more)
         #expect(first.answersSwitched(from: file) == nil)
+    }
+
+    /// A file that names no one, switched twice: start keeps both switches. Until 1.0.3 the second
+    /// switch recorded the first one's answerer as the file's, so start no longer recognized the
+    /// file, dropped the mode switch, and every agent's hook answered again.
+    @Test func startKeepsTwoSwitchesFromAFileThatNamesNoOne() throws {
+        let file = "mode = 'ask'\n" + Self.fxHook + Self.codexHook
+        let first = try ProviderConfiguration.starting(configText: file, after: nil, keepingSwitches: true)
+        let fx = try first.with(mode: .ask, answerer: .agent(.fx))
+        let you = try fx.with(mode: .blockAll, answerer: .you)
+        #expect(try BlackiceConfig.switchedAnswers(in: you.configText) == BlackiceConfig.SwitchedAnswers(fileHas: nil))
+        #expect(you.isStarted(from: file))
+        let kept = try ProviderConfiguration.starting(configText: file, after: you, keepingSwitches: true)
+        #expect(kept.mode == .blockAll && kept.config.answers == .you && kept.config.activeHooks.isEmpty)
     }
 }

@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased
+
+Fixed:
+- `blackice start` keeps two switches of who answers from a file that names no one, such as `blackice mode ask
+  --agent fx` and then the menu's Ask with you answering. Until now the second switch recorded fx as the file's own
+  `answers`, so the next `start` took the file for a changed one: it dropped the mode switch too, and every agent's
+  hook answered again.
+- `blackice agent connect` saves `blackice.toml` holding a lock beside it (`.blackice.toml.lock`) while it checks the
+  file and renames the new one into place. Until now the check and the rename were apart, so two `agent connect`
+  runs that read the same file could both pass the check, and the second one's save replaced the first one's.
+- `blackice agent connect` stops an agent's sign-in status check that gives no answer in 30 s, or at once on
+  Control-C, then goes back to the mode it put off. Until now a status check that stalled left the setup waiting for
+  ever, in accept-all.
+- `npx blackice install` checks `--force` and the installed app's build again right before it replaces the app. Until
+  now it checked them only before the download, so an app another install put in place meanwhile, even a newer
+  build, was replaced.
+
 ## 1.0.2 (6 November 2026)
 
 Fixed:

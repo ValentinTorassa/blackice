@@ -26,9 +26,12 @@ private final class FakeAgentMac: @unchecked Sendable {
     var notes: [String?] = []
     /// Runs while fx decides the sample event, as a person editing blackice.toml meanwhile would.
     var duringTest: (() -> Void)?
-    /// Control-C pressed while fx signs in or decides the sample event; fx dies of it.
-    enum Wait { case signIn, test }
+    /// Control-C pressed while fx signs in, while its status runs, or while it decides the sample
+    /// event; fx dies of it.
+    enum Wait { case signIn, status, test }
     var controlC: Wait?
+    /// `status` stalls, and runCaptured stops it once its time runs out.
+    var statusStalls = false
     /// Whether Control-C was caught, and how often the signals were caught and released.
     var interrupted = false
     var catches = 0
@@ -64,7 +67,9 @@ private final class FakeAgentMac: @unchecked Sendable {
                 return 0
             },
             runCaptured: { _, arguments, _ in
-                (0, arguments == ["status"] ? "[status] model=x\n[status] auth=\(self.signedIn ? "vercel" : "missing")\n" : "")
+                if arguments == ["status"], self.statusStalls { return (AgentMachine.timedOut, "[status] model=x\n") }
+                if arguments == ["status"], self.controlC == .status { self.interrupted = true; return (128 + SIGTERM, "") }
+                return (0, arguments == ["status"] ? "[status] model=x\n[status] auth=\(self.signedIn ? "vercel" : "missing")\n" : "")
             },
             runHook: { hook, event, notes, _, _ in
                 self.hookRuns.append(hook)
@@ -1155,6 +1160,65 @@ struct AgentConnectTests {
         #expect(try BlackiceConfig(data: Data(contentsOf: URL(fileURLWithPath: blockConfig))).hooks.count == 1)
     }
 
+    /// A sign-in status that stalls is stopped once its time runs out, and one that Control-C
+    /// interrupts at once: either way the setup stops there and goes back to the mode it put off.
+    /// Until 1.0.3 it waited for the status for ever, in accept-all.
+    @Test func aStalledStatusStopsTheSetupAndGoesBack() throws {
+        let (home, config) = try setUp("mode = \"ask\"\ntimeout_seconds = 60\n")
+        defer { removeTree(home) }
+        let before = try String(contentsOfFile: config, encoding: .utf8)
+        let back = "The setup did not finish, so blackice goes back to ask mode."
+
+        let stalling = FakeAgentMac(signedIn: true, answer: Self.approve)
+        stalling.statusStalls = true
+        let stalledSystem = Loading()
+        stalledSystem.running = .ask
+        let stalled = connect(home, config: config, mac: stalling, system: stalledSystem)
+        #expect(stalled.status == ExitCode.software)
+        #expect(stalled.stderr == ["  fx's sign-in status gave no answer in 30 s, so blackice stopped it",
+                                   "  and nothing else changed. To retry: blackice agent connect fx --config ~/.config/blackice/blackice.toml"])
+        #expect(stalledSystem.modes == [.acceptAll, .ask] && stalledSystem.running == .ask && stalledSystem.texts.isEmpty)
+        #expect(stalled.stdout.contains(back) && stalling.logins.isEmpty && stalling.hookRuns.isEmpty)
+
+        let interrupting = FakeAgentMac(signedIn: false, answer: Self.approve)
+        interrupting.controlC = .status
+        let interruptedSystem = Loading()
+        interruptedSystem.running = .blockAll
+        let interrupted = connect(home, config: config, mac: interrupting, system: interruptedSystem)
+        #expect(interrupted.status == ExitCode.interrupted && interrupted.stderr == ["  Interrupted, so the setup stops here."])
+        #expect(interruptedSystem.modes == [.acceptAll, .blockAll] && interruptedSystem.running == .blockAll)
+        #expect(interrupting.logins.isEmpty && interrupting.catches == 1 && interrupting.releases == 1)
+        #expect(try String(contentsOfFile: config, encoding: .utf8) == before)
+    }
+
+    /// The program itself, as `runCaptured` runs it on this Mac: its output and status; stopped,
+    /// with SIGTERM and then SIGKILL to its group, once its time runs out, even when it stopped
+    /// itself and a child of it keeps the output open; and stopped at once by Control-C.
+    @Test func aCapturedProgramIsStoppedWhenItStalls() {
+        // Not `Interrupts`: InterruptsTests, running beside this, catch a SIGTERM of their own.
+        let never = { false }
+        let ran = AgentMachine.runCaptured("/bin/sh", ["-c", "echo out; echo err >&2; exit 3"], [:], interrupted: never)
+        #expect(ran.status == 3 && ran.output == "out\nerr\n")
+
+        var started = Date()
+        let stalled = AgentMachine.runCaptured("/bin/sh", ["-c", "echo started; sleep 60 & kill -STOP $$"], [:], seconds: 0.5,
+                                               interrupted: never)
+        #expect(stalled.status == AgentMachine.timedOut && stalled.output == "started\n")
+        #expect(Date().timeIntervalSince(started) < 10)
+
+        // Ended, but a child keeps the output open: the program's own status, once time runs out.
+        started = Date()
+        let child = AgentMachine.runCaptured("/bin/sh", ["-c", "echo done; sleep 60 &"], [:], seconds: 0.5, interrupted: never)
+        #expect(child.status == 0 && child.output == "done\n")
+        #expect(Date().timeIntervalSince(started) < 10)
+
+        started = Date()
+        let controlC = started.addingTimeInterval(0.3)
+        let interrupted = AgentMachine.runCaptured("/bin/sh", ["-c", "sleep 60"], [:], interrupted: { Date() >= controlC })
+        #expect(interrupted.status == 128 + SIGTERM)
+        #expect(Date().timeIntervalSince(started) < 10)
+    }
+
     /// The first start picked ask mode with fx answering, and fx could not be set up. Nothing was
     /// filtered before that start, so it stays in accept-all, and says so plainly.
     @Test func aFirstStartWhoseAgentFailsStaysInAcceptAll() throws {
@@ -1251,8 +1315,57 @@ struct AgentConnectTests {
         #expect(!FileManager.default.fileExists(atPath: CLI.temporaryPath(for: otherConfig)))
     }
 
+    /// Two writers that read the same text: the check and the rename go under one lock, so the one
+    /// that waited for it sees the other's text and stops. Until 1.0.3 both could pass the check,
+    /// and the second rename replaced the first one's text.
+    @Test func aSaveWaitsForTheLockAndSeesTheOtherWritersText() throws {
+        let folder = try makePrivateDirectory()
+        defer { removeTree(folder) }
+        let path = folder.path + "/blackice.toml"
+        let original = Data("mode = \"ask\"\n".utf8), other = Data("mode = \"block-all\"\n".utf8)
+        let mine = Data("mode = \"accept-all\"\n".utf8)
+        try original.write(to: URL(fileURLWithPath: path))
+
+        // The other writer holds the lock, between its check and its rename.
+        let unlock = try CLI.lockBeside(path, waitingUpTo: 1)
+        let outcome = Recorder<String>()
+        let finished = DispatchSemaphore(value: 0)
+        DispatchQueue.global().async {
+            do {
+                try CLI.writeAtomically(mine, to: path, mode: 0o644, replacing: original, lockSeconds: 10)
+                outcome.append("written")
+            } catch is CLI.ChangedMeanwhile {
+                outcome.append("changed meanwhile")
+            } catch {
+                outcome.append("\(error)")
+            }
+            finished.signal()
+        }
+        usleep(200_000)
+        #expect(finished.wait(timeout: .now()) == .timedOut)
+        try other.write(to: URL(fileURLWithPath: path))
+        unlock()
+        #expect(finished.wait(timeout: .now() + 10) == .success)
+        #expect(outcome.items == ["changed meanwhile"])
+        #expect(FileManager.default.contents(atPath: path) == other)
+
+        // A lock held longer than the wait: the save stops as for a change.
+        let held = try CLI.lockBeside(path, waitingUpTo: 1)
+        #expect(throws: CLI.ChangedMeanwhile.self) {
+            try CLI.writeAtomically(mine, to: path, mode: 0o644, replacing: other, lockSeconds: 0.1)
+        }
+        held()
+        // Free: the save goes through, and the lock file stays, empty.
+        try CLI.writeAtomically(mine, to: path, mode: 0o644, replacing: other)
+        #expect(FileManager.default.contents(atPath: path) == mine)
+        #expect(FileManager.default.contents(atPath: CLI.lockPath(for: path)) == Data())
+        #expect(!FileManager.default.fileExists(atPath: CLI.temporaryPath(for: path)))
+    }
+
     /// `--config blackice.toml` has no folder: the temporary file goes in the current one.
     @Test func aBareFileNameKeepsTheTemporaryFileBesideIt() {
+        #expect(CLI.lockPath(for: "blackice.toml") == ".blackice.toml.lock")
+        #expect(CLI.lockPath(for: "/Users/a/blackice.toml") == "/Users/a/.blackice.toml.lock")
         let pid = getpid()
         #expect(CLI.temporaryPath(for: "blackice.toml") == ".blackice.toml.\(pid).tmp")
         #expect(CLI.temporaryPath(for: "conf/blackice.toml") == "conf/.blackice.toml.\(pid).tmp")

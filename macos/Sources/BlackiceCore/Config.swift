@@ -313,7 +313,14 @@ extension BlackiceConfig {
     /// (or `has none`). `blackice start` reads the comment to tell a switch from a change in the
     /// file. A text switched before keeps the value its comment names, not the earlier switch.
     public static func switchingAnswers(_ answerer: Answerer, in text: String) throws -> String {
-        let fileHas = try switchedAnswers(in: text)?.fileHas ?? BlackiceConfig(text: text).answers
+        // A record of `has none` is a record too: `?.fileHas ?? ...` read it as no record, so a
+        // second switch wrote the first switch's answerer as the file's.
+        let fileHas: Answerer?
+        if let switched = try switchedAnswers(in: text) {
+            fileHas = switched.fileHas
+        } else {
+            fileHas = try BlackiceConfig(text: text).answers
+        }
         let named = fileHas.map { "\"\($0.name)\"" } ?? "none"
         return try replacingAnswers(answerer, in: text, comment: switchComment + named)
     }

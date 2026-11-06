@@ -22,8 +22,9 @@ the GitHub release whose version matches this package's, and then:
 5. copies it with `ditto` into a hidden folder in `/Applications` and checks the copy with `codesign --verify`, then
    renames an installed copy into that folder and the new one into its place. If that fails, the installed copy is
    renamed back, and it is removed only once the new one is in place. It refuses to replace an installed copy
-   without `--force`, and one with a higher build number at all, since macOS would keep that build's extension.
-   Then it prints the next steps.
+   without `--force`, and one with a higher build number at all, since macOS would keep that build's extension. Both
+   are checked again right before the replacement, and the build once more on the copy it renamed aside, so a copy
+   another install put there meanwhile is not replaced. Then it prints the next steps.
 
 It does not activate the network extension or load the daemon: `blackice start` and `blackice agent install` do, as
 the [install guide](https://github.com/ValentinTorassa/blackice/blob/main/docs/install.md) describes. After

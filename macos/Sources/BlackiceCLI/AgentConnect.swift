@@ -291,7 +291,8 @@ public struct AgentMachine {
     public let findExecutables: (_ name: String, _ alsoIn: [String]) -> [String]
     /// Runs a program with this terminal attached, for a sign-in; its exit status.
     public let runAttached: (_ path: String, _ arguments: [String], _ environment: [String: String]) -> Int32
-    /// Runs a program and returns its exit status and output.
+    /// Runs a program and returns its exit status and output, or `timedOut` once it took longer
+    /// than `capturedSeconds` and was stopped.
     public let runCaptured: (_ path: String, _ arguments: [String], _ environment: [String: String]) -> (status: Int32, output: String)
     /// Runs one hook for an event the way the daemon does (HookRunner), signature check,
     /// instructions and the owner's notes included.
@@ -347,20 +348,7 @@ public struct AgentMachine {
                 return found
             },
             runAttached: Self.runAttached,
-            runCaptured: { path, arguments, environment in
-                let process = Process()
-                process.executableURL = URL(fileURLWithPath: path)
-                process.arguments = arguments
-                process.environment = ProcessInfo.processInfo.environment.merging(environment) { $1 }
-                let pipe = Pipe()
-                process.standardOutput = pipe
-                process.standardError = pipe
-                process.standardInput = FileHandle.nullDevice
-                do { try process.run() } catch { return (127, "\(error)") }
-                let data = pipe.fileHandleForReading.readDataToEndOfFile()
-                process.waitUntilExit()
-                return (process.terminationStatus, String(decoding: data, as: UTF8.self))
-            },
+            runCaptured: { path, arguments, environment in Self.runCaptured(path, arguments, environment) },
             runHook: { hook, event, notes, workDirectory, timeoutSeconds in
                 let failed = { (why: String) in
                     HookResult(hookLine: 0, outcome: .failedToStart(why), stderr: "", stderrTruncated: false, duration: 0)
@@ -437,6 +425,106 @@ public struct AgentMachine {
         if isTerminal { tcsetattr(STDIN_FILENO, TCSANOW, &terminal) }
         let signal = status & 0x7f
         return signal == 0 ? (status >> 8) & 0xff : 128 + signal
+    }
+
+    /// How long `runCaptured` lets a program run: a sign-in status answers in a second or two.
+    public static let capturedSeconds: TimeInterval = 30
+    /// The status `runCaptured` returns for a program it stopped because time ran out. No exit
+    /// status is negative.
+    public static let timedOut: Int32 = -1
+
+    /// Runs a program with no terminal and returns its exit status, or 128 plus the signal that
+    /// ended it, and what it wrote to stdout and stderr together. Process starts it in a process
+    /// group of its own, which Control-C from the terminal does not reach, and agent connect runs it
+    /// in accept-all: until 1.0.3 a status that stalled, or a child of it that kept the output open,
+    /// left the setup waiting there for ever. Once `seconds` pass or a signal is caught
+    /// (`interrupted`), the group gets SIGTERM (and SIGCONT, for a stopped one), and SIGKILL 2 s
+    /// later; the status is then `timedOut`, or the signal's when it was interrupted.
+    static func runCaptured(_ path: String, _ arguments: [String], _ environment: [String: String],
+                            seconds: TimeInterval = capturedSeconds,
+                            interrupted: () -> Bool = { Interrupts.interrupted }) -> (status: Int32, output: String) {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: path)
+        process.arguments = arguments
+        process.environment = ProcessInfo.processInfo.environment.merging(environment) { $1 }
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = pipe
+        process.standardInput = FileHandle.nullDevice
+        // Read on a thread of its own, from a copy of the descriptor that only it closes: a child
+        // that keeps the output open after the end leaves that thread waiting, not the setup.
+        let descriptor = fcntl(pipe.fileHandleForReading.fileDescriptor, F_DUPFD_CLOEXEC, 0)
+        guard descriptor >= 0 else { return (127, "cannot read its output: \(String(cString: strerror(errno)))") }
+        do { try process.run() } catch { close(descriptor); return (127, "\(error)") }
+        let output = CapturedOutput()
+        let closed = DispatchSemaphore(value: 0)
+        Thread.detachNewThread {
+            var buffer = [UInt8](repeating: 0, count: 16_384)
+            while true {
+                let count = read(descriptor, &buffer, buffer.count)
+                if count < 0, errno == EINTR { continue }
+                guard count > 0 else { break }
+                output.append(buffer[0..<count])
+            }
+            close(descriptor)
+            closed.signal()
+        }
+        let pid = process.processIdentifier
+        func signalGroup(_ signal: Int32) {
+            // The group takes its children too; the program alone when it has no group of its own.
+            if killpg(pid, signal) != 0, process.isRunning { kill(pid, signal) }
+        }
+        let deadline = Date().addingTimeInterval(seconds)
+        var outputClosed = false
+        var stoppedAt: Date?
+        var killed = false
+        var ranOut = false
+        while true {
+            if !outputClosed, closed.wait(timeout: .now() + 0.05) == .success { outputClosed = true }
+            if outputClosed {
+                if !process.isRunning { break }
+                usleep(20_000)
+            }
+            let now = Date()
+            if let stoppedAt {
+                if !killed, now >= stoppedAt.addingTimeInterval(2) {
+                    signalGroup(SIGKILL)
+                    killed = true
+                }
+                // A second for the rest of the output; a child that left the group and keeps it
+                // open is not waited for.
+                if killed, now >= stoppedAt.addingTimeInterval(3) { break }
+            } else {
+                let wasInterrupted = interrupted()
+                guard wasInterrupted || now >= deadline else { continue }
+                // A program that ended already keeps its status: only a child kept the output open.
+                ranOut = !wasInterrupted && process.isRunning
+                signalGroup(SIGTERM)
+                signalGroup(SIGCONT)
+                stoppedAt = now
+            }
+        }
+        let text = String(decoding: output.data, as: UTF8.self)
+        if ranOut { return (Self.timedOut, text) }
+        guard !process.isRunning else { return (128 + SIGKILL, text) }
+        let status = process.terminationStatus
+        return (process.terminationReason == .uncaughtSignal ? 128 + status : status, text)
+    }
+}
+
+/// What `runCaptured` has read so far, from the thread that reads it.
+private final class CapturedOutput: @unchecked Sendable {
+    private let lock = NSLock()
+    private var bytes = Data()
+
+    func append(_ chunk: ArraySlice<UInt8>) {
+        lock.lock(); defer { lock.unlock() }
+        bytes.append(contentsOf: chunk)
+    }
+
+    var data: Data {
+        lock.lock(); defer { lock.unlock() }
+        return bytes
     }
 }
 
@@ -1012,8 +1100,20 @@ extension CLI {
             return fail(ExitCode.cannotCreate, "Cannot set up \(homeShown): \(describe(error))")
         }
         let environment = profile.environment(paths.home)
-        func signedIn() -> Bool { profile.signedIn(machine.runCaptured(executable, profile.statusArguments, environment).output) }
-        if signedIn() {
+        // nil when the setup stops here: Control-C came meanwhile, or the status took too long and
+        // was stopped. Either way the setup returns, and goes back to the mode it put off.
+        func signedIn() -> Bool? {
+            let status = machine.runCaptured(executable, profile.statusArguments, environment)
+            guard status.status != AgentMachine.timedOut, !machine.interrupted() else { return nil }
+            return profile.signedIn(status.output)
+        }
+        func statusStopped() -> Int32 {
+            let seconds = Int(AgentMachine.capturedSeconds)
+            return interruption() ?? fail(ExitCode.software, "\(name)'s sign-in status gave no answer in \(seconds) s, so blackice stopped it",
+                                          "and nothing else changed. To retry: \(retry)")
+        }
+        guard let alreadySignedIn = signedIn() else { return statusStopped() }
+        if alreadySignedIn {
             done("signed in, in its own home (\(homeShown))")
         } else {
             say("Sign \(name) in for blackice, in its own home (\(homeShown)), apart from yours.")
@@ -1023,7 +1123,8 @@ extension CLI {
             while true {
                 _ = machine.runAttached(executable, profile.loginArguments, environment)
                 if let stop = interruption() { return stop }
-                if signedIn() { break }
+                guard let nowSignedIn = signedIn() else { return statusStopped() }
+                if nowSignedIn { break }
                 guard yes("\(name) is not signed in yet. Try again?", default: true) == true else {
                     if let stop = interruption() { return stop }
                     return fail(ExitCode.software, "\(name) is still not signed in, so nothing else changed. To retry: \(retry)")
@@ -1285,8 +1386,12 @@ extension CLI {
     struct ChangedMeanwhile: Error {}
 
     /// Replaces a file through a temporary file in the same folder. With `expected`, only while the
-    /// file holds exactly that, checked just before the rename.
-    static func writeAtomically(_ data: Data, to path: String, mode: mode_t, replacing expected: Data? = nil) throws {
+    /// file holds exactly that: checked and renamed while holding the lock beside it
+    /// (`lockBeside`), so that of two blackice writers that read the same text only the first
+    /// writes. Until 1.0.3 the check and the rename were apart, and both could pass the check.
+    /// An editor that takes no lock can still write between them, for the moment the rename takes.
+    static func writeAtomically(_ data: Data, to path: String, mode: mode_t, replacing expected: Data? = nil,
+                                lockSeconds: TimeInterval = 5) throws {
         let temporary = temporaryPath(for: path)
         unlink(temporary)
         let descriptor = open(temporary, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, mode)
@@ -1299,12 +1404,51 @@ extension CLI {
             guard fchmodat(AT_FDCWD, temporary, mode, 0) == 0 else {
                 throw CocoaError(.fileWriteUnknown, userInfo: [NSFilePathErrorKey: path])
             }
+            let unlock = try expected == nil ? {} : lockBeside(path, waitingUpTo: lockSeconds)
+            defer { unlock() }
             if let expected, FileManager.default.contents(atPath: path) != expected { throw ChangedMeanwhile() }
             guard rename(temporary, path) == 0 else { throw CocoaError(.fileWriteUnknown, userInfo: [NSFilePathErrorKey: path]) }
         } catch {
             unlink(temporary)
             throw error
         }
+    }
+
+    /// Takes an exclusive flock(2) on the lock file beside `path` (`lockPath(for:)`), and returns
+    /// the function that lets it go. Another blackice writer holds it only to compare and rename;
+    /// one that holds it longer than `seconds` is taken as changing the file: `ChangedMeanwhile`.
+    /// The lock file is never removed: a writer that opened it before the removal would hold a lock
+    /// that the next writer, opening a new file, does not see.
+    static func lockBeside(_ path: String, waitingUpTo seconds: TimeInterval) throws -> () -> Void {
+        let lockPath = lockPath(for: path)
+        // Read only, and readable by all: flock needs no more, and a lock file left by a run under
+        // sudo still opens for the owner.
+        let descriptor = open(lockPath, O_RDONLY | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0o644)
+        guard descriptor >= 0 else {
+            throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno), userInfo: [NSFilePathErrorKey: lockPath])
+        }
+        let deadline = Date().addingTimeInterval(seconds)
+        while flock(descriptor, LOCK_EX | LOCK_NB) != 0 {
+            let code = errno
+            // A file system without flock: the check alone, as before 1.0.3.
+            if code == ENOTSUP || code == EOPNOTSUPP { return { close(descriptor) } }
+            guard code == EWOULDBLOCK || code == EINTR else {
+                close(descriptor)
+                throw NSError(domain: NSPOSIXErrorDomain, code: Int(code), userInfo: [NSFilePathErrorKey: lockPath])
+            }
+            guard Date() < deadline else { close(descriptor); throw ChangedMeanwhile() }
+            usleep(10_000)
+        }
+        // Closing the descriptor lets the lock go.
+        return { close(descriptor) }
+    }
+
+    /// The lock file beside `path`, as `temporaryPath(for:)` names the temporary one, without the
+    /// process ID: every writer of that file locks the same one.
+    static func lockPath(for path: String) -> String {
+        let folder = (path as NSString).deletingLastPathComponent
+        let name = ".\((path as NSString).lastPathComponent).lock"
+        return folder.isEmpty ? name : (folder as NSString).appendingPathComponent(name)
     }
 
     /// The temporary file beside `path`: in its folder, or in the current one for a bare file
