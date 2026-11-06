@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+Fixed:
+- `blackice start` keeps a mode or answerer switched with `blackice mode` or the menu only while the file is the one
+  started then, unchanged. Until now it compared only the file's `mode` line, so starting another file, or the same
+  file with a rule more, in the same mode kept the switch: after a test file was switched to accept-all, the owner's
+  own ask-mode file started in accept-all.
+
 ## 0.4.6 (6 November 2026)
 
 `blackice start` opens blackice in the menu bar, and the site and docs are a third as long.

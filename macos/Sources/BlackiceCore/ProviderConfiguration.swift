@@ -36,16 +36,18 @@ public struct ProviderConfiguration: Equatable, Sendable {
     /// A first configuration, or the next one after `previous`, in the file's own mode.
     ///
     /// With `keepingSwitches` (`blackice start`), a mode or an answerer switched with `blackice mode`
-    /// or the menu since the last start stays, as long as the file still has what it had then:
-    /// a change in the file wins over the switch. The mode: `with(mode:)` leaves the text's `mode`
-    /// line as the file had it, so the previous text's mode is the file's at the last start. Who
-    /// answers: from the comment `BlackiceConfig.switchingAnswers` leaves (`answersSwitched(from:)`).
-    /// An answerer whose hook is gone from the file gives way to the file's.
+    /// or the menu since the last start stays, as long as the file is the one started then and has
+    /// not changed (`isStarted(from:)`): any change in the file, or another file, wins over the
+    /// switch. Until 0.4.6 only the file's `mode` line was compared, so a test file in ask mode
+    /// switched to accept-all left the owner's own ask-mode file in accept-all. The mode:
+    /// `with(mode:)` leaves the text's `mode` line as the file had it. Who answers: from the comment
+    /// `BlackiceConfig.switchingAnswers` leaves (`answersSwitched(from:)`). An answerer whose hook is
+    /// gone from the file gives way to the file's.
     public static func starting(configText: String, after previous: ProviderConfiguration?,
                                 keepingSwitches: Bool = false) throws -> ProviderConfiguration {
         let config = try BlackiceConfig(text: configText)
         let generation = try nextGeneration(after: previous)
-        guard keepingSwitches, let previous else {
+        guard keepingSwitches, let previous, previous.isStarted(from: configText) else {
             return try ProviderConfiguration(generation: generation, mode: config.mode, configText: configText)
         }
         let mode = config.mode == previous.config.mode ? previous.mode : config.mode
@@ -56,6 +58,15 @@ public struct ProviderConfiguration: Equatable, Sendable {
             text = kept
         }
         return try ProviderConfiguration(generation: generation, mode: mode, configText: text)
+    }
+
+    /// Whether this configuration was started from `fileText` as it is now: the same text, or the
+    /// same apart from the `answers` line a switch set (with its comment, or as 0.4.2 wrote it).
+    public func isStarted(from fileText: String) -> Bool {
+        if configText == fileText { return true }
+        guard let running = config.answers else { return false }
+        return (try? BlackiceConfig.switchingAnswers(running, in: fileText)) == configText
+            || (try? BlackiceConfig.settingAnswers(running, in: fileText)) == configText
     }
 
     /// What the file had for `answers` when this text was switched to another answerer, or nil

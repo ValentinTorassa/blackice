@@ -12,7 +12,7 @@ public struct SystemOutput {
     public let next: Bool
     /// Start loads the file as written, mode and `answers` included. Otherwise (`blackice start`) a
     /// mode or an answerer switched with `blackice mode` or the menu since the last start stays
-    /// while the file has what it had then (`ProviderConfiguration.starting`). `agent connect` and
+    /// while the file is the one started then, unchanged (`ProviderConfiguration.starting`). `agent connect` and
     /// the first start, right after the questions, load the file as written.
     public let asWritten: Bool
 
