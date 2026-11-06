@@ -29,12 +29,12 @@ Homebrew loads a cask from another tap only after `brew trust`. It checks the zi
 
 ## By hand
 
-Download `Blackice-0.4.6.zip` and `Blackice-0.4.6.zip.sha256` from the [GitHub release](https://github.com/ValentinTorassa/blackice/releases/tag/v0.4.6). In that folder:
+Download `Blackice-0.4.7.zip` and `Blackice-0.4.7.zip.sha256` from the [GitHub release](https://github.com/ValentinTorassa/blackice/releases/tag/v0.4.7). In that folder:
 
 ```console
-$ shasum -a 256 -c Blackice-0.4.6.zip.sha256
-Blackice-0.4.6.zip: OK
-$ ditto -x -k Blackice-0.4.6.zip .
+$ shasum -a 256 -c Blackice-0.4.7.zip.sha256
+Blackice-0.4.7.zip: OK
+$ ditto -x -k Blackice-0.4.7.zip .
 $ codesign --verify --strict --deep --verbose=2 Blackice.app
 $ codesign -dvv Blackice.app 2>&1 | grep -E '^(Identifier|TeamIdentifier)='
 Identifier=com.valentorassa.blackice

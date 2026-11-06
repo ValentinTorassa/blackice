@@ -1,6 +1,9 @@
 # Changelog
 
-## Unreleased
+## 0.4.7 (6 November 2026)
+
+`blackice start` loads the file's mode again after a test file, and the agents let developer tools reach developer
+infrastructure.
 
 Changed:
 - The agents' instructions say when to approve a developer tool. `node`, `python3`, `curl`, `git` and the
@@ -14,6 +17,9 @@ Fixed:
   started then, unchanged. Until now it compared only the file's `mode` line, so starting another file, or the same
   file with a rule more, in the same mode kept the switch: after a test file was switched to accept-all, the owner's
   own ask-mode file started in accept-all.
+
+Upgrading from 0.4.6: `brew upgrade --cask blackice` or the install script with `--force`, then `blackice start`.
+Nothing else changes.
 
 ## 0.4.6 (6 November 2026)
 
