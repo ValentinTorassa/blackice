@@ -492,11 +492,11 @@ struct RecentDecisionsTests {
 private final class FakeMenuBar: MenuBarControlling {
     var canOffer: Bool
     var calls: [String] = []
-    var reopens = 0
+    var opens = 0
 
     init(canOffer: Bool) { self.canOffer = canOffer }
 
-    func reopenIfOutdated(output: SystemOutput) { reopens += 1 }
+    func openAfterStart(output: SystemOutput) { opens += 1 }
 
     func run(output: SystemOutput) -> Int32 { calls.append("run"); return 0 }
 
@@ -560,7 +560,7 @@ struct MenuCommandTests {
         }
         let yes = firstStart(["", "y"], canOffer: true)
         #expect(yes.status == 0 && yes.calls == ["login true"])
-        #expect(yes.prompts == ["  Mode [1]: ", "Show blackice in the menu bar and open it at login? [Y/n]: "])
+        #expect(yes.prompts == ["  Mode [1]: ", "Open blackice in the menu bar at each login? [Y/n]: "])
         #expect(yes.stdout.last == "✓ blackice opens in the menu bar at each login.")
         let enter = firstStart(["", "maybe", ""], canOffer: true)
         #expect(enter.calls == ["login true"] && enter.stdout.contains("  Type y or n."))
@@ -570,9 +570,9 @@ struct MenuCommandTests {
         #expect(cannot.calls.isEmpty && cannot.prompts == ["  Mode [1]: "])
     }
 
-    /// Every start that turns the filter on gives a menu bar app from before an upgrade its turn
-    /// to be opened again; one that fails does not.
-    @Test func startReopensAnOutdatedMenu() throws {
+    /// Every start that turns the filter on opens the menu bar app, or gives one from before an
+    /// upgrade its turn to be opened again; one that fails does not.
+    @Test func startOpensTheMenu() throws {
         let home = try makePrivateDirectory()
         defer { removeTree(home) }
         let config = home.appendingPathComponent("blackice.toml").path
@@ -582,11 +582,11 @@ struct MenuCommandTests {
         let menuBar = FakeMenuBar(canOffer: false)
         #expect(CLI.run(["start", "--config", config], stdout: { _ in }, stderr: { _ in }, system: StartOnly(),
                         interaction: interaction, menuBar: menuBar) == 0)
-        #expect(menuBar.reopens == 1 && menuBar.calls.isEmpty)
+        #expect(menuBar.opens == 1 && menuBar.calls.isEmpty)
         let refused = FakeMenuBar(canOffer: false)
         #expect(CLI.run(["start", "--config", config], stdout: { _ in }, stderr: { _ in }, system: FailingStart(),
                         interaction: interaction, menuBar: refused) == ExitCode.noPermission)
-        #expect(refused.reopens == 0)
+        #expect(refused.opens == 0)
     }
 }
 

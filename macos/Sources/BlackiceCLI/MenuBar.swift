@@ -7,15 +7,15 @@ public protocol MenuBarControlling {
     func run(output: SystemOutput) -> Int32
     /// Turns Open at Login on and opens the menu bar app now, or turns Open at Login off.
     func setOpenAtLogin(_ on: Bool, output: SystemOutput) -> Int32
-    /// Whether the first start asks about the menu bar: the app can open at login and does not yet.
+    /// Whether the first start asks about opening at login: the app can, and does not yet.
     var canOffer: Bool { get }
-    /// After `blackice start`: a menu bar app running another build (one from before an upgrade)
-    /// is closed and opened again from this one.
-    func reopenIfOutdated(output: SystemOutput)
+    /// After `blackice start` turns the filter on: opens the menu bar app when it is not running,
+    /// and closes one running another build (from before an upgrade) and opens this one's.
+    func openAfterStart(output: SystemOutput)
 }
 
 extension MenuBarControlling {
-    public func reopenIfOutdated(output: SystemOutput) {}
+    public func openAfterStart(output: SystemOutput) {}
 }
 
 /// No menu bar app.
@@ -33,14 +33,14 @@ public struct NoMenuBar: MenuBarControlling {
 }
 
 extension CLI {
-    /// At the end of the first start: the menu bar app, opened at each login, if the person wants it.
+    /// At the end of the first start: the menu bar app opened at each login, if the person wants it.
     /// What it prints on failure is its own; the filter is on either way.
     static func offerMenuBar(_ menuBar: MenuBarControlling, interaction: Interaction,
                              stdout: @escaping (String) -> Void, stderr: @escaping (String) -> Void) {
         guard menuBar.canOffer, let ask = interaction.ask else { return }
         stdout("")
         while true {
-            guard let line = ask("Show blackice in the menu bar and open it at login? [Y/n]: ") else { return }
+            guard let line = ask("Open blackice in the menu bar at each login? [Y/n]: ") else { return }
             let answer = line.trimmingCharacters(in: .whitespaces).lowercased()
             if ["n", "no"].contains(answer) {
                 stdout("  Later, with: " + Style.command("blackice menu --login on"))

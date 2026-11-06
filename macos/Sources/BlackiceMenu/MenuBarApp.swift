@@ -21,13 +21,19 @@ public struct MenuBar: MenuBarControlling {
 
     public var canOffer: Bool { LoginItem.state == .off }
 
-    /// A menu bar app from another build holds the lock: SIGTERM ends it (it has nothing to save,
-    /// and the filter goes on), then LaunchServices opens this build's. Menus from 0.4.1 on also do
-    /// this themselves; one from 0.4.0 cannot tell that the app under it changed.
-    public func reopenIfOutdated(output: SystemOutput) {
-        guard LoginItem.unavailableReason == nil, let url = try? MenuInstanceLock.defaultURL(),
-              MenuInstanceLock.isHeld(url: url),
-              MenuUpgrade.outdated(recorded: MenuInstanceLock.recordedBuild(url: url),
+    /// With no menu bar app running, LaunchServices opens this build's. When one from another build
+    /// holds the lock, SIGTERM ends it (it has nothing to save, and the filter goes on) and this
+    /// build's opens. Menus from 0.4.1 on also do this themselves; one from 0.4.0 cannot tell that
+    /// the app under it changed.
+    public func openAfterStart(output: SystemOutput) {
+        guard LoginItem.unavailableReason == nil, let url = try? MenuInstanceLock.defaultURL() else { return }
+        guard MenuInstanceLock.isHeld(url: url) else {
+            if case .failed(let why) = MenuApp.openNow() {
+                output.stderr("blackice did not open in the menu bar (\(why)). Open Blackice.app to start it.")
+            }
+            return
+        }
+        guard MenuUpgrade.outdated(recorded: MenuInstanceLock.recordedBuild(url: url),
                                    own: Bundle.main.infoDictionary?["CFBundleVersion"] as? String) else { return }
         let menus = NSRunningApplication.runningApplications(withBundleIdentifier: BlackiceIdentifiers.host)
             .filter { $0.processIdentifier != getpid() && $0.activationPolicy == .accessory }
