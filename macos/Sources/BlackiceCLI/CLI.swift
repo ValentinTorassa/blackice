@@ -71,12 +71,24 @@ public enum AgentAction: String, Equatable, Sendable {
 public struct Approval: Equatable, Sendable {
     /// `--app/--team` (no team means Apple platform code), or `--cdhash` for ad hoc code.
     public let identity: AppIdentity
-    public let host: String
+    /// One or more `--host`, in the order given, each once.
+    public let hosts: [String]
     public let seconds: Int
 
-    /// A person's answer: the command asks for Touch ID. Hooks answer on their stdout instead.
-    public var request: AnswerRequest {
-        AnswerRequest(kind: .approve, app: identity, host: host, seconds: seconds, token: nil)
+    public init(identity: AppIdentity, hosts: [String], seconds: Int) {
+        self.identity = identity
+        self.hosts = hosts
+        self.seconds = seconds
+    }
+
+    public init(identity: AppIdentity, host: String, seconds: Int) {
+        self.init(identity: identity, hosts: [host], seconds: seconds)
+    }
+
+    /// A person's answer, one per host; the command asks for Touch ID once for all of them. Hooks
+    /// answer on their stdout instead.
+    public var requests: [AnswerRequest] {
+        hosts.map { AnswerRequest(kind: .approve, app: identity, host: $0, seconds: seconds, token: nil) }
     }
 }
 
@@ -98,6 +110,8 @@ public struct UsageError: Error, Equatable, CustomStringConvertible, Sendable {
 public enum CLI {
     public static let defaultApprovalSeconds = 3600
     public static let maximumApprovalSeconds = ApprovalTable.maximumSeconds
+    /// `--host` options one `blackice approve` takes, so the Touch ID dialog can name them all.
+    public static let maximumApprovalHosts = 16
     public static let defaultReportMinutes = 60
     /// A week: about as far back as unified logging keeps the filter's lines on a busy Mac.
     public static let maximumReportMinutes = 7 * 24 * 60
@@ -111,7 +125,7 @@ public enum CLI {
       status               what blackice is doing
       mode MODE            accept-all, ask or block-all (Touch ID)
       pending              what waits for an answer, and the approvals
-      approve, deny        answer for one app and host (Touch ID)
+      approve, deny        answer for one app and its hosts (Touch ID)
       report               what the filter dropped in the last hour
       agent connect NAME   let fx, claude-code, codex or opencode answer
       menu                 show blackice in the menu bar
@@ -137,14 +151,16 @@ public enum CLI {
                  "  block-all      only what your rules allow goes through",
                  "  --agent NAME   who answers: fx, claude-code, codex, opencode or you"],
         "pending": ["Usage: blackice pending", "",
-                    "The connections waiting for an answer, with the command that approves each,",
-                    "then the approvals and the recent denials."],
-        "approve": ["Usage: blackice approve --app ID [--team TEAM] --host HOST [--for 1h]", "",
-                    "Lets one app reach one host for a while, and lets its waiting connections",
-                    "through (Touch ID). blackice pending prints the command for each.",
+                    "The connections waiting for an answer, and the apps and hosts denied a moment",
+                    "ago, whose connections are dropped without asking, each with the command that",
+                    "approves it; then the approvals."],
+        "approve": ["Usage: blackice approve --app ID [--team TEAM] --host HOST… [--for 1h]", "",
+                    "Lets one app reach one or more hosts for a while, and lets its waiting",
+                    "connections through, with one Touch ID. blackice pending prints the command.",
                     "  --app ID       its signing identifier, with --team TEAM unless Apple signed it",
                     "  --cdhash HEX   in place of --app, for ad hoc signed code",
-                    "  --host HOST    a host name, or an IP address for connections with no name",
+                    "  --host HOST    a host name, or an IP address for connections with no name;",
+                    "                 repeat it for up to 16 hosts",
                     "  --for 1h       30s, 10m or 1h; at most 24h"],
         "deny": ["Usage: blackice deny --app ID [--team TEAM] --host HOST", "",
                  "Refuses one app one host, and drops its waiting connections (Touch ID).",
@@ -255,8 +271,21 @@ public enum CLI {
             return .report(minutes: minutes)
         case "approve":
             try noToken(rest, command: first)
-            let options = try parseOptions(rest, allowed: ["app", "team", "cdhash", "host", "for"], command: first)
-            let target = try target(options, command: first)
+            let repeated = try parseOptions(rest, allowed: ["app", "team", "cdhash", "host", "for"], repeatable: ["host"],
+                                            command: first)
+            let options = repeated.compactMapValues(\.first)
+            let app = try identity(options, command: first)
+            let raws = repeated["host"] ?? []
+            guard !raws.isEmpty else { throw UsageError("\(first) needs --host") }
+            guard raws.count <= maximumApprovalHosts else {
+                throw UsageError("\(first): at most \(maximumApprovalHosts) --host at once")
+            }
+            var hosts: [String] = []
+            for raw in raws {
+                let normalized = try host(raw, command: first)
+                guard !hosts.contains(normalized) else { throw UsageError("\(first): --host \(normalized) given twice") }
+                hosts.append(normalized)
+            }
             var seconds = defaultApprovalSeconds
             if let text = options["for"] {
                 guard let parsed = parseDuration(text) else {
@@ -264,7 +293,7 @@ public enum CLI {
                 }
                 seconds = parsed
             }
-            return .approve(Approval(identity: target.identity, host: target.host, seconds: seconds))
+            return .approve(Approval(identity: app, hosts: hosts, seconds: seconds))
         case "deny":
             try noToken(rest, command: first)
             let options = try parseOptions(rest, allowed: ["app", "team", "cdhash", "host"], command: first)
@@ -405,7 +434,7 @@ public enum CLI {
         case .pending:
             return system.pending(output: SystemOutput(stdout: stdout, stderr: stderr))
         case .approve(let approval):
-            return system.answer(approval.request, output: SystemOutput(stdout: stdout, stderr: stderr))
+            return system.answer(all: approval.requests, output: SystemOutput(stdout: stdout, stderr: stderr))
         case .deny(let denial):
             return system.answer(denial.request, output: SystemOutput(stdout: stdout, stderr: stderr))
         case .report(let minutes):
@@ -533,9 +562,7 @@ public enum CLI {
     public static func pendingLines(_ reply: PendingReply) -> [String] {
         if reply.events.isEmpty, reply.approvals.isEmpty, reply.denials.isEmpty { return ["Nothing waiting, and no approvals."] }
         var lines: [String] = []
-        if reply.events.isEmpty {
-            lines.append("Nothing waiting.")
-        } else {
+        if !reply.events.isEmpty {
             lines.append(Style.heading("Waiting"))
             for event in reply.events {
                 let identity = event.app.identity
@@ -547,29 +574,70 @@ public enum CLI {
                 if case .signed? = identity {} else if let path = event.path { lines.append("    " + Describe.terminalSafe(path)) }
                 if let identity { lines.append("    " + Style.command(approveCommand(identity, host: event.host))) }
             }
+        } else if reply.denials.isEmpty {
+            lines.append("Nothing waiting.")
         }
-        for (heading, entries) in [("Approvals", reply.approvals), ("Denied, dropped without asking", reply.denials)]
-            where !entries.isEmpty {
-            lines += ["", Style.heading(heading)]
-            let names = entries.map { $0.app.identity?.name ?? "unknown app" }
-            let nameWidth = min(names.map(\.count).max() ?? 0, 40)
-            let hostWidth = min(entries.map(\.host.count).max() ?? 0, 40)
-            for (name, entry) in zip(names, entries) {
-                lines.append("  " + name.padding(toLength: max(name.count, nameWidth), withPad: " ", startingAt: 0) + " → " +
-                             entry.host.padding(toLength: max(entry.host.count, hostWidth), withPad: " ", startingAt: 0) +
-                             "  " + Describe.left(entry.secondsLeft))
+        // An app's connections to a host denied a moment ago are dropped with no event, so nothing
+        // shows as waiting while it fails. They come next, each app's hosts together and then the
+        // command that approves them all.
+        if !reply.denials.isEmpty {
+            if !lines.isEmpty { lines.append("") }
+            lines.append(Style.heading("Denied, dropped without asking"))
+            let format = columns(reply.denials)
+            for group in byApp(reply.denials) {
+                lines += group.map(format)
+                guard let identity = group[0].app.identity else { continue }
+                for start in stride(from: 0, to: group.count, by: maximumApprovalHosts) {
+                    let hosts = group[start..<min(start + maximumApprovalHosts, group.count)].map(\.host)
+                    lines.append("    " + Style.command(approveCommand(identity, hosts: hosts)))
+                }
             }
+        }
+        if !reply.approvals.isEmpty {
+            lines += ["", Style.heading("Approvals")]
+            lines += reply.approvals.map(columns(reply.approvals))
         }
         return lines
     }
 
+    /// Rows of app → host and the time left, in columns as wide as the longest app and host.
+    private static func columns(_ entries: [ApprovalSummary]) -> (ApprovalSummary) -> String {
+        let nameWidth = min(entries.map { name($0).count }.max() ?? 0, 40)
+        let hostWidth = min(entries.map(\.host.count).max() ?? 0, 40)
+        return { entry in
+            let label = name(entry)
+            return "  " + label.padding(toLength: max(label.count, nameWidth), withPad: " ", startingAt: 0) + " → " +
+                entry.host.padding(toLength: max(entry.host.count, hostWidth), withPad: " ", startingAt: 0) +
+                "  " + Describe.left(entry.secondsLeft)
+        }
+    }
+
+    private static func name(_ entry: ApprovalSummary) -> String { entry.app.identity?.name ?? "unknown app" }
+
+    /// The entries of each app together, apps in the order they first appear.
+    private static func byApp(_ entries: [ApprovalSummary]) -> [[ApprovalSummary]] {
+        var groups: [[ApprovalSummary]] = []
+        var index: [String: Int] = [:]
+        for entry in entries {
+            let key = entry.app.identity?.label ?? ""
+            if let at = index[key] { groups[at].append(entry) } else { index[key] = groups.count; groups.append([entry]) }
+        }
+        return groups
+    }
+
     /// The `blackice approve` line for an app and host, as `pending` shows it.
     static func approveCommand(_ identity: AppIdentity, host: String) -> String {
+        approveCommand(identity, hosts: [host])
+    }
+
+    /// The `blackice approve` line for an app and its hosts, one `--host` each.
+    static func approveCommand(_ identity: AppIdentity, hosts: [String]) -> String {
+        let hostOptions = hosts.map { " --host \($0)" }.joined()
         switch identity {
         case .signed(let signed):
-            return "blackice approve --app \(signed.signingID)" + (signed.teamID.map { " --team \($0)" } ?? "") + " --host \(host)"
+            return "blackice approve --app \(signed.signingID)" + (signed.teamID.map { " --team \($0)" } ?? "") + hostOptions
         case .cdhash(let hash):
-            return "blackice approve --cdhash \(hash) --host \(host)"
+            return "blackice approve --cdhash \(hash)" + hostOptions
         }
     }
 
@@ -618,7 +686,14 @@ public enum CLI {
 
     /// --name value or --name=value, each at most once.
     private static func parseOptions(_ arguments: [String], allowed: Set<String>, command: String) throws -> [String: String] {
-        var options: [String: String] = [:]
+        try parseOptions(arguments, allowed: allowed, repeatable: [], command: command).compactMapValues(\.first)
+    }
+
+    /// --name value or --name=value, each at most once unless `repeatable` names it; the values of
+    /// each in the order given.
+    private static func parseOptions(_ arguments: [String], allowed: Set<String>, repeatable: Set<String>,
+                                     command: String) throws -> [String: [String]] {
+        var options: [String: [String]] = [:]
         var index = 0
         while index < arguments.count {
             let argument = arguments[index]
@@ -640,9 +715,9 @@ public enum CLI {
                 index += 1
                 value = arguments[index]
             }
-            guard options[name] == nil else { throw UsageError("\(command): --\(name) given twice") }
+            guard options[name] == nil || repeatable.contains(name) else { throw UsageError("\(command): --\(name) given twice") }
             guard !value.isEmpty else { throw UsageError("\(command): --\(name) needs a value") }
-            options[name] = value
+            options[name, default: []].append(value)
             index += 1
         }
         return options
@@ -650,6 +725,11 @@ public enum CLI {
 
     /// `--app` with an optional `--team`, or `--cdhash` alone; and `--host`.
     private static func target(_ options: [String: String], command: String) throws -> (identity: AppIdentity, host: String) {
+        (try identity(options, command: command), try host(options["host"], command: command))
+    }
+
+    /// `--app` with an optional `--team`, or `--cdhash` alone.
+    private static func identity(_ options: [String: String], command: String) throws -> AppIdentity {
         let identity: AppIdentity
         if let cdhash = options["cdhash"] {
             guard options["app"] == nil, options["team"] == nil else {
@@ -666,7 +746,12 @@ public enum CLI {
             if let team, !validTeamID(team) { throw UsageError("\(command): --team takes a Team ID, 10 capital letters or digits") }
             identity = .signed(SigningIdentity(signingID: app, teamID: team))
         }
-        guard let rawHost = options["host"] else { throw UsageError("\(command) needs --host") }
+        return identity
+    }
+
+    /// One `--host`: a host name or an IP address, normalized.
+    private static func host(_ rawHost: String?, command: String) throws -> String {
+        guard let rawHost else { throw UsageError("\(command) needs --host") }
         // An address covers connections to it that have no name, as `pending` shows them.
         if let address = IPAddress.strict(rawHost), !address.isCheckable {
             throw UsageError("\(command): --host needs a link-local address's interface, such as fe80::1%en0")
@@ -674,7 +759,7 @@ public enum CLI {
         guard let host = normalizeDestination(rawHost) else {
             throw UsageError("\(command): --host takes one host name or IP address, with no wildcards, ranges or leading zeros")
         }
-        return (identity, host)
+        return host
     }
 
     /// `--token` went in 0.4.0: hooks answer on their stdout, and the daemon answers for them.

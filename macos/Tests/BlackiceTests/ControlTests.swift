@@ -13,10 +13,15 @@ struct ControlTests {
             == "switch to ask mode, with Claude Code answering")
         #expect(ControlAction.answering(.you, mode: .ask, generation: 5).reason == "switch to ask mode, with you answering")
         let tool = AppIdentity.signed(SigningIdentity(signingID: "com.example.tool", teamID: "ABCDE12345"))
-        #expect(ControlAction.approve(tool, host: "example.com", seconds: 3600).reason
+        #expect(ControlAction.approve(tool, hosts: ["example.com"], seconds: 3600).reason
             == "let ABCDE12345/com.example.tool reach example.com for 1 h")
+        // One Touch ID for several hosts: the dialog names each.
+        #expect(ControlAction.approve(tool, hosts: ["a.example.com", "b.example.com"], seconds: 3600).reason
+            == "let ABCDE12345/com.example.tool reach a.example.com and b.example.com for 1 h")
+        #expect(ControlAction.approve(tool, hosts: ["a.example.com", "b.example.com", "100.66.32.75"], seconds: 3600).reason
+            == "let ABCDE12345/com.example.tool reach a.example.com, b.example.com and 100.66.32.75 for 1 h")
         let build = AppIdentity.cdhash(String(repeating: "0f", count: 20))
-        #expect(ControlAction.approve(build, host: "example.com", seconds: 600).reason
+        #expect(ControlAction.approve(build, hosts: ["example.com"], seconds: 600).reason
             == "let cdhash/\(String(repeating: "0f", count: 20)) reach example.com for 10 min")
         #expect(ControlAction.deny(tool, host: "example.com").reason
             == "deny ABCDE12345/com.example.tool access to example.com and drop its waiting connections")

@@ -100,7 +100,7 @@ struct ParseTests {
         // A person's answer always: the request carries no token.
         for command in [approval, apple, denial] {
             switch command {
-            case .approve(let parsed): #expect(parsed.request.authorization == .touchID && parsed.request.token == nil)
+            case .approve(let parsed): #expect(parsed.requests.allSatisfy { $0.authorization == .touchID && $0.token == nil })
             case .deny(let parsed): #expect(parsed.request.authorization == .touchID && parsed.request.token == nil)
             default: Issue.record("\(command)")
             }
@@ -152,10 +152,48 @@ struct ParseTests {
         #expect(approval == .approve(Approval(identity: .cdhash(testCDHash), host: "example.com", seconds: 30)))
         let denial = try CLI.parse(["deny", "--cdhash=\(testCDHash)", "--host", "example.com"])
         #expect(denial == .deny(Denial(identity: .cdhash(testCDHash), host: "example.com")))
-        if case .approve(let parsed) = approval {
-            #expect(parsed.request.app == AppReference(signingID: nil, teamID: nil, cdhash: testCDHash))
-            #expect(parsed.request.authorization == .touchID)
-            #expect(throws: Never.self) { try parsed.request.validate(now: Date()) }
+        if case .approve(let parsed) = approval, let request = parsed.requests.first {
+            #expect(parsed.requests.count == 1)
+            #expect(request.app == AppReference(signingID: nil, teamID: nil, cdhash: testCDHash))
+            #expect(request.authorization == .touchID)
+            #expect(throws: Never.self) { try request.validate(now: Date()) }
+        }
+    }
+
+    /// One command, and one Touch ID, for an app's several hosts: a CLI in an interpreter reaches a
+    /// sign-in host, an API and a mail server, and `pending` lists them together (6 November 2026).
+    @Test func approveTakesSeveralHosts() throws {
+        let parsed = try CLI.parse(["approve", "--cdhash", testCDHash, "--host", "oauth2.googleapis.com",
+                                    "--host=Login.MicrosoftOnline.com.", "--for", "10m", "--host", "100.66.32.75"])
+        let hosts = ["oauth2.googleapis.com", "login.microsoftonline.com", "100.66.32.75"]
+        #expect(parsed == .approve(Approval(identity: .cdhash(testCDHash), hosts: hosts, seconds: 600)))
+        guard case .approve(let approval) = parsed else { Issue.record("\(parsed)"); return }
+        #expect(approval.requests.map(\.host) == hosts)
+        #expect(approval.requests.allSatisfy {
+            $0.kind == .approve && $0.identity == .cdhash(testCDHash) && $0.seconds == 600 && $0.authorization == .touchID &&
+                $0.token == nil && (try? $0.validate(now: Date())) != nil
+        })
+
+        let sixteen = (1...16).flatMap { ["--host", "h\($0).example.com"] }
+        if case .approve(let most) = try CLI.parse(["approve", "--app", "com.a"] + sixteen) {
+            #expect(most.hosts.count == CLI.maximumApprovalHosts && most.hosts.last == "h16.example.com")
+        } else {
+            Issue.record("sixteen hosts did not parse as an approval")
+        }
+        let cases: [([String], String)] = [
+            (["approve", "--app", "com.a"] + sixteen + ["--host", "h17.example.com"], "approve: at most 16 --host at once"),
+            (["approve", "--app", "com.a", "--host", "example.com", "--host", "EXAMPLE.com."], "approve: --host example.com given twice"),
+            (["approve", "--app", "com.a", "--host", "example.com", "--host", "*.example.com"], "with no wildcards"),
+            (["approve", "--app", "com.a", "--host", "example.com", "--host"], "approve: --host needs a value"),
+            (["approve", "--app", "com.a", "--host", "a.example.com", "--host=", "--for", "1h"], "approve: --host needs a value"),
+            (["approve", "--app", "com.a", "--host", "example.com", "--for", "1h", "--for", "2h"], "approve: --for given twice"),
+            (["approve", "--app", "com.a", "--for", "1h"], "approve needs --host"),
+            // deny still names one host.
+            (["deny", "--app", "com.a", "--host", "a.example.com", "--host", "b.example.com"], "deny: --host given twice"),
+        ]
+        for (arguments, fragment) in cases {
+            let message = usageError(arguments)
+            #expect(message?.contains(fragment) == true, "\(arguments): \(message ?? "parsed")")
         }
     }
 
@@ -330,8 +368,20 @@ struct RunTests {
         #expect(system.calls.count == 3)
     }
 
+    @Test func severalHostsReachTheSystemAsOneAnswerEach() {
+        let system = FakeSystem()
+        let arguments = ["approve", "--app", "com.a", "--host", "a.example.com", "--host", "b.example.com", "--for", "5m"]
+        #expect(run(arguments, system: system).status == 0)
+        #expect(system.calls == ["approve apple/com.a a.example.com 300 touch_id", "approve apple/com.a b.example.com 300 touch_id"])
+        // Without NESystemControl's single Touch ID, the first answer that does not go through stops the rest.
+        let refusing = FakeSystem(status: ExitCode.noPermission)
+        #expect(run(arguments, system: refusing).status == 77)
+        #expect(refusing.calls == ["approve apple/com.a a.example.com 300 touch_id"])
+    }
+
     @Test func askCommandsNeedTheSignedApp() {
         let commands: [[String]] = [["pending"], ["approve", "--app", "com.a", "--host", "example.com"],
+                                    ["approve", "--app", "com.a", "--host", "a.example.com", "--host", "b.example.com"],
                                     ["deny", "--cdhash", testCDHash, "--host", "example.com"]]
         for arguments in commands {
             let result = run(arguments)
@@ -386,11 +436,11 @@ struct RunTests {
                                                             host: "registry.example.com", secondsLeft: 540),
                                             ApprovalSummary(app: ssh, host: "100.66.32.75", secondsLeft: 12)])
         #expect(CLI.pendingLines(denied) == [
-            "Nothing waiting.",
-            "",
             "Denied, dropped without asking",
             "  \(adHoc) → registry.example.com  9m",
+            "    blackice approve --cdhash \(testCDHash) --host registry.example.com",
             "  com.apple.ssh   → 100.66.32.75          12s",
+            "    blackice approve --app com.apple.ssh --host 100.66.32.75",
         ])
 
         // Ad hoc code is known by its path, which is wherever it runs from and may hold an escape sequence.
@@ -398,6 +448,60 @@ struct RunTests {
                                                        path: "/tmp/x\u{9B}2J\u{202E}y", host: "example.com", ip: "203.0.113.7",
                                                        port: 443, secondsLeft: 8, connections: 1)], approvals: [])
         #expect(CLI.pendingLines(odd)[2] == "    /tmp/x\\u{9b}2J\\u{202e}y")
+    }
+
+    /// A remembered denial drops the app's connections with no event, so "Nothing waiting" led a
+    /// person to think there was nothing to approve while a CLI kept failing (6 November 2026).
+    /// The denials come first, each app's hosts together with one command that approves them all.
+    @Test func pendingPutsDenialsFirstWithOneCommandPerApp() {
+        let python = AppReference(signingID: nil, teamID: nil, cdhash: testCDHash)
+        let ssh = AppReference(signingID: "com.apple.ssh", teamID: nil, cdhash: nil)
+        let adHoc = "cdhash " + testCDHash.prefix(8)
+        let reply = PendingReply(
+            events: [], approvals: [ApprovalSummary(app: ssh, host: "100.66.32.76", secondsLeft: 3599)],
+            denials: [ApprovalSummary(app: python, host: "oauth2.googleapis.com", secondsLeft: 540),
+                      ApprovalSummary(app: ssh, host: "100.66.32.75", secondsLeft: 300),
+                      ApprovalSummary(app: python, host: "login.microsoftonline.com", secondsLeft: 600)])
+        #expect(CLI.pendingLines(reply) == [
+            "Denied, dropped without asking",
+            "  \(adHoc) → oauth2.googleapis.com      9m",
+            "  \(adHoc) → login.microsoftonline.com  10m",
+            "    blackice approve --cdhash \(testCDHash) --host oauth2.googleapis.com --host login.microsoftonline.com",
+            "  com.apple.ssh   → 100.66.32.75               5m",
+            "    blackice approve --app com.apple.ssh --host 100.66.32.75",
+            "",
+            "Approvals",
+            "  com.apple.ssh → 100.66.32.76  59m",
+        ])
+
+        // With something waiting too, the waiting events come first.
+        let tool = AppReference(signingID: "com.apple.curl", teamID: nil, cdhash: nil)
+        let both = PendingReply(
+            events: [PendingSummary(id: "ev-0000002a", app: tool, path: nil, host: "example.com", ip: "203.0.113.7",
+                                    port: 443, secondsLeft: 8, connections: 1)],
+            approvals: [], denials: [ApprovalSummary(app: ssh, host: "100.66.32.75", secondsLeft: 300)])
+        #expect(CLI.pendingLines(both) == [
+            "Waiting",
+            "  com.apple.curl → example.com:443  1 connection, 8s left",
+            "    blackice approve --app com.apple.curl --host example.com",
+            "",
+            "Denied, dropped without asking",
+            "  com.apple.ssh → 100.66.32.75  5m",
+            "    blackice approve --app com.apple.ssh --host 100.66.32.75",
+        ])
+
+        // More hosts than one approve takes: one command per 16, and each parses.
+        let many = PendingReply(events: [], approvals: [],
+                                denials: (1...17).map { ApprovalSummary(app: python, host: "h\($0).example.com", secondsLeft: 60) })
+        let commands = CLI.pendingLines(many).filter { $0.hasPrefix("    blackice approve") }
+        #expect(commands.count == 2)
+        let parsed = commands.compactMap { line -> Approval? in
+            guard case .approve(let approval)? = try? CLI.parse(Array(line.split(separator: " ").dropFirst().map(String.init))) else {
+                return nil
+            }
+            return approval
+        }
+        #expect(parsed.map(\.hosts.count) == [16, 1])
     }
 
     @Test func anEventWithNoConnectionLeftIsValidAndSaysSo() throws {

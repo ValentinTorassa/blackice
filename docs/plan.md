@@ -427,6 +427,16 @@ and each run on a Mac is recorded in [`evidence/`](../evidence/).
   dropped as `denied;remembered` with no new event, and an approval replaced the denial (P5-10). What remains: no answer in time is not
   remembered, on purpose, so a broken or slow agent still costs one question per deadline, and a pair is asked
   about again 10 minutes after its deny.
+- **Developer tools in an interpreter.** A CLI in Python or Node connects as its interpreter. On the Mac on 6
+  November 2026, a mail CLI installed with uv connected as uv's ad hoc `python3.14`; the agent saw only that
+  interpreter and the hosts (Google and Microsoft sign-in, IMAP on 993), and its instructions deny an interpreter
+  reaching anything but developer infrastructure unless the owner's notes say otherwise. It denied all seven, each
+  remembered for 10 minutes, and no rule can name ad hoc code. `approve` now takes several `--host` under one Touch
+  ID, and `pending` and `status` show the remembered denials. Decided the same day, not yet built: the event names
+  the script an interpreter runs, read from its arguments, as an untrusted field for the agent and the notes and
+  never as an identity, since a process picks its own arguments; and `[[allow]]` may name compiled ad hoc code by
+  cdhash (`approve --save` writes such a rule), but never an interpreter (python, node, ruby, perl, bun, deno, the
+  shells), whose lasting rule would cover every script it runs, a malicious dependency's included.
 - **Touch ID count.** `start`, `stop` and `mode` each ask for Touch ID, so a demo takes two. A short unlock
   window, like sudo's, is a candidate. A test that needs a person at the keyboard can also fail for that reason:
   the fault test's second Touch ID was cancelled, and the check that depends on it failed (P5-01).

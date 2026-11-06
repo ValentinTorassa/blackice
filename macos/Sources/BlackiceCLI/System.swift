@@ -42,6 +42,8 @@ public protocol SystemControlling {
     func pending(output: SystemOutput) -> Int32
     /// `blackice approve` and `deny`. Confirms a person with Touch ID first.
     func answer(_ request: AnswerRequest, output: SystemOutput) -> Int32
+    /// `blackice approve` with several `--host`: the same app, duration and Touch ID for each host.
+    func answer(all requests: [AnswerRequest], output: SystemOutput) -> Int32
     /// `blackice daemon`: registers with the extension, takes the configuration it holds, and runs
     /// that configuration's hooks for each event until the connection ends.
     func runDaemon(output: SystemOutput) -> Int32
@@ -67,6 +69,18 @@ extension SystemControlling {
             return ExitCode.unavailable
         }
         return setMode(mode, output: output)
+    }
+}
+
+extension SystemControlling {
+    /// One answer at a time, stopping at the first that does not go through. NESystemControl asks
+    /// for Touch ID once for all of them instead.
+    public func answer(all requests: [AnswerRequest], output: SystemOutput) -> Int32 {
+        for request in requests {
+            let status = answer(request, output: output)
+            guard status == ExitCode.success else { return status }
+        }
+        return requests.isEmpty ? ExitCode.usage : ExitCode.success
     }
 }
 

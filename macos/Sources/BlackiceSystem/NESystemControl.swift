@@ -295,7 +295,7 @@ public final class NESystemControl: SystemControlling {
         let command = "blackice \(request.kind.rawValue)"
         guard request.authorization == .touchID, let identity = request.identity else { return ExitCode.usage }
         let action: ControlAction = request.kind == .approve
-            ? .approve(identity, host: request.host, seconds: request.seconds ?? 0)
+            ? .approve(identity, hosts: [request.host], seconds: request.seconds ?? 0)
             : .deny(identity, host: request.host)
         guard confirm(action, output) else { return ExitCode.noPermission }
         do {
@@ -307,6 +307,36 @@ public final class NESystemControl: SystemControlling {
                 ?? "\(command): cannot reach blackice's filter (\(error)). Is it on? blackice status")
             return ExitCode.unavailable
         }
+    }
+
+    /// `blackice approve` with several hosts: one Touch ID whose dialog names every host, then one
+    /// answer per host on the same connection. The extension trusts each the way it trusts one,
+    /// because the connection comes from this signed binary. A host the extension refuses does not
+    /// stop the others; the status is the first failure's.
+    public func answer(all requests: [AnswerRequest], output: SystemOutput) -> Int32 {
+        guard requests.count > 1 else { return requests.first.map { answer($0, output: output) } ?? ExitCode.usage }
+        guard Self.isSignedHost(), let teamID = CodeIdentity.current()?.teamID else {
+            return UnsignedSystem().answer(all: requests, output: output)
+        }
+        let first = requests[0]
+        guard first.kind == .approve, let identity = first.identity, let seconds = first.seconds,
+              requests.allSatisfy({ $0.kind == .approve && $0.authorization == .touchID && $0.identity == identity &&
+                                    $0.seconds == seconds }) else { return ExitCode.usage }
+        guard confirm(.approve(identity, hosts: requests.map(\.host), seconds: seconds), output) else { return ExitCode.noPermission }
+        var status = ExitCode.success
+        do {
+            let client = try FilterClient(teamID: teamID)
+            for request in requests {
+                let reply = try client.answer(request)
+                if reply.status == .done { output.stdout(Style.done(reply.message)) } else { output.stderr("blackice approve: \(reply.message)") }
+                if status == ExitCode.success { status = CLI.answerStatus(reply) }
+            }
+        } catch {
+            output.stderr(Self.unfinishedUpgrade().map { "blackice approve: cannot reach blackice's filter. " + $0.hint }
+                ?? "blackice approve: cannot reach blackice's filter (\(error)). Is it on? blackice status")
+            return ExitCode.unavailable
+        }
+        return status
     }
 
     /// Runs until the connection to the extension ends, then exits with 75 so launchd starts the

@@ -10,10 +10,10 @@ The commands. `blackice help COMMAND`, or `blackice COMMAND --help`, shows a com
 | --- | --- |
 | `blackice start [--config PATH]` | Start filtering with `~/.config/blackice/blackice.toml`, or PATH, asking a few questions first when there is no file. Run it again after editing the file or upgrading. A mode or answerer switched since the last start stays while the file is unchanged. |
 | `blackice stop` | Stop filtering and remove the network extension. |
-| `blackice status` | The mode, who answers, what waits, the rules, the approvals and the timeout. |
+| `blackice status` | The mode, who answers, what waits, the denials of the last 10 minutes, the rules, the approvals and the timeout. |
 | `blackice mode accept-all \| ask \| block-all [--agent NAME]` | Switch the mode. `--agent` picks who answers in ask mode: `fx`, `claude-code`, `codex`, `opencode` or `you`; its hook must be in `blackice.toml`. Connections that wait go on if the new mode lets them through, and are dropped otherwise. |
-| `blackice pending` | What waits, each with the `blackice approve` line that lets it through, then the approvals and the denials of the last 10 minutes, with the time each has left. |
-| `blackice approve --app ID [--team TEAM] --host HOST [--for 1h]` | Let one app reach one host, and its waiting connections through. `--for` takes seconds, minutes or hours (`30s`, `10m`, `1h`), at most 24 hours; 1 hour by default. |
+| `blackice pending` | What waits, then the denials of the last 10 minutes, whose connections are dropped without asking, each with the `blackice approve` line that lets it through (one per app for the denials), then the approvals, with the time each has left. |
+| `blackice approve --app ID [--team TEAM] --host HOST… [--for 1h]` | Let one app reach one or more hosts, and its waiting connections through, with one Touch ID. Repeat `--host` for up to 16 hosts. `--for` takes seconds, minutes or hours (`30s`, `10m`, `1h`), at most 24 hours; 1 hour by default. |
 | `blackice deny --app ID [--team TEAM] --host HOST` | Drop the app's waiting connections to that host and remove its approval. For 10 minutes its new connections there are dropped without asking. |
 | `blackice report [--last 1h]` | What the filter dropped, by reason and app, over the last `30m`, `2h` and so on, up to `168h`. In accept-all, what ask mode would have done. It reads macOS's log, which drops lines when the disk is nearly full; when the daemon logged more events than that log has connections asked about, it says the counts are low. No Touch ID. |
 | `blackice agent connect NAME [--model NAME] [--config PATH]` | Set `fx`, `claude-code`, `codex` or `opencode` up to answer in ask mode. See [Let an agent answer](/docs/install#let-an-agent-answer). |
