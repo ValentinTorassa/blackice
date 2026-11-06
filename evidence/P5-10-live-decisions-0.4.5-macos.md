@@ -80,7 +80,12 @@ From the filter's unified log (`log show --predicate 'subsystem == "com.valentor
 - Both agents denied `curl`, `nscurl` and `nc` to hosts a developer might well want (the npm registry, Wikipedia).
   That is what the deciders chose with the instructions they have, not a filter fault; the eval cases do not cover
   these hosts.
-- The 13 hooks with no answer and the 4 killed at the deadline were not looked into here.
+- The 13 hooks with no answer, 4 of them killed at the deadline, were looked into later the same day. Twelve were fx's,
+  from 17:02 to 17:11 UTC on 5 November: its stderr shows it searching its capabilities for the skill instead of
+  reading the event, and it printed no answer line or ran out the 60 s. That was before PR #49 gave fx's hook a
+  two-sentence system prompt (merged at 19:58 UTC); with the new hook fx answered the 28 events after it. The
+  thirteenth was Claude Code killed at the deadline on Datadog's host, at 12:08 UTC on 6 November, with nothing on
+  stderr.
 - Not covered: the fault tests (see the next entry), a first install, and Codex or opencode as the answerer.
 
 **Date.** 6 November 2026.
