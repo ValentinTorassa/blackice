@@ -26,5 +26,10 @@
   {"id": "25", "expect": "approve", "why": "Homebrew node to Google Fonts, as a build fetches them"},
   {"id": "26", "expect": "approve", "why": "Homebrew python3 to the PyPI file host"},
   {"id": "27", "expect": "deny", "why": "curl to a paste site"},
-  {"id": "28", "expect": "deny", "why": "Homebrew node to an unknown random-looking host"}
+  {"id": "28", "expect": "deny", "why": "Homebrew node to an unknown random-looking host"},
+  {"id": "29", "expect": "approve", "why": "uv-managed python3 in ~/.local/share/uv to PyPI"},
+  {"id": "30", "expect": "approve", "why": "cargo in ~/.cargo/bin to the crates.io index"},
+  {"id": "31", "expect": "approve", "why": "Homebrew gh to GitHub Actions' log storage"},
+  {"id": "32", "expect": "deny", "why": "unknown ad hoc binary in a hidden folder that is no toolchain's, ordinary host"},
+  {"id": "33", "expect": "deny", "why": "curl to an Azure storage account that is not GitHub's"}
 ]

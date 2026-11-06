@@ -1,0 +1,11 @@
+{
+  "event": "connection",
+  "id": "ev-00000020",
+  "app": {
+    "cdhash": "c7e15a3f90b2d46e8a1c5b7d3f02e9a4b6c8d150",
+    "path": "/Users/me/.local/share/helperd/helperd"
+  },
+  "ip": "185.199.108.133",
+  "port": 443,
+  "host": "objects.githubusercontent.com"
+}
