@@ -3,37 +3,22 @@
 ## Unreleased
 
 Fixed:
-- An approval that arrives while the configuration changes lets nothing through under the new one. The answer takes
-  its connections off the list of those waiting, and the change now waits until they are resumed, or comes first and
-  they are dropped as `configuration_changed`; a host lookup that finishes is handled the same way. Until now a switch
-  to block-all installed between the approval's check and the resume missed those connections, and they went through
-  under the old approval.
-- One app can no longer fill the connections held for their TLS hello. Each app holds at most 64 of the 256, and a new
-  connection takes the place of the oldest one that has sent nothing yet, its own app's or, when all 256 are taken,
-  one of the app holding the most, which is dropped as `evicted_quiet`. A connection whose hello has started keeps its
-  place. Until now an app, an ad hoc program too, could open 256 connections that write nothing and keep every other
-  app's new TLS connections dropped as `hold_capacity` for as long as it liked.
-- In ask mode one app takes at most 64 of the 256 events and 256 of the 1024 connections waiting for an answer, and a
-  connection over that is dropped as `ask_capacity_app`. Until now an app connecting to many hosts, or to one address
-  on many ports, could fill the table, and every other app's connections were dropped as `ask_capacity` with no event.
-- `blackice report` names these drops in words (`evicted_quiet`, `hold_capacity`, `hold_capacity_app`,
-  `ask_capacity`, `ask_capacity_app`). Until now the capacity drops showed their raw reason.
-- `blackice start` keeps two switches of who answers from a file that names no one, such as `blackice mode ask
-  --agent fx` and then the menu's Ask with you answering. Until now the second switch recorded fx as the file's own
-  `answers`, so the next `start` took the file for a changed one: it dropped the mode switch too, and every agent's
-  hook answered again.
-- `blackice agent connect` saves `blackice.toml` holding a lock beside it (`.blackice.toml.lock`) while it checks the
-  file and renames the new one into place. Until now the check and the rename were apart, so two `agent connect`
-  runs that read the same file could both pass the check, and the second one's save replaced the first one's.
-- `blackice agent connect` stops an agent's sign-in status check that gives no answer in 30 s, or at once on
-  Control-C, then goes back to the mode it put off. Until now a status check that stalled left the setup waiting for
-  ever, in accept-all.
-- `npx blackice install` checks `--force` and the installed app's build again right before it replaces the app. Until
-  now it checked them only before the download, so an app another install put in place meanwhile, even a newer
-  build, was replaced.
-- `blackice pending`, `report` and the menu name a program known only by its cdhash `cdhash 8fbec897`. Until now
-  they called it ad hoc, also a developer's signed program run from `~/Documents`, `~/Downloads`, `~/Desktop` or
-  iCloud Drive, whose file the filter cannot read.
+- An approval that lands while the configuration changes no longer lets its connections through under the new one.
+  Until now a switch to block-all at that moment missed them, and the old approval let them go.
+- One app holds at most 64 of the 256 connections waiting for their TLS hello, and a new one replaces the oldest
+  that has sent nothing (`evicted_quiet`). Until now one app could fill them all, and other apps' TLS connections
+  were dropped as `hold_capacity`.
+- In ask mode one app takes at most 64 of the 256 events (`ask_capacity_app`). Until now one app could fill the
+  table, and other apps' connections were dropped with no event.
+- A second switch of who answers, from a file that names no one, keeps the first one's record. Until now the next
+  `start` dropped both switches.
+- `agent connect` saves `blackice.toml` under a lock, and stops a sign-in check that gives no answer in 30 s. Until
+  now two runs could overwrite each other, and a stalled check left the Mac in accept-all.
+- `npx blackice install` checks `--force` and the installed build again just before replacing the app. Until now
+  another install meanwhile, even of a newer build, was replaced.
+- `pending`, `report` and the menu call code known only by its cdhash `cdhash 8fbec897`, not ad hoc: since 1.0.1
+  that includes signed programs in `~/Documents` or `~/Downloads`.
+- `report` names the capacity drops in words.
 
 ## 1.0.2 (6 November 2026)
 
