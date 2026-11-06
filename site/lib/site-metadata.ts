@@ -13,7 +13,7 @@ export const site = {
   name: 'blackice',
   headline: 'A headless application firewall for macOS, operated through a CLI.',
   description:
-    'blackice is a headless application firewall for macOS, operated through a CLI. New connections can wait for you, or an optional hook such as fx, to approve or deny them.',
+    'blackice is a headless application firewall for macOS, operated through a CLI. New connections can wait for you, or an agent, to approve or deny them.',
   repo: 'https://github.com/ValentinTorassa/blackice',
   authors: [
     { name: 'Valen Torassa', url: 'https://valentorassa.com' },

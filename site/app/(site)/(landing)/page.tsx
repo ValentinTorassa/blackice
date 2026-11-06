@@ -114,20 +114,9 @@ export default function Home() {
         </Section>
 
         <Section id="install" label={`install ${release.version}`}>
-          <div className="max-w-[600px] text-muted-foreground [&_p+p]:mt-4">
-            {status.map((paragraph) => (
-              <p key={paragraph}>
-                <Inline text={paragraph} />
-              </p>
-            ))}
-            <p>
-              Each run is recorded in the repository&apos;s{' '}
-              <a href={release.evidence} className={textLink} target="_blank" rel="noreferrer">
-                evidence
-              </a>{' '}
-              folder.
-            </p>
-          </div>
+          <p className="max-w-[600px] text-muted-foreground">
+            <Inline text={status} />
+          </p>
           <div className="mt-6">
             <CodeBlock code={install.curl}>{install.curl}</CodeBlock>
           </div>
@@ -139,12 +128,11 @@ export default function Home() {
           </div>
           <div className="mt-4 max-w-[600px] text-muted-foreground [&_p+p]:mt-4">
             <p>
-              Or download <code className="text-foreground">{release.zip}</code> and{' '}
-              <code className="text-foreground">{release.checksum}</code> from the{' '}
+              Or download <code className="text-foreground">{release.zip}</code> from the{' '}
               <a href={release.url} className={textLink} target="_blank" rel="noreferrer">
                 GitHub release
-              </a>
-              , check them and move Blackice.app to <code className="text-foreground">/Applications</code>, as the{' '}
+              </a>{' '}
+              and check it as the{' '}
               <FastLink href="/docs/install" className={textLink}>
                 install docs
               </FastLink>{' '}

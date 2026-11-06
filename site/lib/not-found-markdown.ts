@@ -10,7 +10,7 @@ export function createNotFoundMarkdown(): string {
     '',
     '## Where to look next',
     '',
-    `- [Documentation](${canonicalSiteUrl}/docs.md): Install, design, configuration and commands.`,
+    `- [Documentation](${canonicalSiteUrl}/docs.md): Install, configuration and commands.`,
     `- [llms.txt](${canonicalSiteUrl}/llms.txt): Every documentation page as markdown, with descriptions.`,
     `- [sitemap.xml](${canonicalSiteUrl}/sitemap.xml): Every indexable URL on this site.`,
     '',

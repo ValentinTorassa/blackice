@@ -4,7 +4,7 @@
 #   curl -fsSL https://blackice-macos.vercel.app/install.sh | sh
 #
 # Downloads the release zip and its checksum from GitHub, checks the checksum, the app's signature
-# and Gatekeeper's assessment (the checks of docs/install.md, step 1) and that the app is version
+# and Gatekeeper's assessment (the checks in docs/install.md) and that the app is version
 # VERSION, copies Blackice.app to /Applications and writes a `blackice` command to ~/.local/bin.
 # It starts nothing: no extension, no daemon. Options go after `sh -s --`:
 #
@@ -80,10 +80,10 @@ download_and_check() {
 
   if [ -n "${BLACKICE_ZIP:-}" ]; then
     [ "${BLACKICE_ZIP##*/}" = "$zip" ] || fail "BLACKICE_ZIP should name $zip, the zip of blackice $VERSION"
-    say "Using $BLACKICE_ZIP.sha256, a build that is not published"
+    say "Using $BLACKICE_ZIP, a build that is not published"
     /bin/cp "$BLACKICE_ZIP.sha256" "$work/$zip.sha256" || fail "could not read $BLACKICE_ZIP.sha256"
   else
-    say "Downloading $base/$zip.sha256"
+    say "Downloading $base/$zip"
     fetch "$base/$zip.sha256" "$work/$zip.sha256"
   fi
   expected='' name=''
@@ -95,26 +95,21 @@ download_and_check() {
   fi
 
   if [ -n "${BLACKICE_ZIP:-}" ]; then
-    say "Using $BLACKICE_ZIP"
     /bin/cp "$BLACKICE_ZIP" "$work/$zip" || fail "could not read $BLACKICE_ZIP"
   else
-    say "Downloading $base/$zip"
     fetch "$base/$zip" "$work/$zip"
   fi
   actual=$(/usr/bin/shasum -a 256 "$work/$zip")
   actual=${actual%% *}
   [ "$actual" = "$expected" ] || fail "$zip has SHA-256 $actual, but $zip.sha256 says $expected"
-  say "  SHA-256: $actual, as $zip.sha256 says"
 
   /usr/bin/ditto -x -k "$work/$zip" "$work/unpacked" || fail "ditto could not unpack $zip"
   entries=$(ls -A "$work/unpacked")
   [ "$entries" = Blackice.app ] || fail "the zip should hold only Blackice.app; it holds: $entries"
   app=$work/unpacked/Blackice.app
 
-  say "Checking Blackice.app"
   verify=$(/usr/bin/codesign --verify --strict --deep --verbose=2 "$app" 2>&1) \
     || fail "codesign --verify failed: $verify"
-  say "  signature: valid, and satisfies its Designated Requirement"
 
   details=$(/usr/bin/codesign -dvv "$app" 2>&1) || fail "codesign -dvv failed: $details"
   identifier=$(printf '%s\n' "$details" | sed -n 's/^Identifier=//p' | head -n 1)
@@ -126,7 +121,6 @@ download_and_check() {
     "Authority=Developer ID Application:"*"($TEAM_ID)") ;;
     *) fail "the app is not signed with a Developer ID Application certificate of team $TEAM_ID" ;;
   esac
-  say "  signed by: Developer ID Application, team $TEAM_ID"
 
   assessment=$(/usr/sbin/spctl --assess --type execute -vv "$app" 2>&1) \
     || fail "Gatekeeper rejects the app: $assessment"
@@ -138,7 +132,6 @@ download_and_check() {
     '' | *"($TEAM_ID)") ;;
     *) fail "Gatekeeper names another origin: $origin" ;;
   esac
-  say "  Gatekeeper: accepted, source=Notarized Developer ID"
 
   # The signature covers Info.plist, so these are the versions the release was signed with. Another
   # validly signed build under this zip's name, such as an older release, stops here.
@@ -152,7 +145,7 @@ download_and_check() {
     || [ "$(plist "$app/$EXTENSION" CFBundleVersion)" != "$build" ]; then
     fail "the network extension inside the app is not version $VERSION, build $build, as the app is"
   fi
-  say "  version: $VERSION, build $build"
+  say "✓ Checked the checksum, the signature (team $TEAM_ID), the notarization and the version: $VERSION, build $build"
 }
 
 # Stops if the installed app has a higher build number than the checked one: macOS replaces an
@@ -195,7 +188,7 @@ install_app() {
   previous=''
   rm -rf "$stage" || say "Could not remove $stage, which holds the previous Blackice.app; move it to the Trash."
   stage=''
-  say "Blackice.app $VERSION is in $APPLICATIONS."
+  say "✓ Blackice.app $VERSION is in $APPLICATIONS"
 }
 
 # Runs on exit. If the installed app was renamed aside and the new one is not in its place, it
@@ -222,21 +215,19 @@ install_command() {
 exec $EXECUTABLE \"\$@\""
   if [ -e "$cmd" ] || [ -L "$cmd" ]; then
     if [ "$(cat "$cmd" 2>/dev/null)" != "$wrapper" ]; then
-      say "$cmd is already there and is not this installer's; left it as it is."
-      say "Run $EXECUTABLE by its full path, or put its folder on your PATH."
+      say "Left $cmd as it is, since this installer did not write it: run $EXECUTABLE instead."
       return
     fi
   else
     mkdir -p "$bin_dir" || fail "could not create $bin_dir"
     printf '%s\n' "$wrapper" > "$cmd" || fail "could not write $cmd"
     chmod 755 "$cmd"
-    say "Wrote $cmd, which runs $EXECUTABLE."
+    say "✓ Wrote $cmd"
   fi
   case ":$PATH:" in
     *":$bin_dir:"*) ;;
     *)
-      say ""
-      say "$bin_dir is not on your PATH. Add it, for example in ~/.zshrc:"
+      say "$bin_dir is not on your PATH. Add it in ~/.zshrc:"
       say "  export PATH=\"$bin_dir:\$PATH\""
       ;;
   esac
@@ -245,11 +236,10 @@ exec $EXECUTABLE \"\$@\""
 next_steps() {
   say ""
   if [ "$replace" = 1 ]; then
-    say "Next: \`blackice start\` finishes the upgrade. If it exits with 75, restart the Mac and run it again."
+    say "Next: blackice start (if it exits with 75, restart the Mac and run it again)"
   else
-    say "Next: \`blackice start\`. It asks a few questions, then System Settings asks you to allow the extension."
+    say "Next: blackice start"
   fi
-  say "Guide: $GUIDE"
 }
 
 main() {
@@ -275,7 +265,7 @@ main() {
   if [ -e "$APP" ]; then
     installed=$(plist "$APP" CFBundleShortVersionString)
     if [ "$installed" = "$VERSION" ] && [ "$force" = 0 ]; then
-      say "Blackice.app $VERSION is already in $APPLICATIONS."
+      say "✓ Blackice.app $VERSION is already in $APPLICATIONS"
       install_command
       exit 0
     fi

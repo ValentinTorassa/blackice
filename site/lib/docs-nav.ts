@@ -18,17 +18,12 @@ export const docsNav: DocsNavSection[] = [
       {
         title: 'Introduction',
         href: '/docs',
-        description: 'blackice is a headless application firewall for macOS, operated through a CLI. A connection that no rule covers can wait for you, or for an agent behind a hook, to approve or deny it.',
+        description: 'What blackice is, its three modes, how ask mode decides a connection, and its limits.',
       },
       {
         title: 'Install',
         href: '/docs/install',
-        description: 'Install blackice 0.4.5 with the install script, Homebrew or the release zip, check it, start it, remove it and roll it back.',
-      },
-      {
-        title: 'How it works',
-        href: '/docs/how-it-works',
-        description: 'The parts of blackice, and what happens to one connection in ask mode.',
+        description: 'Install blackice, start it, answer what waits, let an agent answer, upgrade and uninstall.',
       },
     ],
   },
@@ -38,17 +33,12 @@ export const docsNav: DocsNavSection[] = [
       {
         title: 'Configuration',
         href: '/docs/configuration',
-        description: 'blackice.toml and the event a hook receives. The format can still change.',
+        description: 'blackice.toml, and the event a hook gets and how it answers.',
       },
       {
         title: 'CLI',
         href: '/docs/cli',
         description: 'The commands.',
-      },
-      {
-        title: 'Changelog',
-        href: '/docs/changelog',
-        description: 'What changed in each release.',
       },
     ],
   },
