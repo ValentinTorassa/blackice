@@ -1,12 +1,17 @@
 # Changelog
 
-## Unreleased
+## 0.4.6 (6 November 2026)
 
-`blackice start` opens blackice in the menu bar.
+`blackice start` opens blackice in the menu bar, and the site and docs are a third as long.
 
 Changed:
 - Each `start` that turns blackice on opens the menu bar app when it is not running, as it already did for a menu
   from before an upgrade. The first `start` asks only whether it also opens at each login.
+- The site keeps four pages: Introduction (with How it works), Install, Configuration and CLI. The changelog page
+  points here. The install script prints five lines.
+
+Upgrading from 0.4.5: `brew upgrade --cask blackice` or the install script with `--force`, then `blackice start`.
+Nothing else changes.
 
 ## 0.4.5 (5 November 2026)
 

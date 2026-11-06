@@ -1,6 +1,6 @@
 # Plan
 
-blackice is early: 0.4.5 is its current release ([`CHANGELOG.md`](../CHANGELOG.md)), and it has run on one Mac. This file holds the phases, the decisions
+blackice is early: 0.4.6 is its current release ([`CHANGELOG.md`](../CHANGELOG.md)), and it has run on one Mac. This file holds the phases, the decisions
 taken so far and the open problems. A phase is done when its check passes on a real Mac, not when the code compiles,
 and each run on a Mac is recorded in [`evidence/`](../evidence/).
 
