@@ -116,7 +116,8 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
         case send(HookEvent, generation: UInt64)
     }
 
-    private static var now: TimeInterval { ProcessInfo.processInfo.systemUptime }
+    /// Counts sleep (see continuousSeconds), so an approval ends on time across sleep.
+    private static var now: TimeInterval { continuousSeconds() }
 
     override func startFilter(completionHandler: @escaping (Error?) -> Void) {
         let identifier = UUID()

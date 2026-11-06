@@ -68,7 +68,10 @@ struct HookEventValidationTests {
             event(app: .init(signingID: "com.example.tool", teamID: nil, cdhash: testCDHash, path: nil)),
             event(app: .init(signingID: nil, teamID: nil, path: nil)),
             event(app: .init(signingID: nil, teamID: nil, cdhash: "zz", path: nil)),
-            event(app: .init(tool, path: "/tmp/a\nb")), event(app: .init(tool, path: String(repeating: "a", count: 2000))),
+            // Built field by field: App(identity, path:) leaves out a path validPath refuses.
+            event(app: .init(signingID: AppReference(tool).signingID, teamID: AppReference(tool).teamID, path: "/tmp/a\nb")),
+            event(app: .init(signingID: AppReference(tool).signingID, teamID: AppReference(tool).teamID,
+                             path: String(repeating: "a", count: 2000))),
             event(host: nil), event(host: "Example.com"), event(host: "bad host"),
             event(ip: "example.com"), event(ip: "::ffff:203.0.113.7"), event(port: 0),
             event(deadlineIn: -60), event(deadlineIn: 3600),

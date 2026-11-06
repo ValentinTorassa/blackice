@@ -296,9 +296,9 @@ public final class HostAddressCache: @unchecked Sendable {
     private let lock = NSLock()
     private var entries: [String: (addresses: Set<IPAddress>, expires: TimeInterval)] = [:]
 
-    /// `clock` returns seconds on a monotonic scale; the default is the system uptime.
+    /// `clock` returns seconds on a monotonic scale; the default counts sleep (continuousSeconds).
     public init(resolver: any HostResolving, ttl: TimeInterval = defaultTTL, limit: Int = defaultLimit,
-                clock: @escaping @Sendable () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }) {
+                clock: @escaping @Sendable () -> TimeInterval = { continuousSeconds() }) {
         self.resolver = resolver
         self.ttl = ttl
         self.limit = limit

@@ -288,6 +288,10 @@ main() {
   if [ -e "$APP" ]; then
     installed=$(plist "$APP" CFBundleShortVersionString)
     if [ "$installed" = "$VERSION" ] && [ "$force" = 0 ]; then
+      # Its Info.plist names the version; only the signature says whose app it is.
+      verify=$(/usr/bin/codesign --verify --strict --deep "-R$REQUIREMENT" "$APP" 2>&1) \
+        || fail "$APP says it is $VERSION, but it is not an app signed with the Developer ID of team $TEAM_ID:" \
+          "$verify. To replace it, run \`curl -fsSL $SCRIPT_URL | sh -s -- --force\`, then \`blackice start\`."
       say "✓ Blackice.app $VERSION is already in $APPLICATIONS"
       install_command
       exit 0

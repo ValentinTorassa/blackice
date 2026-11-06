@@ -25,9 +25,13 @@ public struct HookEvent: Codable, Equatable, Sendable {
             self.path = path
         }
 
+        /// A path `validPath` refuses, such as a file name with a line break, is left out: one such
+        /// event in the pending table made the whole pending reply invalid, so `blackice pending`
+        /// and the menu could read nothing until it expired.
         public init(_ identity: AppIdentity, path: String?) {
             let reference = AppReference(identity)
-            self.init(signingID: reference.signingID, teamID: reference.teamID, cdhash: reference.cdhash, path: path)
+            self.init(signingID: reference.signingID, teamID: reference.teamID, cdhash: reference.cdhash,
+                      path: path.flatMap { validPath($0) ? $0 : nil })
         }
 
         /// nil unless exactly one form is present and valid.

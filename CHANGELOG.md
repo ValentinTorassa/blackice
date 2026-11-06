@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.0.2 (6 November 2026)
+
+Fixed:
+- Approvals, remembered denials and connections waiting for an answer count the time the Mac spends asleep. Until now
+  the filter's clock stopped during sleep, so an approval for 1 hour was still valid after 2 hours asleep.
+- A program whose path has a line break or another control character no longer keeps `blackice pending` and the menu
+  from listing what waits: its event leaves the path out. Until now one such event made the whole list unreadable
+  until it expired.
+- `blackice report` escapes the reasons in its estimate for ask mode, as it already did app names, so a program that
+  writes to the filter's log cannot put terminal control sequences in the report.
+- The install script checks the signature of a Blackice.app already installed at the same version before it writes
+  the `blackice` command, and stops when it is not signed with the Developer ID of team M294LK997M. Until now it
+  trusted the version in the app's Info.plist.
+
+Upgrading from 1.0.1: `brew upgrade --cask blackice`, or the install script with `--force`, then `blackice start`.
+
 ## 1.0.1 (6 November 2026)
 
 Fixed:

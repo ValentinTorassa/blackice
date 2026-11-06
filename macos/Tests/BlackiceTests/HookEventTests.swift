@@ -12,6 +12,17 @@ private let sample = HookEvent(
 private let base64urlBytes = Set("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_".utf8)
 
 struct HookEventTests {
+    /// A path with a line break or another control character is left out of the event, so that it
+    /// cannot make the pending reply invalid; a valid path stays.
+    @Test func aPathValidPathRefusesIsLeftOut() {
+        let identity = AppIdentity.cdhash(String(repeating: "ab", count: 20))
+        #expect(HookEvent.App(identity, path: "/Users/me/evil\nname").path == nil)
+        #expect(HookEvent.App(identity, path: "/Users/me/bell\u{07}").path == nil)
+        #expect(HookEvent.App(identity, path: "").path == nil)
+        #expect(HookEvent.App(identity, path: "/Users/me/Documents/tool").path == "/Users/me/Documents/tool")
+        #expect(HookEvent.App(identity, path: nil).path == nil)
+    }
+
     @Test func encodesTheDocumentedShape() throws {
         let json = String(decoding: try sample.jsonData(), as: UTF8.self)
         #expect(json == #"{"app":{"path":"/Applications/Tool.app","signing_id":"com.example.tool","team_id":"ABCDE12345"},"deadline":"2026-11-02T14:36:11Z","event":"connection","host":"example.com","id":"ev-7f3a91c2","ip":"203.0.113.7","port":443,"token":"q8Zr0d3XyB1mVt5LkS9wJpQa2NcEf7HgUi4Ko6Rl0Ys"}"#)

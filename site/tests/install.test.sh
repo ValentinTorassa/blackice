@@ -47,6 +47,7 @@ exec cp "$SERVE/${url##*/}" "$out"'
 # STUB=codesign-requirement: the unpacked app does not meet the code requirement (-R) the script
 # gives; STUB=codesign-requirement-copy: the copy beside the installed app does not.
 # STUB=codesign-other-team: the app is signed by another team.
+# STUB=codesign-requirement-installed: the app already in Applications does not meet the code requirement.
 stub codesign 'eval "last=\${$#}"
 team=M294LK997M
 [ "${STUB:-}" != codesign-other-team ] || team=ABCDE12345
@@ -54,7 +55,7 @@ case $1 in
   --verify)
     for arg; do
       case ${STUB:-}:$arg:$last in
-        codesign-requirement:-R*:*/unpacked/Blackice.app | codesign-requirement-copy:-R*:*/.blackice-install.*)
+        codesign-requirement:-R*:*/unpacked/Blackice.app | codesign-requirement-copy:-R*:*/.blackice-install.* | codesign-requirement-installed:-R*:*/Applications/Blackice.app)
           echo "$last: test-requirement: code failed to satisfy specified code requirement(s)" >&2; exit 3 ;;
       esac
     done
@@ -234,6 +235,17 @@ expect_status 0
 expect_app old
 expect_output "already in $box/Applications"
 case $output in *Using*) problem 'it read the zip' ;; esac
+done_case
+
+start 'the same version installed but not signed by the team is refused, with no command written'
+new_box samefake
+installed "$version" 15
+STUB=codesign-requirement-installed run
+expect_status 1
+expect_app old
+expect_output "not an app signed with the Developer ID of team"
+expect_output '--force'
+[ ! -e "$box/bin/blackice" ] || problem 'it wrote the command for an app it did not check'
 done_case
 
 start 'another version installed needs --force'
