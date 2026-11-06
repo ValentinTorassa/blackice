@@ -31,8 +31,10 @@ refused. The event looks like this:
 
 - `app.signing_id` and `app.team_id`: the code signature of the program. They were checked
   against the running code. No `team_id` means Apple platform code.
-- `app.cdhash`, instead of `signing_id` and `team_id`: the program is signed ad hoc, with no
-  developer identity. The cdhash names this exact build; a rebuild changes it.
+- `app.cdhash`, instead of `signing_id` and `team_id`: blackice has no developer identity for
+  the program. It is signed ad hoc, or it runs from a folder macOS keeps blackice from reading
+  (`~/Documents`, `~/Desktop`, `~/Downloads`, iCloud Drive, a removable or network volume), so
+  its signature was not checked. The cdhash names this exact build; a rebuild changes it.
 - `app.path`: where the program's executable is, when known.
 - `host`: the host name. `ip` and `port`: the destination.
 - When `host` is the same text as `ip`, the program connected to an address and nothing gave

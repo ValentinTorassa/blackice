@@ -164,13 +164,19 @@ public enum CodeIdentity {
         var code: SecCode?
         let attributes = [kSecGuestAttributeAudit as String: auditToken] as CFDictionary
         guard SecCodeCopyGuestWithAttributes(nil, attributes, [], &code) == errSecSuccess, let code else {
-            // Security finds no guest for a process whose program file was removed since it
-            // started, as when Homebrew upgrades an app that is running: on 5 November 2026 Claude
-            // Code's connections became unknown_identity the minute Homebrew removed its old
-            // version. The identity cached for this process image, checked while the file was
-            // there, stays while the kernel still reports the code valid.
+            // Security finds no guest when it cannot read the program file. That happens to a
+            // process whose file was removed since it started, as when Homebrew upgrades an app
+            // that is running: on 5 November 2026 Claude Code's connections became
+            // unknown_identity the minute Homebrew removed its old version. The identity cached
+            // for this process image, checked while the file was there, stays while the kernel
+            // still reports the code valid.
             if let cached = cache.read(auditToken), kernelReportsValid(auditToken: auditToken) { return cached }
-            return .unresolved
+            // It also happens to every program under a folder macOS keeps the extension from
+            // reading: ~/Documents, ~/Desktop, ~/Downloads, iCloud Drive, removable and network
+            // volumes. On 6 November 2026 the same gh binary connected from /opt/homebrew and was
+            // dropped as unknown_identity from ~/Documents. The kernel still knows the code it
+            // loaded, so the process is named by that cdhash, as ad hoc code is.
+            return kernelResolution(auditToken: auditToken)
         }
         if let cached = cache.read(auditToken) {
             if runningCodeIsValid(code) { return cached }
@@ -197,6 +203,33 @@ public enum CodeIdentity {
             return false
         }
         return status & 1 != 0
+    }
+
+    /// What the kernel alone says about the code behind this audit token, for a process whose
+    /// program file Security cannot read: its cdhash, while the kernel reports the code valid. The
+    /// signature on disk is not checked, so this is never a signing identity: no rule matches it,
+    /// block-all drops it, and in ask mode an approval names this exact build. The kernel checks
+    /// each page the process runs against the code directory this cdhash names.
+    static func kernelResolution(auditToken: Data, valid: (Data) -> Bool = kernelReportsValid,
+                                 cdhash: (Data) -> String? = kernelCDHash) -> IdentityResolution {
+        guard valid(auditToken), let hash = cdhash(auditToken), validCDHash(hash) else { return .unresolved }
+        return .adHoc(cdhash: hash)
+    }
+
+    /// The cdhash of the code the kernel loaded for the process behind this audit token
+    /// (CS_OPS_CDHASH), as `codesign -dvvv` prints it. nil once the process is gone, and for a
+    /// token of another image.
+    public static func kernelCDHash(auditToken: Data) -> String? {
+        guard auditToken.count == MemoryLayout<audit_token_t>.size else { return nil }
+        var token = audit_token_t()
+        _ = withUnsafeMutableBytes(of: &token) { auditToken.copyBytes(to: $0) }
+        var hash = [UInt8](repeating: 0, count: 20)
+        // CS_OPS_CDHASH is 5 (xnu, bsd/sys/codesign.h).
+        let result = hash.withUnsafeMutableBytes {
+            csops_audittoken(pid_t(bitPattern: token.val.5), 5, $0.baseAddress, $0.count, &token)
+        }
+        guard result == 0, hash.contains(where: { $0 != 0 }) else { return nil }
+        return hash.map { String(format: "%02x", $0) }.joined()
     }
 
     /// This boot's session UUID (kern.bootsessionuuid), which a stored identity cache is tied to.
@@ -256,17 +289,33 @@ public enum CodeIdentity {
     }
 
     /// Where the code behind this audit token lives on disk, for the event a hook reads. Taken from
-    /// the same guest as the identity, never from a PID. nil when the system does not say.
+    /// the same guest as the identity, or, when Security cannot read the file (see `resolve`), from
+    /// the kernel by the same audit token; never from a PID alone. nil when the system does not say.
     public static func path(auditToken: Data?) -> String? {
         guard let auditToken, auditToken.count == MemoryLayout<audit_token_t>.size else { return nil }
         var code: SecCode?
         let attributes = [kSecGuestAttributeAudit as String: auditToken] as CFDictionary
-        guard SecCodeCopyGuestWithAttributes(nil, attributes, [], &code) == errSecSuccess, let code else { return nil }
+        guard SecCodeCopyGuestWithAttributes(nil, attributes, [], &code) == errSecSuccess, let code else {
+            return kernelPath(auditToken: auditToken)
+        }
         var staticCode: SecStaticCode?
         guard SecCodeCopyStaticCode(code, [], &staticCode) == errSecSuccess, let staticCode else { return nil }
         var url: CFURL?
         guard SecCodeCopyPath(staticCode, [], &url) == errSecSuccess, let url else { return nil }
         return (url as URL).path
+    }
+
+    /// The executable's path as the kernel has it for this audit token. proc_pidpath_audittoken
+    /// checks the PID version in the token, so it never names another process.
+    static func kernelPath(auditToken: Data) -> String? {
+        guard auditToken.count == MemoryLayout<audit_token_t>.size else { return nil }
+        var token = audit_token_t()
+        _ = withUnsafeMutableBytes(of: &token) { auditToken.copyBytes(to: $0) }
+        // PROC_PIDPATHINFO_MAXSIZE is 4 * MAXPATHLEN.
+        var buffer = [CChar](repeating: 0, count: 4 * Int(MAXPATHLEN))
+        guard proc_pidpath_audittoken(&token, &buffer, UInt32(buffer.count)) > 0 else { return nil }
+        let path = String(decoding: buffer.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }, as: UTF8.self)
+        return path.isEmpty ? nil : path
     }
 
     /// The identity a rule needs for the app or binary at `path`, for `blackice init`: its signing

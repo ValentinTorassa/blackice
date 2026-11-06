@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+Fixed:
+- A program that runs from a folder macOS keeps the filter from reading (`~/Documents`, `~/Desktop`, `~/Downloads`,
+  iCloud Drive, removable and network volumes) is named by the cdhash of the code the kernel loaded, as ad hoc code is,
+  so ask mode asks about it. Until now the filter could not check its signature and dropped its connections as
+  `unknown_identity`, with no question: a tool a project keeps in `node_modules`, such as the Codex that deepsec runs,
+  could not connect in ask mode. A rule still cannot name such a program, and block-all still drops it.
+
 ## 1.0.0 (6 November 2026)
 
 The first stable release: a `blackice.toml` that works in 1.0 keeps working in every 1.x. It has run on one Mac,

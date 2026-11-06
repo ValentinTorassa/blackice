@@ -109,7 +109,9 @@ app = "com.apple.mDNSResponder"
 hosts = ["dns.google"]
 ```
 
-**An app updated while it runs** keeps the identity blackice checked, for as long as that process runs. An app that blackice first sees after its file was removed is `unknown_identity`, and ask and block-all drop its connections: restart the app.
+**An app updated while it runs** keeps the identity blackice checked, for as long as that process runs. An app that blackice first sees after its file was removed is named by its cdhash, as below, until you restart it.
+
+**Programs in folders macOS protects.** macOS keeps the filter from reading `~/Documents`, `~/Desktop`, `~/Downloads`, iCloud Drive and removable and network volumes, so it cannot check the signature of a program that runs from one of them, such as a tool a project installs in `node_modules` or a build in `target/`. blackice names that program by the cdhash of the code the kernel loaded, as it names ad hoc signed code: no `[[allow]]` rule matches it, ask mode asks about it, an approval covers that exact build, and block-all drops it. For a rule to match a tool, run it from another folder, such as `~/.local/bin` or a project outside those folders. Before 1.0.1 these connections were dropped as `unknown_identity`, with no question.
 
 ## macOS's own services
 
@@ -178,7 +180,7 @@ The daemon writes the event to `event.json`, in a private directory that is the 
 }
 ```
 
-Ad hoc signed code has `"cdhash"` in `app` in place of `signing_id` and `team_id`. For a [connection with no name](#connections-with-no-name), `host` is the address, the same as `ip`. The event carries no token: that stays with the extension and the daemon.
+Code with no identity blackice could check, signed ad hoc or run from a [folder macOS protects](#connections-with-no-name), has `"cdhash"` in `app` in place of `signing_id` and `team_id`. For a [connection with no name](#connections-with-no-name), `host` is the address, the same as `ip`. The event carries no token: that stays with the extension and the daemon.
 
 ## How a hook answers
 

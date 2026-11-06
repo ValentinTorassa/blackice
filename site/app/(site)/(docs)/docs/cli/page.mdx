@@ -25,6 +25,6 @@ The commands. `blackice help COMMAND`, or `blackice COMMAND --help`, shows a com
 
 `start`, `stop`, `mode`, `approve` and `deny` ask for Touch ID, or your login password.
 
-`--team` is the app's Team ID; leave it out for Apple's own code. `--cdhash HEX`, in place of `--app`, names ad hoc signed code by the CDHash that `codesign -dvvv` prints. `--host` takes a host name, or an IP address for a [connection with no name](/docs/configuration#connections-with-no-name), as `pending` shows it. Hooks do not use `approve` and `deny`: they [answer on their last line](/docs/configuration#how-a-hook-answers).
+`--team` is the app's Team ID; leave it out for Apple's own code. `--cdhash HEX`, in place of `--app`, names code blackice knows only by its cdhash, signed ad hoc or run from a [folder macOS protects](/docs/configuration#connections-with-no-name), by the CDHash that `codesign -dvvv` prints and `pending` shows. `--host` takes a host name, or an IP address for a [connection with no name](/docs/configuration#connections-with-no-name), as `pending` shows it. Hooks do not use `approve` and `deny`: they [answer on their last line](/docs/configuration#how-a-hook-answers).
 
 Exit statuses: 0 done, 64 a usage error, 65 an invalid `blackice.toml`, 66 no file to read, 69 not the signed Blackice.app, or the filter did not answer, 70 a macOS request failed, 73 `init` found a file already there, 75 run it again (after restarting the Mac, when blackice says so), 77 Touch ID cancelled, 130 a setup stopped by Control-C.
