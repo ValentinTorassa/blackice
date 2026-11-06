@@ -3,6 +3,21 @@
 ## Unreleased
 
 Fixed:
+- An approval that arrives while the configuration changes lets nothing through under the new one. The answer takes
+  its connections off the list of those waiting, and the change now waits until they are resumed, or comes first and
+  they are dropped as `configuration_changed`; a host lookup that finishes is handled the same way. Until now a switch
+  to block-all installed between the approval's check and the resume missed those connections, and they went through
+  under the old approval.
+- One app can no longer fill the connections held for their TLS hello. Each app holds at most 64 of the 256, and a new
+  connection takes the place of the oldest one that has sent nothing yet, its own app's or, when all 256 are taken,
+  one of the app holding the most, which is dropped as `evicted_quiet`. A connection whose hello has started keeps its
+  place. Until now an app, an ad hoc program too, could open 256 connections that write nothing and keep every other
+  app's new TLS connections dropped as `hold_capacity` for as long as it liked.
+- In ask mode one app takes at most 64 of the 256 events and 256 of the 1024 connections waiting for an answer, and a
+  connection over that is dropped as `ask_capacity_app`. Until now an app connecting to many hosts, or to one address
+  on many ports, could fill the table, and every other app's connections were dropped as `ask_capacity` with no event.
+- `blackice report` names these drops in words (`evicted_quiet`, `hold_capacity`, `hold_capacity_app`,
+  `ask_capacity`, `ask_capacity_app`). Until now the capacity drops showed their raw reason.
 - `blackice start` keeps two switches of who answers from a file that names no one, such as `blackice mode ask
   --agent fx` and then the menu's Ask with you answering. Until now the second switch recorded fx as the file's own
   `answers`, so the next `start` took the file for a changed one: it dropped the mode switch too, and every agent's
@@ -16,6 +31,9 @@ Fixed:
 - `npx blackice install` checks `--force` and the installed app's build again right before it replaces the app. Until
   now it checked them only before the download, so an app another install put in place meanwhile, even a newer
   build, was replaced.
+- `blackice pending`, `report` and the menu name a program known only by its cdhash `cdhash 8fbec897`. Until now
+  they called it ad hoc, also a developer's signed program run from `~/Documents`, `~/Downloads`, `~/Desktop` or
+  iCloud Drive, whose file the filter cannot read.
 
 ## 1.0.2 (6 November 2026)
 

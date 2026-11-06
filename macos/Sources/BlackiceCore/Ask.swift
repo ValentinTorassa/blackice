@@ -115,6 +115,11 @@ public enum AskLimits {
     public static let events = 256
     public static let flows = 1024
     public static let flowsPerEvent = 64
+    /// A quarter of the events and of the flows. One app that connects to many hosts, or to one
+    /// address on many ports, could otherwise fill the table, and every other app's connections
+    /// were then dropped as `ask_capacity` with no event.
+    public static let eventsPerApp = events / 4
+    public static let flowsPerApp = flows / 4
 }
 
 /// The paused connections waiting for an answer, at most one event per app, host and port.
@@ -122,16 +127,21 @@ public struct PendingTable<Flow> {
     public let maximumEvents: Int
     public let maximumFlows: Int
     public let maximumFlowsPerEvent: Int
+    public let maximumEventsPerApp: Int
+    public let maximumFlowsPerApp: Int
 
     private var entries: [String: PendingEntry<Flow>] = [:]
     private var idsByKey: [PendingKey: String] = [:]
     public private(set) var flowCount = 0
 
     public init(maximumEvents: Int = AskLimits.events, maximumFlows: Int = AskLimits.flows,
-                maximumFlowsPerEvent: Int = AskLimits.flowsPerEvent) {
+                maximumFlowsPerEvent: Int = AskLimits.flowsPerEvent,
+                maximumEventsPerApp: Int = AskLimits.eventsPerApp, maximumFlowsPerApp: Int = AskLimits.flowsPerApp) {
         self.maximumEvents = maximumEvents
         self.maximumFlows = maximumFlows
         self.maximumFlowsPerEvent = maximumFlowsPerEvent
+        self.maximumEventsPerApp = maximumEventsPerApp
+        self.maximumFlowsPerApp = maximumFlowsPerApp
     }
 
     public var eventCount: Int { entries.count }
@@ -145,6 +155,8 @@ public struct PendingTable<Flow> {
         case joined(eventID: String)
         /// Too many paused flows or events, or no event could be made: drop the flow.
         case full
+        /// The flow's app has its share of the paused flows or of the events: drop the flow.
+        case appFull
     }
 
     /// Pauses `flow` under `key`. A new key gets a new event from `makeEvent`, which receives the
@@ -154,6 +166,8 @@ public struct PendingTable<Flow> {
                              timeout: TimeInterval, holdFor: TimeInterval? = nil,
                              makeEvent: (TimeInterval) throws -> HookEvent) -> Added {
         guard flowCount < maximumFlows else { return .full }
+        let app = held(by: key.identity)
+        guard app.flows < maximumFlowsPerApp else { return .appFull }
         let pendingFlow = PendingFlow(flow: flow, addressMatches: addressMatches, holdUntil: holdFor.map { now + $0 })
         if let id = idsByKey[key], var entry = entries[id] {
             guard entry.flows.count < maximumFlowsPerEvent else { return .full }
@@ -163,6 +177,8 @@ public struct PendingTable<Flow> {
             return .joined(eventID: id)
         }
         guard entries.count < maximumEvents else { return .full }
+        // An event with no flow left still counts: it stays until its deadline.
+        guard app.events < maximumEventsPerApp else { return .appFull }
         for _ in 0..<3 {
             guard let event = try? makeEvent(timeout) else { return .full }
             guard entries[event.id] == nil else { continue }
@@ -172,6 +188,16 @@ public struct PendingTable<Flow> {
             return .raised(event)
         }
         return .full
+    }
+
+    /// The events pending for this app, and their flows.
+    private func held(by identity: AppIdentity) -> (events: Int, flows: Int) {
+        var held = (events: 0, flows: 0)
+        for entry in entries.values where entry.key.identity == identity {
+            held.events += 1
+            held.flows += entry.flows.count
+        }
+        return held
     }
 
     /// Removes and returns the events whose deadline has passed.

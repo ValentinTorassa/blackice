@@ -178,6 +178,31 @@ struct FlowReportTests {
         ])
     }
 
+    /// A full hold, or a full share of it, and the quiet connection a newer one replaced, each read
+    /// as what happened.
+    @Test func capacityDropsSayWhoseShareWasFull() {
+        let text = ([line("drop evicted_quiet app=\(node) <private>"),
+                     line("drop evicted_quiet app=\(node) <private>"),
+                     line("drop evicted_quiet app=\(node) <private>"),
+                     line("drop hold_capacity_app app=\(node) <private>"),
+                     line("drop hold_capacity_app app=\(node) <private>"),
+                     line("drop hold_capacity app=\(tool) <private>")])
+            .joined(separator: "\n")
+        #expect(FlowReport(logText: text).summary(last: "1h") == [
+            "Last 1h: 6 connections, 6 dropped",
+            "",
+            "Dropped",
+            "  3  sent nothing, place given to a newer one",
+            "       3  cdhash 3f1c6a0b",
+            "  2  its app has too many waiting for a hello",
+            "       2  cdhash 3f1c6a0b",
+            "  1  too many waiting for a hello",
+            "       1  com.example.tool (ABCDE12345)",
+        ])
+        #expect(FlowReport.words("ask_capacity_app") == "its app has too many waiting for an answer")
+        #expect(FlowReport.words("ask_capacity") == "too many waiting for an answer")
+    }
+
     @Test func sumsUpTheDryRunOfAskMode() {
         let apps = (1...7).map { "apple/com.apple.service\($0)" }
         var lines = Array(repeating: line("allow accept_all app=\(node) would=ask <private>"), count: 12)
