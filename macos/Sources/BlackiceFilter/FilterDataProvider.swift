@@ -254,12 +254,18 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
         let direction: FlowDirection = flow.direction == .outbound ? .outbound :
             (flow.direction == .inbound ? .inbound : .unknown)
         let address = endpoint.flatMap { BlackiceCore.IPAddress($0.hostname) }
-        let facts = FlowFacts(direction: direction, identity: CodeIdentity.resolve(auditToken: flow.sourceAppAuditToken),
+        let identity = CodeIdentity.resolve(auditToken: flow.sourceAppAuditToken)
+        // Only a cdhash rule reads it, to tell an interpreter by its name (Interpreters).
+        var executablePath: String?
+        if case .adHoc = identity, let token = flow.sourceAppAuditToken {
+            executablePath = CodeIdentity.kernelPath(auditToken: token)
+        }
+        let facts = FlowFacts(direction: direction, identity: identity,
                               internetSocket: internet && (tcp || udp), tcp: tcp,
                               hostname: socket?.remoteHostname, port: endpoint.flatMap { UInt16($0.port) },
                               remoteAddress: address,
                               process: flow.sourceProcessAuditToken.map { CodeIdentity.resolve(auditToken: $0) },
-                              dnsNames: dnsNames.names(for: address))
+                              dnsNames: dnsNames.names(for: address), executablePath: executablePath)
         let paused = Paused(flow: flow, facts: facts, serverName: nil, echPresent: false, stage: .newFlow,
                             generation: snapshot?.generation ?? 0)
         // Accept-all's dry run of ask mode, for the log line only: it changes nothing for the flow.

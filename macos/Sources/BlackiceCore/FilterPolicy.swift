@@ -4,15 +4,18 @@ import Foundation
 // verdict into NetworkExtension verdicts; everything that decides lives here and is unit-tested.
 //
 // - accept-all allows every flow (and the extension logs it);
-// - block-all allows a flow only when an [[allow]] rule names its verified signing identity and
-//   its host, and the flow's address is among the host's answers from the system resolver. The
-//   built-in table of macOS services (AppleServices) counts like a rule unless blackice.toml
-//   turns it off, a rule with hosts = ["*"] allows everything its app does, with no host
-//   or address check, and an address or CIDR entry allows the addresses it holds, by address;
+// - block-all allows a flow only when an [[allow]] rule names its verified signing identity, or
+//   the cdhash of ad hoc code, and its host, and the flow's address is among the host's answers
+//   from the system resolver. The built-in table of macOS services (AppleServices) counts like a
+//   rule unless blackice.toml turns it off, a rule with hosts = ["*"] allows everything its app
+//   does, with no host or address check, and an address or CIDR entry allows the addresses it
+//   holds, by address;
 // - ask allows what block-all allows, plus what a current approval names (with the same address
 //   check), and pauses the rest to ask, but drops an app and host denied in the last 10 minutes
 //   (`denied;remembered`) instead of asking again. Ad hoc signed code has no signing identity,
-//   so in ask mode it is named by its cdhash; rules never name it. A TCP flow with no name at
+//   so it is named by its cdhash: in ask mode always, in block-all when a cdhash rule names it.
+//   A cdhash rule never counts for an interpreter (Interpreters): its flows are decided as if
+//   the rule were not there, with `;interpreter` after the reason. A TCP flow with no name at
 //   all is asked about by its address, and an approval for that address allows it; a UDP one
 //   is not.
 // A host or address that does not check out is "no rule or approval matches", never an error.
@@ -52,10 +55,14 @@ public struct FlowFacts: Equatable, Sendable {
     /// for, as the extension saw them in its DNS responses (DNSNameTable). Each came with the
     /// address, so it passes the host and address check for this flow.
     public let dnsNames: Set<String>
+    /// For ad hoc code, the path of the executable as the kernel has it (CodeIdentity.kernelPath):
+    /// a cdhash rule never counts for an interpreter, told by this file's name (`Interpreters`).
+    /// nil for other code, and when the kernel does not say.
+    public let executablePath: String?
 
     public init(direction: FlowDirection, identity: IdentityResolution, internetSocket: Bool, tcp: Bool,
                 hostname: String?, port: UInt16?, remoteAddress: IPAddress?, process: IdentityResolution? = nil,
-                dnsNames: Set<String> = []) {
+                dnsNames: Set<String> = [], executablePath: String? = nil) {
         self.direction = direction
         self.identity = identity
         self.process = process
@@ -69,6 +76,7 @@ public struct FlowFacts: Equatable, Sendable {
         self.port = port
         self.remoteAddress = remoteAddress
         self.dnsNames = dnsNames
+        self.executablePath = executablePath
     }
 
     /// The one name the remote address was given for, when there is exactly one. Several
@@ -171,13 +179,22 @@ public enum FilterPolicy {
            !snapshot.config.allow.contains(where: { $0.names(systemResolver) }) {
             return .drop(reason: "encrypted_dns")
         }
-        guard let identity = nameable(flow.identity, snapshot.mode) else { return .drop(reason: identityReason(flow.identity)) }
+        // From here on the app counts, and its verdict says when rules naming it were set aside.
+        let aside = setAside(flow, snapshot.config)
+        return decideApp(flow, snapshot, context, aside: aside).adding(aside)
+    }
+
+    /// `decide` for a flow that nothing lets through or drops before its app is looked at.
+    private static func decideApp(_ flow: FlowFacts, _ snapshot: ProviderConfiguration, _ context: PolicyContext,
+                                  aside: String) -> FlowVerdict {
+        guard let identity = nameable(flow, snapshot, aside: aside) else { return .drop(reason: identityReason(flow.identity)) }
+        let rules = aside.isEmpty ? identity : nil
         guard flow.internetSocket else { return .drop(reason: "unsupported_socket") }
-        if let verdict = anyHost(flow, snapshot) ?? byAddressRule(flow, snapshot) { return verdict }
+        if let verdict = anyHost(rules, snapshot) ?? byAddressRule(rules, flow, snapshot) { return verdict }
         let tls = flow.tcp && flow.port == tlsPort
         if let raw = flow.hostname {
             guard let host = normalizeHost(raw) else { return .drop(reason: "hostname_invalid") }
-            let verdict = named(identity, host: host, flow, snapshot, context, suffix: "")
+            let verdict = named(identity, rules, host: host, flow, snapshot, context, suffix: "")
             // The app chose this host name. On the TLS port the server name it sends picks the
             // site behind the address, so it is read before the flow passes, as for a DNS name.
             if tls, case .allow = verdict { return .readServerName }
@@ -187,11 +204,11 @@ public enum FilterPolicy {
         // about, and asks about a TCP flow's address when there is none to read; block-all reads it only
         // when a rule or the Apple services table could match this app.
         // The system resolver gave the address for exactly one name: decide on that name now.
-        if let name = flow.dnsName, let verdict = dnsNamed(identity, name: name, tls: tls, snapshot, context) {
+        if let name = flow.dnsName, let verdict = dnsNamed(identity, rules, name: name, tls: tls, snapshot, context) {
             return verdict
         }
         if snapshot.mode == .ask { return tls ? .readServerName : byAddress(identity, flow, context) }
-        let hasRule = flow.identity.verifiedIdentity.map { hasRuleOrService($0, snapshot.config) } ?? false
+        let hasRule = hasRuleOrService(identity, rules, snapshot.config)
         if hasRule && tls { return .readServerName }
         return .drop(reason: hasRule ? "no_host" : "no_rule")
     }
@@ -208,16 +225,22 @@ public enum FilterPolicy {
             // about the address, as off port 443. A client that connects to an address sends no
             // server name (RFC 6066 has no place for one), as `curl https://100.66.32.75/` does.
             if reason == "sni_missing", snapshot.mode == .ask, flow.hostname == nil, flow.dnsName == nil,
-               let identity = nameable(flow.identity, snapshot.mode) {
+               let identity = flow.identity.appIdentity {
+                // An address rule set aside would have let it through before its hello: it says so.
+                let aside = setAside(flow, snapshot.config)
                 let verdict = byAddress(identity, flow, context)
-                if case .drop(let why) = verdict { return .drop(reason: why == rememberedDenial ? why : reason) }
-                return verdict.adding(";sni_missing")
+                if case .drop(let why) = verdict { return .drop(reason: (why == rememberedDenial ? why : reason) + aside) }
+                return verdict.adding(";sni_missing" + aside)
             }
             return .drop(reason: reason)
         case .serverName(let name, let encrypted):
             if snapshot.mode == .acceptAll { return .allow(reason: "accept_all") }
-            guard let identity = nameable(flow.identity, snapshot.mode) else { return .drop(reason: identityReason(flow.identity)) }
-            if let verdict = anyHost(flow, snapshot) ?? byAddressRule(flow, snapshot) { return verdict }
+            let aside = setAside(flow, snapshot.config)
+            guard let identity = nameable(flow, snapshot, aside: aside) else {
+                return .drop(reason: identityReason(flow.identity) + aside)
+            }
+            let rules = aside.isEmpty ? identity : nil
+            if let verdict = anyHost(rules, snapshot) ?? byAddressRule(rules, flow, snapshot) { return verdict }
             // Encrypted Client Hello (ECH): the server name in the clear is then the provider's
             // public front end (cloudflare-ech.com, say), and the site the connection reaches is
             // in the encrypted inner hello, which blackice cannot read. The outer name is judged
@@ -227,13 +250,13 @@ public enum FilterPolicy {
             // approval for a front-end name covers every site behind it, for that app; and the
             // app writes the outer name itself, so where the provider decrypts ECH whatever that
             // name says, any covered name it hosts can serve as the front end. Reasons say ";ech".
-            let verdict = serverNamed(identity, name, flow, snapshot, context)
-            return encrypted ? verdict.adding(";ech") : verdict
+            let verdict = serverNamed(identity, rules, name, flow, snapshot, context)
+            return (encrypted ? verdict.adding(";ech") : verdict).adding(aside)
         }
     }
 
     /// A held flow's server name, read in the clear.
-    private static func serverNamed(_ identity: AppIdentity, _ name: String, _ flow: FlowFacts,
+    private static func serverNamed(_ identity: AppIdentity, _ rules: AppIdentity?, _ name: String, _ flow: FlowFacts,
                                     _ snapshot: ProviderConfiguration, _ context: PolicyContext) -> FlowVerdict {
         guard let host = normalizeHost(name) else { return .drop(reason: "server_name_invalid") }
         // The flow's host before its hello: the host name from the system, or the one name the
@@ -249,22 +272,21 @@ public enum FilterPolicy {
         // address: that server name passes only if a rule or an approval covers it (and the
         // address checks out), never by asking.
         if let claimed, host != claimed {
-            guard covers(identity, host, snapshot, context) else { return .drop(reason: "server_name_mismatch") }
-            let verdict = named(identity, host: host, flow, snapshot, context, suffix: ";server_name")
+            guard covers(identity, rules, host, snapshot, context) else { return .drop(reason: "server_name_mismatch") }
+            let verdict = named(identity, rules, host: host, flow, snapshot, context, suffix: ";server_name")
             switch verdict {
             case .allow, .resolveHost: return verdict
             default: return .drop(reason: "server_name_mismatch")
             }
         }
-        return named(identity, host: host, flow, snapshot, context, suffix: ";server_name")
+        return named(identity, rules, host: host, flow, snapshot, context, suffix: ";server_name")
     }
 
-    /// A rule with hosts = ["*"] for the flow's verified identity allows it outright: no host name
-    /// is needed and no address is checked. Checked before anything looks at the host, so a VPN
+    /// A rule with hosts = ["*"] for the code `rules` names allows it outright: no host name is
+    /// needed and no address is checked. Checked before anything looks at the host, so a VPN
     /// client or DNS proxy that connects by address is allowed instead of dropped as `no_host`.
-    private static func anyHost(_ flow: FlowFacts, _ snapshot: ProviderConfiguration) -> FlowVerdict? {
-        guard let signing = flow.identity.verifiedIdentity,
-              let rule = snapshot.config.anyHostRule(for: signing) else { return nil }
+    private static func anyHost(_ rules: AppIdentity?, _ snapshot: ProviderConfiguration) -> FlowVerdict? {
+        guard let rules, let rule = snapshot.config.anyHostRule(for: rules) else { return nil }
         return .allow(reason: "rule_line_\(rule.line)")
     }
 
@@ -272,9 +294,10 @@ public enum FilterPolicy {
     /// address, with or without a host name. The rule names the destination itself, so no lookup
     /// applies, and on the TLS port the server name is not read: like `*`, it covers whatever site
     /// the app reaches at that address.
-    private static func byAddressRule(_ flow: FlowFacts, _ snapshot: ProviderConfiguration) -> FlowVerdict? {
-        guard let signing = flow.identity.verifiedIdentity, let address = flow.remoteAddress,
-              let rule = snapshot.config.addressRule(for: signing, address: address) else { return nil }
+    private static func byAddressRule(_ rules: AppIdentity?, _ flow: FlowFacts,
+                                      _ snapshot: ProviderConfiguration) -> FlowVerdict? {
+        guard let rules, let address = flow.remoteAddress,
+              let rule = snapshot.config.addressRule(for: rules, address: address) else { return nil }
         return .allow(reason: "rule_line_\(rule.line);address")
     }
 
@@ -333,9 +356,18 @@ public enum FilterPolicy {
         return address.description
     }
 
-    /// Whether a rule names this app (for any host), or the Apple services table covers it.
-    private static func hasRuleOrService(_ signing: SigningIdentity, _ config: BlackiceConfig) -> Bool {
-        config.allow.contains { $0.names(signing) } || (config.appleServices && AppleServices.covers(signing))
+    /// Whether a rule names the code `rules` names (for any host), or the Apple services table
+    /// covers this app.
+    private static func hasRuleOrService(_ identity: AppIdentity, _ rules: AppIdentity?, _ config: BlackiceConfig) -> Bool {
+        if let rules, config.hasRule(for: rules) { return true }
+        guard config.appleServices, case .signed(let signing) = identity else { return false }
+        return AppleServices.covers(signing)
+    }
+
+    /// Whether the Apple services table lets this app reach this host. Only Apple's signed code is in it.
+    private static func appleService(_ identity: AppIdentity, _ host: String, _ config: BlackiceConfig) -> Bool {
+        guard config.appleServices, case .signed(let signing) = identity else { return false }
+        return AppleServices.allows(signing, host: host)
     }
 
     /// A flow with no host name from the system whose address the resolver gave for exactly one
@@ -343,14 +375,10 @@ public enum FilterPolicy {
     /// for it count; on the TLS port the ClientHello is still read, and a server name other than
     /// this one must be covered by itself. Ask mode asks about the name before the app has sent
     /// anything. nil in block-all when nothing covers the name: the server name may still be read.
-    private static func dnsNamed(_ identity: AppIdentity, name: String, tls: Bool,
+    private static func dnsNamed(_ identity: AppIdentity, _ rules: AppIdentity?, name: String, tls: Bool,
                                  _ snapshot: ProviderConfiguration, _ context: PolicyContext) -> FlowVerdict? {
-        var line: Int?
-        var service = false
-        if case .signed(let signing) = identity {
-            line = snapshot.config.allowRule(for: signing, host: name)?.line
-            service = line == nil && snapshot.config.appleServices && AppleServices.allows(signing, host: name)
-        }
+        let line = rules.flatMap { snapshot.config.allowRule(for: $0, host: name) }?.line
+        let service = line == nil && appleService(identity, name, snapshot.config)
         let ask = snapshot.mode == .ask
         if line != nil || service || (ask && context.approved(identity, name)) {
             if tls { return .readServerName }
@@ -363,12 +391,10 @@ public enum FilterPolicy {
 
     /// Whether a rule, the Apple services table, or in ask mode a current approval, names this app
     /// and host.
-    private static func covers(_ identity: AppIdentity, _ host: String,
+    private static func covers(_ identity: AppIdentity, _ rules: AppIdentity?, _ host: String,
                                _ snapshot: ProviderConfiguration, _ context: PolicyContext) -> Bool {
-        if case .signed(let signing) = identity {
-            if snapshot.config.allowRule(for: signing, host: host) != nil { return true }
-            if snapshot.config.appleServices && AppleServices.allows(signing, host: host) { return true }
-        }
+        if let rules, snapshot.config.allowRule(for: rules, host: host) != nil { return true }
+        if appleService(identity, host, snapshot.config) { return true }
         return snapshot.mode == .ask && context.approved(identity, host)
     }
 
@@ -432,15 +458,11 @@ public enum FilterPolicy {
     }
 
     /// A flow with a host name: rules, then the Apple services table, then approvals, each only once
-    /// the address checks out.
-    private static func named(_ identity: AppIdentity, host: String, _ flow: FlowFacts,
+    /// the address checks out. `identity` is what approvals name, `rules` what rules may name.
+    private static func named(_ identity: AppIdentity, _ rules: AppIdentity?, host: String, _ flow: FlowFacts,
                               _ snapshot: ProviderConfiguration, _ context: PolicyContext, suffix: String) -> FlowVerdict {
-        var line: Int?
-        var service = false
-        if case .signed(let signing) = identity {
-            line = snapshot.config.allowRule(for: signing, host: host)?.line
-            service = line == nil && snapshot.config.appleServices && AppleServices.allows(signing, host: host)
-        }
+        let line = rules.flatMap { snapshot.config.allowRule(for: $0, host: host) }?.line
+        let service = line == nil && appleService(identity, host, snapshot.config)
         let ask = snapshot.mode == .ask
         let approved = ask && context.approved(identity, host)
         // Block-all with no rule or service by name: nothing to check.
@@ -469,10 +491,27 @@ public enum FilterPolicy {
         }
     }
 
-    /// Block-all needs a signing identity; ask mode also takes ad hoc code, by cdhash.
-    private static func nameable(_ identity: IdentityResolution, _ mode: Mode) -> AppIdentity? {
-        if mode == .ask { return identity.appIdentity }
-        return identity.verifiedIdentity.map { .signed($0) }
+    /// The code approvals, denials and events name: ask mode takes a signing identity or the
+    /// cdhash of ad hoc code. Block-all takes ad hoc code only when a cdhash rule counts for it, and
+    /// drops the rest as before cdhash rules (`adhoc_code`).
+    private static func nameable(_ flow: FlowFacts, _ snapshot: ProviderConfiguration, aside: String) -> AppIdentity? {
+        if snapshot.mode == .ask { return flow.identity.appIdentity }
+        switch flow.identity {
+        case .verified(let signing): return .signed(signing)
+        case .adHoc(let cdhash):
+            let code = AppIdentity.cdhash(cdhash)
+            return aside.isEmpty && snapshot.config.hasRule(for: code) ? code : nil
+        case .unresolved, .invalidSignature: return nil
+        }
+    }
+
+    /// What a flow's reasons end with when the rules that name its cdhash count as not there:
+    /// `;interpreter` when its executable is an interpreter (`Interpreters`), `;no_path` when the
+    /// kernel gave no path to tell. Empty for signed code, and for ad hoc code no rule names.
+    private static func setAside(_ flow: FlowFacts, _ config: BlackiceConfig) -> String {
+        guard case .adHoc(let cdhash) = flow.identity, config.hasRule(for: .cdhash(cdhash)) else { return "" }
+        guard let path = flow.executablePath else { return ";no_path" }
+        return Interpreters.contains(path: path) ? ";interpreter" : ""
     }
 
     private static func identityReason(_ identity: IdentityResolution) -> String {

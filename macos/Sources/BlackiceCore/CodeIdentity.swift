@@ -207,9 +207,10 @@ public enum CodeIdentity {
 
     /// What the kernel alone says about the code behind this audit token, for a process whose
     /// program file Security cannot read: its cdhash, while the kernel reports the code valid. The
-    /// signature on disk is not checked, so this is never a signing identity: no rule matches it,
-    /// block-all drops it, and in ask mode an approval names this exact build. The kernel checks
-    /// each page the process runs against the code directory this cdhash names.
+    /// signature on disk is not checked, so this is never a signing identity: no `app` rule matches
+    /// it, and a `cdhash` rule or an approval names this exact build, as for ad hoc code; with no
+    /// such rule, block-all drops it. The kernel checks each page the process runs against the code
+    /// directory this cdhash names.
     static func kernelResolution(auditToken: Data, valid: (Data) -> Bool = kernelReportsValid,
                                  cdhash: (Data) -> String? = kernelCDHash) -> IdentityResolution {
         guard valid(auditToken), let hash = cdhash(auditToken), validCDHash(hash) else { return .unresolved }
@@ -305,9 +306,10 @@ public enum CodeIdentity {
         return (url as URL).path
     }
 
-    /// The executable's path as the kernel has it for this audit token. proc_pidpath_audittoken
-    /// checks the PID version in the token, so it never names another process.
-    static func kernelPath(auditToken: Data) -> String? {
+    /// The executable's path as the kernel has it for this audit token: the program file itself,
+    /// never a bundle, with symbolic links resolved. proc_pidpath_audittoken checks the PID version
+    /// in the token, so it never names another process, nor the one after an exec.
+    public static func kernelPath(auditToken: Data) -> String? {
         guard auditToken.count == MemoryLayout<audit_token_t>.size else { return nil }
         var token = audit_token_t()
         _ = withUnsafeMutableBytes(of: &token) { auditToken.copyBytes(to: $0) }
@@ -321,7 +323,7 @@ public enum CodeIdentity {
     /// The identity a rule needs for the app or binary at `path`, for `blackice init`: its signing
     /// identifier, and its Team ID unless it is Apple platform code. The signature on disk must
     /// satisfy the same requirement the filter checks a running process against. nil for code that
-    /// is unsigned, ad hoc signed or invalid, which a rule cannot name.
+    /// is unsigned, ad hoc signed or invalid, which no `app` rule can name.
     public static func identity(atPath path: String) -> SigningIdentity? {
         var staticCode: SecStaticCode?
         guard SecStaticCodeCreateWithPath(URL(fileURLWithPath: path) as CFURL, [], &staticCode) == errSecSuccess,

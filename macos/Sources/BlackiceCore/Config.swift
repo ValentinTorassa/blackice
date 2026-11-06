@@ -16,12 +16,12 @@ public enum Mode: String, CaseIterable, Sendable {
     case blockAll = "block-all"
 }
 
-/// A permanent rule: this app may reach these hosts, in every mode.
+/// A permanent rule: this code may reach these hosts, in every mode.
 public struct AllowRule: Equatable, Sendable {
-    /// The signing identifier, checked against the running code.
-    public let app: String
-    /// The Team ID. nil means Apple platform code, which is signed without one.
-    public let team: String?
+    /// The code the rule names: a signing identifier and Team ID (`app` and `team`), checked
+    /// against the running code, or the cdhash of one ad hoc build (`cdhash`). A cdhash rule never
+    /// counts for an interpreter (see `Interpreters`).
+    public let code: AppIdentity
     /// The host name entries. Empty when `anyHost` is set.
     public let hosts: [DomainPattern]
     /// The address and CIDR entries. A flow whose remote address is in one is allowed by that
@@ -33,19 +33,37 @@ public struct AllowRule: Equatable, Sendable {
     /// Line of the rule's [[allow]] header.
     public let line: Int
 
-    public func names(_ identity: SigningIdentity) -> Bool {
-        identity.signingID == app && identity.teamID == team
+    /// The signing identifier; nil for a cdhash rule.
+    public var app: String? {
+        if case .signed(let identity) = code { return identity.signingID }
+        return nil
     }
+
+    /// The Team ID; nil for Apple platform code, which is signed without one, and for a cdhash rule.
+    public var team: String? {
+        if case .signed(let identity) = code { return identity.teamID }
+        return nil
+    }
+
+    /// The cdhash, 40 lower-case hex digits; nil for a rule with `app`.
+    public var cdhash: String? {
+        if case .cdhash(let hash) = code { return hash }
+        return nil
+    }
+
+    public func names(_ code: AppIdentity) -> Bool { self.code == code }
+
+    public func names(_ identity: SigningIdentity) -> Bool { names(.signed(identity)) }
 
     /// Whether the rule names this host. Always false for a `*` rule, which names no host:
     /// see `BlackiceConfig.anyHostRule(for:)`. `host` must already be normalized.
-    public func matches(_ identity: SigningIdentity, host: String) -> Bool {
-        names(identity) && hosts.contains { $0.matches(host) }
+    public func matches(_ code: AppIdentity, host: String) -> Bool {
+        names(code) && hosts.contains { $0.matches(host) }
     }
 
-    /// Whether the rule names this app and an address entry holds this address.
-    public func matches(_ identity: SigningIdentity, address: IPAddress) -> Bool {
-        names(identity) && addresses.contains { $0.contains(address) }
+    /// Whether the rule names this code and an address entry holds this address.
+    public func matches(_ code: AppIdentity, address: IPAddress) -> Bool {
+        names(code) && addresses.contains { $0.contains(address) }
     }
 }
 
@@ -210,21 +228,36 @@ public struct BlackiceConfig: Equatable, Sendable {
         return Answering(agents: agents, answerer: answerer)
     }
 
-    /// The first rule that names this app and this host, if any. Rules say nothing about ports.
+    /// The first rule that names this code and this host, if any. Rules say nothing about ports.
     /// A `*` rule names no host; see `anyHostRule(for:)`.
-    public func allowRule(for identity: SigningIdentity, host: String) -> AllowRule? {
+    public func allowRule(for code: AppIdentity, host: String) -> AllowRule? {
         guard let host = normalizeHost(host) else { return nil }
-        return allow.first { $0.matches(identity, host: host) }
+        return allow.first { $0.matches(code, host: host) }
     }
 
-    /// The first `hosts = ["*"]` rule for this app, if any.
-    public func anyHostRule(for identity: SigningIdentity) -> AllowRule? {
-        allow.first { $0.anyHost && $0.names(identity) }
+    public func allowRule(for identity: SigningIdentity, host: String) -> AllowRule? {
+        allowRule(for: .signed(identity), host: host)
     }
 
-    /// The first rule that names this app and has an address entry that holds this address.
+    /// The first `hosts = ["*"]` rule for this code, if any.
+    public func anyHostRule(for code: AppIdentity) -> AllowRule? {
+        allow.first { $0.anyHost && $0.names(code) }
+    }
+
+    public func anyHostRule(for identity: SigningIdentity) -> AllowRule? { anyHostRule(for: .signed(identity)) }
+
+    /// The first rule that names this code and has an address entry that holds this address.
+    public func addressRule(for code: AppIdentity, address: IPAddress) -> AllowRule? {
+        allow.first { $0.matches(code, address: address) }
+    }
+
     public func addressRule(for identity: SigningIdentity, address: IPAddress) -> AllowRule? {
-        allow.first { $0.matches(identity, address: address) }
+        addressRule(for: .signed(identity), address: address)
+    }
+
+    /// Whether any rule names this code, for any host.
+    public func hasRule(for code: AppIdentity) -> Bool {
+        allow.contains { $0.names(code) }
     }
 
     public var summary: String {
@@ -409,9 +442,30 @@ extension BlackiceConfig {
         return SigningIdentity(signingID: app, teamID: team)
     }
 
+    /// `app` and `team`, or `cdhash` alone, in [[allow]].
+    private static func ruleCode(_ table: Table) throws -> AppIdentity {
+        guard let entry = table.entries["cdhash"] else {
+            return .signed(try signingIdentity(table, missing: "[[allow]] needs an 'app' or a 'cdhash' key"))
+        }
+        if let appEntry = table.entries["app"] {
+            throw ConfigError(line: max(entry.line, appEntry.line), "[[allow]] takes 'app' or 'cdhash', not both")
+        }
+        // A cdhash names one build, and ad hoc code has no Team ID to check.
+        if let teamEntry = table.entries["team"] { throw ConfigError(line: teamEntry.line, "team goes with app, not cdhash") }
+        let text = try entry.string("cdhash")
+        // One spelling, the one codesign -dvvv and `blackice approve` lines print, as addresses have one.
+        if let lower = normalizeCDHash(text), lower != text {
+            throw ConfigError(line: entry.line, "cdhash must be lower case; write \(quoted(lower))")
+        }
+        guard validCDHash(text) else {
+            throw ConfigError(line: entry.line, "cdhash must be 40 hex digits, the CDHash that codesign -dvvv prints, " +
+                              "not \(quoted(text))")
+        }
+        return .cdhash(text)
+    }
+
     private static func allowRule(_ table: Table) throws -> AllowRule {
-        let identity = try signingIdentity(table, missing: "[[allow]] needs an 'app' key")
-        let (app, team) = (identity.signingID, identity.teamID)
+        let code = try ruleCode(table)
         guard let hostsEntry = table.entries["hosts"] else { throw ConfigError(line: table.line, "[[allow]] needs a 'hosts' key") }
         guard case .array(let items) = hostsEntry.value else {
             throw ConfigError(line: hostsEntry.line, "hosts must be an array of strings, not \(hostsEntry.value.typeName)")
@@ -426,7 +480,7 @@ extension BlackiceConfig {
             guard items.count == 1 else {
                 throw ConfigError(line: hostsEntry.line, "\"*\" must be the only entry in hosts")
             }
-            return AllowRule(app: app, team: team, hosts: [], addresses: [], anyHost: true, line: table.line)
+            return AllowRule(code: code, hosts: [], addresses: [], anyHost: true, line: table.line)
         }
         var patterns: [DomainPattern] = []
         var addresses: [AddressRange] = []
@@ -452,7 +506,7 @@ extension BlackiceConfig {
                 throw ConfigError(line: hostsEntry.line, "\(quoted(text)) appears twice in hosts")
             }
         }
-        return AllowRule(app: app, team: team, hosts: patterns, addresses: addresses, anyHost: false, line: table.line)
+        return AllowRule(code: code, hosts: patterns, addresses: addresses, anyHost: false, line: table.line)
     }
 
     /// An address or CIDR entry in hosts, or an error that says how to write it.
@@ -647,7 +701,7 @@ private enum TableKind: String {
     var keys: Set<String> {
         switch self {
         case .root: return ["mode", "timeout_seconds", "apple_services", "loopback"]
-        case .allow: return ["app", "team", "hosts"]
+        case .allow: return ["app", "team", "cdhash", "hosts"]
         case .hook: return ["on", "run", "program", "args", "env", "app", "team", "stdin", "instructions"]
         case .agent: return ["notes", "answers"]
         }

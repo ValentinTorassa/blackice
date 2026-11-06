@@ -446,8 +446,9 @@ struct ConfigWizard {
         if let path {
             guard fileExists(path) else { say("    There is nothing at \(path)."); return nil }
             guard let identity = identify(path) else {
-                say("    \(path) is unsigned or ad hoc signed, so a rule cannot name it.")
-                say("    In ask mode you can approve it when it connects instead.")
+                say("    \(path) is unsigned or ad hoc signed, so no app rule can name it.")
+                say("    For ad hoc code, add a cdhash rule to the file later; in ask mode you")
+                say("    can also approve it when it connects.")
                 return nil
             }
             return identity
@@ -515,6 +516,10 @@ struct ConfigWizard {
                 "# [[allow]]",
                 "# app = \"com.apple.curl\"",
                 "# hosts = [\"pypi.org\"]",
+                "# Ad hoc signed code, such as most Homebrew tools, has no signing identifier: name one build",
+                "# by its cdhash instead, cdhash = \"…\" in place of app and team (codesign -dvvv shows the",
+                "# CDHash). An upgrade changes it. A cdhash rule never counts for an interpreter (python,",
+                "# node, ruby, a shell).",
             ]
         } else {
             lines.append("# Apps that may reach these hosts in every mode.")

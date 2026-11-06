@@ -3,6 +3,10 @@
 ## Unreleased
 
 New:
+- An `[[allow]]` rule can name ad hoc signed code, such as Homebrew's `gh`, by `cdhash = "…"` in place of `app` and
+  `team`. It covers that one build, so after an upgrade ask mode asks again. It never counts for an interpreter (python,
+  node, the shells and others), whose connections are decided as without it (`;interpreter`). Until now ad hoc code
+  could only be approved, for at most 24 hours.
 - `blackice approve` takes `--host` up to 16 times: one app's hosts under one Touch ID, whose dialog names them all.
   Until now each host took its own command and Touch ID, seven for a mail CLI that signs in to Google and Microsoft.
 

@@ -39,6 +39,7 @@ The first `blackice start` writes this file, and `blackice agent connect` adds i
 Each `[[allow]]` rule names one app and the hosts it may reach, in every mode and on any port.
 
 - `app` and `team` are checked against the signature of the running code. Leave `team` out only for Apple's own programs, which macOS signs without one.
+- `cdhash`, in place of `app` and `team`, names one build of [ad hoc signed code](#ad-hoc-signed-code).
 - `hosts` takes host names (`api.example.com`), `*.example.com` (every subdomain, not `example.com` itself), and [addresses and ranges](#addresses-and-ranges), at most 256 entries.
 - A host name counts only when the address the app connects to was among that name's DNS answers. Otherwise ask mode asks and block-all drops, as `address_mismatch`.
 - On port 443 the TLS server name the app sends must match too, or the connection is dropped as `server_name_mismatch`.
@@ -51,6 +52,33 @@ $ codesign -dv /Applications/Tailscale.app/Contents/Library/SystemExtensions/*.s
 Identifier=io.tailscale.ipn.macsys.network-extension
 TeamIdentifier=W5364U7YZB
 ```
+
+## Ad hoc signed code
+
+Tools installed with Homebrew, uv, pipx, npm, nvm or `go install` are often signed ad hoc, with no developer identity, so no `app` rule can name them. A rule names one build by its cdhash instead: the `CDHash` that `codesign -dvvv` prints, also in the `blackice approve` line that `blackice pending` shows for it.
+
+```console
+$ codesign -dvvv /opt/homebrew/bin/gh 2>&1 | grep -E '^(Signature|CDHash)='
+Signature=adhoc
+CDHash=8fbec897bc4d2bf005bff3945dc800000ded2752
+```
+
+```toml
+[[allow]]
+cdhash = "8fbec897bc4d2bf005bff3945dc800000ded2752"   # Homebrew's gh 2.103.3
+hosts = ["api.github.com", "uploads.github.com"]
+```
+
+- `cdhash` is 40 lower-case hex digits, and takes no `team`. `hosts` works as in any rule, with the same checks, `*` and addresses included.
+- The rule covers that one build, in ask and block-all. An upgrade or a rebuild changes the cdhash: the rule stops matching, ask mode asks again, and the rule needs the new cdhash.
+- A [program in a folder macOS protects](#connections-with-no-name) is named by its cdhash too, and a cdhash rule covers it the same way.
+- The cdhash names the program file, not what it loads. Ad hoc code has no hardened runtime, so a program that starts it with `DYLD_INSERT_LIBRARIES`, or swaps a library it loads from `/opt/homebrew`, runs its own code under the rule. Give a cdhash rule only the hosts that tool needs.
+
+<Callout>
+
+**Never an interpreter.** A cdhash rule does not count for python, node, bun, deno, ruby, perl, php, lua, tclsh, R, julia, osascript or a shell, with or without a version in the name (`python3.14`): a rule for one would let every script it runs reach those hosts, a malicious dependency's included. Their connections are decided as if the rule were not there, and the log's reason ends in `;interpreter`. `blackice approve --cdhash` still approves one, for at most 24 hours. blackice tells an interpreter by its file name, and a copy under another name keeps the interpreter's cdhash, so never put an interpreter's cdhash in a rule.
+
+</Callout>
 
 ## Any destination
 
@@ -111,7 +139,7 @@ hosts = ["dns.google"]
 
 **An app updated while it runs** keeps the identity blackice checked, for as long as that process runs. An app that blackice first sees after its file was removed is named by its cdhash, as below, until you restart it.
 
-**Programs in folders macOS protects.** macOS keeps the filter from reading `~/Documents`, `~/Desktop`, `~/Downloads`, iCloud Drive and removable and network volumes, so it cannot check the signature of a program that runs from one of them, such as a tool a project installs in `node_modules` or a build in `target/`. blackice names that program by the cdhash of the code the kernel loaded, as it names ad hoc signed code: no `[[allow]]` rule matches it, ask mode asks about it, an approval covers that exact build, and block-all drops it. For a rule to match a tool, run it from another folder, such as `~/.local/bin` or a project outside those folders. Before 1.0.1 these connections were dropped as `unknown_identity`, with no question.
+**Programs in folders macOS protects.** macOS keeps the filter from reading `~/Documents`, `~/Desktop`, `~/Downloads`, iCloud Drive and removable and network volumes, so it cannot check the signature of a program that runs from one of them, such as a tool a project installs in `node_modules` or a build in `target/`. blackice names that program by the cdhash of the code the kernel loaded, as it names ad hoc signed code: no `app` rule matches it, a [`cdhash` rule](#ad-hoc-signed-code) or an approval covers that exact build, and otherwise ask mode asks about it and block-all drops it. For an `app` rule to match a tool, run it from another folder, such as `~/.local/bin` or a project outside those folders. Before 1.0.1 these connections were dropped as `unknown_identity`, with no question.
 
 ## macOS's own services
 
