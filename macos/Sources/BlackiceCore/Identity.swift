@@ -19,7 +19,9 @@ public struct SigningIdentity: Equatable, Hashable, Sendable {
 
 public enum IdentityResolution: Equatable, Sendable {
     case verified(SigningIdentity)
-    /// Valid code signed ad hoc, with no certificate, named by its code directory hash.
+    /// Valid code named by its code directory hash, with no signing identity: code signed ad hoc,
+    /// with no certificate, and code whose program file the filter cannot read, such as anything
+    /// under ~/Documents, whose signature on disk it cannot check (CodeIdentity.kernelResolution).
     case adHoc(cdhash: String)
     case unresolved
     case invalidSignature
@@ -49,8 +51,9 @@ public enum IdentityResolution: Equatable, Sendable {
 }
 
 /// The code an approval, a pending event or `blackice approve` names. Signed code is named by
-/// its signing identity, which survives updates. Ad hoc signed code has none, so it is named by
-/// its cdhash: a rebuild changes the cdhash, and the next connection asks again.
+/// its signing identity, which survives updates. Ad hoc signed code has none, and neither has code
+/// the filter cannot read from disk, so it is named by its cdhash: a rebuild changes the cdhash,
+/// and the next connection asks again.
 public enum AppIdentity: Hashable, Sendable {
     case signed(SigningIdentity)
     /// 40 lower-case hex digits; see `validCDHash`.

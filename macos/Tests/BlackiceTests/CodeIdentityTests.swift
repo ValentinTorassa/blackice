@@ -59,19 +59,56 @@ struct CodeIdentityTests {
         let boot = try #require(CodeIdentity.bootSession())
         let stored = try #require(cache.encoded(boot: boot, keep: CodeIdentity.kernelReportsValid))
 
+        let cdhash = try #require(CodeIdentity.kernelCDHash(auditToken: token))
         try FileManager.default.removeItem(at: copy)
         #expect(CodeIdentity.kernelReportsValid(auditToken: token))
         #expect(CodeIdentity.resolve(auditToken: token, cache: cache) == identity)
-        // A new run of the extension: nothing cached, then the stored cache.
+        // A new run of the extension: with nothing cached, Security cannot read the file, so the
+        // process is named by the kernel's cdhash, as when the file is under ~/Documents; then
+        // the stored cache brings the signing identity back.
         let fresh = IdentityCache()
-        #expect(CodeIdentity.resolve(auditToken: token, cache: fresh) == .unresolved)
+        #expect(CodeIdentity.resolve(auditToken: token, cache: fresh) == .adHoc(cdhash: cdhash))
+        #expect(fresh.count == 0)
         #expect(fresh.restore(stored, boot: boot) == 1)
         #expect(CodeIdentity.resolve(auditToken: token, cache: fresh) == identity)
 
         sleep.terminate()
         sleep.waitUntilExit()
         #expect(!CodeIdentity.kernelReportsValid(auditToken: token))
+        #expect(CodeIdentity.kernelCDHash(auditToken: token) == nil)
         #expect(CodeIdentity.resolve(auditToken: token, cache: cache) == .unresolved)
+        #expect(CodeIdentity.resolve(auditToken: token, cache: IdentityCache()) == .unresolved)
+    }
+
+    /// The kernel's cdhash for a process is the one Security reads from its signature, and its path
+    /// is the process's own executable.
+    @Test func theKernelNamesTheCodeItLoaded() throws {
+        let token = try #require(ownAuditToken())
+        var code: SecCode?
+        #expect(SecCodeCopySelf([], &code) == errSecSuccess)
+        var information: CFDictionary?
+        #expect(SecCodeCopySigningInformation(unsafeBitCast(try #require(code), to: SecStaticCode.self),
+                                              SecCSFlags(rawValue: kSecCSSigningInformation), &information) == errSecSuccess)
+        let unique = try #require((information as? [String: Any])?[kSecCodeInfoUnique as String] as? Data)
+        #expect(CodeIdentity.kernelCDHash(auditToken: token) == unique.map { String(format: "%02x", $0) }.joined())
+
+        var buffer = [CChar](repeating: 0, count: 4 * Int(MAXPATHLEN))
+        #expect(proc_pidpath(getpid(), &buffer, UInt32(buffer.count)) > 0)
+        let own = String(decoding: buffer.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }, as: UTF8.self)
+        #expect(CodeIdentity.kernelPath(auditToken: token) == own)
+        #expect(CodeIdentity.kernelPath(auditToken: Data(count: 3)) == nil)
+        #expect(CodeIdentity.kernelCDHash(auditToken: Data(count: 3)) == nil)
+    }
+
+    /// Without a readable file, only valid code with a well-formed cdhash gets a name, and never a
+    /// signing identity.
+    @Test func theKernelFallbackNamesOnlyValidCodeByItsCDHash() {
+        let token = Data(count: MemoryLayout<audit_token_t>.size)
+        let hash = String(repeating: "ab", count: 20)
+        #expect(CodeIdentity.kernelResolution(auditToken: token, valid: { _ in true }, cdhash: { _ in hash }) == .adHoc(cdhash: hash))
+        #expect(CodeIdentity.kernelResolution(auditToken: token, valid: { _ in false }, cdhash: { _ in hash }) == .unresolved)
+        #expect(CodeIdentity.kernelResolution(auditToken: token, valid: { _ in true }, cdhash: { _ in nil }) == .unresolved)
+        #expect(CodeIdentity.kernelResolution(auditToken: token, valid: { _ in true }, cdhash: { _ in "AB" + hash.dropFirst(2) }) == .unresolved)
     }
 
     /// A stored cache comes back only in the boot it was written in, and only with entries a
