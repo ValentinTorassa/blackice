@@ -1,0 +1,11 @@
+{
+  "event": "connection",
+  "id": "ev-0000001e",
+  "app": {
+    "cdhash": "0e93b1f74c2a58d6e7b3c9a1f4d08e25b6c7a391",
+    "path": "/Users/me/.cargo/bin/cargo"
+  },
+  "ip": "151.101.2.137",
+  "port": 443,
+  "host": "index.crates.io"
+}

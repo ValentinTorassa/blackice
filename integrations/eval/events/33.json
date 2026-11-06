@@ -1,0 +1,11 @@
+{
+  "event": "connection",
+  "id": "ev-00000021",
+  "app": {
+    "signing_id": "com.apple.curl",
+    "path": "/usr/bin/curl"
+  },
+  "ip": "20.150.90.4",
+  "port": 443,
+  "host": "backup7731.blob.core.windows.net"
+}

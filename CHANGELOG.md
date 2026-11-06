@@ -13,6 +13,15 @@ Changed:
   they run or not (`systemextensionsctl list` names them). Until now it showed a system extension only while it ran,
   so a VPN that was off at that moment was missing, and its extension then waited in ask mode and was dropped in
   block-all. A picked extension may reach any host, as a tunnel needs.
+- The agents' instructions say that the owner's notes add to them: a connection the instructions approve stays
+  approved when the notes do not mention it, or name other hosts for the same tool, and only a note that says to
+  deny something narrows them. With notes that listed `node`'s hosts, Codex read the list as all `node` may reach
+  and denied it Google Fonts.
+- A language toolchain in the hidden folder its manager keeps (`~/.local/bin`, uv's Pythons, `~/.cargo/bin`,
+  `~/.bun/bin`, nvm's and pyenv's versions and a few more) counts as an ordinary place to run from; any other hidden
+  folder is still not. Codex had denied a uv-managed Python reaching AWS for running from `~/.local/share/uv`.
+- GitHub Actions' log and artifact storage (`productionresultssaN.blob.core.windows.net`) joins the source hosts
+  developer tools may reach, so `gh run view --log` is approved.
 
 Fixed:
 - `blackice report` says when macOS dropped the filter's lines, instead of printing low counts as if they were all.

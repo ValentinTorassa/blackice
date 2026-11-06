@@ -155,7 +155,7 @@ than the hook's. `NOTES=file` puts that file in
 each event's directory as `notes.md`, as the daemon does with `notes` in `[agent]`. `KEEP=1` keeps the work
 directory with fx's stdout and stderr for each event.
 
-There are 28 events. The first twelve were fx's own, and they cover:
+There are 33 events. The first twelve were fx's own, and they cover:
 
 - apps reaching their own servers: VS Code, Chrome, Docker and GitHub Desktop;
 - two programs signed ad hoc, named by their cdhash: a Homebrew `gh` reaching the GitHub API,
@@ -172,9 +172,14 @@ unknown binary in `~/Downloads` reaching an ordinary host. Three more are connec
 is their address: `ssh` to a Tailscale address (approve), an unknown binary in `~/Downloads` to a public address on
 port 4444, and `curl` to a public address on 443 (both deny).
 
-The last five are developer tools: `curl` to the npm registry, a Homebrew `node` to Google Fonts and a Homebrew
+The next five are developer tools: `curl` to the npm registry, a Homebrew `node` to Google Fonts and a Homebrew
 `python3` to the PyPI file host (all approve), and `curl` to a paste site and that `node` to an unknown host (both
 deny).
+
+The last five are about where a tool runs from and GitHub Actions: a uv-managed `python3` in `~/.local/share/uv`
+to PyPI, `cargo` in `~/.cargo/bin` to the crates.io index and a Homebrew `gh` to GitHub Actions' log storage (all
+approve), and an unknown binary in a hidden folder that is no toolchain's and `curl` to an Azure storage account that
+is not GitHub's (both deny).
 
 The eval has not run with fx and the 0.4.0 skill yet. With the 0.3 skill, which had fx run `blackice approve` and `deny`
 with the token, against a stub:
