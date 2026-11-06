@@ -486,7 +486,8 @@ public enum CLI {
         let wizard = ConfigWizard(ask: ask, say: stdout, identify: interaction.identify,
                                   fileExists: interaction.fileExists, home: interaction.home,
                                   choose: interaction.choose, runningApps: interaction.runningApps,
-                                  networkExtensions: interaction.networkExtensions)
+                                  networkExtensions: interaction.networkExtensions, helpers: interaction.helpers,
+                                  isTunnel: interaction.isTunnel)
         let shown = Describe.path(path, home: interaction.home)
         if let heading { stdout(Style.heading(heading)) }
         guard let answers = wizard.run() else {

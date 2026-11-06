@@ -22,11 +22,17 @@ public struct Interaction {
     /// The network extensions macOS has activated and enabled, running or not, as their bundles in
     /// /Library/SystemExtensions. A VPN client's runs only while the VPN is on.
     public let networkExtensions: () -> [String]
+    /// The code bundles inside an app bundle (its helpers, XPC services and app extensions), as
+    /// paths. A browser's or a chat app's connections come from its helper, not from the app.
+    public let helpers: (String) -> [String]
+    /// Whether a network extension's bundle is a VPN tunnel (`isTunnel`); only those are ticked.
+    public let isTunnel: (String) -> Bool
 
     public init(ask: ((String) -> String?)?, createFile: @escaping (String, Data) throws -> Void,
                 identify: @escaping (String) -> SigningIdentity?, fileExists: @escaping (String) -> Bool,
                 home: String, version: String?, choose: ((Choice) -> [Int]?)? = nil,
-                runningApps: @escaping () -> [String] = { [] }, networkExtensions: @escaping () -> [String] = { [] }) {
+                runningApps: @escaping () -> [String] = { [] }, networkExtensions: @escaping () -> [String] = { [] },
+                helpers: @escaping (String) -> [String] = { _ in [] }, isTunnel: @escaping (String) -> Bool = { _ in true }) {
         self.ask = ask
         self.createFile = createFile
         self.identify = identify
@@ -36,6 +42,8 @@ public struct Interaction {
         self.choose = choose
         self.runningApps = runningApps
         self.networkExtensions = networkExtensions
+        self.helpers = helpers
+        self.isTunnel = isTunnel
     }
 
     /// No terminal: nothing is asked and nothing is written.
@@ -66,7 +74,33 @@ public struct Interaction {
         return Interaction(ask: ask, createFile: CLI.createFile, identify: CodeIdentity.identity(atPath:),
                            fileExists: { FileManager.default.fileExists(atPath: $0) }, home: home, version: version,
                            choose: choose, runningApps: { runningAppBundles(home: home) },
-                           networkExtensions: { activatedNetworkExtensionBundles() })
+                           networkExtensions: { activatedNetworkExtensionBundles() },
+                           helpers: { helperBundles(inside: $0) }, isTunnel: { isTunnel($0) })
+    }
+
+    /// The .app, .xpc and .appex bundles inside an .app bundle, outermost first, at most 64. Each
+    /// nested bundle is listed and not searched further, so a helper's own plug-ins are left out.
+    static func helperBundles(inside app: String) -> [String] {
+        let contents = app + "/Contents"
+        guard app.hasSuffix(".app"), let walker = FileManager.default.enumerator(atPath: contents) else { return [] }
+        var bundles: [String] = []
+        for case let relative as String in walker {
+            guard ["app", "xpc", "appex"].contains((relative as NSString).pathExtension) else { continue }
+            walker.skipDescendants()
+            bundles.append(contents + "/" + relative)
+            if bundles.count == 64 { break }
+        }
+        return bundles
+    }
+
+    /// Whether a network extension's bundle provides a VPN tunnel (a packet tunnel provider in its
+    /// Info.plist), as Tailscale's and WireGuard's do. A transparent or app proxy, such as a VPN
+    /// client's split tunneling, carries other apps' connections, so it is not ticked by default.
+    static func isTunnel(_ bundle: String) -> Bool {
+        guard let info = NSDictionary(contentsOfFile: bundle + "/Contents/Info.plist"),
+              let extensionInfo = info["NetworkExtension"] as? [String: Any],
+              let classes = extensionInfo["NEProviderClasses"] as? [String: Any] else { return false }
+        return classes.keys.contains("com.apple.networkextension.packet-tunnel")
     }
 
     /// The .app bundles in /Applications and ~/Applications that have a process running, by the
@@ -218,6 +252,25 @@ struct ConfigWizard {
     var choose: ((Choice) -> [Int]?)? = nil
     var runningApps: () -> [String] = { [] }
     var networkExtensions: () -> [String] = { [] }
+    var helpers: (String) -> [String] = { _ in [] }
+    var isTunnel: (String) -> Bool = { _ in true }
+
+    /// Apps most people let reach anything, ticked in the list when they run: browsers, chat and
+    /// video-call apps. Each is named by its signing identifier and Team ID, so a program that only
+    /// takes one's name is not ticked. Those a Mac had were read there with `codesign -dv` on
+    /// 6 November 2026 (Chrome, Firefox, Brave, Zen, Vivaldi, Slack, WhatsApp, Discord); the others are
+    /// their vendors' Team IDs, and a wrong one only leaves that app unticked. Safari is not here: its
+    /// connections come from WebKit's networking process, which every app's web views share.
+    static let commonApps: Set<SigningIdentity> = [
+        ("com.google.Chrome", "EQHXZ8M8AV"), ("com.google.Chrome.beta", "EQHXZ8M8AV"),
+        ("org.mozilla.firefox", "43AQ936H96"), ("com.brave.Browser", "KL8N8XSYF4"),
+        ("app.zen-browser.zen", "9V5K9TP787"), ("com.vivaldi.Vivaldi", "4XF3XNRN6Y"),
+        ("company.thebrowser.Browser", "S6N382Y83G"), ("com.microsoft.edgemac", "UBF8T346G9"),
+        ("com.tinyspeck.slackmacgap", "BQR82RBBHL"), ("net.whatsapp.WhatsApp", "57T9237FN3"),
+        ("com.hnc.Discord", "53Q6R32WPB"), ("ru.keepcoder.Telegram", "6N38VWS5BX"),
+        ("org.whispersystems.signal-desktop", "U68MSDN6DR"), ("us.zoom.xos", "BJ4HAAB9B3"),
+        ("com.microsoft.teams2", "UBF8T346G9"),
+    ].reduce(into: []) { $0.insert(SigningIdentity(signingID: $1.0, teamID: $1.1)) }
 
     /// nil when the input ended (Control-D) before the last answer. Everything is indented under
     /// the step's title, which the caller prints.
@@ -297,34 +350,59 @@ struct ConfigWizard {
         return answers
     }
 
-    /// Apps to trust, each to reach any host: first the network extensions macOS has activated,
-    /// ticked, then the apps running now. A VPN client's extension carries its tunnel, and often the
-    /// Mac's DNS lookups: with no rule its connections wait in ask mode and are dropped in block-all,
-    /// and on 3 November 2026 Tailscale's sent most of the events in ask mode. The person can untick
-    /// one. "Another app" asks for a path or name and its hosts, as the typed questions do.
+    /// Apps to trust, each to reach any host: first the VPN tunnels macOS has activated and the common
+    /// apps running now (commonApps), ticked, then the other network extensions (proxies, which
+    /// carry other apps' connections) and the other apps running now, unticked. A VPN
+    /// client's extension carries its tunnel, and often the Mac's DNS lookups: with no rule its
+    /// connections wait in ask mode and are dropped in block-all, and on 3 November 2026 Tailscale's
+    /// sent most of the events in ask mode. The person can untick any. A picked app's rule covers its
+    /// helpers signed by the same team too (appRules). "Another app" asks for a path or name and its
+    /// hosts, as the typed questions do.
     private func pickApps(_ choose: (Choice) -> [Int]?) -> [Rule]? {
         var seen = Set<SigningIdentity>()
         // Each app named its own bundle, so the name is escaped, in the list and in what follows.
-        func listed(_ paths: [String]) -> [(name: String, identity: SigningIdentity)] {
+        func listed(_ paths: [String]) -> [(name: String, identity: SigningIdentity, path: String)] {
             paths.compactMap { path in
                 guard let identity = identify(path), seen.insert(identity).inserted else { return nil }
-                return (Describe.terminalSafe(Interaction.appName(path)), identity)
+                return (Describe.terminalSafe(Interaction.appName(path)), identity, path)
             }
         }
         let extensions = listed(networkExtensions())
-        let apps = Array((extensions + listed(runningApps())).prefix(Self.maximumRules))
+        let tunnels = extensions.filter { isTunnel($0.path) }
+        let proxies = extensions.filter { !isTunnel($0.path) }
+        let running = listed(runningApps())
+        let common = running.filter { Self.commonApps.contains($0.identity) }
+        let apps = Array((tunnels + common + proxies + running.filter { !Self.commonApps.contains($0.identity) })
+            .prefix(Self.maximumRules))
+        let ticked = min(apps.count, tunnels.count + common.count)
         let other = "Another app: type its path or name"
         guard let picks = choose(Choice(options: apps.map(\.name) + [other], multiple: true,
-                                        initial: Array(apps.indices.prefix(extensions.count)),
+                                        initial: Array(0..<ticked),
                                         prompt: "  Which apps may connect anywhere, in every mode?",
                                         labels: apps.map(\.name) + ["another app"])) else { return nil }
         var rules: [Rule] = []
         for index in picks where index < apps.count {
-            rules.append(Rule(identity: apps[index].identity, hosts: ["*"]))
+            rules += appRules(apps[index].identity, path: apps[index].path, after: rules)
         }
         guard picks.contains(apps.count) else { return rules }
         say("  Other apps: a path or signing identifier per line, then an empty line.")
         return typedRules(from: rules)
+    }
+
+    /// The rules for a picked app: the app itself, and each helper inside it signed by the same team
+    /// (Chrome's com.google.Chrome.helper, Slack's com.tinyspeck.slackmacgap.helper), since a rule
+    /// names one signing identifier and the helper is what connects. Apple's own apps and system
+    /// extensions get one rule. Identities already in `earlier` are left out.
+    private func appRules(_ identity: SigningIdentity, path: String, after earlier: [Rule]) -> [Rule] {
+        var identities = [identity]
+        if let team = identity.teamID, path.hasSuffix(".app") {
+            for helper in helpers(path) {
+                guard let nested = identify(helper), nested.teamID == team, !identities.contains(nested) else { continue }
+                identities.append(nested)
+            }
+        }
+        let taken = Set(earlier.map(\.identity))
+        return identities.filter { !taken.contains($0) }.map { Rule(identity: $0, hosts: ["*"]) }
     }
 
     private func chooseMode() -> Mode? {
