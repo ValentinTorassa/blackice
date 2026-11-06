@@ -13,10 +13,31 @@ You need a Mac with Apple silicon, macOS 14 or later, and an admin account.
 $ curl -fsSL https://blackice-macos.vercel.app/install.sh | sh
 ```
 
-The [script](../site/lib/install.sh) checks the release's checksum, signature, notarization and version, copies
-Blackice.app to `/Applications` and writes `~/.local/bin/blackice` (`BLACKICE_BIN_DIR` picks another folder). It starts
-nothing. Run it as your user, without `sudo`. To replace another installed version, add `--force`:
-`curl -fsSL https://blackice-macos.vercel.app/install.sh | sh -s -- --force`.
+The [script](../site/lib/install.sh) downloads the zip from the GitHub release and checks it: its SHA-256 against the
+one the script pins and the release's `.sha256` file, then the signature (Developer ID, Team ID M294LK997M), the
+notarization and the version. Then it copies Blackice.app to `/Applications` and writes `~/.local/bin/blackice`
+(`BLACKICE_BIN_DIR` picks another folder). It starts nothing. Run it as your user, without `sudo`. To replace another
+installed version, add `--force`: `curl -fsSL https://blackice-macos.vercel.app/install.sh | sh -s -- --force`.
+
+The script's checks hold only if the script is the real one, and the site serves it: whoever controls the site
+controls what runs. To read it before it runs:
+
+```console
+$ curl -fsSL -o install.sh https://blackice-macos.vercel.app/install.sh
+$ less install.sh
+$ sh install.sh
+```
+
+The site serves the copy on the repository's `main` branch, so this prints nothing:
+`curl -fsSL https://raw.githubusercontent.com/ValentinTorassa/blackice/main/site/lib/install.sh | diff - install.sh`.
+To skip the site, run the copy at the release's tag on GitHub instead:
+
+```console
+$ curl -fsSL https://raw.githubusercontent.com/ValentinTorassa/blackice/v0.4.7/site/lib/install.sh | sh
+```
+
+That one trusts GitHub and whoever can push the tag. The steps [by hand](#by-hand) trust neither the site nor the
+script: you check Apple's signature, the notarization and the Team ID yourself.
 
 ## With Homebrew
 
@@ -56,6 +77,11 @@ Then put the command's folder on your `PATH`, for example in `~/.zshrc`. Not a s
 ```sh
 export PATH="/Applications/Blackice.app/Contents/MacOS:$PATH"
 ```
+
+The `.sha256` file comes from the same release as the zip, so on its own it only catches a broken download. The
+signature, the Team ID and the notarization show that the app is blackice's. The SHA-256 should also be the one on the
+`SHA256=` line of the [install script](https://github.com/ValentinTorassa/blackice/blob/v0.4.7/site/lib/install.sh)
+at the release's tag (releases before 1.0.0 have no such line).
 
 ## Start
 
