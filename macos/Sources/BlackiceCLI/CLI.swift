@@ -409,6 +409,8 @@ public enum CLI {
         case .deny(let denial):
             return system.answer(denial.request, output: SystemOutput(stdout: stdout, stderr: stderr))
         case .report(let minutes):
+            // Taken before `log show` runs, so every event counted has its ask line in what it reads.
+            let now = Date()
             let result = system.flowLog(minutes: minutes)
             guard result.status == 0 else {
                 let last = result.output.split(separator: "\n").last.map { String($0.prefix(200)) } ?? "no output"
@@ -416,7 +418,8 @@ public enum CLI {
                        Describe.terminalSafe(last))
                 return result.status == 127 ? ExitCode.unavailable : ExitCode.software
             }
-            FlowReport(logText: result.output).summary(last: reportSpan(minutes)).forEach(stdout)
+            let received = system.receivedEvents(in: ReceivedEvents.window(minutes: minutes, before: now))
+            FlowReport(logText: result.output).summary(last: reportSpan(minutes), received: received).forEach(stdout)
             return ExitCode.success
         }
     }
