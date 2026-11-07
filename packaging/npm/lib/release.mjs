@@ -107,6 +107,17 @@ export function versionProblems({ app, extension }, version) {
 }
 
 /**
+ * Why this Mac's macOS, as `sw_vers -productVersion` prints it, cannot run blackice, or null. 14.4
+ * is the first that starts a program only when its signature meets a launch requirement, which
+ * is how the daemon starts hooks.
+ */
+export function macosProblem(productVersion) {
+  const [major, minor = '0'] = String(productVersion ?? '').trim().split('.')
+  const ok = /^\d+$/.test(major) && /^\d+$/.test(minor) && (Number(major) > 14 || (Number(major) === 14 && Number(minor) >= 4))
+  return ok ? null : `blackice needs macOS 14.4 or later; this Mac has ${String(productVersion ?? '').trim() || 'an unknown version'}`
+}
+
+/**
  * Whether putting build `build` over an installed app of build `installedBuild` would go back to
  * an older build. False when either is not a whole number.
  */

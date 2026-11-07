@@ -223,6 +223,11 @@ public struct FlowReport: Equatable, Sendable {
         "tls_unparsed": "hello not readable as TLS",
         "no_host": "no host name",
         "idle_before_hello": "sent nothing for 2 minutes",
+        "evicted_quiet": "sent nothing, place given to a newer one",
+        "hold_capacity": "too many waiting for a hello",
+        "hold_capacity_app": "its app has too many waiting for a hello",
+        "ask_capacity": "too many waiting for an answer",
+        "ask_capacity_app": "its app has too many waiting for an answer",
         "server_name_timeout": "no server name within 10 s",
         "server_name_mismatch": "server name another host's",
         "server_name_invalid": "server name not a host name",
@@ -261,7 +266,7 @@ public struct FlowReport: Equatable, Sendable {
         guard let slash = label.firstIndex(of: "/") else { return label }
         let owner = label[..<slash], rest = label[label.index(after: slash)...]
         switch owner {
-        case "cdhash": return "ad hoc " + rest.prefix(8)
+        case "cdhash": return "cdhash " + rest.prefix(8)
         case "apple": return String(rest)
         default: return String(rest) + " (" + owner + ")"
         }

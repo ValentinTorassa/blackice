@@ -368,7 +368,7 @@ struct ConfigRejectionTests {
 
     @Test func allowRuleChecks() {
         let head = "mode = 'ask'\n[[allow]]\n"
-        expectError(head + "hosts = ['a.example']", line: 2, containing: "needs an 'app' key")
+        expectError(head + "hosts = ['a.example']", line: 2, containing: "needs an 'app' or a 'cdhash' key")
         expectError(head + "app = 'com.a'", line: 2, containing: "needs a 'hosts' key")
         expectError(head + "app = 'com.a\" or true'\nhosts = ['a.example']", line: 3, containing: "signing identifier")
         expectError(head + "app = 'com.a'\nteam = 'abcde12345'\nhosts = ['a.example']", line: 4, containing: "Team ID")
@@ -388,6 +388,57 @@ struct ConfigRejectionTests {
         expectError(head + "app = 'com.a'\nhosts = ['a.example', 'A.Example.']", line: 4, containing: "appears twice")
         let tooMany = "[" + (0...BlackiceConfig.maximumHostsPerRule).map { "'h\($0).example'" }.joined(separator: ",") + "]"
         expectError(head + "app = 'com.a'\nhosts = " + tooMany, line: 4, containing: "more than 256 entries")
+    }
+
+    @Test func aRuleNamesAdHocCodeByItsCDHash() throws {
+        let gh = "8fbec897bc4d2bf005bff3945dc800000ded2752"
+        let config = try BlackiceConfig(text: """
+        mode = "block-all"
+        [[allow]]
+        cdhash = "\(gh)"   # Homebrew's gh 2.103.3
+        hosts = ["api.github.com", "*.githubusercontent.com", "140.82.112.0/20"]
+
+        [[allow]]
+        cdhash = '\(testCDHash)'
+        hosts = ["*"]
+        """)
+        let rule = try #require(config.allow.first)
+        #expect(rule.code == .cdhash(gh) && rule.cdhash == gh && rule.app == nil && rule.team == nil && rule.line == 2)
+        #expect(rule.hosts.map(\.source) == ["api.github.com", "*.githubusercontent.com"])
+        #expect(rule.addresses.map(\.source) == ["140.82.112.0/20"])
+        #expect(config.allowRule(for: .cdhash(gh), host: "API.GitHub.com.")?.line == 2)
+        #expect(config.allowRule(for: .cdhash(gh), host: "uploads.github.com") == nil)
+        #expect(config.addressRule(for: .cdhash(gh), address: IPAddress("140.82.114.5")!)?.line == 2)
+        #expect(config.anyHostRule(for: .cdhash(testCDHash))?.line == 6 && config.anyHostRule(for: .cdhash(gh)) == nil)
+        // Another build, or signed code, is not what the rule names.
+        #expect(config.allowRule(for: .cdhash(String(repeating: "e", count: 40)), host: "api.github.com") == nil)
+        #expect(!config.hasRule(for: .signed(SigningIdentity(signingID: gh, teamID: nil))))
+        #expect(config.hasRule(for: .cdhash(gh)) && config.allow[1].cdhash == testCDHash)
+    }
+
+    @Test func cdhashRuleChecks() {
+        let head = "mode = 'ask'\n[[allow]]\n"
+        let hash = "cdhash = '\(testCDHash)'\n"
+        expectError(head + hash + "app = 'com.a'\nhosts = ['a.example']", line: 4, containing: "takes 'app' or 'cdhash', not both")
+        expectError(head + "app = 'com.a'\n" + hash + "hosts = ['a.example']", line: 4, containing: "takes 'app' or 'cdhash', not both")
+        expectError(head + hash + "team = 'ABCDE12345'\nhosts = ['a.example']", line: 4, containing: "team goes with app, not cdhash")
+        expectError(head + hash, line: 2, containing: "needs a 'hosts' key")
+        expectError(head + hash + "hosts = []", line: 4, containing: "must not be empty")
+        // Upper case is refused, with the spelling to use: codesign -dvvv and blackice pending print it lower case.
+        expectError(head + "cdhash = '\(testCDHash.uppercased())'\nhosts = ['a.example']", line: 3,
+                    containing: "cdhash must be lower case; write \"\(testCDHash)\"")
+        expectError(head + "cdhash = '3F1c6a0b9e2d4c5a7b8f9e0d1c2b3a4f5e6d7c8b'\nhosts = ['a.example']", line: 3,
+                    containing: "lower case")
+        for bad in [String(testCDHash.dropLast()), testCDHash + "0", "g" + testCDHash.dropFirst(), "", " " + testCDHash.dropFirst(),
+                    String(repeating: "\u{e9}", count: 40), "cdhash/" + testCDHash] {
+            expectError(head + "cdhash = \"\(bad)\"\nhosts = ['a.example']", line: 3, containing: "cdhash must be 40 hex digits")
+        }
+        expectError(head + "cdhash = 7\nhosts = ['a.example']", line: 3, containing: "cdhash must be a string, not an integer")
+        expectError(head + hash + hash + "hosts = ['a.example']", line: 4, containing: "duplicate key 'cdhash'")
+        // A hook is still checked by its signature, never by a cdhash.
+        expectError("mode = 'ask'\n[[hook]]\non = 'connection'\nprogram = '/opt/fx'\n" + hash, line: 5,
+                    containing: "unknown key 'cdhash' in [[hook]]")
+        expectError("mode = 'ask'\n" + hash, line: 2, containing: "unknown key 'cdhash' at the top level")
     }
 
     @Test func hookChecks() {
@@ -687,6 +738,11 @@ struct AgentAnswersTests {
         let crlf = try BlackiceConfig.switchingAnswers(.agent(.fx), in: crlfFile)
         #expect(crlf.hasSuffix("[agent]\r\nanswers = \"fx\"  # set by blackice mode; blackice.toml has none\r\n"))
         #expect(try BlackiceConfig.switchedAnswers(in: crlf) == BlackiceConfig.SwitchedAnswers(fileHas: nil))
+        // Switched again, it still has none. Until 1.0.3 the second switch wrote the first one's
+        // answerer as the file's: `has "fx"`.
+        let crlfYou = try BlackiceConfig.switchingAnswers(.you, in: crlf)
+        #expect(crlfYou.hasSuffix("[agent]\r\nanswers = \"you\"  # set by blackice mode; blackice.toml has none\r\n"))
+        #expect(try BlackiceConfig.switchedAnswers(in: crlfYou) == BlackiceConfig.SwitchedAnswers(fileHas: nil))
         // The file's own text has none, and neither has a line that only looks like one.
         #expect(try BlackiceConfig.switchedAnswers(in: file) == nil)
         #expect(try BlackiceConfig.settingAnswers(.agent(.codex), in: file) == base + "[agent]\nanswers = \"codex\"\n")
@@ -758,5 +814,19 @@ struct AgentAnswersTests {
         #expect(legacy.isStarted(from: file) && !legacy.isStarted(from: more))
         #expect(try ProviderConfiguration.starting(configText: more, after: legacy, keepingSwitches: true).configText == more)
         #expect(first.answersSwitched(from: file) == nil)
+    }
+
+    /// A file that names no one, switched twice: start keeps both switches. Until 1.0.3 the second
+    /// switch recorded the first one's answerer as the file's, so start no longer recognized the
+    /// file, dropped the mode switch, and every agent's hook answered again.
+    @Test func startKeepsTwoSwitchesFromAFileThatNamesNoOne() throws {
+        let file = "mode = 'ask'\n" + Self.fxHook + Self.codexHook
+        let first = try ProviderConfiguration.starting(configText: file, after: nil, keepingSwitches: true)
+        let fx = try first.with(mode: .ask, answerer: .agent(.fx))
+        let you = try fx.with(mode: .blockAll, answerer: .you)
+        #expect(try BlackiceConfig.switchedAnswers(in: you.configText) == BlackiceConfig.SwitchedAnswers(fileHas: nil))
+        #expect(you.isStarted(from: file))
+        let kept = try ProviderConfiguration.starting(configText: file, after: you, keepingSwitches: true)
+        #expect(kept.mode == .blockAll && kept.config.answers == .you && kept.config.activeHooks.isEmpty)
     }
 }

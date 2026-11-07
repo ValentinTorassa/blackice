@@ -198,6 +198,9 @@ public struct ProviderConfiguration: Equatable, Sendable {
 public final class ProviderSnapshotStore: @unchecked Sendable {
     private let lock = NSLock()
     private var current: ProviderConfiguration?
+    /// Held by install, clear and `withInstalled`, never by `read`, so flow callbacks do not
+    /// wait for a release.
+    private let changing = NSLock()
 
     public init() {}
 
@@ -206,9 +209,20 @@ public final class ProviderSnapshotStore: @unchecked Sendable {
         return current
     }
 
+    /// Runs `body` with the installed configuration, which no install or clear replaces until
+    /// `body` returns. The extension releases answered flows in it: they have left the pending
+    /// list, so the cleanup of a configuration installed between its generation check and its
+    /// resume would not find them, and the old answer would let them through under the new one.
+    /// `body` may `read`, and must not install or clear.
+    public func withInstalled<T>(_ body: (ProviderConfiguration?) throws -> T) rethrows -> T {
+        changing.lock(); defer { changing.unlock() }
+        return try body(read())
+    }
+
     /// True when the candidate replaced the snapshot.
     @discardableResult
     public func install(_ candidate: ProviderConfiguration) throws -> Bool {
+        changing.lock(); defer { changing.unlock() }
         lock.lock(); defer { lock.unlock() }
         if let current {
             if candidate == current { return false }
@@ -221,6 +235,7 @@ public final class ProviderSnapshotStore: @unchecked Sendable {
     }
 
     public func clear() {
+        changing.lock(); defer { changing.unlock() }
         lock.lock(); defer { lock.unlock() }
         current = nil
     }

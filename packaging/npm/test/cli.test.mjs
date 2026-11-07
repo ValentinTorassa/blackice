@@ -57,9 +57,13 @@ test('forward maps a signal to 128 + its number', () => {
   assert.equal(forward([], { exists: () => true, spawn: () => ({ status: null, signal: 'SIGINT' }) }), 130)
 })
 
-test('install refuses other platforms and architectures before touching anything', async () => {
+test('install refuses other platforms, architectures and macOS before 14.4 before touching anything', async () => {
   await assert.rejects(install({ version: '0.1.0', platform: 'linux', arch: 'arm64', log: () => {} }), /macOS only/)
   await assert.rejects(install({ version: '0.1.0', platform: 'darwin', arch: 'x64', log: () => {} }), /arm64/)
+  const logged = []
+  await assert.rejects(install({ version: '0.1.0', platform: 'darwin', arch: 'arm64', macos: '14.3.1', log: (line) => logged.push(line) }),
+    /blackice needs macOS 14\.4 or later; this Mac has 14\.3\.1/)
+  assert.deepEqual(logged, [])
 })
 
 test('next steps mention the restart only after a replacement', () => {

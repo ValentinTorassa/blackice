@@ -29,7 +29,8 @@ stub() {
 }
 
 stub uname 'case ${1:-} in -m) echo arm64 ;; *) echo Darwin ;; esac'
-stub sw_vers 'echo 27.0.1'
+# SW_VERS is the macOS version it reports.
+stub sw_vers 'echo "${SW_VERS:-27.0.1}"'
 stub sysctl 'echo 1'
 # curl fails unless SERVE names a folder. Then it copies the file the URL ends with from there to
 # the --output file, as a download would, and adds the URL to the file REQUESTS.
@@ -166,7 +167,7 @@ installed() { write_app "$box/Applications/Blackice.app" "$1" "$2" old; }
 # Runs the copy for the current box; sets $status and $output.
 run() {
   set +e
-  output=$(env PATH="$stubs:$PATH" HOME="$box/home" TMPDIR="$box/tmp" STUB="$STUB" \
+  output=$(env PATH="$stubs:$PATH" HOME="$box/home" TMPDIR="$box/tmp" STUB="$STUB" SW_VERS="${SW_VERS:-27.0.1}" \
     BLACKICE_APPLICATIONS="$box/Applications" BLACKICE_BIN_DIR="$box/bin" \
     BLACKICE_ZIP="$box/release/Blackice-$version.zip" "$shell" "$copy" "$@" 2>&1)
   status=$?
@@ -225,6 +226,30 @@ expect_no_leftovers
 expect_output "version: $version, build 15"
 grep -qx "exec $box/Applications/Blackice.app/Contents/MacOS/blackice \"\$@\"" "$box/bin/blackice" 2>/dev/null \
   || problem "the command does not run the installed app"
+done_case
+
+start 'macOS before 14.4 is refused before anything is touched'
+for old_macos in 14.3.1 14.3 14 13.6.7 10.15; do
+  new_box "old-$old_macos"
+  SW_VERS=$old_macos
+  run
+  SW_VERS=
+  expect_status 1
+  expect_app none
+  expect_output "blackice needs macOS 14.4 or later; this Mac has $old_macos"
+  [ ! -e "$box/bin/blackice" ] || problem "it wrote the command on macOS $old_macos"
+done
+done_case
+
+start 'macOS 14.4 and later installs'
+for new_macos in 14.4 14.4.1 14.10 15.0 26.1 27.0.1; do
+  new_box "new-$new_macos"
+  SW_VERS=$new_macos
+  run
+  SW_VERS=
+  expect_status 0
+  expect_app new
+done
 done_case
 
 start 'the same version installed is kept, with no download'

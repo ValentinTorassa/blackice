@@ -1,8 +1,8 @@
-# shellcheck shell=bash disable=SC2034,SC2154 # sourced by ../run.sh, which sets repo and reads these
-# Codex (`codex exec`), with the hook `blackice agent connect codex` writes (CLI.codexArguments in
-# macos/Sources/BlackiceCLI/AgentConnect.swift; a test checks that the two stay in step), with the
-# repository's copy of its instructions put in each event's directory, where the daemon writes
-# the copy inside blackice.
+# shellcheck shell=bash disable=SC2034,SC2154 # sourced by ../run.sh, which sets repo and notes and reads these
+# Codex (`codex exec`), with the hook `blackice agent connect codex` writes
+# (AgentInstructions.hookArguments in macos/Sources/BlackiceCore/AgentInstructions.swift) and the
+# repository's copy of its instructions and the owner's notes in `-c developer_instructions`,
+# where the daemon puts the copy inside blackice (a test checks that the two stay in step).
 #
 #   CODEX_HOME=dir   the Codex home whose sign-in it uses. Default: $AGENT_HOME/.codex, the one
 #                    agent connect signs in; ~/.codex is your own.
@@ -13,11 +13,14 @@
 agent_bin_name=codex
 agent_configure() {
   local home=${CODEX_HOME:-${AGENT_HOME:-$HOME/.config/blackice/agent}/.codex}
-  agent_args=("exec" "--strict-config" "--skip-git-repo-check" "--ephemeral" "--ignore-user-config" "--ignore-rules"
+  local prompt
+  system_prompt prompt "$repo/integrations/codex/instructions.md"
+  agent_args=("exec" "-c" "developer_instructions=$(toml_string "$prompt")"
+              "--strict-config" "--skip-git-repo-check" "--ephemeral" "--ignore-user-config" "--ignore-rules"
               "--color" "never" "-m" "${MODEL:-gpt-6-luna}"
               "-c" 'model_reasoning_effort="low"'
-              "-c" 'model_instructions_file="instructions.md"'
               "-c" "project_doc_max_bytes=0"
+              "-c" "skills.include_instructions=false"
               "-c" 'default_permissions="blackice"'
               "-c" 'permissions.blackice.filesystem={":minimal"="read",":workspace_roots"="read"}'
               "-c" 'approval_policy="never"'
@@ -28,9 +31,6 @@ agent_configure() {
               "-c" 'history.persistence="none"'
               "--disable" "hooks" "--disable" "plugins" "--disable" "apps" "--disable" "multi_agent"
               "--disable" "image_generation" "--disable" "browser_use" "--disable" "computer_use"
-              "Decide the pending blackice connection described in event.json.")
-  agent_files=("$repo/integrations/codex/instructions.md:instructions.md")
+              "Decide the pending blackice connection. Its event is the JSON object in the <stdin> block below.")
   agent_env=("CODEX_HOME=$home")
-  # codex exec adds what comes on stdin to its prompt: the event reaches it only as a file.
-  agent_stdin=none
 }

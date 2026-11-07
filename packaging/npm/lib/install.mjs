@@ -19,6 +19,7 @@ import {
   INSTALLED_APP,
   gatekeeperProblems,
   isOlderBuild,
+  macosProblem,
   parseChecksum,
   releaseAssets,
   signatureProblems,
@@ -29,6 +30,7 @@ const DITTO = '/usr/bin/ditto'
 const CODESIGN = '/usr/bin/codesign'
 const SPCTL = '/usr/sbin/spctl'
 const PLIST_BUDDY = '/usr/libexec/PlistBuddy'
+const SW_VERS = '/usr/bin/sw_vers'
 const MAX_ZIP_BYTES = 200 * 1024 * 1024
 const MAX_CHECKSUM_BYTES = 4096
 const MAX_REDIRECTS = 5
@@ -168,19 +170,56 @@ function verifyCopy(copy) {
 
 const SIGNALS = ['SIGINT', 'SIGTERM', 'SIGHUP']
 
+/** Why an app at `target` is not replaced without --force. */
+function alreadyThere(target) {
+  return (
+    `${target} is already there. To replace it, run \`npx blackice install --force\`; ` +
+    'after replacing it, run `blackice start`.'
+  )
+}
+
 /**
- * Puts the checked `app` at `target`. It copies the app into a new folder beside `target` and
- * checks the copy there. Then it renames the app already at `target`, if any, into that folder and
- * the copy to `target`. If anything fails after the installed app was renamed, it renames it back,
- * so a failure leaves the installed app in place. The folder, with the previous app, is removed
- * only once the new one is in place. Returns whether it replaced an app.
+ * Puts the checked `app`, build `build` of release `version`, at `target`. It copies the app into a
+ * new folder beside `target` and checks the copy there. Then it renames the app already at
+ * `target`, if any, into that folder and the copy to `target`. If anything fails after the
+ * installed app was renamed, it renames it back, so a failure leaves the installed app in place.
+ * The folder, with the previous app, is removed only once the new one is in place. Returns whether
+ * it replaced an app.
+ *
+ * An installed app is replaced only with `force`, and never by a lower build. Both are checked
+ * here, right before the replacement, and the build again on the app once it is renamed aside,
+ * where nothing else moves it: until 1.0.3 they were checked only before the downloads, so an app
+ * that another install put in place meanwhile, even a newer build, was replaced.
  *
  * Everything here is synchronous and runs with SIGINT, SIGTERM and SIGHUP caught, so no signal
  * stops it halfway; one that comes meanwhile is ignored. A Ctrl-C in the terminal still stops
- * ditto or codesign, and their step fails as any other. `copy`, `verify` and `rename` are there
- * for the tests.
+ * ditto or codesign, and their step fails as any other. `copy`, `verify`, `rename` and `readBuild`
+ * are there for the tests.
  */
-export function placeApp(app, target, { log = () => {}, copy = dittoCopy, verify = verifyCopy, rename = renameSync } = {}) {
+export function placeApp(
+  app,
+  target,
+  {
+    force = false,
+    build,
+    version,
+    log = () => {},
+    copy = dittoCopy,
+    verify = verifyCopy,
+    rename = renameSync,
+    readBuild = (bundle) => bundleVersion(bundle).build,
+  } = {},
+) {
+  // macOS replaces an activated extension only with the same or a higher build, so an older app
+  // over a newer one could not start.
+  const notOlder = (bundle) => {
+    const installedBuild = readBuild(bundle)
+    check(
+      !isOlderBuild(build, installedBuild),
+      `${target} is build ${installedBuild}, newer than build ${build} of ${version}. To go back to an older ` +
+        `build, uninstall blackice first, as the install guide says: ${INSTALL_GUIDE}`,
+    )
+  }
   const ignore = () => {}
   for (const signal of SIGNALS) process.on(signal, ignore)
   try {
@@ -198,6 +237,8 @@ export function placeApp(app, target, { log = () => {}, copy = dittoCopy, verify
       verify(staged)
       const replacing = exists(target)
       if (replacing) {
+        check(force, alreadyThere(target))
+        notOlder(target)
         log(`Replacing the installed ${target}`)
         try {
           rename(target, aside)
@@ -208,7 +249,12 @@ export function placeApp(app, target, { log = () => {}, copy = dittoCopy, verify
           )
         }
         previous = aside
+        // What was renamed is what gets replaced: an app put at `target` since the check above is
+        // checked here, and a newer one goes back.
+        notOlder(aside)
       }
+      // A rename onto an app fails (the folder is not empty), so nothing put here since this
+      // check is replaced either.
       check(!exists(target), `something else is at ${target} now; left it as it is`)
       try {
         rename(staged, target)
@@ -263,20 +309,19 @@ export function nextSteps(version, replaced) {
 
 /**
  * Installs the release `version`. Refuses to replace an installed Blackice.app unless `force`, and
- * to replace one of a higher build at all. Never activates the extension or loads the daemon; it
- * prints how to.
+ * to replace one of a higher build at all: `force` is checked before the downloads too, so that a
+ * refusal comes at once, and both again right before the replacement (`placeApp`). Never activates
+ * the extension or loads the daemon; it prints how to.
  */
-export async function install({ version, force = false, log = console.log, platform = process.platform, arch = process.arch }) {
+export async function install({
+  version, force = false, log = console.log, platform = process.platform, arch = process.arch, macos,
+}) {
   check(platform === 'darwin', 'blackice runs on macOS only')
   check(arch === 'arm64', 'the blackice build is for Apple silicon (arm64) only')
+  const tooOld = macosProblem(macos ?? run(SW_VERS, ['-productVersion']).stdout)
+  check(tooOld === null, tooOld)
   const assets = releaseAssets(version)
-  const installed = exists(INSTALLED_APP)
-  check(
-    !installed || force,
-    `${INSTALLED_APP} is already there. To replace it, run \`npx blackice install --force\`; ` +
-      'after replacing it, run `blackice start`.',
-  )
-  const installedBuild = installed ? bundleVersion(INSTALLED_APP).build : undefined
+  check(!exists(INSTALLED_APP) || force, alreadyThere(INSTALLED_APP))
   const userAgent = `blackice-npm/${version}`
   const work = await mkdtemp(join(tmpdir(), 'blackice-install-'))
   try {
@@ -296,15 +341,7 @@ export async function install({ version, force = false, log = console.log, platf
     const app = join(unpacked, APP_NAME)
     log(`Checking ${APP_NAME}`)
     const build = verifyApp(app, version, log)
-    // macOS replaces an activated extension only with the same or a higher build, so an older
-    // app over a newer one could not start.
-    check(
-      !isOlderBuild(build, installedBuild),
-      `${INSTALLED_APP} is build ${installedBuild}, newer than build ${build} of ${version}. To go back to an older ` +
-        `build, uninstall blackice first, as the install guide says: ${INSTALL_GUIDE}`,
-    )
-
-    const replaced = placeApp(app, INSTALLED_APP, { log })
+    const replaced = placeApp(app, INSTALLED_APP, { force, build, version, log })
     log(nextSteps(version, replaced))
   } finally {
     await rm(work, { recursive: true, force: true })

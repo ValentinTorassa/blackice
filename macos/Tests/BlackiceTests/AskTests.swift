@@ -128,6 +128,36 @@ struct PendingTableTests {
                            makeEvent: { _ in throw EventToken.RandomFailure(status: -1) }) == .full)
     }
 
+    /// One app that connects to many hosts, or to many ports, no longer fills the table for every
+    /// other app: it gets a quarter of the events and of the flows.
+    @Test func oneAppTakesAtMostItsShare() {
+        #expect(AskLimits.eventsPerApp == 64 && AskLimits.flowsPerApp == 256)
+        let defaults = PendingTable<Int>()
+        #expect(defaults.maximumEventsPerApp == AskLimits.eventsPerApp && defaults.maximumFlowsPerApp == AskLimits.flowsPerApp)
+        var table = PendingTable<Int>(maximumEvents: 8, maximumFlows: 16, maximumFlowsPerEvent: 8,
+                                      maximumEventsPerApp: 2, maximumFlowsPerApp: 3)
+        let maker = EventMaker()
+        func add(_ flow: Int, _ key: PendingKey, holdFor: TimeInterval? = nil) -> PendingTable<Int>.Added {
+            table.add(flow, key: key, addressMatches: true, now: 0, timeout: 10, holdFor: holdFor, makeEvent: maker.make(key))
+        }
+        let a = pendingKey(tool, "a.example.com"), b = pendingKey(tool, "b.example.com", 8443)
+        let c = pendingKey(tool, "b.example.com", 8444)
+        guard case .raised = add(1, a, holdFor: 5), case .raised = add(2, b) else { Issue.record("not raised"); return }
+        // A third event for the same app is one too many, another app still raises its own...
+        #expect(add(3, c) == .appFull)
+        guard case .raised = add(4, pendingKey(other, "b.example.com", 8444)) else { Issue.record("not raised"); return }
+        // ...and the app's flows count on all of its events.
+        guard case .joined = add(5, b) else { Issue.record("not joined"); return }
+        #expect(add(6, b) == .appFull && table.flowCount == 4)
+        // A flow whose hold ran out makes room. Its event stays until its deadline, and still counts.
+        #expect(table.expireHolds(now: 5).map(\.flow) == [1])
+        #expect(add(7, c) == .appFull)
+        guard case .joined = add(8, a) else { Issue.record("not joined"); return }
+        // Once its events end, the app has room again.
+        #expect(table.expire(now: 10).count == 3)
+        guard case .raised = add(9, c) else { Issue.record("not raised"); return }
+    }
+
     @Test func eventIDCollisionsAreRetried() throws {
         var table = PendingTable<Int>()
         var attempts = 0

@@ -4,6 +4,7 @@ import test from 'node:test'
 import {
   gatekeeperProblems,
   isOlderBuild,
+  macosProblem,
   parseChecksum,
   releaseAssets,
   signatureProblems,
@@ -134,4 +135,12 @@ test('older build: only a lower whole number than the installed one', () => {
   assert.equal(isOlderBuild('15', undefined), false)
   assert.equal(isOlderBuild('15', '1.2'), false)
   assert.equal(isOlderBuild('15', ''), false)
+})
+
+test('macOS 14.4 or later', () => {
+  for (const version of ['14.4', '14.4.1\n', '14.10', '15.0', '26.1', '27.0.1']) assert.equal(macosProblem(version), null, version)
+  for (const version of ['14.3.1', '14.3', '14', '13.6.7', '10.15', '', 'x.y', undefined]) {
+    assert.match(macosProblem(version), /^blackice needs macOS 14\.4 or later; this Mac has /, String(version))
+  }
+  assert.equal(macosProblem('14.3\n'), 'blackice needs macOS 14.4 or later; this Mac has 14.3')
 })

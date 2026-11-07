@@ -95,7 +95,7 @@ struct MenuTextTests {
                 == "io.tailscale.ipn.macsys.network-extension")
         #expect(MenuText.appName(path: "/usr/bin/curl", identity: nil) == "curl")
         #expect(MenuText.appName(path: nil, identity: .signed(SigningIdentity(signingID: "com.apple.curl", teamID: nil))) == "com.apple.curl")
-        #expect(MenuText.appName(path: nil, identity: .cdhash(String(repeating: "a", count: 40))) == "ad hoc code")
+        #expect(MenuText.appName(path: nil, identity: .cdhash(String(repeating: "a", count: 40))) == "code by cdhash")
         #expect(MenuText.appName(path: "/tmp/\u{202E}gpj.app/x", identity: nil) == "gpj")
     }
 }
@@ -257,6 +257,10 @@ struct MenuPresentationTests {
         #expect(!MenuPresentation.menu(MenuSnapshot(filter: .off), context).contains { $0.key == "recent" })
         #expect(entries.contains { $0.title == "Hooks won't run: blackice agent install" })
         #expect(entries.contains { $0.title == "A hook's signature did not match" && $0.detail == "10m" })
+        var forHome = withRecent
+        forHome.hookRefusedForHome = true
+        #expect(MenuPresentation.menu(MenuSnapshot(filter: .on(saved: block, hooks: 2)), forHome, now: now)
+            .contains { $0.title == "A hook did not answer: its agent's home changed" && $0.detail == "10m" })
         // A filter that does not answer cannot take a new mode, which `blackice mode` waits for.
         #expect(modes(entries)?.checked == ["Block All"] && modes(entries)?.enabled == false)
         // The hooks line shows up only when hooks have no daemon.
@@ -467,7 +471,11 @@ struct RecentDecisionsTests {
         #expect(summary.decisions.map(\.host) == ["f.example", "f.example", "e.example", "d.example", "c.example", "b.example",
                                                   "a.example"])
         #expect(summary.decisions.map(\.by) == [.hook, .hook, nil, nil, .hand, .hand, .hook])
-        #expect(summary.hookRefused == start)
+        #expect(summary.hookRefused == start && !summary.hookRefusedForHome)
+        // Then a file in an agent's home voids an answer: the note says so.
+        try log.append(.hookNoAnswer(eventID: "ev-00000007", hookLine: 7, .unsafeHome("/h/.codex/AGENTS.md")), at: later)
+        let home = RecentDecisions(url: url).latest(limit: 10)
+        #expect(home.hookRefused == later && home.hookRefusedForHome)
 
         // A log from before hooks answered on their output: the hook ran, and nothing says more.
         let old = #"{"type":"event_received","event":"ev-00000008","app_signing_id":"com.apple.curl","host":"pypi.org","ip":"203.0.113.1","port":443}"# + "\n" +

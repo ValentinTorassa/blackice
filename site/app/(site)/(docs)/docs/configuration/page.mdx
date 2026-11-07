@@ -39,6 +39,7 @@ The first `blackice start` writes this file, and `blackice agent connect` adds i
 Each `[[allow]]` rule names one app and the hosts it may reach, in every mode and on any port.
 
 - `app` and `team` are checked against the signature of the running code. Leave `team` out only for Apple's own programs, which macOS signs without one.
+- `cdhash`, in place of `app` and `team`, names one build of [ad hoc signed code](#ad-hoc-signed-code).
 - `hosts` takes host names (`api.example.com`), `*.example.com` (every subdomain, not `example.com` itself), and [addresses and ranges](#addresses-and-ranges), at most 256 entries.
 - A host name counts only when the address the app connects to was among that name's DNS answers. Otherwise ask mode asks and block-all drops, as `address_mismatch`.
 - On port 443 the TLS server name the app sends must match too, or the connection is dropped as `server_name_mismatch`.
@@ -51,6 +52,33 @@ $ codesign -dv /Applications/Tailscale.app/Contents/Library/SystemExtensions/*.s
 Identifier=io.tailscale.ipn.macsys.network-extension
 TeamIdentifier=W5364U7YZB
 ```
+
+## Ad hoc signed code
+
+Tools installed with Homebrew, uv, pipx, npm, nvm or `go install` are often signed ad hoc, with no developer identity, so no `app` rule can name them. A rule names one build by its cdhash instead: the `CDHash` that `codesign -dvvv` prints, also in the `blackice approve` line that `blackice pending` shows for it.
+
+```console
+$ codesign -dvvv /opt/homebrew/bin/gh 2>&1 | grep -E '^(Signature|CDHash)='
+Signature=adhoc
+CDHash=8fbec897bc4d2bf005bff3945dc800000ded2752
+```
+
+```toml
+[[allow]]
+cdhash = "8fbec897bc4d2bf005bff3945dc800000ded2752"   # Homebrew's gh 2.103.3
+hosts = ["api.github.com", "uploads.github.com"]
+```
+
+- `cdhash` is 40 lower-case hex digits, and takes no `team`. `hosts` works as in any rule, with the same checks, `*` and addresses included.
+- The rule covers that one build, in ask and block-all. An upgrade or a rebuild changes the cdhash: the rule stops matching, ask mode asks again, and the rule needs the new cdhash.
+- A [program in a folder macOS protects](#connections-with-no-name) is named by its cdhash too, and a cdhash rule covers it the same way.
+- The cdhash names the program file, not what it loads. Ad hoc code has no hardened runtime, so a program that starts it with `DYLD_INSERT_LIBRARIES`, or swaps a library it loads from `/opt/homebrew`, runs its own code under the rule. Give a cdhash rule only the hosts that tool needs.
+
+<Callout>
+
+**Never an interpreter.** A cdhash rule does not count for python, node, bun, deno, ruby, perl, php, lua, tclsh, R, julia, osascript or a shell, with or without a version in the name (`python3.14`): a rule for one would let every script it runs reach those hosts, a malicious dependency's included. Their connections are decided as if the rule were not there, and the log's reason ends in `;interpreter`. `blackice approve --cdhash` still approves one, for at most 24 hours. blackice tells an interpreter by its file name, and a copy under another name keeps the interpreter's cdhash, so never put an interpreter's cdhash in a rule.
+
+</Callout>
 
 ## Any destination
 
@@ -101,6 +129,8 @@ With `loopback = true`, the default, connections to 127.0.0.0/8 and ::1 pass in 
 
 A connection is named by the host the app asked for, by the Mac's DNS answers for its address, or by its TLS server name on port 443. In ask mode a TCP connection with none of these, such as `ssh` to `100.66.32.75`, is asked about by its address, and an approval of that address covers only connections to it that have no name. Block-all drops them unless an address entry or `*` covers them. UDP with no name (WebRTC, games, network discovery, QUIC) and multicast and broadcast connections are dropped with no question.
 
+**Wi-Fi with a sign-in page.** On a network that shows a page before it lets you online (hotels, airports, trains), nothing reaches the internet until you sign in, so in ask mode the agent cannot answer, and the page waits until its connections time out. Switch to accept-all to sign in, then back: `blackice mode accept-all`, sign in, `blackice mode ask`.
+
 **Encrypted DNS.** In ask and block-all, macOS's encrypted DNS (from `com.apple.mDNSResponder`, on port 443 or 853) is dropped as `encrypted_dns`, and macOS falls back to plain DNS, whose answers name the addresses apps connect to. To use an encrypted resolver on purpose, give it a rule; more connections are then asked about by address.
 
 ```toml
@@ -111,7 +141,7 @@ hosts = ["dns.google"]
 
 **An app updated while it runs** keeps the identity blackice checked, for as long as that process runs. An app that blackice first sees after its file was removed is named by its cdhash, as below, until you restart it.
 
-**Programs in folders macOS protects.** macOS keeps the filter from reading `~/Documents`, `~/Desktop`, `~/Downloads`, iCloud Drive and removable and network volumes, so it cannot check the signature of a program that runs from one of them, such as a tool a project installs in `node_modules` or a build in `target/`. blackice names that program by the cdhash of the code the kernel loaded, as it names ad hoc signed code: no `[[allow]]` rule matches it, ask mode asks about it, an approval covers that exact build, and block-all drops it. For a rule to match a tool, run it from another folder, such as `~/.local/bin` or a project outside those folders. Before 1.0.1 these connections were dropped as `unknown_identity`, with no question.
+**Programs in folders macOS protects.** macOS keeps the filter from reading `~/Documents`, `~/Desktop`, `~/Downloads`, iCloud Drive and removable and network volumes, so it cannot check the signature of a program that runs from one of them, such as a tool a project installs in `node_modules` or a build in `target/`. blackice names that program by the cdhash of the code the kernel loaded, as it names ad hoc signed code: no `app` rule matches it, a [`cdhash` rule](#ad-hoc-signed-code) or an approval covers that exact build, and otherwise ask mode asks about it and block-all drops it. For an `app` rule to match a tool, run it from another folder, such as `~/.local/bin` or a project outside those folders. Before 1.0.1 these connections were dropped as `unknown_identity`, with no question.
 
 ## macOS's own services
 
@@ -128,13 +158,13 @@ With `apple_services = true`, the default, a built-in list lets macOS's own serv
 
 In ask mode the daemon runs each `[[hook]]` with `on = "connection"` for a connection that waits. The agent a hook runs needs a rule to reach its model, or it waits on its own approval; `agent connect` adds both.
 
-- `program` is an absolute path. The daemon starts it with no shell, and only when its signature names `app` and `team`; otherwise it is killed before it runs, and the log says `hook_refused`.
+- `program` is an absolute path. The daemon starts it with no shell, and macOS runs it only when its signature names `app` and `team`: a Developer ID signature with that Team ID, or, with no `team`, Apple's own code. Otherwise it is killed before it runs, and the log says `hook_refused`. Name the agent's own executable, not a script or wrapper that starts it. With System Integrity Protection off, macOS skips that check: the daemon then checks the program only once it runs, and a program put in its place can start the agent with arguments of its own before that check. Keep SIP on.
 - `args` lists the arguments, as strings. Nothing from the event is ever put in them.
 - `env` adds `NAME=value` strings to the [environment](#the-hooks-environment). A name may not start with `BLACKICE_`.
-- `stdin = "none"` keeps the event off stdin, so it is only in its file. The default, `"event"`, sends it on stdin too.
-- `instructions` (`"fx"`, `"claude-code"`, `"codex"` or `"opencode"`) has the daemon write that agent's instructions, from blackice itself, into the event's directory.
+- `stdin = "none"` keeps the event off stdin, so it is only in its file, for a program that names no `instructions`. The default, `"event"`, sends it on stdin too.
+- `instructions` (`"fx"`, `"claude-code"`, `"codex"` or `"opencode"`) has the daemon pass that agent its instructions, from blackice itself, and your notes, on its command line or in its environment. The agent gets the event on stdin, whatever `stdin` says, runs in `/var/empty`, and gets no file. The daemon also looks in the agent's home first: a file there that Codex or fx would load as instructions, and that blackice did not put there, keeps the hook from starting (`hook_refused`, reason `agent_home`), and one that appears while it runs voids its answer. The connection then waits for you.
 
-`run = '…'`, in place of `program`, is a line for `/bin/sh -c`. Nothing checks what it starts, so any program running as you can put something else in its place. It takes no `app`, `team`, `args`, `env`, `stdin` or `instructions`.
+`run = '…'`, in place of `program`, is a line for `/bin/sh -c`. Nothing checks what it starts, so any program running as you can put something else in its place. It takes no `app`, `team`, `args`, `env`, `stdin` or `instructions`, and gets the event as a file too, as a `program` that names no `instructions` does (below).
 
 ## The agent table
 
@@ -148,7 +178,7 @@ Deny analytics and tracking hosts, such as stats.example.com, whatever the app.
 ```
 
 - `answers` names the agent whose hook runs: `"fx"`, `"claude-code"`, `"codex"`, `"opencode"`, or `"you"` for none. Hooks without `instructions` run either way. With no `answers`, every hook runs.
-- `notes` is your guidance for the agent: what you use for work, what you never want reached. The daemon writes it as `notes.md` beside the event, and the agent follows it for judgment calls, never over its safety rules. Plain text, at most 4 KiB, and the only value that may span lines. Like the hooks, it changes only with your Touch ID.
+- `notes` is your guidance for the agent: what you use for work, what you never want reached. The daemon passes it to the agent after its instructions, and the agent follows it for judgment calls, never over its safety rules. A hook that names no `instructions` gets it as `notes.md` beside the event's file. Plain text, at most 4 KiB, and the only value that may span lines. Like the hooks, it changes only with your Touch ID.
 
 ## The hook's environment
 
@@ -160,13 +190,14 @@ The daemon builds the environment a hook starts with:
 | `TMPDIR` | That user's temporary directory. |
 | `PATH` | `/usr/bin:/bin:/usr/sbin:/sbin` |
 | `LANG` | `en_US.UTF-8` |
-| `BLACKICE_EVENT_FILE`, `BLACKICE_EVENT_ID` | The event's file and ID. |
+| `BLACKICE_EVENT_ID` | The event's ID. |
+| `BLACKICE_EVENT_FILE` | The event's file, for a hook that names no `instructions`. |
 
-A `program` hook's `env` may replace any of these but the last two.
+A `program` hook's `env` may replace any of these but the `BLACKICE_` ones.
 
 ## The event a hook receives
 
-The daemon writes the event to `event.json`, in a private directory that is the hook's working directory and is deleted afterwards, and names the file in `BLACKICE_EVENT_FILE`. Unless the hook says `stdin = "none"`, it gets the event on stdin too.
+A hook that names an agent's `instructions` gets the event on stdin only, and no file: up to 1.0.2 it got the event, the instructions and the notes as files in a folder of yours, which any program running as you could change while the agent read them. For any other hook the daemon writes the event to `event.json`, in a private directory that is the hook's working directory and is deleted afterwards, and names the file in `BLACKICE_EVENT_FILE`. Unless the hook says `stdin = "none"`, it gets the event on stdin too.
 
 ```json
 {
@@ -180,7 +211,7 @@ The daemon writes the event to `event.json`, in a private directory that is the 
 }
 ```
 
-Code with no identity blackice could check, signed ad hoc or run from a [folder macOS protects](#connections-with-no-name), has `"cdhash"` in `app` in place of `signing_id` and `team_id`. For a [connection with no name](#connections-with-no-name), `host` is the address, the same as `ip`. The event carries no token: that stays with the extension and the daemon.
+Code with no identity blackice could check, signed ad hoc or run from a [folder macOS protects](#connections-with-no-name), has `"cdhash"` in `app` in place of `signing_id` and `team_id`. For a [connection with no name](#connections-with-no-name), `host` is the address, the same as `ip`. For an interpreter (python, node, ruby, a shell and the others blackice knows), `app` also has `"script"`: the script its command line names, such as `/Users/me/.local/bin/mailctl`, or `-m module` for `python -m`. Only the script is read, never the other arguments. Any program can start an interpreter with any script name, so `script` tells tools apart for the agent and your notes, and no rule or approval names it. The event carries no token: that stays with the extension and the daemon.
 
 ## How a hook answers
 
