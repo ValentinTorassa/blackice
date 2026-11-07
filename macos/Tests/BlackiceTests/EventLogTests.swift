@@ -97,6 +97,22 @@ struct EventLogTests {
         #expect(record["port"] as? Int == 443)
         #expect(record["token"] == nil)
         #expect((record["ts"] as? String)?.hasSuffix("Z") == true)
+        #expect(record["app_script"] == nil)
+    }
+
+    /// The script an interpreter ran is kept with the event, as the agent saw it.
+    @Test func anInterpretersScriptIsLogged() throws {
+        let dir = try makePrivateDirectory()
+        defer { removeTree(dir) }
+        let url = dir.appendingPathComponent("events.jsonl")
+        let log = try EventLog(url: url)
+        let app = HookEvent.App(AppIdentity.cdhash(String(repeating: "ab", count: 20)), path: "/opt/homebrew/bin/python3",
+                                script: "/opt/homebrew/bin/aws")
+        try log.append(.eventReceived(try HookEvent.connection(app: app, host: "sts.amazonaws.com", ip: "203.0.113.7",
+                                                               port: 443, deadline: Date().addingTimeInterval(30))))
+        let record = try #require(try lines(url).first)
+        #expect(record["app_script"] as? String == "/opt/homebrew/bin/aws")
+        #expect(record["app_cdhash"] as? String == String(repeating: "ab", count: 20))
     }
 
     @Test func eachOutcomeHasItsRecordType() throws {
@@ -109,6 +125,7 @@ struct EventLogTests {
             (.dropped(.queueFull), "hook_dropped", "reason", "queue_full"),
             (.failedToStart("no shell"), "hook_failed", "error", "no shell"),
             (.refused(found: "invalid_signature"), "hook_refused", "found", "invalid_signature"),
+            (.unsafeHome(path: "/h/.codex/AGENTS.md"), "hook_refused", "path", "/h/.codex/AGENTS.md"),
         ]
         for (outcome, type, key, value) in cases {
             let data = try EventLog.encode(.hookFinished(eventID: "ev-1", result(outcome)), at: Date())
@@ -120,6 +137,19 @@ struct EventLogTests {
             #expect(record["stderr"] == nil)
             #expect(record["waited_ms"] == nil)
         }
+    }
+
+    /// Why a hook was refused, and why an answer did not count: the signature, or the agent's home.
+    @Test func aRefusalSaysWhy() throws {
+        func record(_ entry: LogRecord) throws -> [String: Any] {
+            try #require(try JSONSerialization.jsonObject(with: EventLog.encode(entry, at: Date())) as? [String: Any])
+        }
+        #expect(try record(.hookFinished(eventID: "ev-1", result(.refused(found: "x"))))["reason"] as? String == "signature")
+        let home = try record(.hookFinished(eventID: "ev-1", result(.unsafeHome(path: "/h/.fx/AGENTS.md"))))
+        #expect(home["reason"] as? String == "agent_home" && home["path"] as? String == "/h/.fx/AGENTS.md")
+        let voided = try record(.hookNoAnswer(eventID: "ev-1", hookLine: 9, .unsafeHome("/h/.fx/AGENTS.md")))
+        #expect(voided["type"] as? String == "hook_no_answer" && voided["reason"] as? String == "agent_home")
+        #expect(voided["path"] as? String == "/h/.fx/AGENTS.md")
     }
 
     /// A hook that had to wait for a slot: hook_queued, then waited_ms on its start and its end.

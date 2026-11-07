@@ -128,6 +128,36 @@ struct PendingTableTests {
                            makeEvent: { _ in throw EventToken.RandomFailure(status: -1) }) == .full)
     }
 
+    /// One app that connects to many hosts, or to many ports, no longer fills the table for every
+    /// other app: it gets a quarter of the events and of the flows.
+    @Test func oneAppTakesAtMostItsShare() {
+        #expect(AskLimits.eventsPerApp == 64 && AskLimits.flowsPerApp == 256)
+        let defaults = PendingTable<Int>()
+        #expect(defaults.maximumEventsPerApp == AskLimits.eventsPerApp && defaults.maximumFlowsPerApp == AskLimits.flowsPerApp)
+        var table = PendingTable<Int>(maximumEvents: 8, maximumFlows: 16, maximumFlowsPerEvent: 8,
+                                      maximumEventsPerApp: 2, maximumFlowsPerApp: 3)
+        let maker = EventMaker()
+        func add(_ flow: Int, _ key: PendingKey, holdFor: TimeInterval? = nil) -> PendingTable<Int>.Added {
+            table.add(flow, key: key, addressMatches: true, now: 0, timeout: 10, holdFor: holdFor, makeEvent: maker.make(key))
+        }
+        let a = pendingKey(tool, "a.example.com"), b = pendingKey(tool, "b.example.com", 8443)
+        let c = pendingKey(tool, "b.example.com", 8444)
+        guard case .raised = add(1, a, holdFor: 5), case .raised = add(2, b) else { Issue.record("not raised"); return }
+        // A third event for the same app is one too many, another app still raises its own...
+        #expect(add(3, c) == .appFull)
+        guard case .raised = add(4, pendingKey(other, "b.example.com", 8444)) else { Issue.record("not raised"); return }
+        // ...and the app's flows count on all of its events.
+        guard case .joined = add(5, b) else { Issue.record("not joined"); return }
+        #expect(add(6, b) == .appFull && table.flowCount == 4)
+        // A flow whose hold ran out makes room. Its event stays until its deadline, and still counts.
+        #expect(table.expireHolds(now: 5).map(\.flow) == [1])
+        #expect(add(7, c) == .appFull)
+        guard case .joined = add(8, a) else { Issue.record("not joined"); return }
+        // Once its events end, the app has room again.
+        #expect(table.expire(now: 10).count == 3)
+        guard case .raised = add(9, c) else { Issue.record("not raised"); return }
+    }
+
     @Test func eventIDCollisionsAreRetried() throws {
         var table = PendingTable<Int>()
         var attempts = 0
@@ -404,5 +434,117 @@ struct AskStateTests {
         _ = unanswered.pending.add("slow", key: key, addressMatches: true, now: 100, timeout: 10, holdFor: 30,
                                    makeEvent: maker.make(key))
         #expect(unanswered.expire(now: 110).released.map(\.reason) == ["timeout"])
+    }
+}
+
+/// An interpreter's answers are bound to its script (ScriptScope): an agent's covers the script
+/// its event named, a person's the one it names, or all of them.
+struct ScriptScopeTests {
+    private static let aws = ScriptScope.script("/opt/homebrew/bin/aws")
+    private static let other = ScriptScope.script("/tmp/upload.py")
+
+    /// Homebrew's python, ad hoc signed, to sts.amazonaws.com from three scripts: the AWS CLI,
+    /// another script and none at all (`python3 -c`).
+    private func state() -> (AskState<String>, [ScriptScope: HookEvent]) {
+        var ask = AskState<String>()
+        let maker = EventMaker()
+        var events: [ScriptScope: HookEvent] = [:]
+        for (name, scope) in [("aws", Self.aws), ("other", Self.other), ("none", ScriptScope.script(nil))] {
+            let key = PendingKey(identity: build, host: "sts.amazonaws.com", port: 443, scope: scope)
+            if case .raised(let event) = ask.pending.add(name, key: key, addressMatches: true, now: 0, timeout: 10,
+                                                         makeEvent: maker.make(key)) {
+                events[scope] = event
+            }
+        }
+        return (ask, events)
+    }
+
+    private func covered(_ table: ApprovalTable, _ scope: ScriptScope, now: TimeInterval = 2) -> Bool {
+        table.covers(build, host: "sts.amazonaws.com", scope: scope, now: now)
+    }
+
+    @Test func eachScriptWaitsOnItsOwnEvent() {
+        let (ask, events) = state()
+        #expect(events.count == 3 && ask.pending.eventCount == 3)
+    }
+
+    @Test func anAgentsApprovalCoversOnlyItsEventsScript() throws {
+        var (ask, events) = state()
+        let token = try #require(events[Self.aws]?.token)
+        let outcome = ask.answer(request(.approve, build, host: "sts.amazonaws.com", seconds: 3600, token: token), now: 1)
+        #expect(outcome.reply.status == .done)
+        #expect(outcome.reply.message.contains(" → sts.amazonaws.com (running /opt/homebrew/bin/aws) for "))
+        #expect(outcome.released.map(\.flow) == ["aws"] && outcome.released.allSatisfy(\.allow))
+        #expect(covered(ask.approvals, Self.aws))
+        // The same python running another script, or none, still asks; so does code that is no interpreter.
+        #expect(!covered(ask.approvals, Self.other) && !covered(ask.approvals, .script(nil)) && !covered(ask.approvals, .any))
+        #expect(ask.pending.eventCount == 2)
+        #expect(ask.approvals.summaries(now: 2)
+            == [ApprovalSummary(app: AppReference(build), host: "sts.amazonaws.com", secondsLeft: 3599, scope: Self.aws)])
+    }
+
+    @Test func aPersonsAnswerWithNoScriptCoversThemAll() {
+        var (ask, _) = state()
+        let outcome = ask.answer(request(.approve, build, host: "sts.amazonaws.com", seconds: 600), now: 1)
+        #expect(Set(outcome.released.map(\.flow)) == ["aws", "other", "none"])
+        #expect(!outcome.reply.message.contains("running"))
+        for scope in [Self.aws, Self.other, .script(nil), .any] { #expect(covered(ask.approvals, scope)) }
+    }
+
+    @Test func aPersonsAnswerCanNameOneScript() {
+        var (ask, _) = state()
+        let approve = AnswerRequest(kind: .approve, app: build, host: "sts.amazonaws.com", seconds: 600, token: nil,
+                                    script: "/tmp/upload.py")
+        let outcome = ask.answer(approve, now: 1)
+        #expect(outcome.released.map(\.flow) == ["other"])
+        #expect(outcome.reply.message.contains("(running /tmp/upload.py)"))
+        #expect(covered(ask.approvals, Self.other) && !covered(ask.approvals, Self.aws))
+    }
+
+    @Test func aDenialOfOneScriptLeavesTheOthersAsking() throws {
+        var (ask, events) = state()
+        let deny = request(.deny, build, host: "sts.amazonaws.com", token: try #require(events[.script(nil)]?.token))
+        let outcome = ask.answer(deny, now: 1)
+        #expect(outcome.released.map(\.flow) == ["none"] && outcome.reply.message.contains("(with no script)"))
+        #expect(covered(ask.denials, .script(nil)) && !covered(ask.denials, Self.aws) && !covered(ask.denials, .any))
+        #expect(ask.denials.summaries(now: 2).first?.noScript == true)
+        // An agent's approval of another script leaves that denial alone.
+        let approve = ask.answer(request(.approve, build, host: "sts.amazonaws.com", token: try #require(events[Self.aws]?.token)),
+                                 now: 2)
+        #expect(!approve.reply.message.contains("replacing its denial") && covered(ask.denials, .script(nil), now: 3))
+        // A person's answer for every script takes back the answers of each.
+        let all = ask.answer(request(.deny, build, host: "sts.amazonaws.com"), now: 3)
+        #expect(all.reply.message.contains("removing its approval"))
+        #expect(!covered(ask.approvals, Self.aws, now: 4) && covered(ask.denials, Self.other, now: 4))
+        #expect(ask.denials.count == 1)
+        let back = ask.answer(request(.approve, build, host: "sts.amazonaws.com"), now: 4)
+        #expect(back.reply.message.contains("replacing its denial") && ask.denials.count == 0)
+    }
+
+    @Test func aPersonsApprovalOfOneScriptOutranksADenialOfAll() {
+        var ask = AskState<String>()
+        _ = ask.answer(request(.deny, build, host: "sts.amazonaws.com"), now: 0)
+        _ = ask.answer(AnswerRequest(kind: .approve, app: build, host: "sts.amazonaws.com", seconds: 600, token: nil,
+                                     script: "/opt/homebrew/bin/aws"), now: 1)
+        // FilterPolicy checks approvals first: that script goes through, the others stay denied.
+        #expect(covered(ask.approvals, Self.aws) && covered(ask.denials, Self.aws))
+        #expect(!covered(ask.approvals, Self.other) && covered(ask.denials, Self.other))
+    }
+
+    @Test func onlyAnInterpreterHasAScriptScope() {
+        var read = 0
+        let script = { () -> String? in read += 1; return "/tmp/x.py" }
+        #expect(ScriptScope.of(executablePath: "/usr/bin/curl", script: script) == .any)
+        #expect(ScriptScope.of(executablePath: nil, script: script) == .any)
+        #expect(read == 0)
+        #expect(ScriptScope.of(executablePath: "/opt/homebrew/Cellar/python@3.14/3.14.0/bin/python3.14", script: script)
+            == .script("/tmp/x.py"))
+        #expect(ScriptScope.of(executablePath: "/opt/homebrew/bin/node", script: { nil }) == .script(nil))
+    }
+
+    @Test func aPersonCanNameOnlyAFullPathOrAModule() {
+        #expect(ScriptScope.canName("/opt/homebrew/bin/aws") && ScriptScope.canName("-m pip"))
+        #expect(!ScriptScope.canName("aws") && !ScriptScope.canName("") && !ScriptScope.canName("/tmp/a\u{7}b"))
+        #expect(!ScriptScope.canName("/" + String(repeating: "a", count: HookEvent.maximumPathBytes)))
     }
 }

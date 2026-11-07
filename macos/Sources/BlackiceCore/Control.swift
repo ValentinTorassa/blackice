@@ -12,10 +12,11 @@ public enum ControlAction: Equatable, Sendable {
     case mode(from: Mode, to: Mode, generation: UInt64)
     /// `blackice mode ask --agent NAME` and the menu's Ask items: ask mode, with someone else answering.
     case answering(Answerer, mode: Mode, generation: UInt64)
-    /// `blackice approve`: a person confirms.
-    case approve(AppIdentity, host: String, seconds: Int)
+    /// `blackice approve`: a person confirms, once for every host the command names; with a
+    /// script, for an interpreter running only that one.
+    case approve(AppIdentity, hosts: [String], seconds: Int, script: String? = nil)
     /// `blackice deny`: a person confirms.
-    case deny(AppIdentity, host: String)
+    case deny(AppIdentity, host: String, script: String? = nil)
 
     /// What the Touch ID dialog says, completing macOS's "Blackice is trying to …". The terminal
     /// prints it too. Every change to filtering asks.
@@ -30,11 +31,22 @@ public enum ControlAction: Equatable, Sendable {
         case .answering(let answerer, let mode, _):
             return answerer == .you ? "switch to \(mode.rawValue) mode, with you answering"
                 : "switch to \(mode.rawValue) mode, with \(answerer.title) answering"
-        case .approve(let identity, let host, let seconds):
-            return "let \(identity.label) reach \(host) for \(Self.duration(seconds))"
-        case .deny(let identity, let host):
-            return "deny \(identity.label) access to \(host) and drop its waiting connections"
+        case .approve(let identity, let hosts, let seconds, let script):
+            return "let \(identity.label)\(Self.running(script)) reach \(Self.list(hosts)) for \(Self.duration(seconds))"
+        case .deny(let identity, let host, let script):
+            return "deny \(identity.label)\(Self.running(script)) access to \(host) and drop its waiting connections"
         }
+    }
+
+    /// ", running /path/to/script" for an answer bound to one script.
+    static func running(_ script: String?) -> String {
+        script.map { ", running \(Describe.script($0))," } ?? ""
+    }
+
+    /// "a", "a and b", "a, b and c": every host named, so the dialog shows all that one Touch ID allows.
+    static func list(_ items: [String]) -> String {
+        guard let last = items.last else { return "" }
+        return items.count == 1 ? last : items.dropLast().joined(separator: ", ") + " and " + last
     }
 
     /// "90 s", "10 min", "1 h", "1 h 30 min".

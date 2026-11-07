@@ -69,12 +69,14 @@ final class SystemAdapter {
         return Self.result(NESystemControl().answer(request, output: output.system), output.errors)
     }
 
-    /// NESystemControl.confirm's line when Touch ID is cancelled: nothing changed, nothing to show.
-    nonisolated static let cancelledLine = "Touch ID was cancelled, so nothing changed."
+    /// NESystemControl.confirm's lines when nothing was confirmed: no answer in time, a cancel or a
+    /// finger that did not match. Nothing changed, and there is nothing to show.
+    nonisolated static let notConfirmedLines: Set = [NESystemControl.touchIDNoAnswer, NESystemControl.touchIDCancelled,
+                                                     NESystemControl.touchIDNotMatched]
 
     nonisolated static func result(_ status: Int32, _ errors: [String]) -> MenuActionResult {
         if status == ExitCode.success { return .done }
-        if status == ExitCode.noPermission, errors.last == cancelledLine { return .cancelled }
+        if status == ExitCode.noPermission, let last = errors.last, notConfirmedLines.contains(last) { return .cancelled }
         return .failed(errors.isEmpty ? "blackice stopped with status \(status)." : errors.joined(separator: "\n"))
     }
 

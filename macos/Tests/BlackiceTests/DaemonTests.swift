@@ -209,7 +209,8 @@ struct DaemonTests {
         let logURL = dir.appendingPathComponent("events.jsonl")
         let daemon = Daemon(log: try EventLog(url: logURL), runner: try testRunner(dir, grace: 0.2))
         let answers = Answers()
-        await daemon.handle(testEvent(id: "ev-6", deadlineIn: 1), with: try hooks("echo approve 1h; sleep 30"), send: answers.send)
+        // Room for a slow CI runner to start the hook before the deadline.
+        await daemon.handle(testEvent(id: "ev-6", deadlineIn: 2.5), with: try hooks("echo approve 1h; sleep 30"), send: answers.send)
         #expect(answers.sent.items.isEmpty)
         let log = try records(logURL)
         #expect(types(log, event: "ev-6").suffix(2) == ["hook_killed", "hook_no_answer"])

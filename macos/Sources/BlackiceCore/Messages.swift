@@ -241,9 +241,11 @@ public struct PendingSummary: Codable, Equatable, Sendable {
     public let secondsLeft: Int
     /// Paused flows waiting on this event: the first one and the repeats.
     public let connections: Int
+    /// For an interpreter, the script it runs, as its command line says (HookEvent.App.script).
+    public let script: String?
 
     public init(id: String, app: AppReference, path: String?, host: String, ip: String, port: UInt16,
-                secondsLeft: Int, connections: Int) {
+                secondsLeft: Int, connections: Int, script: String? = nil) {
         self.id = id
         self.app = app
         self.path = path
@@ -252,10 +254,11 @@ public struct PendingSummary: Codable, Equatable, Sendable {
         self.port = port
         self.secondsLeft = secondsLeft
         self.connections = connections
+        self.script = script
     }
 
     enum CodingKeys: String, CodingKey {
-        case id, app, path, host, ip, port, connections
+        case id, app, path, host, ip, port, connections, script
         case secondsLeft = "seconds_left"
     }
 
@@ -279,16 +282,33 @@ public struct ApprovalSummary: Codable, Equatable, Sendable {
     public let app: AppReference
     public let host: String
     public let secondsLeft: Int
+    /// For an interpreter's answer, the script it covers (ScriptScope).
+    public let script: String?
+    /// True for an interpreter's answer that covers it running no script it names.
+    public let noScript: Bool?
 
-    public init(app: AppReference, host: String, secondsLeft: Int) {
+    public init(app: AppReference, host: String, secondsLeft: Int, scope: ScriptScope = .any) {
         self.app = app
         self.host = host
         self.secondsLeft = secondsLeft
+        script = scope.script
+        noScript = scope == .script(nil) ? true : nil
+    }
+
+    public var scope: ScriptScope {
+        if let script { return .script(script) }
+        return noScript == true ? .script(nil) : .any
+    }
+
+    var isValid: Bool {
+        app.identity != nil && isNormalDestination(host) && secondsLeft >= 0
+            && (script.map(validPath) ?? true) && (noScript == nil || (noScript == true && script == nil))
     }
 
     enum CodingKeys: String, CodingKey {
-        case app, host
+        case app, host, script
         case secondsLeft = "seconds_left"
+        case noScript = "no_script"
     }
 }
 
@@ -328,12 +348,12 @@ public struct ActiveConfiguration: Codable, Equatable, Sendable {
 public struct PendingReply: CheckedMessage, Equatable {
     public static let maximumEntries = 1024
     /// The largest reply `validate` accepts, encoded: each event at most 1 KiB plus its escaped
-    /// path, each approval and each denial at most 1 KiB, and 1 KiB for the rest. A signing
-    /// identifier takes at most 255 bytes, a host name 253 and an address 45, and none of them
-    /// needs escaping.
+    /// path and script, each approval and each denial at most 1 KiB plus its escaped script, and
+    /// 1 KiB for the rest. A signing identifier takes at most 255 bytes, a host name 253 and an
+    /// address 45, and none of them needs escaping.
     public static let maximumBytes = 1024
-        + AskLimits.events * (1024 + Messages.jsonStringBytes(HookEvent.maximumPathBytes))
-        + 2 * ApprovalTable.maximumEntries * 1024
+        + AskLimits.events * (1024 + 2 * Messages.jsonStringBytes(HookEvent.maximumPathBytes))
+        + 2 * ApprovalTable.maximumEntries * (1024 + Messages.jsonStringBytes(HookEvent.maximumPathBytes))
 
     public let version: Int
     public let events: [PendingSummary]
@@ -368,15 +388,15 @@ public struct PendingReply: CheckedMessage, Equatable {
         for event in events {
             guard validEventID(event.id), event.app.identity != nil, IPAddress(event.ip)?.description == event.ip,
                   validEventHost(event.host, ip: event.ip), event.secondsLeft >= 0, event.connections >= 0,
-                  event.path.map(validPath) ?? true else { throw MessageError("events", "has an invalid entry") }
+                  event.path.map(validPath) ?? true, event.script.map(validPath) ?? true else {
+                throw MessageError("events", "has an invalid entry")
+            }
         }
         for approval in approvals {
-            guard approval.app.identity != nil, isNormalDestination(approval.host),
-                  approval.secondsLeft >= 0 else { throw MessageError("approvals", "has an invalid entry") }
+            guard approval.isValid else { throw MessageError("approvals", "has an invalid entry") }
         }
         for denial in denials {
-            guard denial.app.identity != nil, isNormalDestination(denial.host),
-                  denial.secondsLeft >= 0 else { throw MessageError("denials", "has an invalid entry") }
+            guard denial.isValid else { throw MessageError("denials", "has an invalid entry") }
         }
     }
 }
@@ -400,8 +420,11 @@ public struct AnswerRequest: CheckedMessage, Equatable {
     public let seconds: Int?
     public let authorization: Authorization
     public let token: String?
+    /// touch_id only: the one script of an interpreter the answer covers (`--script`); with none,
+    /// a person's answer covers all of them. An answer with a token covers its event's script.
+    public let script: String?
 
-    public init(kind: Kind, app: AppIdentity, host: String, seconds: Int?, token: String?) {
+    public init(kind: Kind, app: AppIdentity, host: String, seconds: Int?, token: String?, script: String? = nil) {
         version = Messages.version
         self.kind = kind
         self.app = AppReference(app)
@@ -409,9 +432,13 @@ public struct AnswerRequest: CheckedMessage, Equatable {
         self.seconds = seconds
         self.authorization = token == nil ? .touchID : .token
         self.token = token
+        self.script = script
     }
 
     public var identity: AppIdentity? { app.identity }
+
+    /// What a person's answer covers; one with a token takes its event's instead (AskState.answer).
+    public var scope: ScriptScope { script.map { .script($0) } ?? .any }
 
     public func validate(now: Date) throws {
         guard app.identity != nil else { throw MessageError("app", "needs a valid signing_id (and team_id) or a cdhash, not both") }
@@ -431,6 +458,12 @@ public struct AnswerRequest: CheckedMessage, Equatable {
             guard let token, validEventToken(token) else { throw MessageError("token", "must be 43 base64url characters") }
         case .touchID:
             guard token == nil else { throw MessageError("token", "must be absent with touch_id") }
+        }
+        if let script {
+            guard authorization == .touchID else { throw MessageError("script", "is for touch_id only") }
+            guard ScriptScope.canName(script) else {
+                throw MessageError("script", "must be an absolute path or -m module, with no control characters")
+            }
         }
     }
 }

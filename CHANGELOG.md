@@ -1,5 +1,63 @@
 # Changelog
 
+## 1.0.3 (7 November 2026)
+
+New:
+- An `[[allow]]` rule can name ad hoc signed code, such as Homebrew's `gh`, by `cdhash = "…"` in place of `app` and
+  `team`. It covers that one build, so after an upgrade ask mode asks again. It never counts for an interpreter (python,
+  node, the shells and others), whose connections are decided as without it (`;interpreter`). Until now ad hoc code
+  could only be approved, for at most 24 hours.
+- `blackice approve` takes `--host` up to 16 times: one app's hosts under one Touch ID, whose dialog names them all.
+  Until now each host took its own command and Touch ID, seven for a mail CLI that signs in to Google and Microsoft.
+- `blackice approve --save` also writes a lasting `[[allow]]` rule for the app and hosts in `blackice.toml`, which counts
+  from the next `start`. Until now an approval was the only way to let ad hoc code through, for at most 24 hours.
+- For an interpreter (python, node, a shell…), the event, `pending` and the event log (`app_script`) show the script it
+  runs, as `app.script`, so the agent and your notes can tell one tool from another. Until now every uv or npm CLI
+  looked the same: its interpreter.
+- An interpreter's approvals and denials are bound to its script: the agent's answer covers the script its event
+  named, each script waits on its own event, and `pending` says which script an approval covers. `approve --script`
+  and `deny --script` name one script, and the menu's answers take the event's; without it your answer covers them
+  all. Until now an approval of an interpreter let every script it runs reach that host: once the agent approved the
+  AWS CLI's python to STS for a day, any script of that python reached STS for the day.
+
+Changed:
+- blackice needs macOS 14.4 or later: the daemon starts `program` hooks with a launch requirement, so macOS runs one
+  only when its signature names the hook's `app` and `team`, with a Developer ID (or, with no `team`, Apple's own
+  code). Until now the daemon started it suspended and checked it before letting it run, and a program that stopped
+  the hook and let it run first got past the check. With SIP off macOS does not check launch requirements, and a
+  hook that exits before the daemon can read its code is refused.
+- A hook that names an agent's `instructions` gets no files: the instructions and the owner's notes come on its
+  command line (Claude Code, Codex, fx) or in its environment (opencode), the event on stdin, and it runs in
+  `/var/empty`. Claude Code runs with no tools at all. A hook from 1.0 runs the same way. Until now all three were
+  files in a folder any program running as you could change while the agent read them.
+- The daemon looks in Codex's and fx's homes before it starts their hook and once it exits. A file there that they
+  would load as instructions, such as `AGENTS.md` or a skill, keeps the hook from starting, or voids its answer
+  (`agent_home` in the log and the menu), and the connection waits for you. Until now nothing looked. This only
+  detects the file, and can miss one added and removed while the hook runs.
+
+Fixed:
+- When nobody answers Touch ID within 2 minutes, the command says so ("No answer to Touch ID within 2 minutes"), and
+  a finger that does not match says that. Until now each said "Touch ID was cancelled", as if Cancel had been pressed.
+- `pending` lists the apps and hosts denied a moment ago first, each app's hosts with one `blackice approve` line,
+  and `status` counts them. Until now `pending` opened with "Nothing waiting" while a remembered denial dropped the
+  app's connections without an event, so there seemed to be nothing to approve.
+- An approval that lands while the configuration changes no longer lets its connections through under the new one.
+  Until now a switch to block-all at that moment missed them, and the old approval let them go.
+- One app holds at most 64 of the 256 connections waiting for their TLS hello, and a new one replaces the oldest
+  that has sent nothing (`evicted_quiet`). Until now one app could fill them all, and other apps' TLS connections
+  were dropped as `hold_capacity`.
+- In ask mode one app takes at most 64 of the 256 events (`ask_capacity_app`). Until now one app could fill the
+  table, and other apps' connections were dropped with no event.
+- A second switch of who answers, from a file that names no one, keeps the first one's record. Until now the next
+  `start` dropped both switches.
+- `agent connect` saves `blackice.toml` under a lock, and stops a sign-in check that gives no answer in 30 s. Until
+  now two runs could overwrite each other, and a stalled check left the Mac in accept-all.
+- `npx blackice install` checks `--force` and the installed build again just before replacing the app. Until now
+  another install meanwhile, even of a newer build, was replaced.
+- `pending`, `report` and the menu call code known only by its cdhash `cdhash 8fbec897`, not ad hoc: since 1.0.1
+  that includes signed programs in `~/Documents` or `~/Downloads`.
+- `report` names the capacity drops in words.
+
 ## 1.0.2 (6 November 2026)
 
 Fixed:

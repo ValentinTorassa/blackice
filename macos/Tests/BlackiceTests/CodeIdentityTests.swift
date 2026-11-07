@@ -236,12 +236,13 @@ struct CodeIdentityTests {
 
     /// Mac App Store apps are signed by Apple with the developer's Team ID in the code directory.
     /// Skipped on a Mac with none.
-    @Test func macAppStoreAppsKeepTheirTeam() throws {
+    @Test func macAppStoreAppsKeepTheirTeam() async throws {
         let names = (try? FileManager.default.contentsOfDirectory(atPath: "/Applications")) ?? []
         guard let name = names.sorted().first(where: {
             $0.hasSuffix(".app") && FileManager.default.fileExists(atPath: "/Applications/\($0)/Contents/_MASReceipt")
         }) else { return }
-        let identity = try #require(CodeIdentity.identity(atPath: "/Applications/" + name))
+        // Checking a whole app's signature takes seconds.
+        let identity = try #require(await offThePool { CodeIdentity.identity(atPath: "/Applications/" + name) })
         #expect(identity.teamID.map(validTeamID) == true)
     }
 }

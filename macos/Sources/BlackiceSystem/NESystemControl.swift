@@ -295,8 +295,8 @@ public final class NESystemControl: SystemControlling {
         let command = "blackice \(request.kind.rawValue)"
         guard request.authorization == .touchID, let identity = request.identity else { return ExitCode.usage }
         let action: ControlAction = request.kind == .approve
-            ? .approve(identity, host: request.host, seconds: request.seconds ?? 0)
-            : .deny(identity, host: request.host)
+            ? .approve(identity, hosts: [request.host], seconds: request.seconds ?? 0, script: request.script)
+            : .deny(identity, host: request.host, script: request.script)
         guard confirm(action, output) else { return ExitCode.noPermission }
         do {
             let reply = try FilterClient(teamID: teamID).answer(request)
@@ -307,6 +307,38 @@ public final class NESystemControl: SystemControlling {
                 ?? "\(command): cannot reach blackice's filter (\(error)). Is it on? blackice status")
             return ExitCode.unavailable
         }
+    }
+
+    /// `blackice approve` with several hosts: one Touch ID whose dialog names every host, then one
+    /// answer per host on the same connection. The extension trusts each the way it trusts one,
+    /// because the connection comes from this signed binary. A host the extension refuses does not
+    /// stop the others; the status is the first failure's.
+    public func answer(all requests: [AnswerRequest], output: SystemOutput) -> Int32 {
+        guard requests.count > 1 else { return requests.first.map { answer($0, output: output) } ?? ExitCode.usage }
+        guard Self.isSignedHost(), let teamID = CodeIdentity.current()?.teamID else {
+            return UnsignedSystem().answer(all: requests, output: output)
+        }
+        let first = requests[0]
+        guard first.kind == .approve, let identity = first.identity, let seconds = first.seconds,
+              requests.allSatisfy({ $0.kind == .approve && $0.authorization == .touchID && $0.identity == identity &&
+                                    $0.seconds == seconds && $0.script == first.script }) else { return ExitCode.usage }
+        guard confirm(.approve(identity, hosts: requests.map(\.host), seconds: seconds, script: first.script), output) else {
+            return ExitCode.noPermission
+        }
+        var status = ExitCode.success
+        do {
+            let client = try FilterClient(teamID: teamID)
+            for request in requests {
+                let reply = try client.answer(request)
+                if reply.status == .done { output.stdout(Style.done(reply.message)) } else { output.stderr("blackice approve: \(reply.message)") }
+                if status == ExitCode.success { status = CLI.answerStatus(reply) }
+            }
+        } catch {
+            output.stderr(Self.unfinishedUpgrade().map { "blackice approve: cannot reach blackice's filter. " + $0.hint }
+                ?? "blackice approve: cannot reach blackice's filter (\(error)). Is it on? blackice status")
+            return ExitCode.unavailable
+        }
+        return status
     }
 
     /// Runs until the connection to the extension ends, then exits with 75 so launchd starts the
@@ -370,6 +402,22 @@ public final class NESystemControl: SystemControlling {
         return ExitCode.tempFail
     }
 
+    /// What `confirm` says when nothing was confirmed. A dialog nobody answers closes after 2
+    /// minutes, and once said it was cancelled, which read like a press of Cancel. The menu shows
+    /// none of them (SystemAdapter).
+    public static let touchIDNoAnswer = "No answer to Touch ID within 2 minutes, so nothing changed."
+    public static let touchIDCancelled = "Touch ID was cancelled, so nothing changed."
+    public static let touchIDNotMatched = "Touch ID did not match, so nothing changed."
+
+    /// The line for `confirm`'s outcome: nil when the time ran out, else LAError's code.
+    static func notConfirmed(_ status: Int32?) -> String {
+        switch status {
+        case nil: return touchIDNoAnswer
+        case Int32(LAError.Code.authenticationFailed.rawValue): return touchIDNotMatched
+        default: return touchIDCancelled
+        }
+    }
+
     /// Fresh Touch ID (or the login password) for this one change. No reuse window.
     private func confirm(_ action: ControlAction, _ output: SystemOutput) -> Bool {
         if !output.setup { output.stdout("Touch ID to \(action.reason)…") }
@@ -382,12 +430,14 @@ public final class NESystemControl: SystemControlling {
             return false
         }
         let result = Completion()
-        context.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: action.reason) { success, _ in
-            result.finish(success ? 0 : 1)
+        context.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: action.reason) { success, error in
+            // LAError's codes are negative; 1 stands for an error that is none of them.
+            result.finish(success ? 0 : (error as? LAError).map { Int32($0.errorCode) } ?? 1)
         }
-        let approved = MainLoop.wait(for: result, timeout: 120) == 0
+        let status = MainLoop.wait(for: result, timeout: 120)
         context.invalidate()
-        if !approved { output.stderr("Touch ID was cancelled, so nothing changed.") }
+        let approved = status == 0
+        if !approved { output.stderr(Self.notConfirmed(status)) }
         if approved, output.setup { output.stdout("  " + Style.done("Confirmed")) }
         return approved
     }

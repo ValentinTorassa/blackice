@@ -131,6 +131,8 @@ public final class EventLog: @unchecked Sendable {
             fields["app_team_id"] = event.app.teamID.map(Field.string)
             fields["app_cdhash"] = event.app.cdhash.map(Field.string)
             fields["app_path"] = event.app.path.map(Field.string)
+            // What the agent was shown, never trusted (ProcessArguments): the review of its answers needs it.
+            fields["app_script"] = event.app.script.map(Field.string)
             fields["host"] = event.host.map(Field.string)
             fields["ip"] = .string(event.ip)
             fields["port"] = .int(Int(event.port))
@@ -175,6 +177,10 @@ public final class EventLog: @unchecked Sendable {
                 fields["type"] = .string("hook_refused")
                 fields["reason"] = .string("signature")
                 fields["found"] = .string(found)
+            case .unsafeHome(let path):
+                fields["type"] = .string("hook_refused")
+                fields["reason"] = .string("agent_home")
+                fields["path"] = .string(path)
             }
             if !result.stderr.isEmpty {
                 let cut = result.stderr.count > maximumStderrCharacters
@@ -201,6 +207,7 @@ public final class EventLog: @unchecked Sendable {
             case .exitStatus(let status): fields["status"] = .int(Int(status))
             case .signaled(let signal): fields["signal"] = .int(Int(signal))
             case .output(.unrecognized(let prefix)): fields["line_prefix"] = .string(prefix)
+            case .unsafeHome(let path): fields["path"] = .string(path)
             case .deadline, .output: break
             }
         case .answerRefused(let eventID, let hookLine, let reason):

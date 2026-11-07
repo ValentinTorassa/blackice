@@ -6,12 +6,13 @@
 // (https://github.com/ValentinTorassa/blackice-poc/blob/45a7870/macos/FilterExtension/FilterDataProvider.swift).
 // Kept: filter settings that also capture loopback; configuration snapshots replaced only by a
 // higher generation and a bad update never replacing a working one; held flows for reading the
-// TLS ClientHello, at most 256, ended when the configuration changes; unified
-// logging, which is diagnostic and can drop records. Changed: decisions come from
-// FilterPolicy (modes and [[allow]] rules) instead of blackice-poc's per-app policies, the
-// configuration is ProviderConfiguration, and every decided flow gets one log line. A held flow
-// may stay quiet for 120 s before its first byte and has 10 s from it for the hello
-// (BlackiceCore.HelloDeadline); blackice-poc gave it 10 s from the connect.
+// TLS ClientHello, at most 256, ended when the configuration changes; unified logging, which is
+// diagnostic and can drop records. Changed: decisions come from FilterPolicy (modes and [[allow]]
+// rules) instead of blackice-poc's per-app policies, the configuration is ProviderConfiguration,
+// and every decided flow gets one log line. A held flow may stay quiet for 120 s before its first
+// byte and has 10 s from it for the hello (BlackiceCore.HelloDeadline); blackice-poc gave it 10 s
+// from the connect. One app holds at most 64 flows, and a new flow may take the place of a quiet
+// one (BlackiceCore.HoldPool).
 //
 // Phase 2 (ask mode), also compiled only: flows wait paused while their host is looked up
 // (HostAddressCache) and while an event waits for an answer (AskState). Answers and the pending
@@ -52,7 +53,6 @@ import os
 
 @objc(BlackiceFilterDataProvider)
 final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
-    static let maximumHeld = 256
     /// More than any DNS message over UDP, so each datagram comes whole in one callback: XNU's
     /// content filter copies at most the peek size of a datagram to the provider, and lets a
     /// datagram through only once all of it is passed.
@@ -71,7 +71,8 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
     private let flowLog = Logger(subsystem: BlackiceIdentifiers.logSubsystem, category: "flows")
     private let controlLog = Logger(subsystem: BlackiceIdentifiers.logSubsystem, category: "control")
 
-    // Ask mode. askLock guards `ask` and `lookups`; it is never taken while holding heldLock.
+    // Ask mode. askLock guards `ask` and `lookups`; it is never taken while holding heldLock, and
+    // may be taken inside snapshots.withInstalled, never the other way round.
     private let askLock = NSLock()
     private var ask = AskState<Paused>()
     private var lookups = LookupWaiters<Paused>()
@@ -202,6 +203,7 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
     private func reloadConfiguration() {
         do {
             let candidate = try ProviderConfiguration(vendorConfiguration: filterConfiguration.vendorConfiguration)
+            // Waits for a release in progress, whose flows endPaused would not find (release).
             guard try snapshots.install(candidate) else { return }
             // What waits under the old configuration is decided again by the new one: what it
             // allows outright goes on, the rest is dropped (FilterPolicy.afterChange).
@@ -252,18 +254,28 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
         let direction: FlowDirection = flow.direction == .outbound ? .outbound :
             (flow.direction == .inbound ? .inbound : .unknown)
         let address = endpoint.flatMap { BlackiceCore.IPAddress($0.hostname) }
-        let facts = FlowFacts(direction: direction, identity: CodeIdentity.resolve(auditToken: flow.sourceAppAuditToken),
+        let identity = CodeIdentity.resolve(auditToken: flow.sourceAppAuditToken)
+        // A cdhash rule reads the path of ad hoc code, to tell an interpreter by its name
+        // (Interpreters); answers and approvals read any interpreter's script (ScriptScope).
+        let kernelPath = flow.sourceAppAuditToken.flatMap { CodeIdentity.kernelPath(auditToken: $0) }
+        var executablePath: String?
+        if case .adHoc = identity { executablePath = kernelPath }
+        let scriptScope = ScriptScope.of(executablePath: kernelPath) {
+            flow.sourceAppAuditToken.flatMap(ProcessArguments.script(auditToken:))
+        }
+        let facts = FlowFacts(direction: direction, identity: identity,
                               internetSocket: internet && (tcp || udp), tcp: tcp,
                               hostname: socket?.remoteHostname, port: endpoint.flatMap { UInt16($0.port) },
                               remoteAddress: address,
                               process: flow.sourceProcessAuditToken.map { CodeIdentity.resolve(auditToken: $0) },
-                              dnsNames: dnsNames.names(for: address))
+                              dnsNames: dnsNames.names(for: address), executablePath: executablePath,
+                              scriptScope: scriptScope)
         let paused = Paused(flow: flow, facts: facts, serverName: nil, echPresent: false, stage: .newFlow,
                             generation: snapshot?.generation ?? 0)
         // Accept-all's dry run of ask mode, for the log line only: it changes nothing for the flow.
         let would = snapshot.flatMap { FilterPolicy.dryRun(facts, snapshot: $0) }
         askLock.lock()
-        let verdict = FilterPolicy.decide(facts, snapshot: snapshot, context: context(now: Self.now))
+        let verdict = FilterPolicy.decide(facts, snapshot: snapshot, context: context(now: Self.now, scope: facts.scriptScope))
         let (step, after) = place(verdict, paused, snapshot, now: Self.now, would: would)
         askLock.unlock()
         perform(after)
@@ -285,22 +297,33 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
     }
 
     /// Holds a flow to read its TLS ClientHello: from handleNewFlow, and when a flow paused at
-    /// the new-flow stage is resumed.
+    /// the new-flow stage is resumed. It may take the place of a quiet one (HoldPool.admit).
     private func hold(_ flow: NEFilterFlow, _ facts: FlowFacts, _ snapshot: ProviderConfiguration?) -> NEFilterNewFlowVerdict {
         guard let socket = flow as? NEFilterSocketFlow, let snapshot else {
             log(facts, .drop(reason: "hold_failed"), snapshot)
             return .drop()
         }
         heldLock.lock()
-        guard held.count < Self.maximumHeld, held[flow.identifier] == nil else {
+        let admission: HoldPool.Admission<UUID> = held[flow.identifier] != nil ? .refuse("hold_capacity") :
+            HoldPool.admit(facts.identity.appIdentity, held: held.lazy.map {
+                HeldPlace(id: $0.key, app: $0.value.facts.identity.appIdentity, deadline: $0.value.deadline)
+            })
+        guard case .hold(let evicting) = admission else {
             heldLock.unlock()
-            log(facts, .drop(reason: "hold_capacity"), snapshot)
+            if case .refuse(let reason) = admission { log(facts, .drop(reason: reason), snapshot) }
             return .drop()
         }
+        let evicted = evicting.flatMap { held.removeValue(forKey: $0) }
         held[flow.identifier] = Held(flow: socket, facts: facts, generation: snapshot.generation,
                                      deadline: HelloDeadline(heldAt: Self.now),
                                      reader: TLSServerNameReader())
         heldLock.unlock()
+        if let evicted {
+            // Out of `held`, a byte it sends drops it anyway; update() is not allowed inside the
+            // flow callback this may run in, so the drop is told from the lifecycle queue.
+            log(evicted.facts, .drop(reason: "evicted_quiet"), snapshot)
+            lifecycle.async { [weak self] in self?.update(evicted.flow, using: .drop(), for: .outbound) }
+        }
         // The 5-byte record header first; no byte is passed until a verdict.
         return .filterDataVerdict(withFilterInbound: false, peekInboundBytes: 0,
                                   filterOutbound: true, peekOutboundBytes: 5)
@@ -335,7 +358,8 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
         let paused = Paused(flow: flow, facts: entry.facts, serverName: serverName, echPresent: echPresent, stage: .data,
                             generation: entry.generation)
         askLock.lock()
-        let verdict = FilterPolicy.decide(entry.facts, serverName: result, snapshot: snapshot, context: context(now: Self.now))
+        let verdict = FilterPolicy.decide(entry.facts, serverName: result, snapshot: snapshot,
+                                          context: context(now: Self.now, scope: entry.facts.scriptScope))
         let (step, after) = place(verdict, paused, snapshot, now: Self.now)
         askLock.unlock()
         perform(after)
@@ -406,18 +430,19 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
 
     /// Under askLock. `resolved` stands in for the cache right after a lookup, so a flow is
     /// decided on the answers it waited for even if they expire meanwhile.
-    private func context(now: TimeInterval,
+    /// For a flow of `scope`: an interpreter's approvals and denials count only for their script.
+    private func context(now: TimeInterval, scope: ScriptScope,
                          resolved: (host: String, answers: Set<BlackiceCore.IPAddress>)? = nil) -> PolicyContext {
         PolicyContext(
             approved: { [approvals = ask.approvals] identity, host in
-                approvals.covers(ApprovalKey(identity: identity, host: host), now: now)
+                approvals.covers(identity, host: host, scope: scope, now: now)
             },
             address: { [addresses] host, address in
                 if let resolved, resolved.host == host { return HostAddressCache.check(address, against: resolved.answers) }
                 return addresses.check(host: host, address: address)
             },
             denied: { [denials = ask.denials] identity, host in
-                denials.covers(ApprovalKey(identity: identity, host: host), now: now)
+                denials.covers(identity, host: host, scope: scope, now: now)
             })
     }
 
@@ -470,11 +495,13 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
                 log(facts, .drop(reason: "ask_incomplete"), snapshot, serverName: paused.serverName)
                 return (.drop, .nothing)
             }
-            let key = PendingKey(identity: identity, host: host, port: port)
+            let key = PendingKey(identity: identity, host: host, port: port, scope: facts.scriptScope)
             let added = ask.pending.add(paused, key: key, addressMatches: addressMatches, now: now,
                                         timeout: TimeInterval(snapshot.config.timeoutSeconds),
                                         holdFor: FilterPolicy.holdLimit(facts, afterServerName: paused.stage == .data)) { seconds in
-                try HookEvent.connection(app: HookEvent.App(identity, path: CodeIdentity.path(auditToken: paused.flow.sourceAppAuditToken)),
+                // The script read when the flow began, the one the event's key and its answer cover.
+                try HookEvent.connection(app: HookEvent.App(identity, path: CodeIdentity.path(auditToken: paused.flow.sourceAppAuditToken),
+                                                            script: facts.scriptScope.script),
                                          host: host, ip: address.description, port: port,
                                          deadline: Date().addingTimeInterval(seconds))
             }
@@ -487,6 +514,9 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
                 return (.pause, .nothing)
             case .full:
                 log(facts, .drop(reason: "ask_capacity"), snapshot, serverName: paused.serverName)
+                return (.drop, .nothing)
+            case .appFull:
+                log(facts, .drop(reason: "ask_capacity_app"), snapshot, serverName: paused.serverName)
                 return (.drop, .nothing)
             }
         }
@@ -509,37 +539,41 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
         }
     }
 
-    /// On resolverQueue: resolves, then decides again every flow that waited for this host.
+    /// On resolverQueue: resolves, then decides again every flow that waited for this host. From
+    /// the generation check to the last resume no configuration is installed (`release`).
     private func finishLookup(_ host: String) {
         let answers = addresses.lookUp(host)
-        let snapshot = snapshots.read()
         let now = Self.now
-        var outcomes: [(Paused, Step, After)] = []
-        askLock.lock()
-        for paused in lookups.finish(host) {
-            let verdict: FlowVerdict
-            if paused.generation != snapshot?.generation {
-                verdict = .drop(reason: "configuration_changed")
-            } else {
-                let context = context(now: now, resolved: (host, answers))
-                verdict = paused.serverName.map {
-                    FilterPolicy.decide(paused.facts, serverName: .serverName($0, echPresent: paused.echPresent),
-                                        snapshot: snapshot, context: context)
-                } ?? FilterPolicy.decide(paused.facts, snapshot: snapshot, context: context)
+        var afters: [After] = []
+        snapshots.withInstalled { snapshot in
+            var outcomes: [(Paused, Step, After)] = []
+            askLock.lock()
+            for paused in lookups.finish(host) {
+                let verdict: FlowVerdict
+                if paused.generation != snapshot?.generation {
+                    verdict = .drop(reason: "configuration_changed")
+                } else {
+                    let context = context(now: now, scope: paused.facts.scriptScope, resolved: (host, answers))
+                    verdict = paused.serverName.map {
+                        FilterPolicy.decide(paused.facts, serverName: .serverName($0, echPresent: paused.echPresent),
+                                            snapshot: snapshot, context: context)
+                    } ?? FilterPolicy.decide(paused.facts, snapshot: snapshot, context: context)
+                }
+                let (step, after) = place(verdict, paused, snapshot, now: now)
+                outcomes.append((paused, step, after))
             }
-            let (step, after) = place(verdict, paused, snapshot, now: now)
-            outcomes.append((paused, step, after))
-        }
-        askLock.unlock()
-        for (paused, step, after) in outcomes {
-            switch step {
-            // .hold comes only at the new-flow stage on the TLS port, where resume holds the flow.
-            case .allow, .learnNames, .hold: resume(paused, allow: true)
-            case .drop: resume(paused, allow: false)
-            case .pause: break // waiting for an answer, or for another lookup of the same host
+            askLock.unlock()
+            for (paused, step, after) in outcomes {
+                switch step {
+                // .hold comes only at the new-flow stage on the TLS port, where resume holds the flow.
+                case .allow, .learnNames, .hold: resume(paused, allow: true)
+                case .drop: resume(paused, allow: false)
+                case .pause: break // waiting for an answer, or for another lookup of the same host
+                }
+                afters.append(after)
             }
-            perform(after)
         }
+        for after in afters { perform(after) }
     }
 
     /// Resumes a flow paused by this provider. Called outside flow callbacks. A flow paused at
@@ -562,13 +596,17 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
         resumeFlow(paused.flow, with: verdict)
     }
 
-    /// An answer taken just before a configuration change lets nothing through after it.
+    /// An answer taken just before a configuration change lets nothing through after it. The
+    /// answer took these flows off the pending list, so the change's endPaused cannot find them:
+    /// the generation check and every resume run with the installed configuration held, and a
+    /// change waits for them or comes first and turns each allow into a drop.
     private func release(_ releases: [Release<Paused>]) {
-        let snapshot = snapshots.read()
-        for release in FilterPolicy.current(releases, installed: snapshot, generation: \.generation) {
-            resume(release.flow, allow: release.allow)
-            log(release.flow.facts, release.allow ? .allow(reason: release.reason) : .drop(reason: release.reason),
-                snapshot, serverName: release.flow.serverName)
+        snapshots.withInstalled { snapshot in
+            for release in FilterPolicy.current(releases, installed: snapshot, generation: \.generation) {
+                resume(release.flow, allow: release.allow)
+                log(release.flow.facts, release.allow ? .allow(reason: release.reason) : .drop(reason: release.reason),
+                    snapshot, serverName: release.flow.serverName)
+            }
         }
     }
 

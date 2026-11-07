@@ -46,7 +46,8 @@ public enum MenuText {
 
     /// What to call the app: its outermost .app (or .systemextension) bundle in the path, so a
     /// helper counts for its app; else the path's last part; else the signing identifier, or
-    /// "ad hoc code" for code named by its cdhash.
+    /// "code by cdhash" for code named by its cdhash: ad hoc, or a file the filter
+    /// cannot read.
     public static func appName(path: String?, identity: AppIdentity?) -> String {
         if let path, !path.isEmpty {
             let parts = path.split(separator: "/")
@@ -58,7 +59,7 @@ public enum MenuText {
         }
         switch identity {
         case .signed(let signing)?: return clean(signing.signingID, limit: appLimit, keepTail: true)
-        case .cdhash?: return "ad hoc code"
+        case .cdhash?: return "code by cdhash"
         case nil: return "unknown app"
         }
     }

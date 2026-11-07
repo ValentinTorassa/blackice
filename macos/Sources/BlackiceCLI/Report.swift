@@ -105,6 +105,11 @@ extension CLI {
             } else if ask {
                 row("waiting", "nothing")
             }
+            // Dropped with no event, so they never show as waiting.
+            if !pending.denials.isEmpty {
+                row("denied", Describe.count(pending.denials.count, "app and host", "apps and hosts") +
+                    " a moment ago, dropped without asking: blackice pending")
+            }
         }
         row("rules", config.allow.isEmpty ? "none" : "\(config.allow.count)")
         if let approvals = report.pending?.approvals, !approvals.isEmpty { row("approvals", "\(approvals.count)") }

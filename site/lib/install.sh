@@ -20,11 +20,11 @@
 
 set -eu
 
-VERSION=1.0.2
+VERSION=1.0.3
 # The SHA-256 of Blackice-$VERSION.zip, the file package.sh wrote and the release holds. The zip
 # must match it and the release's .sha256 file, so this script and the GitHub release must agree.
 # Each release sets it with VERSION.
-SHA256=7386b3d7e462baaa2e47178237004f9e6685783aa58843868e3973a941995576
+SHA256=4424c192708e74171424d0e874baf006383386daf022afbbb80240904e4ee012
 REPOSITORY=ValentinTorassa/blackice
 TEAM_ID=M294LK997M
 IDENTIFIER=com.valentorassa.blackice
@@ -65,7 +65,13 @@ check_system() {
   [ "$(uname -m)" = arm64 ] || [ "$(/usr/sbin/sysctl -in hw.optional.arm64 2>/dev/null)" = 1 ] \
     || fail "the blackice build is for Apple silicon (arm64) only"
   macos=$(/usr/bin/sw_vers -productVersion)
-  [ "${macos%%.*}" -ge 14 ] 2>/dev/null || fail "blackice needs macOS 14 or later; this Mac has $macos"
+  # 14.4 is the first that starts a program only when its signature meets a launch requirement,
+  # which is how the daemon starts hooks.
+  major=${macos%%.*} minor=${macos#*.}
+  [ "$minor" != "$macos" ] || minor=0
+  minor=${minor%%.*}
+  { [ "$major" -gt 14 ] || { [ "$major" -eq 14 ] && [ "$minor" -ge 4 ]; }; } 2>/dev/null \
+    || fail "blackice needs macOS 14.4 or later; this Mac has $macos"
   [ "$(id -u)" -ne 0 ] || fail "run this as your user, without sudo"
   for prefix in "${HOMEBREW_PREFIX:-/opt/homebrew}" /opt/homebrew /usr/local; do
     [ ! -d "$prefix/Caskroom/blackice" ] \

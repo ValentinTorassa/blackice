@@ -34,4 +34,4 @@ Rules, the built-in list of macOS services and current approvals are checked fir
 - Host and app names come from whoever opens the connection, and they reach the agent's prompt. The only answers taken are `deny` and `approve` with a duration, for the event's app and host.
 - A program running as you can stop the daemon. Connections then wait and are dropped at their timeout.
 - A tool that connects to an address, such as `curl`, fails on its first try when the answer takes longer than the server waits, and gets through on the retry. Apps that connect by name wait for the answer.
-- A `run` hook's program is not checked. A `program` hook starts only when its signature matches.
+- A `run` hook's program is not checked. A `program` hook starts only when its signature matches, and with SIP off macOS does not check that before it runs.

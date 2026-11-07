@@ -128,14 +128,14 @@ struct FlowReportTests {
             "",
             "Dropped",
             "  5  nobody answered in time",
-            "       3  ad hoc 3f1c6a0b",
+            "       3  cdhash 3f1c6a0b",
             "       1  (app not logged)",
             "       1  com.example.tool (ABCDE12345)",
             "  1  held past macOS's limit while asking",
-            "       1  ad hoc 3f1c6a0b",
+            "       1  cdhash 3f1c6a0b",
             "",
             "Asked about",
-            "  2  ad hoc 3f1c6a0b",
+            "  2  cdhash 3f1c6a0b",
         ])
     }
 
@@ -152,7 +152,7 @@ struct FlowReportTests {
             "",
             "Dropped",
             "  1  hello not readable as TLS",
-            "       1  ad hoc 3f1c6a0b",
+            "       1  cdhash 3f1c6a0b",
             "",
             "Closed by the app before it sent anything, so nothing was cut: 2",
         ])
@@ -172,10 +172,35 @@ struct FlowReportTests {
             "",
             "Dropped",
             "  2  sent nothing for 2 minutes",
-            "       2  ad hoc 3f1c6a0b",
+            "       2  cdhash 3f1c6a0b",
             "  1  no server name within 10 s",
             "       1  com.example.tool (ABCDE12345)",
         ])
+    }
+
+    /// A full hold, or a full share of it, and the quiet connection a newer one replaced, each read
+    /// as what happened.
+    @Test func capacityDropsSayWhoseShareWasFull() {
+        let text = ([line("drop evicted_quiet app=\(node) <private>"),
+                     line("drop evicted_quiet app=\(node) <private>"),
+                     line("drop evicted_quiet app=\(node) <private>"),
+                     line("drop hold_capacity_app app=\(node) <private>"),
+                     line("drop hold_capacity_app app=\(node) <private>"),
+                     line("drop hold_capacity app=\(tool) <private>")])
+            .joined(separator: "\n")
+        #expect(FlowReport(logText: text).summary(last: "1h") == [
+            "Last 1h: 6 connections, 6 dropped",
+            "",
+            "Dropped",
+            "  3  sent nothing, place given to a newer one",
+            "       3  cdhash 3f1c6a0b",
+            "  2  its app has too many waiting for a hello",
+            "       2  cdhash 3f1c6a0b",
+            "  1  too many waiting for a hello",
+            "       1  com.example.tool (ABCDE12345)",
+        ])
+        #expect(FlowReport.words("ask_capacity_app") == "its app has too many waiting for an answer")
+        #expect(FlowReport.words("ask_capacity") == "too many waiting for an answer")
     }
 
     @Test func sumsUpTheDryRunOfAskMode() {
@@ -195,7 +220,7 @@ struct FlowReportTests {
             "",
             "In ask mode, of these 24",
             "  19  would wait for an answer",
-            "        12  ad hoc 3f1c6a0b",
+            "        12  cdhash 3f1c6a0b",
             "         1  com.apple.service1",
             "         1  com.apple.service2",
             "         1  com.apple.service3",
@@ -246,10 +271,10 @@ struct FlowReportTests {
             "",
             "Dropped",
             "  1  nobody answered in time",
-            "       1  ad hoc 3f1c6a0b",
+            "       1  cdhash 3f1c6a0b",
             "",
             "Asked about",
-            "  12  ad hoc 3f1c6a0b",
+            "  12  cdhash 3f1c6a0b",
         ]
         #expect(report.summary(last: "1h", received: 40) == counts + [
             "",

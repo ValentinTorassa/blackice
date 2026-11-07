@@ -4,7 +4,7 @@
 on a sample connection before it changes `blackice.toml`. The rest of this page is what it does, by hand, and why.
 
 [opencode](https://opencode.ai/docs) decides blackice's ask-mode connections with `opencode run`, signed in to a
-provider you pick when you connect it. It reads the event with its read tool, weighs it, and ends its reply with one
+provider you pick when you connect it. It reads the event in its message, weighs it, and ends its reply with one
 verdict line, which the daemon reads from the hook's stdout: `approve 12h`, `approve 30m` or `deny`. With stdout not
 a terminal, `opencode run` prints its reply there; its progress and errors go to stderr.
 
@@ -51,50 +51,54 @@ on = "connection"
 program = "/Users/me/.opencode/bin/opencode"
 app = "opencode"
 team = "5NZ4Q7NXJ4"
-args = ["run", "--standalone", "--agent", "blackice", "--model", "openai/gpt-6-luna", "Decide whether to approve the pending blackice connection in event.json."]
-env = ["HOME=/Users/me/.config/blackice/agent/.opencode", "OPENCODE_CONFIG_CONTENT={…}", "OPENCODE_DISABLE_AUTOUPDATE=1", "OPENCODE_DISABLE_CLAUDE_CODE=1", "OPENCODE_DISABLE_MODELS_FETCH=1", "OPENCODE_DISABLE_PROJECT_CONFIG=1", "XDG_CONFIG_HOME=."]
-stdin = "none"
+args = ["run", "--standalone", "--agent", "blackice", "--model", "openai/gpt-6-luna", "Decide whether to approve the pending blackice connection. Its event is the JSON object in this message, which blackice sent on stdin."]
+env = ["HOME=/Users/me/.config/blackice/agent/.opencode", "OPENCODE_DISABLE_AUTOUPDATE=1", "OPENCODE_DISABLE_CLAUDE_CODE=1", "OPENCODE_DISABLE_MODELS_FETCH=1", "OPENCODE_DISABLE_PROJECT_CONFIG=1"]
 instructions = "opencode"
 ```
 
 `program` is the `opencode` it found on `PATH`, in the usual folders or in `~/.opencode/bin`, where opencode's
 installer (`curl -fsSL https://opencode.ai/install | bash`) puts it. `app` and `team` are read from that binary
-(`codesign -dv`: `Identifier=opencode`, `TeamIdentifier=5NZ4Q7NXJ4`, Anomaly Innovations), and the daemon starts it
-only when the running code has them. `OPENCODE_CONFIG_CONTENT` holds, on one line:
+(`codesign -dv`: `Identifier=opencode`, `TeamIdentifier=5NZ4Q7NXJ4`, Anomaly Innovations), and macOS starts it only
+when its code has them with that Developer ID signature. The daemon starts it with the event on stdin, `/var/empty`
+as its working directory, and two more variables. `OPENCODE_CONFIG_CONTENT` holds, on one line:
 
 ```json
-{"agent": {"blackice": {"mode": "primary", "prompt": "{file:./instructions.md}", "steps": 4,
-                        "permission": {"*": "deny", "read": "allow", "bash": "deny", "edit": "deny", "…": "deny"}}},
+{"agent": {"blackice": {"mode": "primary", "prompt": "<the instructions, then the owner's notes>", "steps": 4,
+                        "permission": {"*": "deny", "read": "deny", "bash": "deny", "edit": "deny", "…": "deny"}}},
  "autoupdate": false,
- "permission": {"*": "deny", "read": "allow", "bash": "deny", "edit": "deny", "…": "deny"},
+ "permission": {"*": "deny", "read": "deny", "bash": "deny", "edit": "deny", "…": "deny"},
  "share": "disabled"}
 ```
 
-Checked against opencode 2.2.5:
+and `XDG_CONFIG_HOME` names a new private folder with an empty `opencode/` in it, made for each event and removed
+afterwards. A hook from 1.0, with `OPENCODE_CONFIG_CONTENT`, `XDG_CONFIG_HOME=.` and `stdin = "none"` of its own,
+runs the same way: the daemon's two take the place of the hook's. Checked against opencode 2.2.5:
 
-- **`--agent blackice`** with **`"prompt": "{file:./instructions.md}"`** and **`instructions = "opencode"`**: before
-  opencode starts, the daemon writes the instructions, from blackice itself, as `instructions.md` in the event's
-  directory, its working directory, and they are the agent's whole system prompt, in place of opencode's own. The
-  path is relative to that directory. In the eval below, opencode read `notes.md` and `event.json`, as the
-  instructions say, and called no other tool.
-- **`permission`**: the read tool and no other. `"*"` comes first, since the last rule that matches wins, and every
-  tool is named as well: a rule for one in a configuration file of its home would otherwise stay. The same rules
-  are set for the agent, whose rules come before the global ones. `external_directory` is denied, so a read outside
-  the event's directory is refused.
+- **`--agent blackice`** and **`instructions = "opencode"`**: the instructions, from blackice itself, and the
+  owner's notes after them, are the agent's whole system prompt, in place of opencode's own. opencode would replace
+  `{env:…}` and `{file:…}` in it with a variable or a file, so the daemon writes those as `{ env:…}` and
+  `{ file:…}`. Up to 1.0.2 the daemon wrote the instructions as `instructions.md` and the notes as `notes.md` into
+  the event's directory, opencode's working directory, and the prompt was `{file:./instructions.md}`: files that any
+  program running as you could rewrite while opencode read them.
+- **The event on stdin**: `opencode run` adds what comes on stdin to its message, and the prompt says the event is
+  that JSON object. Up to 1.0.2 the hook had `stdin = "none"`, and opencode read `event.json` with its read tool.
+- **`permission`**: no tools at all. `"*"` comes first, since the last rule that matches wins, and every tool is
+  named as well: a rule for one in a configuration file of its home would otherwise stay. The same rules are set
+  for the agent, whose rules come before the global ones.
 - **`OPENCODE_CONFIG_CONTENT`**: opencode reads it after its global and project files, so what it sets wins.
-- **`XDG_CONFIG_HOME=.`**: opencode's global configuration folder is `opencode/` in its working directory, which it
-  creates, empty. For the hook that is the event's new private directory, which the daemon removes afterwards. So no
-  `opencode.json`, `AGENTS.md`, plugin, command or skill that a program wrote into a folder of yours is loaded.
-  (opencode stops when it cannot create that folder, so it cannot be a folder nobody can write, such as `/var/empty`.)
-- **`OPENCODE_DISABLE_PROJECT_CONFIG=1`**: no `opencode.json` or `AGENTS.md` from the folders above the event's.
+- **`XDG_CONFIG_HOME`**: opencode's global configuration folder is `opencode/` in it, empty. So no `opencode.json`,
+  `AGENTS.md`, plugin, command or skill that a program wrote into a folder of yours is loaded. opencode stops when
+  it cannot create that folder (`EPERM: operation not permitted, mkdir '/var/empty/opencode'`), so it cannot be a
+  folder nobody can write: the private folder is in the daemon's work folder, which is yours, and a program that
+  watches it could still add a file there while opencode starts.
+- **`OPENCODE_DISABLE_PROJECT_CONFIG=1`**: no `opencode.json` or `AGENTS.md` from the folders above `/var/empty`.
   **`OPENCODE_DISABLE_CLAUDE_CODE=1`**: nothing from `~/.claude`.
 - **`OPENCODE_DISABLE_AUTOUPDATE=1`**, **`"autoupdate": false`**, **`OPENCODE_DISABLE_MODELS_FETCH=1`**,
   **`"share": "disabled"`**: no update check, no model list from `models.opencode.ai`, no sharing. opencode knows the
   models of a provider it is signed in to without that list. Through the proxy, a decision reached only its provider.
 - **`--standalone`**: opencode runs its own server for the request. Without it, `opencode run` goes through the
   background service that opencode shares between its commands, which runs with your own `HOME`.
-- **`"steps": 4`**: a decision reads two files and answers; a run that goes on past four steps ends without an answer.
-- **`stdin = "none"`**: the event reaches opencode only as the file it reads, as data.
+- **`"steps": 4`**: a decision needs one step; a run that goes on past four steps ends without an answer.
 
 ## Signing in
 
@@ -137,6 +141,9 @@ $ integrations/eval/run.sh --agent opencode
 It uses the sign-in in `~/.config/blackice/agent/.opencode`; `OPENCODE_HOME=dir` picks another `HOME`, and
 `MODEL=provider/name` another model.
 
+These results are from before 1.0.3, when the event and the instructions were files that opencode read. With the
+instructions in its configuration and the event on stdin, the eval has not been run against a model yet.
+
 On 5 November 2026, with opencode 2.2.5, the sign-ins in your own home (`OPENCODE_HOME=$HOME`) and the filter in
 accept-all:
 
@@ -161,8 +168,9 @@ writes the hook, so it stops at these; a sign-in that lapses later fails each ev
   has not been checked.
 - **Its cache.** `~/.config/blackice/agent/.opencode/.cache/opencode` holds what opencode downloads for itself; with
   no plugin, formatter or language server configured, nothing was seen there but an empty `bin` folder.
-- **Reading.** The read tool reads the event's directory. A read outside it is refused by `external_directory`;
-  no model tried one in the eval. What it reads goes to the model.
+- **Its configuration folder.** The new folder for each event is in the daemon's work folder, which is yours: a
+  program that watches it can add an `opencode.json`, an `AGENTS.md` or a plugin there while opencode starts. The
+  daemon does not look for one, as it does in Codex's and fx's homes.
 
 ## Open questions
 

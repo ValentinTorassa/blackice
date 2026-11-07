@@ -4,6 +4,7 @@ import Testing
 @testable import BlackiceCLI
 @testable import BlackiceCore
 @testable import BlackiceMenu
+@testable import BlackiceSystem
 
 private let safari = AppReference(signingID: "com.apple.Safari", teamID: nil, cdhash: nil)
 private let vscode = AppReference(signingID: "com.microsoft.VSCode", teamID: "UBF8T346G9", cdhash: nil)
@@ -95,7 +96,7 @@ struct MenuTextTests {
                 == "io.tailscale.ipn.macsys.network-extension")
         #expect(MenuText.appName(path: "/usr/bin/curl", identity: nil) == "curl")
         #expect(MenuText.appName(path: nil, identity: .signed(SigningIdentity(signingID: "com.apple.curl", teamID: nil))) == "com.apple.curl")
-        #expect(MenuText.appName(path: nil, identity: .cdhash(String(repeating: "a", count: 40))) == "ad hoc code")
+        #expect(MenuText.appName(path: nil, identity: .cdhash(String(repeating: "a", count: 40))) == "code by cdhash")
         #expect(MenuText.appName(path: "/tmp/\u{202E}gpj.app/x", identity: nil) == "gpj")
     }
 }
@@ -220,6 +221,32 @@ struct MenuPresentationTests {
         try request.validate(now: Date())
     }
 
+    /// An interpreter's waiting connection: the menu's answers cover the script its event names,
+    /// as blackice approve --script does, and every script when the name is not a full path.
+    @Test func anInterpretersAnswerIsBoundToItsScript() throws {
+        let ask = try saved(.ask)
+        let python = AppReference(signingID: nil, teamID: nil, cdhash: testCDHash)
+        let path = "/opt/homebrew/Cellar/python@3.14/3.14.0/bin/python3.14"
+        let events = [PendingSummary(id: "ev-0a1b2c3d", app: python, path: path, host: "sts.amazonaws.com", ip: "203.0.113.7",
+                                     port: 443, secondsLeft: 40, connections: 1, script: "/opt/homebrew/bin/aws"),
+                      PendingSummary(id: "ev-0a1b2c3e", app: python, path: path, host: "pypi.org", ip: "203.0.113.8",
+                                     port: 443, secondsLeft: 40, connections: 1, script: "tool.py")]
+        let entries = MenuPresentation.menu(MenuSnapshot(filter: .on(saved: ask, hooks: 0), pending: answering(ask, events)), context)
+        let waiting = entries.filter { $0.key.hasPrefix("waiting.ev-") }
+        guard waiting.count == 2, case .waiting(let bound) = waiting[0].kind, case .waiting(let loose) = waiting[1].kind else {
+            Issue.record("not waiting entries")
+            return
+        }
+        #expect(bound.lines.last == "Running /opt/homebrew/bin/aws" && bound.script == "/opt/homebrew/bin/aws")
+        #expect(loose.lines.last == "Running tool.py" && loose.script == nil)
+        for answer in MenuAnswer.all {
+            let request = answer.request(for: bound)
+            #expect(request.scope == .script("/opt/homebrew/bin/aws"))
+            try request.validate(now: Date())
+            #expect(answer.request(for: loose).scope == .any)
+        }
+    }
+
     @Test func anUnsignedBuildShowsWhatItCannotDo() {
         let entries = MenuPresentation.menu(MenuSnapshot(filter: .unsignedBuild), MenuContext(version: nil))
         #expect(titles(entries) == [
@@ -257,6 +284,10 @@ struct MenuPresentationTests {
         #expect(!MenuPresentation.menu(MenuSnapshot(filter: .off), context).contains { $0.key == "recent" })
         #expect(entries.contains { $0.title == "Hooks won't run: blackice agent install" })
         #expect(entries.contains { $0.title == "A hook's signature did not match" && $0.detail == "10m" })
+        var forHome = withRecent
+        forHome.hookRefusedForHome = true
+        #expect(MenuPresentation.menu(MenuSnapshot(filter: .on(saved: block, hooks: 2)), forHome, now: now)
+            .contains { $0.title == "A hook did not answer: its agent's home changed" && $0.detail == "10m" })
         // A filter that does not answer cannot take a new mode, which `blackice mode` waits for.
         #expect(modes(entries)?.checked == ["Block All"] && modes(entries)?.enabled == false)
         // The hooks line shows up only when hooks have no daemon.
@@ -363,7 +394,17 @@ struct MenuStateTests {
 
     @Test func aCancelledTouchIDSaysNothing() {
         #expect(SystemAdapter.result(0, []) == .done)
-        #expect(SystemAdapter.result(ExitCode.noPermission, [SystemAdapter.cancelledLine]) == .cancelled)
+        // No answer within 2 minutes, a cancel or a finger that did not match: each says why on
+        // the command line, and the menu says nothing.
+        #expect(SystemAdapter.notConfirmedLines.count == 3)
+        // LAError's codes: -1 a finger that did not match, -2 Cancel pressed, -4 macOS closed it.
+        #expect(NESystemControl.notConfirmed(nil) == NESystemControl.touchIDNoAnswer)
+        #expect(NESystemControl.notConfirmed(-1) == NESystemControl.touchIDNotMatched)
+        #expect(NESystemControl.notConfirmed(-2) == NESystemControl.touchIDCancelled)
+        #expect(NESystemControl.notConfirmed(-4) == NESystemControl.touchIDCancelled)
+        for line in SystemAdapter.notConfirmedLines {
+            #expect(SystemAdapter.result(ExitCode.noPermission, [line]) == .cancelled)
+        }
         #expect(SystemAdapter.result(ExitCode.noPermission, ["blackice approve: the event is gone"]) ==
                 .failed("blackice approve: the event is gone"))
         #expect(SystemAdapter.result(ExitCode.unavailable, []) == .failed("blackice stopped with status 69."))
@@ -467,7 +508,11 @@ struct RecentDecisionsTests {
         #expect(summary.decisions.map(\.host) == ["f.example", "f.example", "e.example", "d.example", "c.example", "b.example",
                                                   "a.example"])
         #expect(summary.decisions.map(\.by) == [.hook, .hook, nil, nil, .hand, .hand, .hook])
-        #expect(summary.hookRefused == start)
+        #expect(summary.hookRefused == start && !summary.hookRefusedForHome)
+        // Then a file in an agent's home voids an answer: the note says so.
+        try log.append(.hookNoAnswer(eventID: "ev-00000007", hookLine: 7, .unsafeHome("/h/.codex/AGENTS.md")), at: later)
+        let home = RecentDecisions(url: url).latest(limit: 10)
+        #expect(home.hookRefused == later && home.hookRefusedForHome)
 
         // A log from before hooks answered on their output: the hook ran, and nothing says more.
         let old = #"{"type":"event_received","event":"ev-00000008","app_signing_id":"com.apple.curl","host":"pypi.org","ip":"203.0.113.1","port":443}"# + "\n" +

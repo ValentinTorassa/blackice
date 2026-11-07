@@ -182,6 +182,41 @@ struct MessagesTests {
         #expect(refused { try decodeEdited(AnswerRequest.self, deny) { $0["token"] = testToken } })
     }
 
+    @Test func aPersonsAnswerMayNameOneScript() throws {
+        let approve = AnswerRequest(kind: .approve, app: build, host: "sts.amazonaws.com", seconds: 600, token: nil,
+                                    script: "/opt/homebrew/bin/aws")
+        #expect(try Messages.decode(AnswerRequest.self, from: Messages.encode(approve)) == approve)
+        #expect(approve.scope == .script("/opt/homebrew/bin/aws"))
+        let module = AnswerRequest(kind: .deny, app: build, host: "pypi.org", seconds: nil, token: nil, script: "-m pip")
+        #expect(try Messages.decode(AnswerRequest.self, from: Messages.encode(module)).scope == .script("-m pip"))
+        #expect(AnswerRequest(kind: .deny, app: build, host: "pypi.org", seconds: nil, token: nil).scope == .any)
+        // A relative path, control characters, an empty name; and a hook's answer, whose event names its script.
+        for script in ["aws", "./aws", "/tmp/a\u{1b}[2Jb", ""] {
+            #expect(refused { try decodeEdited(AnswerRequest.self, approve) { $0["script"] = script } })
+        }
+        let hook = AnswerRequest(kind: .approve, app: build, host: "sts.amazonaws.com", seconds: 600, token: testToken)
+        #expect(refused { try decodeEdited(AnswerRequest.self, hook) { $0["script"] = "/opt/homebrew/bin/aws" } })
+    }
+
+    @Test func approvalsSayWhichScriptTheyCover() throws {
+        let entries = [ApprovalSummary(app: AppReference(build), host: "sts.amazonaws.com", secondsLeft: 60, scope: .script("/opt/homebrew/bin/aws")),
+                       ApprovalSummary(app: AppReference(build), host: "sts.amazonaws.com", secondsLeft: 60, scope: .script(nil)),
+                       ApprovalSummary(app: AppReference(build), host: "sts.amazonaws.com", secondsLeft: 60)]
+        let reply = PendingReply(events: [], approvals: entries, denials: entries)
+        let decoded = try Messages.decode(PendingReply.self, from: Messages.encode(reply))
+        #expect(decoded == reply && decoded.approvals.map(\.scope) == [.script("/opt/homebrew/bin/aws"), .script(nil), .any])
+        let json = String(decoding: try Messages.encode(reply), as: UTF8.self)
+        #expect(json.contains(#""no_script":true"#) && json.contains("homebrew"))
+        // A script and no script at once, a no_script that is not true, a script with control characters.
+        for entry in [["app": ["cdhash": testCDHash], "host": "example.com", "seconds_left": 1, "script": "/a", "no_script": true],
+                      ["app": ["cdhash": testCDHash], "host": "example.com", "seconds_left": 1, "no_script": false],
+                      ["app": ["cdhash": testCDHash], "host": "example.com", "seconds_left": 1, "script": "/a\u{7}"]]
+                as [[String: Any]] {
+            #expect(refused { try decodeEdited(PendingReply.self, reply) { $0["approvals"] = [entry] } })
+            #expect(refused { try decodeEdited(PendingReply.self, reply) { $0["denials"] = [entry] } })
+        }
+    }
+
     @Test func daemonMessagesCarryOnePayload() {
         let message = DaemonMessage.event(event(), generation: 3)
         #expect(refused { try decodeEdited(DaemonMessage.self, message) { $0["verdict"] = "approved" } })
@@ -247,10 +282,11 @@ struct MessagesTests {
         let path = String(repeating: "\"\\", count: HookEvent.maximumPathBytes / 2)
         let events = (0..<AskLimits.events).map { index in
             PendingSummary(id: String(format: "ev-%08x", index), app: app, path: path, host: host,
-                           ip: "ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff", port: .max, secondsLeft: .max, connections: .max)
+                           ip: "ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff", port: .max, secondsLeft: .max, connections: .max,
+                           script: path)
         }
         let approvals = (0..<ApprovalTable.maximumEntries).map { _ in
-            ApprovalSummary(app: app, host: host, secondsLeft: .max)
+            ApprovalSummary(app: app, host: host, secondsLeft: .max, scope: .script(path))
         }
         return PendingReply(events: events, approvals: approvals, denials: approvals)
     }
@@ -259,6 +295,7 @@ struct MessagesTests {
         let largest = Self.largestPendingReply()
         try largest.validate(now: Date())
         #expect(largest.events[0].host.utf8.count == 253 && largest.events[0].path?.utf8.count == HookEvent.maximumPathBytes)
+        #expect(largest.events[0].script?.utf8.count == HookEvent.maximumPathBytes && largest.approvals[0].script != nil)
         let data = try Messages.encode(largest)
         #expect(data.count <= PendingReply.maximumBytes)
         #expect(data.count > Messages.maximumBytes, "the old limit refused this reply")

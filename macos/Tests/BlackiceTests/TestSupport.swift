@@ -27,12 +27,34 @@ func testEvent(host: String? = "example.com", id: String = "ev-0a1b2c3d", deadli
               host: host, ip: "203.0.113.7", port: 443, deadline: Date().addingTimeInterval(seconds))
 }
 
+/// A test that is not about the kernel's launch check runs as on a Mac with SIP on wherever it
+/// runs (CI's runner has SIP off): a quick hook's answer counts. The others pass
+/// `kernelChecks: { HookRunner.kernelChecksLaunch }`.
 func testRunner(_ directory: URL, limit: Int = 4, waiting: Int = 256, minimumStart: TimeInterval = 10,
-                grace: TimeInterval = 0.3, environment: [String: String]? = nil) throws -> HookRunner {
+                grace: TimeInterval = 0.3, environment: [String: String]? = nil,
+                kernelChecks: @escaping @Sendable () -> Bool = { true }) throws -> HookRunner {
     try HookRunner(options: .init(
         workDirectory: directory.appendingPathComponent("work", isDirectory: true),
         environment: environment ?? HookRunner.environment(for: try UserAccount.current()),
-        maximumConcurrent: limit, maximumWaiting: waiting, minimumStartBudget: minimumStart, gracePeriod: grace))
+        maximumConcurrent: limit, maximumWaiting: waiting, minimumStartBudget: minimumStart, gracePeriod: grace,
+        kernelChecksLaunch: kernelChecks))
+}
+
+/// Runs `work`, which blocks (a child process, a semaphore, a signature check), on a thread of its
+/// own, and waits for it without holding a thread of the pool the tests share. That pool has a
+/// thread per core: on CI's 3-core runner a few tests blocking at once held every other test for
+/// about 3 s (7 November 2026), past the deadlines of the tests that time hooks. Expectations stay
+/// outside `work`: on that thread they would belong to no test.
+func offThePool<T: Sendable>(_ work: @escaping @Sendable () throws -> T) async throws -> T {
+    try await withCheckedThrowingContinuation { continuation in
+        Thread.detachNewThread { continuation.resume(with: Result(catching: work)) }
+    }
+}
+
+func offThePool<T: Sendable>(_ work: @escaping @Sendable () -> T) async -> T {
+    await withCheckedContinuation { continuation in
+        Thread.detachNewThread { continuation.resume(returning: work()) }
+    }
 }
 
 /// Polls `condition` every 10 ms for up to `seconds`; true once it holds.

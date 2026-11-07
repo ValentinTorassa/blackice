@@ -57,8 +57,18 @@ public struct WaitingEvent: Equatable, Sendable {
     public let identity: AppIdentity
     public let host: String
     /// The disabled lines at the top of the submenu: the code's identity, the connections, the
-    /// address and the path.
+    /// address, the path and an interpreter's script.
     public let lines: [String]
+    /// For an interpreter, the script its event named, which an answer from the menu covers; nil
+    /// for other code, and for a script with no full path, when the answer covers every script.
+    public let script: String?
+
+    public init(identity: AppIdentity, host: String, lines: [String], script: String? = nil) {
+        self.identity = identity
+        self.host = host
+        self.lines = lines
+        self.script = script
+    }
 }
 
 /// A decision on one line: "Denied Python → oauth2.googleapis.com", and "4m".
@@ -85,7 +95,7 @@ public struct MenuAnswer: Equatable, Sendable {
     ]
 
     public func request(for event: WaitingEvent) -> AnswerRequest {
-        AnswerRequest(kind: kind, app: event.identity, host: event.host, seconds: seconds, token: nil)
+        AnswerRequest(kind: kind, app: event.identity, host: event.host, seconds: seconds, token: nil, script: event.script)
     }
 }
 
@@ -104,13 +114,16 @@ public struct MenuContext: Equatable, Sendable {
     /// "0.3.2 (build 15)", from Blackice.app's Info.plist; nil for a build outside the app.
     public var version: String?
     public var recent: [RecentDecision]
-    /// When the daemon last refused a hook program whose signature did not match.
+    /// When the daemon last refused a hook program whose signature did not match, or whose agent's
+    /// home had a file blackice did not put there (`hookRefusedForHome`).
     public var hookRefused: Date?
+    public var hookRefusedForHome: Bool
 
-    public init(version: String?, recent: [RecentDecision] = [], hookRefused: Date? = nil) {
+    public init(version: String?, recent: [RecentDecision] = [], hookRefused: Date? = nil, hookRefusedForHome: Bool = false) {
         self.version = version
         self.recent = recent
         self.hookRefused = hookRefused
+        self.hookRefusedForHome = hookRefusedForHome
     }
 }
 
@@ -257,7 +270,9 @@ public enum MenuPresentation {
             entries.append(MenuEntry(.note, key: "hooks", title: line))
         }
         if let refused = context.hookRefused, now.timeIntervalSince(refused) < refusedHookWindow {
-            entries.append(MenuEntry(.note, key: "hooks.refused", title: "A hook's signature did not match",
+            let title = context.hookRefusedForHome ? "A hook did not answer: its agent's home changed"
+                : "A hook's signature did not match"
+            entries.append(MenuEntry(.note, key: "hooks.refused", title: title,
                                      detail: short(refused, now: now)))
         }
         // `blackice stop`, with Touch ID: the quit item below leaves the filter running, and
@@ -283,8 +298,12 @@ public enum MenuPresentation {
         var lines = [MenuText.clean(identity.label, limit: MenuText.lineLimit, keepTail: true), connections,
                      MenuText.clean(event.destination, limit: MenuText.lineLimit, keepTail: true)]
         if let path = event.path { lines.append(MenuText.clean(path, limit: MenuText.lineLimit)) }
+        if let script = event.script { lines.append(MenuText.clean("Running " + script, limit: MenuText.lineLimit, keepTail: true)) }
+        // An answer names only a full path (AnswerRequest.validate); with a relative one, the
+        // menu's answer covers every script, as the CLI's does without --script.
+        let bound = event.script.flatMap { ScriptScope.canName($0) ? $0 : nil }
         let left = max(0, event.secondsLeft - Int(now.timeIntervalSince(readAt)))
-        return MenuEntry(.waiting(WaitingEvent(identity: identity, host: event.host, lines: lines)),
+        return MenuEntry(.waiting(WaitingEvent(identity: identity, host: event.host, lines: lines, script: bound)),
                          key: "waiting." + event.id,
                          title: "\(app) → " + (event.hostIsAddress ? event.hostAndPort : "\(MenuText.host(event.host)):\(event.port)"),
                          detail: "\(left)s", enabled: true)

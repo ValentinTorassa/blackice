@@ -94,6 +94,51 @@ struct ConfigurationChangeTests {
         #expect(kept.map(\.allow) == [true, false] && kept.map(\.reason) == ["approved", "denied"])
     }
 
+    /// The answer has taken its flows off the pending list, so a change installed between the
+    /// generation check and the resume would not find them, and they would go through under the old
+    /// approval. The extension checks and resumes them inside `withInstalled`: a change that arrives
+    /// meanwhile waits until the last one is resumed, and a release after it sees it.
+    @Test func aChangeWaitsForTheReleaseInProgress() throws {
+        let store = ProviderSnapshotStore()
+        let asked = try policySnapshot(.ask, generation: 7)
+        try store.install(asked)
+        let blocked = try asked.with(mode: .blockAll)
+        var ask = AskState<Waiting>()
+        let key = PendingKey(identity: tool, host: "example.org", port: 443)
+        guard case .raised(let event) = ask.pending.add(Waiting(name: "approved", generation: 7), key: key,
+                                                        addressMatches: true, now: 0, timeout: 60,
+                                                        makeEvent: makeEvent(key)) else {
+            Issue.record("the flow raises an event")
+            return
+        }
+        let outcome = ask.answer(AnswerRequest(kind: .approve, app: tool, host: "example.org", seconds: 600,
+                                               token: event.token), now: 1)
+        #expect(ask.pending.eventCount == 0 && outcome.released.count == 1)
+        let installed = DispatchSemaphore(value: 0)
+        let resumed = store.withInstalled { snapshot in
+            // `blackice mode block-all` arrives on the lifecycle queue while the flows are resumed...
+            // A thread of its own, not a global queue's: see aSaveWaitsForTheLockAndSeesTheOtherWritersText.
+            Thread.detachNewThread {
+                _ = try? store.install(blocked)
+                installed.signal()
+            }
+            #expect(installed.wait(timeout: .now() + 0.3) == .timedOut)
+            // ...and flow callbacks still read the configuration without waiting.
+            #expect(store.read() == asked)
+            return FilterPolicy.current(outcome.released, installed: snapshot, generation: \.generation)
+        }
+        // The approval applied under the configuration it was given under, before the change.
+        #expect(resumed.map(\.allow) == [true] && resumed.map(\.reason) == ["approved"])
+        #expect(installed.wait(timeout: .now() + 10) == .success)
+        #expect(store.read() == blocked)
+        // A release that comes after the change lets nothing through.
+        let late = store.withInstalled { FilterPolicy.current(outcome.released, installed: $0, generation: \.generation) }
+        #expect(late.map(\.allow) == [false] && late.map(\.reason) == ["configuration_changed"])
+        // Stopping clears the configuration the same way: nothing is let through after it.
+        store.clear()
+        #expect(store.withInstalled { $0 } == nil)
+    }
+
     /// Switching from ask mode to accept-all dropped every connection that waited (20 at once on
     /// the Mac). Now what the new configuration allows outright goes on.
     @Test func whatTheNewConfigurationAllowsOutrightGoesOn() throws {

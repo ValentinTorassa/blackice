@@ -4,23 +4,23 @@
 #
 #   integrations/eval/run.sh --agent fx|claude-code|codex|opencode [--only 01,05] [path/to/agent]
 #
-# agents/NAME.sh gives the hook's args, env and stdin, as `blackice agent connect NAME` writes
-# them; the program is the agent's executable. The [[hook]] table is printed first. Each event
-# gets a private directory under TMPDIR with event.json (0600) in it and, as the daemon writes
-# them from the copy inside blackice, the agent's instructions from integrations/ (0600, in 0700
-# folders; a test in macos/ keeps the two copies the same). The program starts there
-# directly, with no shell, with the environment the daemon builds (HOME, USER, LOGNAME, TMPDIR, a
-# fixed PATH, LANG, BLACKICE_EVENT_FILE, BLACKICE_EVENT_ID) plus the hook's env, and the event on
-# stdin unless the hook says `stdin = "none"`. The event's deadline is TIMEOUT seconds ahead, and
-# at TIMEOUT its process group is killed. The daemon also checks the program's signature before
-# it runs; the eval only prints it. The answer is read as the daemon reads it: exit status 0, at
-# most 64 KiB of stdout, and the last non-empty line exactly `deny`, `approve <N>m` (1 to 1440)
-# or `approve <N>h` (1 to 24). Anything else is no answer: the connection would be denied at the
-# deadline.
+# agents/NAME.sh gives the hook's args and env, as `blackice agent connect NAME` writes them, with
+# the agent's instructions from integrations/ and the owner's notes where the daemon puts the copy
+# inside blackice (text.sh; a test in macos/ keeps the two the same); the program is the agent's
+# executable. The [[hook]] table is printed first, the instructions left out. Nothing is written
+# for the agent to read: the program starts in /var/empty, directly, with no shell, with the
+# environment the daemon builds (HOME, USER, LOGNAME, TMPDIR, a fixed PATH, LANG, BLACKICE_EVENT_ID)
+# plus the hook's env, and the event on stdin. opencode alone gets a new private folder for its
+# configuration for each event. The event's deadline is TIMEOUT seconds ahead, and at TIMEOUT its
+# process group is killed. The daemon also starts the program only with its signature, and checks
+# the agent's home for files it would load as instructions; the eval only prints the signature.
+# The answer is read as the daemon reads it: exit status 0, at most 64 KiB of stdout, and the last
+# non-empty line exactly `deny`, `approve <N>m` (1 to 1440) or `approve <N>h` (1 to 24). Anything
+# else is no answer: the connection would be denied at the deadline.
 #
 #   TIMEOUT=s   per event (default 60, the least blackice agent connect sets)
-#   NOTES=file  the owner's notes, as `notes` in [agent]: copied to notes.md in each event's
-#               directory, as the daemon writes them
+#   NOTES=file  the owner's notes, as `notes` in [agent], passed after the instructions as the
+#               daemon passes them
 #   KEEP=1      keep the work directory, with each event's stdout and stderr
 #   The agent's file says what else it reads (AGENT_HOME, CLAUDE_CONFIG_DIR, CODEX_HOME, OPENCODE_HOME, MODEL).
 set -euo pipefail
@@ -47,30 +47,32 @@ fi
 timeout=${TIMEOUT:-60}
 
 # The agent's file sets agent_bin_name (looked up on PATH when no path is given), and an
-# agent_configure that sets, from $repo: agent_args, agent_env (NAME=value), agent_stdin
-# (event or none) and agent_files (SOURCE:DEST pairs: the file SOURCE is copied to the path DEST
-# in each event's directory, as AgentInstructions.files says the daemon writes it).
-agent_args=() agent_env=() agent_files=() agent_stdin=event
+# agent_configure that sets, from $repo and $notes: agent_args, agent_env (NAME=value) and
+# agent_configuration_folder (1 for a new XDG_CONFIG_HOME for each event).
+agent_args=() agent_env=() agent_configuration_folder='' notes=''
+# shellcheck source=/dev/null
+. "$here/text.sh"
 # shellcheck source=/dev/null
 . "$here/agents/$agent.sh"
 bin=${bin:-$(command -v "$agent_bin_name" || true)}
 if [ -z "$bin" ] || [ ! -x "$bin" ]; then echo "$agent_bin_name not found; pass its path" >&2; exit 69; fi
-agent_configure
 if [ -n "${NOTES:-}" ]; then
   if [ ! -r "$NOTES" ]; then echo "cannot read NOTES=$NOTES" >&2; exit 66; fi
-  agent_files+=("$NOTES:notes.md")
+  read_text notes "$NOTES"
+  # As blackice.toml takes them: blank notes are none.
+  [ -n "${notes//[[:space:]]/}" ] || notes=''
 fi
+agent_configure
 
 work=$(mktemp -d)
 if [ -n "${KEEP:-}" ]; then echo "work directory: $work"; else trap 'command rm -rf "$work"' EXIT; fi
 
-python3 - "$here" "$work" "$timeout" "$only" "$bin" "$agent_stdin" \
+python3 - "$here" "$work" "$timeout" "$only" "$bin" "$agent_configuration_folder" \
   "${#agent_args[@]}" ${agent_args[@]+"${agent_args[@]}"} \
-  "${#agent_env[@]}" ${agent_env[@]+"${agent_env[@]}"} \
-  "${#agent_files[@]}" ${agent_files[@]+"${agent_files[@]}"} <<'PY'
+  "${#agent_env[@]}" ${agent_env[@]+"${agent_env[@]}"} <<'PY'
 import datetime, json, os, re, shutil, signal, statistics, subprocess, sys, tempfile, time
 
-here, work, timeout, only, program, stdin_mode = sys.argv[1:7]
+here, work, timeout, only, program, configuration_folder = sys.argv[1:7]
 timeout = int(timeout)
 rest = sys.argv[7:]
 def take():
@@ -78,7 +80,7 @@ def take():
     count = int(rest[0])
     items, rest = rest[1:1 + count], rest[1 + count:]
     return items
-arguments, hook_env, files = take(), take(), [pair.rsplit(":", 1) for pair in take()]
+arguments, hook_env = take(), take()
 marker = "/tmp/blackice-pwned-marker"   # the injection events ask the agent to create it
 
 def identity(path):
@@ -93,17 +95,20 @@ def identity(path):
 def toml(text):
     return '"' + text.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
+def shown(text):
+    """An argument or variable as the [[hook]] table shows it: the instructions, which the daemon
+    adds and blackice.toml does not hold, left out."""
+    return text if len(text) <= 400 else text[:40] + f"... ({len(text)} bytes the daemon adds)"
+
 signed = identity(program)
 print("[[hook]]\non = \"connection\"\nprogram = " + toml(program))
 print("app = " + (toml(signed[0]) if signed else "?  # unsigned or ad hoc: the daemon would not start it"))
 if signed and signed[1]:
     print("team = " + toml(signed[1]))
 if arguments:
-    print("args = [" + ", ".join(map(toml, arguments)) + "]")
+    print("args = [" + ", ".join(toml(shown(argument)) for argument in arguments) + "]")
 if hook_env:
-    print("env = [" + ", ".join(map(toml, sorted(hook_env))) + "]")
-if stdin_mode == "none":
-    print('stdin = "none"')
+    print("env = [" + ", ".join(toml(shown(item)) for item in sorted(hook_env)) + "]")
 print()
 
 cases = json.load(open(os.path.join(here, "cases.json")))
@@ -146,26 +151,21 @@ for case in cases:
     event = json.load(open(os.path.join(here, "events", case["id"] + ".json")))
     deadline = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(seconds=timeout)
     event["deadline"] = deadline.strftime("%Y-%m-%dT%H:%M:%SZ")
-    directory = tempfile.mkdtemp(prefix="hook-", dir=work)   # 0700
-    event_file = os.path.join(directory, "event.json")
     data = json.dumps(event, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
-    with open(os.open(event_file, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "wb") as f:
-        f.write(data)
-    for source, destination in files:
-        target = os.path.join(directory, destination)
-        os.makedirs(os.path.dirname(target), mode=0o700, exist_ok=True)
-        with open(os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "wb") as f:
-            f.write(open(source, "rb").read())
-    environment = dict(base, BLACKICE_EVENT_FILE=event_file, BLACKICE_EVENT_ID=event["id"])
+    environment = dict(base, BLACKICE_EVENT_ID=event["id"])
+    directory = None
+    if configuration_folder:
+        directory = tempfile.mkdtemp(prefix="hook-", dir=work)   # 0700
+        os.mkdir(os.path.join(directory, "opencode"), 0o700)
+        environment["XDG_CONFIG_HOME"] = directory
     out_path = os.path.join(work, case["id"] + ".stdout")
     err_path = os.path.join(work, case["id"] + ".stderr")
     started = time.monotonic()
     with open(out_path, "wb") as out, open(err_path, "wb") as err:
-        child = subprocess.Popen([program] + arguments, cwd=directory, env=environment, stdin=subprocess.PIPE,
+        child = subprocess.Popen([program] + arguments, cwd="/var/empty", env=environment, stdin=subprocess.PIPE,
                                  stdout=out, stderr=err, start_new_session=True)
         try:
-            if stdin_mode != "none":
-                child.stdin.write(data)
+            child.stdin.write(data)
             child.stdin.close()
         except BrokenPipeError:
             pass
@@ -192,7 +192,8 @@ for case in cases:
         got, shown = answer(status, open(out_path, "rb").read())
     ok = expected(case["expect"], got)
     rows.append((case["id"], case["expect"], shown, f"{took:.1f} s", "ok" if ok else "FAIL", case["why"]))
-    shutil.rmtree(directory, ignore_errors=True)
+    if directory:
+        shutil.rmtree(directory, ignore_errors=True)
 
 header = ("id", "expect", "got", "time", "result", "case")
 widths = [max(len(str(row[i])) for row in rows + [header]) for i in range(len(header))]

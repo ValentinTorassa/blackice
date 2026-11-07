@@ -71,21 +71,51 @@ public enum AgentAction: String, Equatable, Sendable {
 public struct Approval: Equatable, Sendable {
     /// `--app/--team` (no team means Apple platform code), or `--cdhash` for ad hoc code.
     public let identity: AppIdentity
-    public let host: String
+    /// One or more `--host`, in the order given, each once.
+    public let hosts: [String]
     public let seconds: Int
+    /// `--save`: after the approval, write a lasting `[[allow]]` rule for it in `configPath`, or
+    /// in blackice.toml's usual place when nil.
+    public let save: Bool
+    public let configPath: String?
+    /// `--script`: for an interpreter, the one script the approval covers; nil covers them all.
+    public let script: String?
 
-    /// A person's answer: the command asks for Touch ID. Hooks answer on their stdout instead.
-    public var request: AnswerRequest {
-        AnswerRequest(kind: .approve, app: identity, host: host, seconds: seconds, token: nil)
+    public init(identity: AppIdentity, hosts: [String], seconds: Int, save: Bool = false, configPath: String? = nil,
+                script: String? = nil) {
+        self.identity = identity
+        self.hosts = hosts
+        self.seconds = seconds
+        self.save = save
+        self.configPath = configPath
+        self.script = script
+    }
+
+    public init(identity: AppIdentity, host: String, seconds: Int) {
+        self.init(identity: identity, hosts: [host], seconds: seconds)
+    }
+
+    /// A person's answer, one per host; the command asks for Touch ID once for all of them. Hooks
+    /// answer on their stdout instead.
+    public var requests: [AnswerRequest] {
+        hosts.map { AnswerRequest(kind: .approve, app: identity, host: $0, seconds: seconds, token: nil, script: script) }
     }
 }
 
 public struct Denial: Equatable, Sendable {
     public let identity: AppIdentity
     public let host: String
+    /// `--script`: for an interpreter, the one script the denial covers; nil covers them all.
+    public let script: String?
+
+    public init(identity: AppIdentity, host: String, script: String? = nil) {
+        self.identity = identity
+        self.host = host
+        self.script = script
+    }
 
     public var request: AnswerRequest {
-        AnswerRequest(kind: .deny, app: identity, host: host, seconds: nil, token: nil)
+        AnswerRequest(kind: .deny, app: identity, host: host, seconds: nil, token: nil, script: script)
     }
 }
 
@@ -98,6 +128,8 @@ public struct UsageError: Error, Equatable, CustomStringConvertible, Sendable {
 public enum CLI {
     public static let defaultApprovalSeconds = 3600
     public static let maximumApprovalSeconds = ApprovalTable.maximumSeconds
+    /// `--host` options one `blackice approve` takes, so the Touch ID dialog can name them all.
+    public static let maximumApprovalHosts = 16
     public static let defaultReportMinutes = 60
     /// A week: about as far back as unified logging keeps the filter's lines on a busy Mac.
     public static let maximumReportMinutes = 7 * 24 * 60
@@ -111,7 +143,7 @@ public enum CLI {
       status               what blackice is doing
       mode MODE            accept-all, ask or block-all (Touch ID)
       pending              what waits for an answer, and the approvals
-      approve, deny        answer for one app and host (Touch ID)
+      approve, deny        answer for one app and its hosts (Touch ID)
       report               what the filter dropped in the last hour
       agent connect NAME   let fx, claude-code, codex or opencode answer
       menu                 show blackice in the menu bar
@@ -137,18 +169,27 @@ public enum CLI {
                  "  block-all      only what your rules allow goes through",
                  "  --agent NAME   who answers: fx, claude-code, codex, opencode or you"],
         "pending": ["Usage: blackice pending", "",
-                    "The connections waiting for an answer, with the command that approves each,",
-                    "then the approvals and the recent denials."],
-        "approve": ["Usage: blackice approve --app ID [--team TEAM] --host HOST [--for 1h]", "",
-                    "Lets one app reach one host for a while, and lets its waiting connections",
-                    "through (Touch ID). blackice pending prints the command for each.",
+                    "The connections waiting for an answer, and the apps and hosts denied a moment",
+                    "ago, whose connections are dropped without asking, each with the command that",
+                    "approves it; then the approvals."],
+        "approve": ["Usage: blackice approve --app ID [--team TEAM] --host HOST… [--for 1h]",
+                    "                        [--script PATH | --save]", "",
+                    "Lets one app reach one or more hosts for a while, and lets its waiting",
+                    "connections through, with one Touch ID. blackice pending prints the command.",
                     "  --app ID       its signing identifier, with --team TEAM unless Apple signed it",
                     "  --cdhash HEX   in place of --app, for ad hoc signed code",
-                    "  --host HOST    a host name, or an IP address for connections with no name",
-                    "  --for 1h       30s, 10m or 1h; at most 24h"],
-        "deny": ["Usage: blackice deny --app ID [--team TEAM] --host HOST", "",
+                    "  --host HOST    a host name, or an IP address for connections with no name;",
+                    "                 repeat it for up to 16 hosts",
+                    "  --for 1h       30s, 10m or 1h; at most 24h",
+                    "  --script PATH  for an interpreter (python, node…), only this script: its",
+                    "                 full path, or -m MODULE; without it, every script it runs",
+                    "  --save         also add a lasting [[allow]] rule for it to blackice.toml",
+                    "                 (or --config PATH); it counts from the next blackice start.",
+                    "                 A rule for an interpreter (python, node…) never counts."],
+        "deny": ["Usage: blackice deny --app ID [--team TEAM] --host HOST [--script PATH]", "",
                  "Refuses one app one host, and drops its waiting connections (Touch ID).",
-                 "--cdhash HEX in place of --app names ad hoc signed code."],
+                 "--cdhash HEX in place of --app names ad hoc signed code; --script PATH, for",
+                 "an interpreter, refuses only that script."],
         "report": ["Usage: blackice report [--last 1h]", "",
                    "What the filter dropped, by reason and app, and in accept-all what ask mode",
                    "would have done. --last takes minutes or hours, such as 30m or 2h, at most 168h."],
@@ -255,8 +296,24 @@ public enum CLI {
             return .report(minutes: minutes)
         case "approve":
             try noToken(rest, command: first)
-            let options = try parseOptions(rest, allowed: ["app", "team", "cdhash", "host", "for"], command: first)
-            let target = try target(options, command: first)
+            // --save is the one option with no value.
+            let save = rest.contains("--save")
+            let repeated = try parseOptions(rest.filter { $0 != "--save" },
+                                            allowed: ["app", "team", "cdhash", "host", "for", "config", "script"], repeatable: ["host"],
+                                            command: first)
+            let options = repeated.compactMapValues(\.first)
+            let app = try identity(options, command: first)
+            let raws = repeated["host"] ?? []
+            guard !raws.isEmpty else { throw UsageError("\(first) needs --host") }
+            guard raws.count <= maximumApprovalHosts else {
+                throw UsageError("\(first): at most \(maximumApprovalHosts) --host at once")
+            }
+            var hosts: [String] = []
+            for raw in raws {
+                let normalized = try host(raw, command: first)
+                guard !hosts.contains(normalized) else { throw UsageError("\(first): --host \(normalized) given twice") }
+                hosts.append(normalized)
+            }
             var seconds = defaultApprovalSeconds
             if let text = options["for"] {
                 guard let parsed = parseDuration(text) else {
@@ -264,15 +321,77 @@ public enum CLI {
                 }
                 seconds = parsed
             }
-            return .approve(Approval(identity: target.identity, host: target.host, seconds: seconds))
+            if let path = options["config"] {
+                guard save else { throw UsageError("\(first): --config goes with --save") }
+                guard !path.hasPrefix("-") else { throw UsageError("\(first): --config needs a path") }
+            }
+            let script = try options["script"].map { try self.script($0, command: first) }
+            // A rule covers every script of an interpreter, and never counts for one: there is no
+            // rule for one script to save.
+            if script != nil, save { throw UsageError("\(first): --script and --save do not go together") }
+            return .approve(Approval(identity: app, hosts: hosts, seconds: seconds, save: save, configPath: options["config"],
+                                     script: script))
         case "deny":
             try noToken(rest, command: first)
-            let options = try parseOptions(rest, allowed: ["app", "team", "cdhash", "host"], command: first)
+            let options = try parseOptions(rest, allowed: ["app", "team", "cdhash", "host", "script"], command: first)
             let target = try target(options, command: first)
-            return .deny(Denial(identity: target.identity, host: target.host))
+            let script = try options["script"].map { try self.script($0, command: first) }
+            return .deny(Denial(identity: target.identity, host: target.host, script: script))
         default:
             throw UsageError("unknown command '\(printable(first))'")
         }
+    }
+
+    /// `approve --save`: adds a rule for the approved app and the hosts no rule covers yet to the
+    /// end of blackice.toml, through the same compare-and-replace `agent connect` uses. The running
+    /// filter keeps its configuration, so the rule counts from the next `blackice start`; the
+    /// approval covers the hosts until then.
+    static func saveRule(_ approval: Approval, readFile: (String) throws -> Data,
+                         stdout: (String) -> Void, stderr: (String) -> Void) -> Int32 {
+        let path = approval.configPath ?? defaultConfigPath
+        let shown = Describe.terminalSafe(Describe.path(path, home: NSHomeDirectory()))
+        let text: String
+        let config: BlackiceConfig
+        do {
+            text = String(decoding: try readFile(path), as: UTF8.self)
+            config = try BlackiceConfig(text: text)
+        } catch {
+            stderr("blackice approve: approved, but not saved: cannot read \(shown) (\(error))")
+            return ExitCode.unreadable
+        }
+        let missing = approval.hosts.filter { config.allowRule(for: approval.identity, host: $0) == nil }
+        guard !missing.isEmpty else {
+            stdout(Style.done("\(shown) already has a rule for \(approval.identity.name) to these hosts"))
+            return ExitCode.success
+        }
+        let reference = AppReference(approval.identity)
+        var lines = ["", "# Added by blackice approve --save for \(approval.identity.name)."
+                         + (reference.cdhash == nil ? "" : " That build only: an upgrade changes its cdhash."),
+                     "[[allow]]"]
+        if let cdhash = reference.cdhash { lines.append("cdhash = \"\(cdhash)\"") }
+        if let signingID = reference.signingID { lines.append("app = \"\(signingID)\"") }
+        if let teamID = reference.teamID { lines.append("team = \"\(teamID)\"") }
+        lines.append("hosts = [" + missing.map { "\"\($0)\"" }.joined(separator: ", ") + "]")
+        let updated = text + (text.isEmpty || text.hasSuffix("\n") ? "" : "\n") + lines.joined(separator: "\n") + "\n"
+        do {
+            _ = try BlackiceConfig(text: updated)
+            var info = stat()
+            let mode = stat(path, &info) == 0 ? info.st_mode & 0o777 : 0o600
+            try writeAtomically(Data(updated.utf8), to: path, mode: mode, replacing: Data(text.utf8))
+        } catch is ChangedMeanwhile {
+            stderr("blackice approve: approved, but not saved: \(shown) changed meanwhile; run it again")
+            return ExitCode.tempFail
+        } catch {
+            stderr("blackice approve: approved, but not saved in \(shown): \(error)")
+            return ExitCode.cannotCreate
+        }
+        stdout(Style.done("Saved a rule for \(approval.identity.name) → \(missing.joined(separator: ", ")) in \(shown);"
+                          + " it counts from the next blackice start"))
+        if case .cdhash = approval.identity {
+            stdout("  If that cdhash is an interpreter (python, node, a shell…), the rule never counts: blackice decides")
+            stdout("  an interpreter's connections one by one. Name the tool in the agent's notes instead.")
+        }
+        return ExitCode.success
     }
 
     /// Where start looks for blackice.toml without --config.
@@ -405,7 +524,9 @@ public enum CLI {
         case .pending:
             return system.pending(output: SystemOutput(stdout: stdout, stderr: stderr))
         case .approve(let approval):
-            return system.answer(approval.request, output: SystemOutput(stdout: stdout, stderr: stderr))
+            let status = system.answer(all: approval.requests, output: SystemOutput(stdout: stdout, stderr: stderr))
+            guard approval.save, status == ExitCode.success else { return status }
+            return saveRule(approval, readFile: readFile, stdout: stdout, stderr: stderr)
         case .deny(let denial):
             return system.answer(denial.request, output: SystemOutput(stdout: stdout, stderr: stderr))
         case .report(let minutes):
@@ -533,9 +654,7 @@ public enum CLI {
     public static func pendingLines(_ reply: PendingReply) -> [String] {
         if reply.events.isEmpty, reply.approvals.isEmpty, reply.denials.isEmpty { return ["Nothing waiting, and no approvals."] }
         var lines: [String] = []
-        if reply.events.isEmpty {
-            lines.append("Nothing waiting.")
-        } else {
+        if !reply.events.isEmpty {
             lines.append(Style.heading("Waiting"))
             for event in reply.events {
                 let identity = event.app.identity
@@ -545,32 +664,99 @@ public enum CLI {
                 lines.append("  \(identity?.name ?? "unknown app") → \(event.hostAndPort)  \(held), \(Describe.left(event.secondsLeft)) left")
                 // A signing identifier says which app it is; ad hoc code is known by where it runs.
                 if case .signed? = identity {} else if let path = event.path { lines.append("    " + Describe.terminalSafe(path)) }
-                if let identity { lines.append("    " + Style.command(approveCommand(identity, host: event.host))) }
+                // An interpreter's script, which its command line names: it tells tools apart, and proves nothing.
+                if let script = event.script { lines.append("    running " + Describe.terminalSafe(script)) }
+                if let identity {
+                    lines.append("    " + Style.command(approveCommand(identity, hosts: [event.host], script: event.script)))
+                }
+            }
+        } else if reply.denials.isEmpty {
+            lines.append("Nothing waiting.")
+        }
+        // An app's connections to a host denied a moment ago are dropped with no event, so nothing
+        // shows as waiting while it fails. They come next, each app's hosts together and then the
+        // command that approves them all.
+        if !reply.denials.isEmpty {
+            if !lines.isEmpty { lines.append("") }
+            lines.append(Style.heading("Denied, dropped without asking"))
+            let format = columns(reply.denials)
+            for group in byApp(reply.denials) {
+                lines += group.map(format)
+                guard let identity = group[0].app.identity else { continue }
+                for start in stride(from: 0, to: group.count, by: maximumApprovalHosts) {
+                    let hosts = group[start..<min(start + maximumApprovalHosts, group.count)].map(\.host)
+                    lines.append("    " + Style.command(approveCommand(identity, hosts: hosts, script: group[0].script)))
+                }
             }
         }
-        for (heading, entries) in [("Approvals", reply.approvals), ("Denied, dropped without asking", reply.denials)]
-            where !entries.isEmpty {
-            lines += ["", Style.heading(heading)]
-            let names = entries.map { $0.app.identity?.name ?? "unknown app" }
-            let nameWidth = min(names.map(\.count).max() ?? 0, 40)
-            let hostWidth = min(entries.map(\.host.count).max() ?? 0, 40)
-            for (name, entry) in zip(names, entries) {
-                lines.append("  " + name.padding(toLength: max(name.count, nameWidth), withPad: " ", startingAt: 0) + " → " +
-                             entry.host.padding(toLength: max(entry.host.count, hostWidth), withPad: " ", startingAt: 0) +
-                             "  " + Describe.left(entry.secondsLeft))
-            }
+        if !reply.approvals.isEmpty {
+            lines += ["", Style.heading("Approvals")]
+            lines += reply.approvals.map(columns(reply.approvals))
         }
         return lines
     }
 
+    /// Rows of app → host and the time left, in columns as wide as the longest app and host; an
+    /// interpreter's entry for one script says so after the time.
+    private static func columns(_ entries: [ApprovalSummary]) -> (ApprovalSummary) -> String {
+        let nameWidth = min(entries.map { name($0).count }.max() ?? 0, 40)
+        let hostWidth = min(entries.map(\.host.count).max() ?? 0, 40)
+        return { entry in
+            let label = name(entry)
+            let scope: String
+            switch entry.scope {
+            case .any: scope = ""
+            case .script(let script?): scope = "  running " + Describe.script(script)
+            case .script(nil): scope = "  with no script"
+            }
+            return "  " + label.padding(toLength: max(label.count, nameWidth), withPad: " ", startingAt: 0) + " → " +
+                entry.host.padding(toLength: max(entry.host.count, hostWidth), withPad: " ", startingAt: 0) +
+                "  " + Describe.left(entry.secondsLeft) + scope
+        }
+    }
+
+    private static func name(_ entry: ApprovalSummary) -> String { entry.app.identity?.name ?? "unknown app" }
+
+    /// The entries of each app and script together, in the order they first appear.
+    private static func byApp(_ entries: [ApprovalSummary]) -> [[ApprovalSummary]] {
+        var groups: [[ApprovalSummary]] = []
+        var index: [String: Int] = [:]
+        for entry in entries {
+            let key = (entry.app.identity?.label ?? "") + "\u{0}" + (entry.script ?? "") + (entry.noScript == true ? "\u{0}" : "")
+            if let at = index[key] { groups[at].append(entry) } else { index[key] = groups.count; groups.append([entry]) }
+        }
+        return groups
+    }
+
     /// The `blackice approve` line for an app and host, as `pending` shows it.
     static func approveCommand(_ identity: AppIdentity, host: String) -> String {
+        approveCommand(identity, hosts: [host])
+    }
+
+    /// The `blackice approve` line for an app and its hosts, one `--host` each. For an
+    /// interpreter's script that an answer can name and the terminal shows as it is, `--script`
+    /// too, quoted for the shell; otherwise the line approves every script, which only a person
+    /// with Touch ID can.
+    static func approveCommand(_ identity: AppIdentity, hosts: [String], script: String? = nil) -> String {
+        let hostOptions = hosts.map { " --host \($0)" }.joined()
+        let scriptOption = script.flatMap { ScriptScope.canName($0) && Describe.terminalSafe($0) == $0 ? $0 : nil }
+            .map { " --script " + shellQuoted($0) } ?? ""
         switch identity {
         case .signed(let signed):
-            return "blackice approve --app \(signed.signingID)" + (signed.teamID.map { " --team \($0)" } ?? "") + " --host \(host)"
+            return "blackice approve --app \(signed.signingID)" + (signed.teamID.map { " --team \($0)" } ?? "") + hostOptions
+                + scriptOption
         case .cdhash(let hash):
-            return "blackice approve --cdhash \(hash) --host \(host)"
+            return "blackice approve --cdhash \(hash)" + hostOptions + scriptOption
         }
+    }
+
+    /// One shell word: as it is when it has only characters no shell treats specially, otherwise
+    /// in single quotes, with each single quote closed, escaped and opened again.
+    static func shellQuoted(_ text: String) -> String {
+        let plain = !text.isEmpty && text.unicodeScalars.allSatisfy {
+            ("a"..."z").contains($0) || ("A"..."Z").contains($0) || ("0"..."9").contains($0) || "/._-+,:@%=".unicodeScalars.contains($0)
+        }
+        return plain ? text : "'" + text.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 
     /// The exit status for an answer: 0 when done, 77 when the extension refused it, 64 for a
@@ -618,7 +804,14 @@ public enum CLI {
 
     /// --name value or --name=value, each at most once.
     private static func parseOptions(_ arguments: [String], allowed: Set<String>, command: String) throws -> [String: String] {
-        var options: [String: String] = [:]
+        try parseOptions(arguments, allowed: allowed, repeatable: [], command: command).compactMapValues(\.first)
+    }
+
+    /// --name value or --name=value, each at most once unless `repeatable` names it; the values of
+    /// each in the order given.
+    private static func parseOptions(_ arguments: [String], allowed: Set<String>, repeatable: Set<String>,
+                                     command: String) throws -> [String: [String]] {
+        var options: [String: [String]] = [:]
         var index = 0
         while index < arguments.count {
             let argument = arguments[index]
@@ -640,16 +833,29 @@ public enum CLI {
                 index += 1
                 value = arguments[index]
             }
-            guard options[name] == nil else { throw UsageError("\(command): --\(name) given twice") }
+            guard options[name] == nil || repeatable.contains(name) else { throw UsageError("\(command): --\(name) given twice") }
             guard !value.isEmpty else { throw UsageError("\(command): --\(name) needs a value") }
-            options[name] = value
+            options[name, default: []].append(value)
             index += 1
         }
         return options
     }
 
+    /// `--script`: an interpreter's script as `pending` shows it.
+    private static func script(_ text: String, command: String) throws -> String {
+        guard ScriptScope.canName(text) else {
+            throw UsageError("\(command): --script takes the script's full path, or -m MODULE, as blackice pending shows it")
+        }
+        return text
+    }
+
     /// `--app` with an optional `--team`, or `--cdhash` alone; and `--host`.
     private static func target(_ options: [String: String], command: String) throws -> (identity: AppIdentity, host: String) {
+        (try identity(options, command: command), try host(options["host"], command: command))
+    }
+
+    /// `--app` with an optional `--team`, or `--cdhash` alone.
+    private static func identity(_ options: [String: String], command: String) throws -> AppIdentity {
         let identity: AppIdentity
         if let cdhash = options["cdhash"] {
             guard options["app"] == nil, options["team"] == nil else {
@@ -666,7 +872,12 @@ public enum CLI {
             if let team, !validTeamID(team) { throw UsageError("\(command): --team takes a Team ID, 10 capital letters or digits") }
             identity = .signed(SigningIdentity(signingID: app, teamID: team))
         }
-        guard let rawHost = options["host"] else { throw UsageError("\(command) needs --host") }
+        return identity
+    }
+
+    /// One `--host`: a host name or an IP address, normalized.
+    private static func host(_ rawHost: String?, command: String) throws -> String {
+        guard let rawHost else { throw UsageError("\(command) needs --host") }
         // An address covers connections to it that have no name, as `pending` shows them.
         if let address = IPAddress.strict(rawHost), !address.isCheckable {
             throw UsageError("\(command): --host needs a link-local address's interface, such as fe80::1%en0")
@@ -674,7 +885,7 @@ public enum CLI {
         guard let host = normalizeDestination(rawHost) else {
             throw UsageError("\(command): --host takes one host name or IP address, with no wildcards, ranges or leading zeros")
         }
-        return (identity, host)
+        return host
     }
 
     /// `--token` went in 0.4.0: hooks answer on their stdout, and the daemon answers for them.
