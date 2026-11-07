@@ -980,8 +980,8 @@ struct AgentConnectTests {
         declining.found = ["/opt/dev/fx"]
         let declined = connect(home, config: config, mac: declining, system: Loading(), answers: ["n"])
         #expect(declined.status == ExitCode.unavailable && declining.installs.isEmpty)
-        #expect(declined.stdout.contains("  /opt/dev/fx is unsigned or ad hoc signed, as development builds are, so no rule can name it."))
-        #expect(declined.stderr == ["  /opt/dev/fx is unsigned or ad hoc signed, so a rule cannot name it."])
+        #expect(declined.stdout.contains("  /opt/dev/fx is unsigned or ad hoc signed, as development builds are, so blackice cannot start it as a hook."))
+        #expect(declined.stderr == ["  /opt/dev/fx is unsigned or ad hoc signed, so blackice cannot start it as a hook."])
         #expect(try String(contentsOfFile: config, encoding: .utf8) == text)
 
         // An install that leaves no signed fx there.

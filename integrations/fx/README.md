@@ -28,7 +28,7 @@ file that any program running as you could rewrite while fx read it. `agent conn
 ## A development build
 
 A rule and a program hook name fx by its signature. fx's releases are signed by Vercel (`com.vercel.fx`, team
-`JW6Y669B67`); builds from `fx upgrade --channel dev` are ad hoc signed, so nothing can name them. When the first fx
+`JW6Y669B67`); builds from `fx upgrade --channel dev` are ad hoc signed, so blackice cannot start them as a hook. When the first fx
 on PATH is one of those, `agent connect fx` uses a signed fx further on PATH, or offers to install fx's release for
 blackice only, in `~/.config/blackice/agent/bin`, with fx's `setup.sh`. It sets `FX_INSTALL_DIR` to that folder and
 puts the folder on the script's PATH, since otherwise the script adds it to your shell's startup file. Your fx and

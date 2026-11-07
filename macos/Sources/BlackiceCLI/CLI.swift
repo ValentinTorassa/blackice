@@ -74,11 +74,17 @@ public struct Approval: Equatable, Sendable {
     /// One or more `--host`, in the order given, each once.
     public let hosts: [String]
     public let seconds: Int
+    /// `--save`: after the approval, write a lasting `[[allow]]` rule for it in `configPath`, or
+    /// in blackice.toml's usual place when nil.
+    public let save: Bool
+    public let configPath: String?
 
-    public init(identity: AppIdentity, hosts: [String], seconds: Int) {
+    public init(identity: AppIdentity, hosts: [String], seconds: Int, save: Bool = false, configPath: String? = nil) {
         self.identity = identity
         self.hosts = hosts
         self.seconds = seconds
+        self.save = save
+        self.configPath = configPath
     }
 
     public init(identity: AppIdentity, host: String, seconds: Int) {
@@ -154,14 +160,17 @@ public enum CLI {
                     "The connections waiting for an answer, and the apps and hosts denied a moment",
                     "ago, whose connections are dropped without asking, each with the command that",
                     "approves it; then the approvals."],
-        "approve": ["Usage: blackice approve --app ID [--team TEAM] --host HOST… [--for 1h]", "",
+        "approve": ["Usage: blackice approve --app ID [--team TEAM] --host HOST… [--for 1h] [--save]", "",
                     "Lets one app reach one or more hosts for a while, and lets its waiting",
                     "connections through, with one Touch ID. blackice pending prints the command.",
                     "  --app ID       its signing identifier, with --team TEAM unless Apple signed it",
                     "  --cdhash HEX   in place of --app, for ad hoc signed code",
                     "  --host HOST    a host name, or an IP address for connections with no name;",
                     "                 repeat it for up to 16 hosts",
-                    "  --for 1h       30s, 10m or 1h; at most 24h"],
+                    "  --for 1h       30s, 10m or 1h; at most 24h",
+                    "  --save         also add a lasting [[allow]] rule for it to blackice.toml",
+                    "                 (or --config PATH); it counts from the next blackice start.",
+                    "                 A rule for an interpreter (python, node…) never counts."],
         "deny": ["Usage: blackice deny --app ID [--team TEAM] --host HOST", "",
                  "Refuses one app one host, and drops its waiting connections (Touch ID).",
                  "--cdhash HEX in place of --app names ad hoc signed code."],
@@ -271,7 +280,10 @@ public enum CLI {
             return .report(minutes: minutes)
         case "approve":
             try noToken(rest, command: first)
-            let repeated = try parseOptions(rest, allowed: ["app", "team", "cdhash", "host", "for"], repeatable: ["host"],
+            // --save is the one option with no value.
+            let save = rest.contains("--save")
+            let repeated = try parseOptions(rest.filter { $0 != "--save" },
+                                            allowed: ["app", "team", "cdhash", "host", "for", "config"], repeatable: ["host"],
                                             command: first)
             let options = repeated.compactMapValues(\.first)
             let app = try identity(options, command: first)
@@ -293,7 +305,11 @@ public enum CLI {
                 }
                 seconds = parsed
             }
-            return .approve(Approval(identity: app, hosts: hosts, seconds: seconds))
+            if let path = options["config"] {
+                guard save else { throw UsageError("\(first): --config goes with --save") }
+                guard !path.hasPrefix("-") else { throw UsageError("\(first): --config needs a path") }
+            }
+            return .approve(Approval(identity: app, hosts: hosts, seconds: seconds, save: save, configPath: options["config"]))
         case "deny":
             try noToken(rest, command: first)
             let options = try parseOptions(rest, allowed: ["app", "team", "cdhash", "host"], command: first)
@@ -302,6 +318,58 @@ public enum CLI {
         default:
             throw UsageError("unknown command '\(printable(first))'")
         }
+    }
+
+    /// `approve --save`: adds a rule for the approved app and the hosts no rule covers yet to the
+    /// end of blackice.toml, through the same compare-and-replace `agent connect` uses. The running
+    /// filter keeps its configuration, so the rule counts from the next `blackice start`; the
+    /// approval covers the hosts until then.
+    static func saveRule(_ approval: Approval, readFile: (String) throws -> Data,
+                         stdout: (String) -> Void, stderr: (String) -> Void) -> Int32 {
+        let path = approval.configPath ?? defaultConfigPath
+        let shown = Describe.terminalSafe(Describe.path(path, home: NSHomeDirectory()))
+        let text: String
+        let config: BlackiceConfig
+        do {
+            text = String(decoding: try readFile(path), as: UTF8.self)
+            config = try BlackiceConfig(text: text)
+        } catch {
+            stderr("blackice approve: approved, but not saved: cannot read \(shown) (\(error))")
+            return ExitCode.unreadable
+        }
+        let missing = approval.hosts.filter { config.allowRule(for: approval.identity, host: $0) == nil }
+        guard !missing.isEmpty else {
+            stdout(Style.done("\(shown) already has a rule for \(approval.identity.name) to these hosts"))
+            return ExitCode.success
+        }
+        let reference = AppReference(approval.identity)
+        var lines = ["", "# Added by blackice approve --save for \(approval.identity.name)."
+                         + (reference.cdhash == nil ? "" : " That build only: an upgrade changes its cdhash."),
+                     "[[allow]]"]
+        if let cdhash = reference.cdhash { lines.append("cdhash = \"\(cdhash)\"") }
+        if let signingID = reference.signingID { lines.append("app = \"\(signingID)\"") }
+        if let teamID = reference.teamID { lines.append("team = \"\(teamID)\"") }
+        lines.append("hosts = [" + missing.map { "\"\($0)\"" }.joined(separator: ", ") + "]")
+        let updated = text + (text.isEmpty || text.hasSuffix("\n") ? "" : "\n") + lines.joined(separator: "\n") + "\n"
+        do {
+            _ = try BlackiceConfig(text: updated)
+            var info = stat()
+            let mode = stat(path, &info) == 0 ? info.st_mode & 0o777 : 0o600
+            try writeAtomically(Data(updated.utf8), to: path, mode: mode, replacing: Data(text.utf8))
+        } catch is ChangedMeanwhile {
+            stderr("blackice approve: approved, but not saved: \(shown) changed meanwhile; run it again")
+            return ExitCode.tempFail
+        } catch {
+            stderr("blackice approve: approved, but not saved in \(shown): \(error)")
+            return ExitCode.cannotCreate
+        }
+        stdout(Style.done("Saved a rule for \(approval.identity.name) → \(missing.joined(separator: ", ")) in \(shown);"
+                          + " it counts from the next blackice start"))
+        if case .cdhash = approval.identity {
+            stdout("  If that cdhash is an interpreter (python, node, a shell…), the rule never counts: blackice decides")
+            stdout("  an interpreter's connections one by one. Name the tool in the agent's notes instead.")
+        }
+        return ExitCode.success
     }
 
     /// Where start looks for blackice.toml without --config.
@@ -434,7 +502,9 @@ public enum CLI {
         case .pending:
             return system.pending(output: SystemOutput(stdout: stdout, stderr: stderr))
         case .approve(let approval):
-            return system.answer(all: approval.requests, output: SystemOutput(stdout: stdout, stderr: stderr))
+            let status = system.answer(all: approval.requests, output: SystemOutput(stdout: stdout, stderr: stderr))
+            guard approval.save, status == ExitCode.success else { return status }
+            return saveRule(approval, readFile: readFile, stdout: stdout, stderr: stderr)
         case .deny(let denial):
             return system.answer(denial.request, output: SystemOutput(stdout: stdout, stderr: stderr))
         case .report(let minutes):
@@ -572,6 +642,8 @@ public enum CLI {
                 lines.append("  \(identity?.name ?? "unknown app") → \(event.hostAndPort)  \(held), \(Describe.left(event.secondsLeft)) left")
                 // A signing identifier says which app it is; ad hoc code is known by where it runs.
                 if case .signed? = identity {} else if let path = event.path { lines.append("    " + Describe.terminalSafe(path)) }
+                // An interpreter's script, which its command line names: it tells tools apart, and proves nothing.
+                if let script = event.script { lines.append("    running " + Describe.terminalSafe(script)) }
                 if let identity { lines.append("    " + Style.command(approveCommand(identity, host: event.host))) }
             }
         } else if reply.denials.isEmpty {

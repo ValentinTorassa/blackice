@@ -271,7 +271,8 @@ public struct PendingTable<Flow> {
         entries.values.sorted { $0.deadline < $1.deadline }.map { entry in
             PendingSummary(id: entry.event.id, app: AppReference(entry.key.identity), path: entry.event.app.path,
                            host: entry.key.host, ip: entry.event.ip, port: entry.key.port,
-                           secondsLeft: max(0, Int((entry.deadline - now).rounded(.up))), connections: entry.flows.count)
+                           secondsLeft: max(0, Int((entry.deadline - now).rounded(.up))), connections: entry.flows.count,
+                           script: entry.event.app.script)
         }
     }
 }

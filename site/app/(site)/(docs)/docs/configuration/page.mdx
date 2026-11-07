@@ -129,6 +129,8 @@ With `loopback = true`, the default, connections to 127.0.0.0/8 and ::1 pass in 
 
 A connection is named by the host the app asked for, by the Mac's DNS answers for its address, or by its TLS server name on port 443. In ask mode a TCP connection with none of these, such as `ssh` to `100.66.32.75`, is asked about by its address, and an approval of that address covers only connections to it that have no name. Block-all drops them unless an address entry or `*` covers them. UDP with no name (WebRTC, games, network discovery, QUIC) and multicast and broadcast connections are dropped with no question.
 
+**Wi-Fi with a sign-in page.** On a network that shows a page before it lets you online (hotels, airports, trains), nothing reaches the internet until you sign in, so in ask mode the agent cannot answer, and the page waits until its connections time out. Switch to accept-all to sign in, then back: `blackice mode accept-all`, sign in, `blackice mode ask`.
+
 **Encrypted DNS.** In ask and block-all, macOS's encrypted DNS (from `com.apple.mDNSResponder`, on port 443 or 853) is dropped as `encrypted_dns`, and macOS falls back to plain DNS, whose answers name the addresses apps connect to. To use an encrypted resolver on purpose, give it a rule; more connections are then asked about by address.
 
 ```toml
@@ -209,7 +211,7 @@ A hook that names an agent's `instructions` gets the event on stdin only, and no
 }
 ```
 
-Code with no identity blackice could check, signed ad hoc or run from a [folder macOS protects](#connections-with-no-name), has `"cdhash"` in `app` in place of `signing_id` and `team_id`. For a [connection with no name](#connections-with-no-name), `host` is the address, the same as `ip`. The event carries no token: that stays with the extension and the daemon.
+Code with no identity blackice could check, signed ad hoc or run from a [folder macOS protects](#connections-with-no-name), has `"cdhash"` in `app` in place of `signing_id` and `team_id`. For a [connection with no name](#connections-with-no-name), `host` is the address, the same as `ip`. For an interpreter (python, node, ruby, a shell and the others blackice knows), `app` also has `"script"`: the script its command line names, such as `/Users/me/.local/bin/mailctl`, or `-m module` for `python -m`. Only the script is read, never the other arguments. Any program can start an interpreter with any script name, so `script` tells tools apart for the agent and your notes, and no rule or approval names it. The event carries no token: that stays with the extension and the daemon.
 
 ## How a hook answers
 

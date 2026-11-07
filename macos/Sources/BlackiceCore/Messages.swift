@@ -241,9 +241,11 @@ public struct PendingSummary: Codable, Equatable, Sendable {
     public let secondsLeft: Int
     /// Paused flows waiting on this event: the first one and the repeats.
     public let connections: Int
+    /// For an interpreter, the script it runs, as its command line says (HookEvent.App.script).
+    public let script: String?
 
     public init(id: String, app: AppReference, path: String?, host: String, ip: String, port: UInt16,
-                secondsLeft: Int, connections: Int) {
+                secondsLeft: Int, connections: Int, script: String? = nil) {
         self.id = id
         self.app = app
         self.path = path
@@ -252,10 +254,11 @@ public struct PendingSummary: Codable, Equatable, Sendable {
         self.port = port
         self.secondsLeft = secondsLeft
         self.connections = connections
+        self.script = script
     }
 
     enum CodingKeys: String, CodingKey {
-        case id, app, path, host, ip, port, connections
+        case id, app, path, host, ip, port, connections, script
         case secondsLeft = "seconds_left"
     }
 
@@ -368,7 +371,9 @@ public struct PendingReply: CheckedMessage, Equatable {
         for event in events {
             guard validEventID(event.id), event.app.identity != nil, IPAddress(event.ip)?.description == event.ip,
                   validEventHost(event.host, ip: event.ip), event.secondsLeft >= 0, event.connections >= 0,
-                  event.path.map(validPath) ?? true else { throw MessageError("events", "has an invalid entry") }
+                  event.path.map(validPath) ?? true, event.script.map(validPath) ?? true else {
+                throw MessageError("events", "has an invalid entry")
+            }
         }
         for approval in approvals {
             guard approval.app.identity != nil, isNormalDestination(approval.host),

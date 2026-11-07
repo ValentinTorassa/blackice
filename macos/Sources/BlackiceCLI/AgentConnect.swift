@@ -929,7 +929,7 @@ extension CLI {
         }
 
         // Find it and read its signature. A development build first on PATH may be unsigned or ad
-        // hoc signed, which no rule can name: the first signed copy is the one used, and blackice
+        // hoc signed, which blackice cannot start as a hook: the first signed copy is the one used, and blackice
         // can install one for itself where the agent's installer allows it.
         let paths = AgentPaths(userHome: interaction.home, profile: profile)
         let binShown = Describe.path(paths.bin, home: interaction.home)
@@ -975,7 +975,7 @@ extension CLI {
         let shownFirst = Describe.terminalSafe(Describe.path(first, home: interaction.home))
         var signed = firstSigned(found)
         if signed == nil, let installer = profile.installer, let privateInstall = profile.privateInstall {
-            say("\(shownFirst) is unsigned or ad hoc signed, as development builds are, so no rule can name it.")
+            say("\(shownFirst) is unsigned or ad hoc signed, as development builds are, so blackice cannot start it as a hook.")
             if yes("Install \(name)'s signed release in \(binShown), for blackice only?", default: true) == true {
                 do {
                     let parent = (paths.home as NSString).deletingLastPathComponent
@@ -999,7 +999,7 @@ extension CLI {
         }
         if let stop = interruption() { return stop }
         guard let (executable, identity) = signed else {
-            return fail(ExitCode.unavailable, "\(shownFirst) is unsigned or ad hoc signed, so a rule cannot name it.")
+            return fail(ExitCode.unavailable, "\(shownFirst) is unsigned or ad hoc signed, so blackice cannot start it as a hook.")
         }
         let shownExecutable = Describe.terminalSafe(Describe.path(executable, home: interaction.home))
         guard fitsConfig(executable) else {

@@ -17,21 +17,25 @@ public struct HookEvent: Codable, Equatable, Sendable {
         /// 40 lower-case hex digits, only for ad hoc code. A rebuild changes it.
         public let cdhash: String?
         public let path: String?
+        /// For an interpreter (Interpreters), the script its command line names (ProcessArguments).
+        /// Any program can start an interpreter with any script, so it only helps tell tools apart.
+        public let script: String?
 
-        public init(signingID: String?, teamID: String?, cdhash: String? = nil, path: String?) {
+        public init(signingID: String?, teamID: String?, cdhash: String? = nil, path: String?, script: String? = nil) {
             self.signingID = signingID
             self.teamID = teamID
             self.cdhash = cdhash
             self.path = path
+            self.script = script
         }
 
         /// A path `validPath` refuses, such as a file name with a line break, is left out: one such
         /// event in the pending table made the whole pending reply invalid, so `blackice pending`
         /// and the menu could read nothing until it expired.
-        public init(_ identity: AppIdentity, path: String?) {
+        public init(_ identity: AppIdentity, path: String?, script: String? = nil) {
             let reference = AppReference(identity)
             self.init(signingID: reference.signingID, teamID: reference.teamID, cdhash: reference.cdhash,
-                      path: path.flatMap { validPath($0) ? $0 : nil })
+                      path: path.flatMap { validPath($0) ? $0 : nil }, script: script.flatMap { validPath($0) ? $0 : nil })
         }
 
         /// nil unless exactly one form is present and valid.
@@ -44,6 +48,7 @@ public struct HookEvent: Codable, Equatable, Sendable {
             case teamID = "team_id"
             case cdhash
             case path
+            case script
         }
     }
 
@@ -117,6 +122,9 @@ public struct HookEvent: Codable, Equatable, Sendable {
             throw MessageError("app", "needs a valid signing_id (and team_id) or a cdhash, not both")
         }
         if let path = app.path, !validPath(path) { throw MessageError("app.path", "is too long or has control characters") }
+        if let script = app.script, !validPath(script) {
+            throw MessageError("app.script", "is too long or has control characters")
+        }
         guard let address = IPAddress(ip), address.description == ip else { throw MessageError("ip", "must be an IP address") }
         guard let host, validEventHost(host, ip: ip) else {
             throw MessageError("host", "must be a normalized host name, or the event's ip")

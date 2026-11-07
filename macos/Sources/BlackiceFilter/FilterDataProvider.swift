@@ -493,7 +493,7 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
             let added = ask.pending.add(paused, key: key, addressMatches: addressMatches, now: now,
                                         timeout: TimeInterval(snapshot.config.timeoutSeconds),
                                         holdFor: FilterPolicy.holdLimit(facts, afterServerName: paused.stage == .data)) { seconds in
-                try HookEvent.connection(app: HookEvent.App(identity, path: CodeIdentity.path(auditToken: paused.flow.sourceAppAuditToken)),
+                try HookEvent.connection(app: Self.eventApp(identity, auditToken: paused.flow.sourceAppAuditToken),
                                          host: host, ip: address.description, port: port,
                                          deadline: Date().addingTimeInterval(seconds))
             }
@@ -529,6 +529,14 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
             }
             if server?.send(.event(event, generation: generation)) != true { control("event_not_sent", "no_daemon") }
         }
+    }
+
+    /// The event's app: its path, and for an interpreter the script it runs (ProcessArguments),
+    /// told by the executable's own name as the kernel has it.
+    private static func eventApp(_ identity: AppIdentity, auditToken: Data?) -> HookEvent.App {
+        let executable = auditToken.flatMap { CodeIdentity.kernelPath(auditToken: $0) }
+        let script = executable.flatMap { Interpreters.contains(path: $0) ? auditToken.flatMap(ProcessArguments.script(auditToken:)) : nil }
+        return HookEvent.App(identity, path: CodeIdentity.path(auditToken: auditToken), script: script)
     }
 
     /// On resolverQueue: resolves, then decides again every flow that waited for this host. From

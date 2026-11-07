@@ -18,16 +18,21 @@ public enum Interpreters {
     /// Lower case. Each also counts with a version after it: python3, python3.14, python3.14t,
     /// ruby3.3, perl5.34, luajit-2.1.0.
     static let names: Set<String> = [
-        "python", "pythonw", "node", "nodejs", "bun", "deno", "ruby", "perl", "php", "lua", "luajit", "tclsh",
-        "wish", "julia", "osascript", "sh", "bash", "zsh", "dash", "ksh", "tcsh", "csh", "fish", "pwsh",
+        "python", "pythonw", "pypy", "node", "nodejs", "bun", "deno", "ruby", "perl", "php", "lua", "luajit",
+        "tclsh", "wish", "julia", "osascript", "sh", "bash", "zsh", "dash", "ksh", "tcsh", "csh", "fish", "pwsh",
+        "java", "erl", "escript", "elixir", "dotnet", "groovy", "expect", "awk", "gawk", "mawk", "nawk",
     ]
+    /// Names that are whole as they are, dots included: Erlang's VM.
+    static let exact: Set<String> = ["beam.smp"]
     /// R's, only as they are: with a version, "r" would also take radare2's r2.
     static let unversioned: Set<String> = ["r", "rscript"]
 
     /// Whether the executable at `path` is an interpreter, by its file name in any case: the
     /// framework build of Python runs as Python.app/Contents/MacOS/Python.
     public static func contains(path: String) -> Bool {
-        let name = Array((path.split(separator: "/").last ?? "").lowercased().utf8)
+        let file = (path.split(separator: "/").last ?? "").lowercased()
+        if exact.contains(file) { return true }
+        let name = Array(file.utf8)
         let letters = name.prefix { (97...122).contains($0) }
         let base = String(decoding: letters, as: UTF8.self)
         var version = name.dropFirst(letters.count)

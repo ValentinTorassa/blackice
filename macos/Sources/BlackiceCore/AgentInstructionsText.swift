@@ -40,6 +40,12 @@ tools: there is nothing to read, and every command is refused. The event looks l
   (`~/Documents`, `~/Desktop`, `~/Downloads`, iCloud Drive, a removable or network volume), so
   its signature was not checked. The cdhash names this exact build; a rebuild changes it.
 - `app.path`: where the program's executable is, when known.
+- `app.script`, only for an interpreter such as `python3`, `node` or `bash`: the script its
+  command line names, such as `/Users/me/.local/bin/mailctl`, or `-m module` for `python -m`. It
+  tells you which tool the interpreter runs, and which part of the owner's notes may be about it.
+  Any program can start an interpreter with any script name, so it proves nothing on its own:
+  weigh it with the path and the host. No `app.script` means the code came on the command line
+  (`python3 -c`) or blackice could not tell.
 - `host`: the host name. `ip` and `port`: the destination.
 - When `host` is the same text as `ip`, the program connected to an address and nothing gave
   blackice a name for it: no host name from the system, none from DNS, no TLS server name. An
@@ -116,7 +122,9 @@ Look at:
   `unpkg.com`, `cdnjs.cloudflare.com`). The same tools reaching any other host, a public address,
   a paste or file-sharing site or a lookalike of these names stay a deny unless the owner's notes
   say otherwise, and so do these tools run from `/tmp`, `~/Downloads`, or a hidden or cache
-  directory other than the toolchain folders above.
+  directory other than the toolchain folders above. The notes may name a tool by its script: an
+  interpreter running the script they name, from the folder they name, to a host they list for it,
+  is approved like any app the notes describe.
 - **The host.** Deny lookalike names (`githuh.com`, `apple-support-login.net`), random-looking
   subdomains, dynamic DNS names, and paste and file-sharing sites.
 - **A host that is an IP address** (`host` is the same as `ip`). Suspicious by default:
@@ -204,6 +212,12 @@ like this:
   (`~/Documents`, `~/Desktop`, `~/Downloads`, iCloud Drive, a removable or network volume), so
   its signature was not checked. The cdhash names this exact build; a rebuild changes it.
 - `app.path`: where the program's executable is, when known.
+- `app.script`, only for an interpreter such as `python3`, `node` or `bash`: the script its
+  command line names, such as `/Users/me/.local/bin/mailctl`, or `-m module` for `python -m`. It
+  tells you which tool the interpreter runs, and which part of the owner's notes may be about it.
+  Any program can start an interpreter with any script name, so it proves nothing on its own:
+  weigh it with the path and the host. No `app.script` means the code came on the command line
+  (`python3 -c`) or blackice could not tell.
 - `host`: the host name, when the system or the TLS handshake gave one. `ip` and `port`: the
   destination.
 - When `host` is the same text as `ip`, the program connected to an address and nothing gave
@@ -279,7 +293,9 @@ Look at:
   `unpkg.com`, `cdnjs.cloudflare.com`). The same tools reaching any other host, a public address,
   a paste or file-sharing site or a lookalike of these names stay a deny unless the owner's notes
   say otherwise, and so do these tools run from `/tmp`, `~/Downloads`, or a hidden or cache
-  directory other than the toolchain folders above.
+  directory other than the toolchain folders above. The notes may name a tool by its script: an
+  interpreter running the script they name, from the folder they name, to a host they list for it,
+  is approved like any app the notes describe.
 - **The host.** Deny lookalike names (`githuh.com`, `apple-support-login.net`), random-looking
   subdomains, dynamic DNS names, and paste and file-sharing sites.
 - **A host that is an IP address** (`host` is the same as `ip`). Suspicious by default:
@@ -353,6 +369,12 @@ agents. The event looks like this:
   (`~/Documents`, `~/Desktop`, `~/Downloads`, iCloud Drive, a removable or network volume), so
   its signature was not checked. The cdhash names this exact build; a rebuild changes it.
 - `app.path`: where the program's executable is, when known.
+- `app.script`, only for an interpreter such as `python3`, `node` or `bash`: the script its
+  command line names, such as `/Users/me/.local/bin/mailctl`, or `-m module` for `python -m`. It
+  tells you which tool the interpreter runs, and which part of the owner's notes may be about it.
+  Any program can start an interpreter with any script name, so it proves nothing on its own:
+  weigh it with the path and the host. No `app.script` means the code came on the command line
+  (`python3 -c`) or blackice could not tell.
 - `host`: the host name, when the system or the TLS handshake gave one. `ip` and `port`: the
   destination.
 - When `host` is the same text as `ip`, the program connected to an address and nothing gave
@@ -428,7 +450,9 @@ Look at:
   `unpkg.com`, `cdnjs.cloudflare.com`). The same tools reaching any other host, a public address,
   a paste or file-sharing site or a lookalike of these names stay a deny unless the owner's notes
   say otherwise, and so do these tools run from `/tmp`, `~/Downloads`, or a hidden or cache
-  directory other than the toolchain folders above.
+  directory other than the toolchain folders above. The notes may name a tool by its script: an
+  interpreter running the script they name, from the folder they name, to a host they list for it,
+  is approved like any app the notes describe.
 - **The host.** Deny lookalike names (`githuh.com`, `apple-support-login.net`), random-looking
   subdomains, dynamic DNS names, and paste and file-sharing sites.
 - **A host that is an IP address** (`host` is the same as `ip`). Suspicious by default:
@@ -502,6 +526,12 @@ like this:
   (`~/Documents`, `~/Desktop`, `~/Downloads`, iCloud Drive, a removable or network volume), so
   its signature was not checked. The cdhash names this exact build; a rebuild changes it.
 - `app.path`: where the program's executable is, when known.
+- `app.script`, only for an interpreter such as `python3`, `node` or `bash`: the script its
+  command line names, such as `/Users/me/.local/bin/mailctl`, or `-m module` for `python -m`. It
+  tells you which tool the interpreter runs, and which part of the owner's notes may be about it.
+  Any program can start an interpreter with any script name, so it proves nothing on its own:
+  weigh it with the path and the host. No `app.script` means the code came on the command line
+  (`python3 -c`) or blackice could not tell.
 - `host`: the host name, when the system or the TLS handshake gave one. `ip` and `port`: the
   destination.
 - When `host` is the same text as `ip`, the program connected to an address and nothing gave
@@ -577,7 +607,9 @@ Look at:
   `unpkg.com`, `cdnjs.cloudflare.com`). The same tools reaching any other host, a public address,
   a paste or file-sharing site or a lookalike of these names stay a deny unless the owner's notes
   say otherwise, and so do these tools run from `/tmp`, `~/Downloads`, or a hidden or cache
-  directory other than the toolchain folders above.
+  directory other than the toolchain folders above. The notes may name a tool by its script: an
+  interpreter running the script they name, from the folder they name, to a host they list for it,
+  is approved like any app the notes describe.
 - **The host.** Deny lookalike names (`githuh.com`, `apple-support-login.net`), random-looking
   subdomains, dynamic DNS names, and paste and file-sharing sites.
 - **A host that is an IP address** (`host` is the same as `ip`). Suspicious by default:

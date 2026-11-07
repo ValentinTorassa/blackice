@@ -379,6 +379,36 @@ struct RunTests {
         #expect(refusing.calls == ["approve apple/com.a a.example.com 300 touch_id"])
     }
 
+    /// `approve --save` adds a rule for the hosts no rule covers yet, after the approval went through.
+    @Test func saveAddsALastingRuleAfterTheApproval() throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("blackice-save-\(getpid())")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let path = folder.appendingPathComponent("blackice.toml").path
+        let text = "mode = \"ask\"\n\n[[allow]]\ncdhash = \"\(testCDHash)\"\nhosts = [\"api.github.com\"]\n"
+        try Data(text.utf8).write(to: URL(fileURLWithPath: path))
+        let arguments = ["approve", "--cdhash", testCDHash, "--host", "api.github.com", "--host", "uploads.github.com",
+                         "--for", "1h", "--save", "--config", path]
+        let system = FakeSystem()
+        let saved = run(arguments, files: [path: Data(text.utf8)], system: system)
+        #expect(saved.status == 0)
+        #expect(system.calls.count == 2)
+        let written = try String(contentsOfFile: path, encoding: .utf8)
+        #expect(written.hasPrefix(text))
+        #expect(written.hasSuffix("[[allow]]\ncdhash = \"\(testCDHash)\"\nhosts = [\"uploads.github.com\"]\n"))
+        #expect(try BlackiceConfig(text: written).allowRule(for: .cdhash(testCDHash), host: "uploads.github.com") != nil)
+        #expect(saved.stdout.contains("never counts"))
+        // A refused approval saves nothing, and neither does one whose hosts are all covered.
+        let refused = run(arguments, files: [path: Data(written.utf8)], system: FakeSystem(status: ExitCode.noPermission))
+        #expect(refused.status == 77)
+        let again = run(arguments, files: [path: Data(written.utf8)], system: FakeSystem())
+        #expect(again.status == 0 && again.stdout.contains("already has a rule"))
+        #expect(try String(contentsOfFile: path, encoding: .utf8) == written)
+        // --config only with --save.
+        #expect(usageError(["approve", "--cdhash", testCDHash, "--host", "a.example.com", "--config", path])?
+            .contains("--config goes with --save") == true)
+    }
+
     @Test func askCommandsNeedTheSignedApp() {
         let commands: [[String]] = [["pending"], ["approve", "--app", "com.a", "--host", "example.com"],
                                     ["approve", "--app", "com.a", "--host", "a.example.com", "--host", "b.example.com"],

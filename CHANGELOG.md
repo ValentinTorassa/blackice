@@ -9,6 +9,10 @@ New:
   could only be approved, for at most 24 hours.
 - `blackice approve` takes `--host` up to 16 times: one app's hosts under one Touch ID, whose dialog names them all.
   Until now each host took its own command and Touch ID, seven for a mail CLI that signs in to Google and Microsoft.
+- `blackice approve --save` also writes a lasting `[[allow]]` rule for the app and hosts in `blackice.toml`, which counts
+  from the next `start`. Until now an approval was the only way to let ad hoc code through, for at most 24 hours.
+- For an interpreter (python, node, a shell…), the event and `pending` show the script it runs, as `app.script`, so the
+  agent and your notes can tell one tool from another. Until now every uv or npm CLI looked the same: its interpreter.
 
 Changed:
 - blackice needs macOS 14.4 or later: the daemon starts `program` hooks with a launch requirement, so macOS runs one
