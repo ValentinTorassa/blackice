@@ -538,6 +538,8 @@ struct HookRunnerTests {
         let real = try await testRunner(dir).run([Hook(program: program, line: 1)], for: testEvent(), timeoutSeconds: 10)
         #expect(real.map(\.outcome) == [.refused(found: "apple/com.apple.echo")])
         #expect(real.first?.answer == nil && real.first?.stdout.isEmpty == true)
+        // With SIP off the kernel lets it run; the check by PID above is all there is.
+        guard HookRunner.kernelChecksLaunch else { return }
         // Told that it is the hook's code, the runner still gets nothing from it: SIGKILL at exec.
         let fooled = try HookRunner(options: .init(
             workDirectory: dir.appendingPathComponent("work"), environment: HookRunner.environment(for: try UserAccount.current()),
@@ -552,9 +554,10 @@ struct HookRunnerTests {
         let dir = try makePrivateDirectory()
         defer { removeTree(dir) }
         let marker = dir.appendingPathComponent("ran")
-        // Ten times each: the check after the start races with the kernel's SIGKILL.
-        let identities = [SigningIdentity(signingID: "com.apple.bash", teamID: nil),
-                          SigningIdentity(signingID: "com.apple.sh", teamID: "ABCDE12345")]
+        // Ten times each: the check after the start races with the kernel's SIGKILL. With SIP off
+        // the kernel lets other Apple code run, and Apple code that starts other Apple code passes.
+        let identities = (HookRunner.kernelChecksLaunch ? [SigningIdentity(signingID: "com.apple.bash", teamID: nil)] : [])
+            + [SigningIdentity(signingID: "com.apple.sh", teamID: "ABCDE12345")]
         for expected in identities + identities + identities + identities + identities
             + identities + identities + identities + identities + identities {
             let program = HookProgram(path: "/bin/sh", arguments: ["-c", "touch \(quotedPath(marker)); echo 'approve 24h'"],
@@ -571,6 +574,38 @@ struct HookRunnerTests {
         }
         #expect(!fileExists(marker))
         #expect(try FileManager.default.contentsOfDirectory(atPath: dir.appendingPathComponent("work").path).isEmpty)
+    }
+
+    /// A program that prints an answer and exits before its code can be read: where the kernel
+    /// checked it at exec, its answer counts; with SIP off, where it did not, the hook is refused.
+    @Test func anEarlyExitCountsOnlyWhereTheKernelChecks() async throws {
+        let dir = try makePrivateDirectory()
+        defer { removeTree(dir) }
+        // Its own identity, so that the kernel lets it run on any Mac.
+        let program = HookProgram(path: "/bin/echo", arguments: ["approve 24h"],
+                                  identity: SigningIdentity(signingID: "com.apple.echo", teamID: nil))
+        for kernelChecks in [true, false] {
+            let runner = try HookRunner(options: .init(
+                workDirectory: dir.appendingPathComponent("work"),
+                environment: HookRunner.environment(for: try UserAccount.current()),
+                identify: { pid in
+                    // Read after it is gone, as when it exits first.
+                    while kill(pid, 0) == 0 {
+                        var info = siginfo_t()
+                        if waitid(P_PID, id_t(pid), &info, WEXITED | WNOHANG | WNOWAIT) == 0, info.si_pid == pid { break }
+                        usleep(1_000)
+                    }
+                    return .unresolved
+                },
+                kernelChecksLaunch: { kernelChecks }))
+            let result = try #require(await runner.run([Hook(program: program, line: 1)], for: testEvent(),
+                                                       timeoutSeconds: 10).first)
+            if kernelChecks {
+                #expect(result.outcome == .exited(status: 0) && result.answer == .success(.approve(seconds: 86400)))
+            } else {
+                #expect(result.outcome == .refused(found: "apple/com.apple.echo") && result.answer == nil)
+            }
+        }
     }
 
     /// The check after the start looks at the child that was started, and refuses the hook when it

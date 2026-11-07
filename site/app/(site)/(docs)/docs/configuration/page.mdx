@@ -158,7 +158,7 @@ With `apple_services = true`, the default, a built-in list lets macOS's own serv
 
 In ask mode the daemon runs each `[[hook]]` with `on = "connection"` for a connection that waits. The agent a hook runs needs a rule to reach its model, or it waits on its own approval; `agent connect` adds both.
 
-- `program` is an absolute path. The daemon starts it with no shell, and macOS runs it only when its signature names `app` and `team`: a Developer ID signature with that Team ID, or, with no `team`, Apple's own code. Otherwise it is killed before it runs, and the log says `hook_refused`. Name the agent's own executable, not a script or wrapper that starts it.
+- `program` is an absolute path. The daemon starts it with no shell, and macOS runs it only when its signature names `app` and `team`: a Developer ID signature with that Team ID, or, with no `team`, Apple's own code. Otherwise it is killed before it runs, and the log says `hook_refused`. Name the agent's own executable, not a script or wrapper that starts it. With System Integrity Protection off, macOS skips that check: the daemon then checks the program only once it runs, and a program put in its place can start the agent with arguments of its own before that check. Keep SIP on.
 - `args` lists the arguments, as strings. Nothing from the event is ever put in them.
 - `env` adds `NAME=value` strings to the [environment](#the-hooks-environment). A name may not start with `BLACKICE_`.
 - `stdin = "none"` keeps the event off stdin, so it is only in its file, for a program that names no `instructions`. The default, `"event"`, sends it on stdin too.

@@ -117,7 +117,8 @@ struct ConfigurationChangeTests {
         let installed = DispatchSemaphore(value: 0)
         let resumed = store.withInstalled { snapshot in
             // `blackice mode block-all` arrives on the lifecycle queue while the flows are resumed...
-            DispatchQueue.global().async {
+            // A thread of its own, not a global queue's: see aSaveWaitsForTheLockAndSeesTheOtherWritersText.
+            Thread.detachNewThread {
                 _ = try? store.install(blocked)
                 installed.signal()
             }

@@ -15,7 +15,9 @@ import LightweightCodeRequirements
 // hook starts: a program that starts another in its place (exec) is refused when the second check
 // sees the other one, and may be let through when it comes too late, so a hook names the agent's
 // own executable, never a wrapper. Apple's own code that starts other Apple code, as /bin/sh
-// starts bash, passes. A `run` line has no check.
+// starts bash, passes. A `run` line has no check. With SIP off the kernel checks no launch
+// requirement (`kernelChecksLaunch`): the check by PID is then the only one, a hook that exits
+// before it is refused, and a program that starts the agent in its own place before it may pass.
 //
 // A program hook that names its agent's instructions (`instructions = "codex"`) gets no files. The
 // event, without its token, comes as JSON on stdin; the instructions and the owner's notes come in
@@ -188,6 +190,8 @@ public final class HookRunner: @unchecked Sendable {
         /// A file in the agent's home that it would load as instructions, given the program and the
         /// environment it runs with; nil when there is none. Tests replace it.
         public var unsafeHome: @Sendable (HookProgram, [String: String]) -> String?
+        /// Whether the kernel checks a launch requirement on this Mac. Tests replace it.
+        public var kernelChecksLaunch: @Sendable () -> Bool
 
         public init(workDirectory: URL, environment: [String: String], maximumConcurrent: Int = 4,
                     maximumWaiting: Int = 256, minimumStartBudget: TimeInterval = 10,
@@ -196,7 +200,8 @@ public final class HookRunner: @unchecked Sendable {
                     identify: @escaping @Sendable (pid_t) -> IdentityResolution = { CodeIdentity.resolve(childPID: $0) },
                     unsafeHome: @escaping @Sendable (HookProgram, [String: String]) -> String? = {
                         $0.instructions?.plantedFile(environment: $1)
-                    }) {
+                    },
+                    kernelChecksLaunch: @escaping @Sendable () -> Bool = { HookRunner.kernelChecksLaunch }) {
             self.workDirectory = workDirectory
             self.environment = environment
             self.maximumConcurrent = maximumConcurrent
@@ -207,6 +212,7 @@ public final class HookRunner: @unchecked Sendable {
             self.stdoutLimit = stdoutLimit
             self.identify = identify
             self.unsafeHome = unsafeHome
+            self.kernelChecksLaunch = kernelChecksLaunch
         }
     }
 
@@ -235,6 +241,33 @@ public final class HookRunner: @unchecked Sendable {
             ValidationCategory(.developerID)
         }
     }
+
+    /// Whether the kernel checks launch requirements here. It does not when SIP is off ("SIP is
+    /// disabled, not checking launch constraints", AMFI says): the hook's code is then checked by
+    /// its PID alone. Found once, the first time it matters, by starting /usr/bin/true under a
+    /// requirement it does not meet: the kernel kills it, and macOS keeps a crash report of that.
+    public static let kernelChecksLaunch: Bool = {
+        let unmet = SigningIdentity(signingID: "com.valentorassa.blackice.launch-check", teamID: nil)
+        guard let requirement = try? launchRequirement(for: unmet) else { return false }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/true")
+        process.arguments = []
+        process.environment = [:]
+        process.standardInput = FileHandle.nullDevice
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        process.launchRequirement = requirement
+        guard (try? process.run()) != nil else { return false }
+        let giveUp = ProcessInfo.processInfo.systemUptime + 5
+        while process.isRunning {
+            guard ProcessInfo.processInfo.systemUptime < giveUp else {
+                _ = kill(process.processIdentifier, SIGKILL)
+                return false
+            }
+            usleep(2_000)
+        }
+        return process.terminationReason == .uncaughtSignal && process.terminationStatus == SIGKILL
+    }()
 
     public let options: Options
     private let lock = NSLock()
@@ -441,7 +474,9 @@ public final class HookRunner: @unchecked Sendable {
             // the kernel would not start dies of SIGKILL before its first instruction, and its PID
             // names no valid code by then. A hook that already exited with a status of its own
             // cannot be read either, but it ran only because the kernel let it; it has not had the
-            // event yet.
+            // event yet. Where the kernel does not check (SIP is off), that proves nothing, and the
+            // hook is refused: a program put in its place could print an answer and exit before
+            // this check.
             // Apple's own code may have started other Apple code in its place, as /bin/sh starts
             // bash: the kernel checked the first, and the system volume holds both. Apple code the
             // kernel refused can still read as itself for a moment before its SIGKILL lands, so that
@@ -452,7 +487,7 @@ public final class HookRunner: @unchecked Sendable {
             if !expected, program.identity.teamID == nil, found.verifiedIdentity.map({ $0.teamID == nil }) == true {
                 expected = !killedAtOnce(child)
             }
-            if !expected, otherCode || !exitedOnItsOwn(child) {
+            if !expected, otherCode || !exitedOnItsOwn(child) || !options.kernelChecksLaunch() {
                 _ = kill(-child.pid, SIGKILL)
                 waitForTermination(child)
                 close(child.stdin)

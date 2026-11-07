@@ -18,7 +18,8 @@ Changed:
 - blackice needs macOS 14.4 or later: the daemon starts `program` hooks with a launch requirement, so macOS runs one
   only when its signature names the hook's `app` and `team`, with a Developer ID (or, with no `team`, Apple's own
   code). Until now the daemon started it suspended and checked it before letting it run, and a program that stopped
-  the hook and let it run first got past the check.
+  the hook and let it run first got past the check. With SIP off macOS does not check launch requirements, and a
+  hook that exits before the daemon can read its code is refused.
 - A hook that names an agent's `instructions` gets no files: the instructions and the owner's notes come on its
   command line (Claude Code, Codex, fx) or in its environment (opencode), the event on stdin, and it runs in
   `/var/empty`. Claude Code runs with no tools at all. A hook from 1.0 runs the same way. Until now all three were

@@ -1345,7 +1345,9 @@ struct AgentConnectTests {
         let unlock = try CLI.lockBeside(path, waitingUpTo: 1)
         let outcome = Recorder<String>()
         let finished = DispatchSemaphore(value: 0)
-        DispatchQueue.global().async {
+        // A thread of its own: on a small CI runner a block on a global queue can wait longer than
+        // this test does, while the tests around it hold the threads.
+        Thread.detachNewThread {
             do {
                 try CLI.writeAtomically(mine, to: path, mode: 0o644, replacing: original, lockSeconds: 10)
                 outcome.append("written")
