@@ -673,7 +673,7 @@ struct AgentConnectTests {
     /// `agent connect` writes, with the instructions and the notes where `launch` puts them, the
     /// hook's environment, and the hook's model as the default of MODEL.
     @Test(arguments: AgentProfile.known.map(\.name))
-    func theEvalRunsTheAgentAsTheDaemonDoes(_ name: String) throws {
+    func theEvalRunsTheAgentAsTheDaemonDoes(_ name: String) async throws {
         let profile = try #require(AgentProfile.known.first { $0.name == name })
         let agentHome = "/Users/me/.config/blackice/agent"
         for notes in [nil, "I build with node.\nDeny \"q\" \\b\tt {env:HOME} ñ"] {
@@ -683,16 +683,19 @@ struct AgentConnectTests {
             let script = "repo=$1; notes=$2; . \"$repo/integrations/eval/text.sh\"; . \"$repo/integrations/eval/agents/$3.sh\"; " +
                 "agent_args=() agent_env=() agent_configuration_folder=''; agent_configure; " +
                 "printf '%s\\0' ${#agent_args[@]} \"${agent_args[@]}\" ${#agent_env[@]} \"${agent_env[@]}\" \"$agent_configuration_folder\""
-            let bash = Process()
-            bash.executableURL = URL(fileURLWithPath: "/bin/bash")
-            bash.arguments = ["-c", script, "bash", repository.path, notes ?? "", name]
-            bash.environment = ["HOME": "/Users/me", "PATH": "/usr/bin:/bin", "AGENT_HOME": agentHome]
-            let pipe = Pipe()
-            bash.standardOutput = pipe
-            try bash.run()
-            let printed = pipe.fileHandleForReading.readDataToEndOfFile()
-            bash.waitUntilExit()
-            #expect(bash.terminationStatus == 0)
+            let (status, printed) = try await offThePool { () throws -> (Int32, Data) in
+                let bash = Process()
+                bash.executableURL = URL(fileURLWithPath: "/bin/bash")
+                bash.arguments = ["-c", script, "bash", repository.path, notes ?? "", name]
+                bash.environment = ["HOME": "/Users/me", "PATH": "/usr/bin:/bin", "AGENT_HOME": agentHome]
+                let pipe = Pipe()
+                bash.standardOutput = pipe
+                try bash.run()
+                let printed = pipe.fileHandleForReading.readDataToEndOfFile()
+                bash.waitUntilExit()
+                return (bash.terminationStatus, printed)
+            }
+            #expect(status == 0)
             var parts = printed.split(separator: 0, omittingEmptySubsequences: false).map { String(decoding: $0, as: UTF8.self) }[...]
             func take() throws -> [String] {
                 let count = try #require(Int(parts.first ?? ""))
@@ -1209,27 +1212,34 @@ struct AgentConnectTests {
     /// The program itself, as `runCaptured` runs it on this Mac: its output and status; stopped,
     /// with SIGTERM and then SIGKILL to its group, once its time runs out, even when it stopped
     /// itself and a child of it keeps the output open; and stopped at once by Control-C.
-    @Test func aCapturedProgramIsStoppedWhenItStalls() {
+    @Test func aCapturedProgramIsStoppedWhenItStalls() async {
         // Not `Interrupts`: InterruptsTests, running beside this, catch a SIGTERM of their own.
-        let never = { false }
-        let ran = AgentMachine.runCaptured("/bin/sh", ["-c", "echo out; echo err >&2; exit 3"], [:], interrupted: never)
+        let ran = await offThePool {
+            AgentMachine.runCaptured("/bin/sh", ["-c", "echo out; echo err >&2; exit 3"], [:], interrupted: { false })
+        }
         #expect(ran.status == 3 && ran.output == "out\nerr\n")
 
         var started = Date()
-        let stalled = AgentMachine.runCaptured("/bin/sh", ["-c", "echo started; sleep 60 & kill -STOP $$"], [:], seconds: 0.5,
-                                               interrupted: never)
+        let stalled = await offThePool {
+            AgentMachine.runCaptured("/bin/sh", ["-c", "echo started; sleep 60 & kill -STOP $$"], [:], seconds: 0.5,
+                                     interrupted: { false })
+        }
         #expect(stalled.status == AgentMachine.timedOut && stalled.output == "started\n")
         #expect(Date().timeIntervalSince(started) < 10)
 
         // Ended, but a child keeps the output open: the program's own status, once time runs out.
         started = Date()
-        let child = AgentMachine.runCaptured("/bin/sh", ["-c", "echo done; sleep 60 &"], [:], seconds: 0.5, interrupted: never)
+        let child = await offThePool {
+            AgentMachine.runCaptured("/bin/sh", ["-c", "echo done; sleep 60 &"], [:], seconds: 0.5, interrupted: { false })
+        }
         #expect(child.status == 0 && child.output == "done\n")
         #expect(Date().timeIntervalSince(started) < 10)
 
         started = Date()
         let controlC = started.addingTimeInterval(0.3)
-        let interrupted = AgentMachine.runCaptured("/bin/sh", ["-c", "sleep 60"], [:], interrupted: { Date() >= controlC })
+        let interrupted = await offThePool {
+            AgentMachine.runCaptured("/bin/sh", ["-c", "sleep 60"], [:], interrupted: { Date() >= controlC })
+        }
         #expect(interrupted.status == 128 + SIGTERM)
         #expect(Date().timeIntervalSince(started) < 10)
     }
@@ -1333,7 +1343,7 @@ struct AgentConnectTests {
     /// Two writers that read the same text: the check and the rename go under one lock, so the one
     /// that waited for it sees the other's text and stops. Until 1.0.3 both could pass the check,
     /// and the second rename replaced the first one's text.
-    @Test func aSaveWaitsForTheLockAndSeesTheOtherWritersText() throws {
+    @Test func aSaveWaitsForTheLockAndSeesTheOtherWritersText() async throws {
         let folder = try makePrivateDirectory()
         defer { removeTree(folder) }
         let path = folder.path + "/blackice.toml"
@@ -1358,11 +1368,10 @@ struct AgentConnectTests {
             }
             finished.signal()
         }
-        usleep(200_000)
-        #expect(finished.wait(timeout: .now()) == .timedOut)
+        #expect(await offThePool { usleep(200_000); return finished.wait(timeout: .now()) } == .timedOut)
         try other.write(to: URL(fileURLWithPath: path))
         unlock()
-        #expect(finished.wait(timeout: .now() + 10) == .success)
+        #expect(await offThePool { finished.wait(timeout: .now() + 10) } == .success)
         #expect(outcome.items == ["changed meanwhile"])
         #expect(FileManager.default.contents(atPath: path) == other)
 
