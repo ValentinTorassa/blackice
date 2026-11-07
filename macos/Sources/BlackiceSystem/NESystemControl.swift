@@ -402,6 +402,22 @@ public final class NESystemControl: SystemControlling {
         return ExitCode.tempFail
     }
 
+    /// What `confirm` says when nothing was confirmed. A dialog nobody answers closes after 2
+    /// minutes, and once said it was cancelled, which read like a press of Cancel. The menu shows
+    /// none of them (SystemAdapter).
+    public static let touchIDNoAnswer = "No answer to Touch ID within 2 minutes, so nothing changed."
+    public static let touchIDCancelled = "Touch ID was cancelled, so nothing changed."
+    public static let touchIDNotMatched = "Touch ID did not match, so nothing changed."
+
+    /// The line for `confirm`'s outcome: nil when the time ran out, else LAError's code.
+    static func notConfirmed(_ status: Int32?) -> String {
+        switch status {
+        case nil: return touchIDNoAnswer
+        case Int32(LAError.Code.authenticationFailed.rawValue): return touchIDNotMatched
+        default: return touchIDCancelled
+        }
+    }
+
     /// Fresh Touch ID (or the login password) for this one change. No reuse window.
     private func confirm(_ action: ControlAction, _ output: SystemOutput) -> Bool {
         if !output.setup { output.stdout("Touch ID to \(action.reason)…") }
@@ -414,12 +430,14 @@ public final class NESystemControl: SystemControlling {
             return false
         }
         let result = Completion()
-        context.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: action.reason) { success, _ in
-            result.finish(success ? 0 : 1)
+        context.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: action.reason) { success, error in
+            // LAError's codes are negative; 1 stands for an error that is none of them.
+            result.finish(success ? 0 : (error as? LAError).map { Int32($0.errorCode) } ?? 1)
         }
-        let approved = MainLoop.wait(for: result, timeout: 120) == 0
+        let status = MainLoop.wait(for: result, timeout: 120)
         context.invalidate()
-        if !approved { output.stderr("Touch ID was cancelled, so nothing changed.") }
+        let approved = status == 0
+        if !approved { output.stderr(Self.notConfirmed(status)) }
         if approved, output.setup { output.stdout("  " + Style.done("Confirmed")) }
         return approved
     }

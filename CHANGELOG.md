@@ -36,6 +36,8 @@ Changed:
   detects the file, and can miss one added and removed while the hook runs.
 
 Fixed:
+- When nobody answers Touch ID within 2 minutes, the command says so ("No answer to Touch ID within 2 minutes"), and
+  a finger that does not match says that. Until now each said "Touch ID was cancelled", as if Cancel had been pressed.
 - `pending` lists the apps and hosts denied a moment ago first, each app's hosts with one `blackice approve` line,
   and `status` counts them. Until now `pending` opened with "Nothing waiting" while a remembered denial dropped the
   app's connections without an event, so there seemed to be nothing to approve.

@@ -4,6 +4,7 @@ import Testing
 @testable import BlackiceCLI
 @testable import BlackiceCore
 @testable import BlackiceMenu
+@testable import BlackiceSystem
 
 private let safari = AppReference(signingID: "com.apple.Safari", teamID: nil, cdhash: nil)
 private let vscode = AppReference(signingID: "com.microsoft.VSCode", teamID: "UBF8T346G9", cdhash: nil)
@@ -393,7 +394,17 @@ struct MenuStateTests {
 
     @Test func aCancelledTouchIDSaysNothing() {
         #expect(SystemAdapter.result(0, []) == .done)
-        #expect(SystemAdapter.result(ExitCode.noPermission, [SystemAdapter.cancelledLine]) == .cancelled)
+        // No answer within 2 minutes, a cancel or a finger that did not match: each says why on
+        // the command line, and the menu says nothing.
+        #expect(SystemAdapter.notConfirmedLines.count == 3)
+        // LAError's codes: -1 a finger that did not match, -2 Cancel pressed, -4 macOS closed it.
+        #expect(NESystemControl.notConfirmed(nil) == NESystemControl.touchIDNoAnswer)
+        #expect(NESystemControl.notConfirmed(-1) == NESystemControl.touchIDNotMatched)
+        #expect(NESystemControl.notConfirmed(-2) == NESystemControl.touchIDCancelled)
+        #expect(NESystemControl.notConfirmed(-4) == NESystemControl.touchIDCancelled)
+        for line in SystemAdapter.notConfirmedLines {
+            #expect(SystemAdapter.result(ExitCode.noPermission, [line]) == .cancelled)
+        }
         #expect(SystemAdapter.result(ExitCode.noPermission, ["blackice approve: the event is gone"]) ==
                 .failed("blackice approve: the event is gone"))
         #expect(SystemAdapter.result(ExitCode.unavailable, []) == .failed("blackice stopped with status 69."))
