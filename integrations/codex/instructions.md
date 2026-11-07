@@ -131,8 +131,10 @@ When you are unsure, deny.
 
 ## 5. Answer narrowly
 
-An approval covers exactly the event's app and host, for the time you give; an approval of an
-address covers only that address. Pick the time by how plain the connection is:
+An approval covers exactly the event's app and host, for the time you give. For an interpreter,
+it covers only the script in `app.script`: the same interpreter running another script, or none,
+is asked about again. An approval of an address covers only that address. Pick the time by how
+plain the connection is:
 
 - `8h` to `24h` for clearly ordinary developer or vendor traffic: an app reaching its own
   vendor's API, update or sign-in server, or a package manager reaching its registry. The same

@@ -8,17 +8,55 @@ import Foundation
 // Times are seconds on a monotonic clock (the system uptime in the extension), passed in by the
 // caller, so nothing here reads a clock.
 
-/// One app and one host: what an approval and an answer name. Ports do not matter.
+/// Which of an interpreter's scripts an event, an approval or a denial is about. An interpreter's
+/// identity is every script it runs: one approval of uv's python3.14 to oauth2.googleapis.com for
+/// mailctl would let any script of that python reach the host for the day. So the agent's answer
+/// covers the script its event named, and only the owner, with Touch ID, answers for them all.
+/// The script comes from the process's command line (ProcessArguments): any program can start an
+/// interpreter with any script name, so a scope only narrows what an answer covers, and an
+/// answer still never trusts the name.
+public enum ScriptScope: Hashable, Sendable {
+    /// Every connection of the app to the host: code that is no interpreter, or an owner's answer
+    /// that names no script.
+    case any
+    /// An interpreter (Interpreters) running this script; nil when its command line names none
+    /// (`python3 -c`, a REPL) or cannot be read.
+    case script(String?)
+
+    /// The scope of a connection from the executable at `executablePath`; `script` is read only
+    /// for an interpreter.
+    public static func of(executablePath: String?, script: () -> String?) -> ScriptScope {
+        guard let executablePath, Interpreters.contains(path: executablePath) else { return .any }
+        return .script(script())
+    }
+
+    /// The script, for an event or a summary; nil for `.any` and for an interpreter with none.
+    public var script: String? {
+        if case .script(let script) = self { return script }
+        return nil
+    }
+
+    /// Whether a person's answer can name this script: a full path or `-m module`, as events show
+    /// them when the process's folder is known, with no control characters.
+    public static func canName(_ script: String) -> Bool {
+        validPath(script) && (script.hasPrefix("/") || script.hasPrefix("-m "))
+    }
+}
+
+/// One app and one host: what an approval and an answer name. Ports do not matter. For an
+/// interpreter, also its script (ScriptScope).
 public struct ApprovalKey: Hashable, Sendable {
     public let identity: AppIdentity
     /// A normalized host name, or an IP address (`normalizeDestination`). An address covers only
     /// connections to that address that have no name: a connection with a name is asked about,
     /// and approved, by its name.
     public let host: String
+    public let scope: ScriptScope
 
-    public init(identity: AppIdentity, host: String) {
+    public init(identity: AppIdentity, host: String, scope: ScriptScope = .any) {
         self.identity = identity
         self.host = host
+        self.scope = scope
     }
 }
 
@@ -56,10 +94,27 @@ public struct ApprovalTable: Sendable {
         return expires > now
     }
 
+    /// Whether a connection of this app to this host, from code of this scope, is covered: by an
+    /// entry for any script, or by one for its own.
+    public func covers(_ identity: AppIdentity, host: String, scope: ScriptScope, now: TimeInterval) -> Bool {
+        covers(ApprovalKey(identity: identity, host: host), now: now)
+            || (scope != .any && covers(ApprovalKey(identity: identity, host: host, scope: scope), now: now))
+    }
+
     /// True when there was one.
     @discardableResult
     public mutating func remove(_ key: ApprovalKey) -> Bool {
         expiries.removeValue(forKey: key) != nil
+    }
+
+    /// Removes what an answer for `key` takes back: for one script, that entry; for any script,
+    /// the app and host's entries of every scope. True when there was one.
+    @discardableResult
+    public mutating func removeCovered(by key: ApprovalKey) -> Bool {
+        guard key.scope == .any else { return remove(key) }
+        let before = expiries.count
+        expiries = expiries.filter { $0.key.identity != key.identity || $0.key.host != key.host }
+        return expiries.count != before
     }
 
     public mutating func expire(now: TimeInterval) {
@@ -71,24 +126,35 @@ public struct ApprovalTable: Sendable {
     public func summaries(now: TimeInterval) -> [ApprovalSummary] {
         expiries.filter { $0.value > now }
             .map { ApprovalSummary(app: AppReference($0.key.identity), host: $0.key.host,
-                                   secondsLeft: Int(($0.value - now).rounded(.up))) }
-            .sorted { ($0.host, $0.app.signingID ?? $0.app.cdhash ?? "") < ($1.host, $1.app.signingID ?? $1.app.cdhash ?? "") }
+                                   secondsLeft: Int(($0.value - now).rounded(.up)), scope: $0.key.scope) }
+            .sorted { ($0.host, $0.app.signingID ?? $0.app.cdhash ?? "", $0.script ?? "")
+                < ($1.host, $1.app.signingID ?? $1.app.cdhash ?? "", $1.script ?? "") }
     }
 }
 
-/// Repeated connections with the same app, host and port share one event while it is pending.
+/// Repeated connections with the same app, host and port share one event while it is pending;
+/// an interpreter's, only those of the same script, so that an answer for one script releases no
+/// other script's connections.
 public struct PendingKey: Hashable, Sendable {
     public let identity: AppIdentity
     public let host: String
     public let port: UInt16
+    public let scope: ScriptScope
 
-    public init(identity: AppIdentity, host: String, port: UInt16) {
+    public init(identity: AppIdentity, host: String, port: UInt16, scope: ScriptScope = .any) {
         self.identity = identity
         self.host = host
         self.port = port
+        self.scope = scope
     }
 
-    public var approvalKey: ApprovalKey { ApprovalKey(identity: identity, host: host) }
+    public var approvalKey: ApprovalKey { ApprovalKey(identity: identity, host: host, scope: scope) }
+
+    /// Whether an answer for `key` resolves this event: the same app and host, and the same
+    /// script unless the answer is for any script.
+    func answered(by key: ApprovalKey) -> Bool {
+        identity == key.identity && host == key.host && (key.scope == .any || scope == key.scope)
+    }
 }
 
 public struct PendingFlow<Flow> {
@@ -220,9 +286,10 @@ public struct PendingTable<Flow> {
         return dropped
     }
 
-    /// Removes and returns every event for this app and host, on any port.
+    /// Removes and returns every event for this app and host, on any port; for one script, only
+    /// that script's events.
     public mutating func resolve(_ key: ApprovalKey) -> [PendingEntry<Flow>] {
-        remove { $0.key.approvalKey == key }
+        remove { $0.key.answered(by: key) }
     }
 
     public mutating func removeAll() -> [PendingEntry<Flow>] {
@@ -319,11 +386,14 @@ public struct AskState<Flow> {
     /// that app and host on every port; a flow whose address did not match its host is dropped
     /// instead. deny drops them, removes an approval for that app and host, if there is one, and
     /// remembers the denial for `rememberedDenialSeconds`.
+    ///
+    /// An answer with a token covers the script its event named (ScriptScope), which only the
+    /// extension knows; a person's covers the script the request names, or, with none, every one.
     public mutating func answer(_ request: AnswerRequest, now: TimeInterval) -> Outcome {
         guard let identity = request.identity, isNormalDestination(request.host) else {
             return refused("invalid_request", "the request does not name one app and one host")
         }
-        let key = ApprovalKey(identity: identity, host: request.host)
+        var key = ApprovalKey(identity: identity, host: request.host, scope: request.scope)
         if request.authorization == .token {
             switch pending.spendToken(request.token ?? "", now: now) {
             case .unknown:
@@ -333,9 +403,10 @@ public struct AskState<Flow> {
             case .expired:
                 return refused("token_expired", "the connection's deadline has passed")
             case .valid(_, let eventKey):
-                guard eventKey.approvalKey == key else {
+                guard eventKey.identity == identity, eventKey.host == request.host else {
                     return refused("token_mismatch", "the token belongs to another app or host; it is now spent")
                 }
+                key = eventKey.approvalKey
             }
         }
         let entries: [PendingEntry<Flow>]
@@ -344,7 +415,7 @@ public struct AskState<Flow> {
         switch request.kind {
         case .approve:
             let expires = approvals.add(key, seconds: request.seconds ?? 0, now: now)
-            let replaced = denials.remove(key)
+            let replaced = denials.removeCovered(by: key)
             entries = pending.resolve(key)
             for entry in entries {
                 for paused in entry.flows {
@@ -353,10 +424,12 @@ public struct AskState<Flow> {
                                             eventID: entry.event.id))
                 }
             }
-            message = "Approved \(identity.name) → \(request.host) for \(Describe.left(Int((expires - now).rounded())))"
+            message = "Approved \(identity.name) → \(request.host)\(Self.describe(key.scope)) for \(Describe.left(Int((expires - now).rounded())))"
                 + (replaced ? ", replacing its denial" : "")
         case .deny:
-            let revoked = approvals.remove(key)
+            let revoked = approvals.removeCovered(by: key)
+            // A denial of every script takes the place of each script's, which ends no later.
+            if key.scope == .any { denials.removeCovered(by: key) }
             let remembered = denials.add(key, seconds: Self.rememberedDenialSeconds, now: now)
             entries = pending.resolve(key)
             for entry in entries {
@@ -364,7 +437,7 @@ public struct AskState<Flow> {
                     released.append(Release(flow: paused.flow, allow: false, reason: "denied", eventID: entry.event.id))
                 }
             }
-            message = "Denied \(identity.name) → \(request.host) for \(Describe.left(Int((remembered - now).rounded())))"
+            message = "Denied \(identity.name) → \(request.host)\(Self.describe(key.scope)) for \(Describe.left(Int((remembered - now).rounded())))"
                 + (revoked ? ", removing its approval" : "")
         }
         let verdict: Verdict = request.kind == .approve ? .approved : .denied
@@ -402,6 +475,17 @@ public struct AskState<Flow> {
     public mutating func endAll() -> [PendingEntry<Flow>] {
         denials.removeAll()
         return pending.removeAll()
+    }
+
+    /// ", running /path" for one script's answer, ", with no script" for an interpreter that names
+    /// none, nothing for every script. Escaped: the name comes from the process.
+    static func describe(_ scope: ScriptScope) -> String {
+        switch scope {
+        case .any: return ""
+        // The reply's message is at most 1024 bytes: a long path keeps its start and its file name.
+        case .script(let script?): return " (running \(Describe.script(script)))"
+        case .script(nil): return " (with no script)"
+        }
     }
 
     private func refused(_ reason: String, _ message: String) -> Outcome {

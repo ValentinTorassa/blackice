@@ -255,23 +255,27 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
             (flow.direction == .inbound ? .inbound : .unknown)
         let address = endpoint.flatMap { BlackiceCore.IPAddress($0.hostname) }
         let identity = CodeIdentity.resolve(auditToken: flow.sourceAppAuditToken)
-        // Only a cdhash rule reads it, to tell an interpreter by its name (Interpreters).
+        // A cdhash rule reads the path of ad hoc code, to tell an interpreter by its name
+        // (Interpreters); answers and approvals read any interpreter's script (ScriptScope).
+        let kernelPath = flow.sourceAppAuditToken.flatMap { CodeIdentity.kernelPath(auditToken: $0) }
         var executablePath: String?
-        if case .adHoc = identity, let token = flow.sourceAppAuditToken {
-            executablePath = CodeIdentity.kernelPath(auditToken: token)
+        if case .adHoc = identity { executablePath = kernelPath }
+        let scriptScope = ScriptScope.of(executablePath: kernelPath) {
+            flow.sourceAppAuditToken.flatMap(ProcessArguments.script(auditToken:))
         }
         let facts = FlowFacts(direction: direction, identity: identity,
                               internetSocket: internet && (tcp || udp), tcp: tcp,
                               hostname: socket?.remoteHostname, port: endpoint.flatMap { UInt16($0.port) },
                               remoteAddress: address,
                               process: flow.sourceProcessAuditToken.map { CodeIdentity.resolve(auditToken: $0) },
-                              dnsNames: dnsNames.names(for: address), executablePath: executablePath)
+                              dnsNames: dnsNames.names(for: address), executablePath: executablePath,
+                              scriptScope: scriptScope)
         let paused = Paused(flow: flow, facts: facts, serverName: nil, echPresent: false, stage: .newFlow,
                             generation: snapshot?.generation ?? 0)
         // Accept-all's dry run of ask mode, for the log line only: it changes nothing for the flow.
         let would = snapshot.flatMap { FilterPolicy.dryRun(facts, snapshot: $0) }
         askLock.lock()
-        let verdict = FilterPolicy.decide(facts, snapshot: snapshot, context: context(now: Self.now))
+        let verdict = FilterPolicy.decide(facts, snapshot: snapshot, context: context(now: Self.now, scope: facts.scriptScope))
         let (step, after) = place(verdict, paused, snapshot, now: Self.now, would: would)
         askLock.unlock()
         perform(after)
@@ -354,7 +358,8 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
         let paused = Paused(flow: flow, facts: entry.facts, serverName: serverName, echPresent: echPresent, stage: .data,
                             generation: entry.generation)
         askLock.lock()
-        let verdict = FilterPolicy.decide(entry.facts, serverName: result, snapshot: snapshot, context: context(now: Self.now))
+        let verdict = FilterPolicy.decide(entry.facts, serverName: result, snapshot: snapshot,
+                                          context: context(now: Self.now, scope: entry.facts.scriptScope))
         let (step, after) = place(verdict, paused, snapshot, now: Self.now)
         askLock.unlock()
         perform(after)
@@ -425,18 +430,19 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
 
     /// Under askLock. `resolved` stands in for the cache right after a lookup, so a flow is
     /// decided on the answers it waited for even if they expire meanwhile.
-    private func context(now: TimeInterval,
+    /// For a flow of `scope`: an interpreter's approvals and denials count only for their script.
+    private func context(now: TimeInterval, scope: ScriptScope,
                          resolved: (host: String, answers: Set<BlackiceCore.IPAddress>)? = nil) -> PolicyContext {
         PolicyContext(
             approved: { [approvals = ask.approvals] identity, host in
-                approvals.covers(ApprovalKey(identity: identity, host: host), now: now)
+                approvals.covers(identity, host: host, scope: scope, now: now)
             },
             address: { [addresses] host, address in
                 if let resolved, resolved.host == host { return HostAddressCache.check(address, against: resolved.answers) }
                 return addresses.check(host: host, address: address)
             },
             denied: { [denials = ask.denials] identity, host in
-                denials.covers(ApprovalKey(identity: identity, host: host), now: now)
+                denials.covers(identity, host: host, scope: scope, now: now)
             })
     }
 
@@ -489,11 +495,13 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
                 log(facts, .drop(reason: "ask_incomplete"), snapshot, serverName: paused.serverName)
                 return (.drop, .nothing)
             }
-            let key = PendingKey(identity: identity, host: host, port: port)
+            let key = PendingKey(identity: identity, host: host, port: port, scope: facts.scriptScope)
             let added = ask.pending.add(paused, key: key, addressMatches: addressMatches, now: now,
                                         timeout: TimeInterval(snapshot.config.timeoutSeconds),
                                         holdFor: FilterPolicy.holdLimit(facts, afterServerName: paused.stage == .data)) { seconds in
-                try HookEvent.connection(app: Self.eventApp(identity, auditToken: paused.flow.sourceAppAuditToken),
+                // The script read when the flow began, the one the event's key and its answer cover.
+                try HookEvent.connection(app: HookEvent.App(identity, path: CodeIdentity.path(auditToken: paused.flow.sourceAppAuditToken),
+                                                            script: facts.scriptScope.script),
                                          host: host, ip: address.description, port: port,
                                          deadline: Date().addingTimeInterval(seconds))
             }
@@ -531,14 +539,6 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
         }
     }
 
-    /// The event's app: its path, and for an interpreter the script it runs (ProcessArguments),
-    /// told by the executable's own name as the kernel has it.
-    private static func eventApp(_ identity: AppIdentity, auditToken: Data?) -> HookEvent.App {
-        let executable = auditToken.flatMap { CodeIdentity.kernelPath(auditToken: $0) }
-        let script = executable.flatMap { Interpreters.contains(path: $0) ? auditToken.flatMap(ProcessArguments.script(auditToken:)) : nil }
-        return HookEvent.App(identity, path: CodeIdentity.path(auditToken: auditToken), script: script)
-    }
-
     /// On resolverQueue: resolves, then decides again every flow that waited for this host. From
     /// the generation check to the last resume no configuration is installed (`release`).
     private func finishLookup(_ host: String) {
@@ -553,7 +553,7 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
                 if paused.generation != snapshot?.generation {
                     verdict = .drop(reason: "configuration_changed")
                 } else {
-                    let context = context(now: now, resolved: (host, answers))
+                    let context = context(now: now, scope: paused.facts.scriptScope, resolved: (host, answers))
                     verdict = paused.serverName.map {
                         FilterPolicy.decide(paused.facts, serverName: .serverName($0, echPresent: paused.echPresent),
                                             snapshot: snapshot, context: context)

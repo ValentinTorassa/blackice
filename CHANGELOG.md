@@ -14,6 +14,11 @@ New:
 - For an interpreter (python, node, a shell…), the event, `pending` and the event log (`app_script`) show the script it
   runs, as `app.script`, so the agent and your notes can tell one tool from another. Until now every uv or npm CLI
   looked the same: its interpreter.
+- An interpreter's approvals and denials are bound to its script: the agent's answer covers the script its event
+  named, each script waits on its own event, and `pending` says which script an approval covers. `approve --script`
+  and `deny --script` name one script, and the menu's answers take the event's; without it your answer covers them
+  all. Until now an approval of an interpreter let every script it runs reach that host: once the agent approved the
+  AWS CLI's python to STS for a day, any script of that python reached STS for the day.
 
 Changed:
 - blackice needs macOS 14.4 or later: the daemon starts `program` hooks with a launch requirement, so macOS runs one

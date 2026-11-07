@@ -7,8 +7,9 @@ import Foundation
 // interpreter: uv's python3.14 for every uv tool, Homebrew's node for every npm CLI, so the event
 // alone cannot tell mailctl from any other script. The script its command line names can, for the
 // agent and the owner's notes. Any program can start an interpreter with any script name, so the
-// script is shown and never trusted: no rule or approval names it. Only the script is taken, never
-// the other arguments, which can hold tokens.
+// script is shown and never trusted: no rule names it, and an answer for it only narrows what the
+// answer covers (ScriptScope). Only the script is taken, never the other arguments, which can hold
+// tokens.
 public enum ProcessArguments {
     /// The script the interpreter that `auditToken` names runs: its path (absolute when the
     /// process's folder is known), or `-m module` for `python -m`. nil when the command line names

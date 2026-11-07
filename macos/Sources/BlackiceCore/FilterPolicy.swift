@@ -59,10 +59,14 @@ public struct FlowFacts: Equatable, Sendable {
     /// a cdhash rule never counts for an interpreter, told by this file's name (`Interpreters`).
     /// nil for other code, and when the kernel does not say.
     public let executablePath: String?
+    /// For an interpreter, the script its command line names: an answer for its event covers only
+    /// that script, and an approval counts for this flow only when it covers it (ScriptScope).
+    /// `.any` for other code.
+    public let scriptScope: ScriptScope
 
     public init(direction: FlowDirection, identity: IdentityResolution, internetSocket: Bool, tcp: Bool,
                 hostname: String?, port: UInt16?, remoteAddress: IPAddress?, process: IdentityResolution? = nil,
-                dnsNames: Set<String> = [], executablePath: String? = nil) {
+                dnsNames: Set<String> = [], executablePath: String? = nil, scriptScope: ScriptScope = .any) {
         self.direction = direction
         self.identity = identity
         self.process = process
@@ -77,6 +81,7 @@ public struct FlowFacts: Equatable, Sendable {
         self.remoteAddress = remoteAddress
         self.dnsNames = dnsNames
         self.executablePath = executablePath
+        self.scriptScope = scriptScope
     }
 
     /// The one name the remote address was given for, when there is exactly one. Several

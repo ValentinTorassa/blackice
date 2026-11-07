@@ -50,6 +50,13 @@ public enum Describe {
     /// escape sequence too), the bidirectional controls and the line and paragraph separators are
     /// written as `\u{…}`, so they can neither move the cursor nor reorder or hide what follows.
     /// Everything else stays as it is.
+    /// An interpreter's script for a message or a dialog: escaped, and past 160 characters cut to
+    /// its start and its end, which holds the file name.
+    public static func script(_ text: String) -> String {
+        let safe = terminalSafe(text)
+        return safe.count > 160 ? String(safe.prefix(80)) + "…" + String(safe.suffix(70)) : safe
+    }
+
     public static func terminalSafe(_ text: String) -> String {
         guard text.unicodeScalars.contains(where: unsafeOnTerminal) else { return text }
         var out = ""

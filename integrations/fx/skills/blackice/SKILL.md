@@ -166,8 +166,9 @@ approve 10m
   `no answer: the host has characters blackice never sends`. That is not an answer, and the
   deadline drops the connection.
 
-A cdhash approval covers only this build; the next build asks again. An approval of an address
-covers only that address.
+A cdhash approval covers only this build; the next build asks again. An interpreter's approval
+covers only the script in `app.script`: the same interpreter running another script, or none, is
+asked about again. An approval of an address covers only that address.
 
 For example, a reply ends like this:
 

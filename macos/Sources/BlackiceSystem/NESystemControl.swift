@@ -295,8 +295,8 @@ public final class NESystemControl: SystemControlling {
         let command = "blackice \(request.kind.rawValue)"
         guard request.authorization == .touchID, let identity = request.identity else { return ExitCode.usage }
         let action: ControlAction = request.kind == .approve
-            ? .approve(identity, hosts: [request.host], seconds: request.seconds ?? 0)
-            : .deny(identity, host: request.host)
+            ? .approve(identity, hosts: [request.host], seconds: request.seconds ?? 0, script: request.script)
+            : .deny(identity, host: request.host, script: request.script)
         guard confirm(action, output) else { return ExitCode.noPermission }
         do {
             let reply = try FilterClient(teamID: teamID).answer(request)
@@ -321,8 +321,10 @@ public final class NESystemControl: SystemControlling {
         let first = requests[0]
         guard first.kind == .approve, let identity = first.identity, let seconds = first.seconds,
               requests.allSatisfy({ $0.kind == .approve && $0.authorization == .touchID && $0.identity == identity &&
-                                    $0.seconds == seconds }) else { return ExitCode.usage }
-        guard confirm(.approve(identity, hosts: requests.map(\.host), seconds: seconds), output) else { return ExitCode.noPermission }
+                                    $0.seconds == seconds && $0.script == first.script }) else { return ExitCode.usage }
+        guard confirm(.approve(identity, hosts: requests.map(\.host), seconds: seconds, script: first.script), output) else {
+            return ExitCode.noPermission
+        }
         var status = ExitCode.success
         do {
             let client = try FilterClient(teamID: teamID)

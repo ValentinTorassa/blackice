@@ -51,7 +51,8 @@ private final class FakeSystem: SystemControlling {
 
     func answer(_ request: AnswerRequest, output: SystemOutput) -> Int32 {
         calls.append("\(request.kind.rawValue) \(request.app.identity?.label ?? "?") \(request.host) " +
-                     "\(request.seconds.map(String.init) ?? "-") \(request.authorization.rawValue)")
+                     "\(request.seconds.map(String.init) ?? "-") \(request.authorization.rawValue)" +
+                     (request.script.map { " script=\($0)" } ?? ""))
         return answer
     }
 
@@ -195,6 +196,76 @@ struct ParseTests {
             let message = usageError(arguments)
             #expect(message?.contains(fragment) == true, "\(arguments): \(message ?? "parsed")")
         }
+    }
+
+    @Test func approveAndDenyCanNameOneScript() throws {
+        let python = AppIdentity.cdhash(testCDHash)
+        let parsed = try CLI.parse(["approve", "--cdhash", testCDHash, "--host", "sts.amazonaws.com", "--for", "24h",
+                                    "--script", "/opt/homebrew/bin/aws"])
+        #expect(parsed == .approve(Approval(identity: python, hosts: ["sts.amazonaws.com"], seconds: 86_400,
+                                            script: "/opt/homebrew/bin/aws")))
+        guard case .approve(let approval) = parsed else { Issue.record("\(parsed)"); return }
+        #expect(approval.requests.allSatisfy { $0.scope == .script("/opt/homebrew/bin/aws") && (try? $0.validate(now: Date())) != nil })
+        let denied = try CLI.parse(["deny", "--cdhash", testCDHash, "--host", "pypi.org", "--script=-m pip"])
+        #expect(denied == .deny(Denial(identity: python, host: "pypi.org", script: "-m pip")))
+        if case .deny(let denial) = denied { #expect(denial.request.scope == .script("-m pip")) }
+        // Without --script, a person's answer covers every script, as before.
+        if case .deny(let denial) = try CLI.parse(["deny", "--cdhash", testCDHash, "--host", "pypi.org"]) {
+            #expect(denial.request.scope == .any)
+        }
+        let cases: [([String], String)] = [
+            (["approve", "--cdhash", testCDHash, "--host", "pypi.org", "--script", "tool.py"], "--script takes the script's full path"),
+            (["deny", "--cdhash", testCDHash, "--host", "pypi.org", "--script", "-m"], "--script takes the script's full path"),
+            (["approve", "--cdhash", testCDHash, "--host", "pypi.org", "--script", "/a.py", "--save"], "--script and --save do not go together"),
+            (["approve", "--cdhash", testCDHash, "--host", "pypi.org", "--script", "/a.py", "--script", "/b.py"], "--script given twice"),
+        ]
+        for (arguments, fragment) in cases {
+            let message = usageError(arguments)
+            #expect(message?.contains(fragment) == true, "\(arguments): \(message ?? "parsed")")
+        }
+        let system = FakeSystem()
+        #expect(run(["approve", "--cdhash", testCDHash, "--host", "a.example.com", "--host", "b.example.com", "--for", "5m",
+                     "--script", "/opt/homebrew/bin/aws"], system: system).status == 0)
+        #expect(system.calls == ["approve cdhash/\(testCDHash) a.example.com 300 touch_id script=/opt/homebrew/bin/aws",
+                                 "approve cdhash/\(testCDHash) b.example.com 300 touch_id script=/opt/homebrew/bin/aws"])
+    }
+
+    @Test func pendingBindsItsCommandsToTheScript() throws {
+        let python = AppReference(signingID: nil, teamID: nil, cdhash: testCDHash)
+        let adHoc = "cdhash " + testCDHash.prefix(8)
+        let path = "/opt/homebrew/Cellar/python@3.14/3.14.0/bin/python3.14"
+        let reply = PendingReply(
+            events: [PendingSummary(id: "ev-0000002d", app: python, path: path, host: "sts.amazonaws.com", ip: "203.0.113.7",
+                                    port: 443, secondsLeft: 40, connections: 1, script: "/Users/me/My Tools/it's.py"),
+                     PendingSummary(id: "ev-0000002e", app: python, path: path, host: "pypi.org", ip: "203.0.113.8",
+                                    port: 443, secondsLeft: 40, connections: 1, script: "tool.py")],
+            approvals: [ApprovalSummary(app: python, host: "sts.amazonaws.com", secondsLeft: 3599, scope: .script("/opt/homebrew/bin/aws"))],
+            denials: [ApprovalSummary(app: python, host: "s3.amazonaws.com", secondsLeft: 540, scope: .script(nil)),
+                      ApprovalSummary(app: python, host: "s3.amazonaws.com", secondsLeft: 300, scope: .script("-m boto"))])
+        try reply.validate(now: Date())
+        #expect(CLI.pendingLines(reply) == [
+            "Waiting",
+            "  \(adHoc) → sts.amazonaws.com:443  1 connection, 40s left",
+            "    \(path)",
+            "    running /Users/me/My Tools/it's.py",
+            "    blackice approve --cdhash \(testCDHash) --host sts.amazonaws.com --script '/Users/me/My Tools/it'\\''s.py'",
+            // A relative script cannot be named: the command approves every script, which only a person can.
+            "  \(adHoc) → pypi.org:443  1 connection, 40s left",
+            "    \(path)",
+            "    running tool.py",
+            "    blackice approve --cdhash \(testCDHash) --host pypi.org",
+            "",
+            "Denied, dropped without asking",
+            "  \(adHoc) → s3.amazonaws.com  9m  with no script",
+            "    blackice approve --cdhash \(testCDHash) --host s3.amazonaws.com",
+            "  \(adHoc) → s3.amazonaws.com  5m  running -m boto",
+            "    blackice approve --cdhash \(testCDHash) --host s3.amazonaws.com --script '-m boto'",
+            "",
+            "Approvals",
+            "  \(adHoc) → sts.amazonaws.com  59m  running /opt/homebrew/bin/aws",
+        ])
+        #expect(CLI.shellQuoted("/opt/homebrew/bin/aws") == "/opt/homebrew/bin/aws" && CLI.shellQuoted("a b") == "'a b'")
+        #expect(CLI.shellQuoted("$(x)") == "'$(x)'" && CLI.shellQuoted("~/x") == "'~/x'")
     }
 
     @Test func durations() {

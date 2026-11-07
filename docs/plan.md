@@ -441,6 +441,17 @@ and each run on a Mac is recorded in [`evidence/`](../evidence/).
   arguments; `pending` shows it too. And `[[allow]]` may name compiled ad hoc code by cdhash (`approve --save`
   writes such a rule), but never an interpreter (python, node, ruby, perl, bun, deno, the shells), whose lasting
   rule would cover every script it runs, a malicious dependency's included.
+  The review of 7 November 2026 found the gap that was left: an approval named the interpreter and the host, so
+  once the agent approved the AWS CLI's python to STS for a day, any script of that python reached STS for the day,
+  and the owner's notes filtered only the first question. Since then an interpreter's approvals and denials are
+  bound to its script: the agent's answer covers the script its event named (or no script, for `-c` and a
+  REPL), each script waits on its own event, and an answer for one script releases no other script's
+  connections. A person's answer covers every script unless it names one (`approve --script`, `deny --script`,
+  and the menu's answers, which take the event's script when it is a full path); a person's answer for every
+  script takes back each script's. The name still proves nothing, since a process picks its own arguments:
+  binding only narrows what an answer covers, and a script that copies the AWS CLI's path gets its approval.
+  On the Mac on 7 November, before the change, `aws` reached STS after an agent's approval and another script of
+  the same python to S3 was denied, so the notes worked on the first question.
 - **Touch ID count.** `start`, `stop` and `mode` each ask for Touch ID, so a demo takes two. A short unlock
   window, like sudo's, is a candidate. A test that needs a person at the keyboard can also fail for that reason:
   the fault test's second Touch ID was cancelled, and the check that depends on it failed (P5-01).

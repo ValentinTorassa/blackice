@@ -25,6 +25,13 @@ struct ControlTests {
             == "let cdhash/\(String(repeating: "0f", count: 20)) reach example.com for 10 min")
         #expect(ControlAction.deny(tool, host: "example.com").reason
             == "deny ABCDE12345/com.example.tool access to example.com and drop its waiting connections")
+        // An answer bound to one of an interpreter's scripts names it.
+        #expect(ControlAction.approve(build, hosts: ["sts.amazonaws.com"], seconds: 3600, script: "/opt/homebrew/bin/aws").reason
+            == "let cdhash/\(String(repeating: "0f", count: 20)), running /opt/homebrew/bin/aws, reach sts.amazonaws.com for 1 h")
+        #expect(ControlAction.deny(build, host: "pypi.org", script: "-m pip").reason
+            == "deny cdhash/\(String(repeating: "0f", count: 20)), running -m pip, access to pypi.org and drop its waiting connections")
+        let long = "/" + String(repeating: "d/", count: 120) + "tool.py"
+        #expect(ControlAction.approve(build, hosts: ["pypi.org"], seconds: 60, script: long).reason.contains("…") == true)
         #expect(ControlAction.duration(45) == "45 s" && ControlAction.duration(90) == "90 s")
         #expect(ControlAction.duration(5400) == "1 h 30 min" && ControlAction.duration(86_400) == "24 h")
     }

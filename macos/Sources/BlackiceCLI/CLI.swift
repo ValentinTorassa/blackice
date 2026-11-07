@@ -78,13 +78,17 @@ public struct Approval: Equatable, Sendable {
     /// in blackice.toml's usual place when nil.
     public let save: Bool
     public let configPath: String?
+    /// `--script`: for an interpreter, the one script the approval covers; nil covers them all.
+    public let script: String?
 
-    public init(identity: AppIdentity, hosts: [String], seconds: Int, save: Bool = false, configPath: String? = nil) {
+    public init(identity: AppIdentity, hosts: [String], seconds: Int, save: Bool = false, configPath: String? = nil,
+                script: String? = nil) {
         self.identity = identity
         self.hosts = hosts
         self.seconds = seconds
         self.save = save
         self.configPath = configPath
+        self.script = script
     }
 
     public init(identity: AppIdentity, host: String, seconds: Int) {
@@ -94,16 +98,24 @@ public struct Approval: Equatable, Sendable {
     /// A person's answer, one per host; the command asks for Touch ID once for all of them. Hooks
     /// answer on their stdout instead.
     public var requests: [AnswerRequest] {
-        hosts.map { AnswerRequest(kind: .approve, app: identity, host: $0, seconds: seconds, token: nil) }
+        hosts.map { AnswerRequest(kind: .approve, app: identity, host: $0, seconds: seconds, token: nil, script: script) }
     }
 }
 
 public struct Denial: Equatable, Sendable {
     public let identity: AppIdentity
     public let host: String
+    /// `--script`: for an interpreter, the one script the denial covers; nil covers them all.
+    public let script: String?
+
+    public init(identity: AppIdentity, host: String, script: String? = nil) {
+        self.identity = identity
+        self.host = host
+        self.script = script
+    }
 
     public var request: AnswerRequest {
-        AnswerRequest(kind: .deny, app: identity, host: host, seconds: nil, token: nil)
+        AnswerRequest(kind: .deny, app: identity, host: host, seconds: nil, token: nil, script: script)
     }
 }
 
@@ -160,7 +172,8 @@ public enum CLI {
                     "The connections waiting for an answer, and the apps and hosts denied a moment",
                     "ago, whose connections are dropped without asking, each with the command that",
                     "approves it; then the approvals."],
-        "approve": ["Usage: blackice approve --app ID [--team TEAM] --host HOST… [--for 1h] [--save]", "",
+        "approve": ["Usage: blackice approve --app ID [--team TEAM] --host HOST… [--for 1h]",
+                    "                        [--script PATH | --save]", "",
                     "Lets one app reach one or more hosts for a while, and lets its waiting",
                     "connections through, with one Touch ID. blackice pending prints the command.",
                     "  --app ID       its signing identifier, with --team TEAM unless Apple signed it",
@@ -168,12 +181,15 @@ public enum CLI {
                     "  --host HOST    a host name, or an IP address for connections with no name;",
                     "                 repeat it for up to 16 hosts",
                     "  --for 1h       30s, 10m or 1h; at most 24h",
+                    "  --script PATH  for an interpreter (python, node…), only this script: its",
+                    "                 full path, or -m MODULE; without it, every script it runs",
                     "  --save         also add a lasting [[allow]] rule for it to blackice.toml",
                     "                 (or --config PATH); it counts from the next blackice start.",
                     "                 A rule for an interpreter (python, node…) never counts."],
-        "deny": ["Usage: blackice deny --app ID [--team TEAM] --host HOST", "",
+        "deny": ["Usage: blackice deny --app ID [--team TEAM] --host HOST [--script PATH]", "",
                  "Refuses one app one host, and drops its waiting connections (Touch ID).",
-                 "--cdhash HEX in place of --app names ad hoc signed code."],
+                 "--cdhash HEX in place of --app names ad hoc signed code; --script PATH, for",
+                 "an interpreter, refuses only that script."],
         "report": ["Usage: blackice report [--last 1h]", "",
                    "What the filter dropped, by reason and app, and in accept-all what ask mode",
                    "would have done. --last takes minutes or hours, such as 30m or 2h, at most 168h."],
@@ -283,7 +299,7 @@ public enum CLI {
             // --save is the one option with no value.
             let save = rest.contains("--save")
             let repeated = try parseOptions(rest.filter { $0 != "--save" },
-                                            allowed: ["app", "team", "cdhash", "host", "for", "config"], repeatable: ["host"],
+                                            allowed: ["app", "team", "cdhash", "host", "for", "config", "script"], repeatable: ["host"],
                                             command: first)
             let options = repeated.compactMapValues(\.first)
             let app = try identity(options, command: first)
@@ -309,12 +325,18 @@ public enum CLI {
                 guard save else { throw UsageError("\(first): --config goes with --save") }
                 guard !path.hasPrefix("-") else { throw UsageError("\(first): --config needs a path") }
             }
-            return .approve(Approval(identity: app, hosts: hosts, seconds: seconds, save: save, configPath: options["config"]))
+            let script = try options["script"].map { try self.script($0, command: first) }
+            // A rule covers every script of an interpreter, and never counts for one: there is no
+            // rule for one script to save.
+            if script != nil, save { throw UsageError("\(first): --script and --save do not go together") }
+            return .approve(Approval(identity: app, hosts: hosts, seconds: seconds, save: save, configPath: options["config"],
+                                     script: script))
         case "deny":
             try noToken(rest, command: first)
-            let options = try parseOptions(rest, allowed: ["app", "team", "cdhash", "host"], command: first)
+            let options = try parseOptions(rest, allowed: ["app", "team", "cdhash", "host", "script"], command: first)
             let target = try target(options, command: first)
-            return .deny(Denial(identity: target.identity, host: target.host))
+            let script = try options["script"].map { try self.script($0, command: first) }
+            return .deny(Denial(identity: target.identity, host: target.host, script: script))
         default:
             throw UsageError("unknown command '\(printable(first))'")
         }
@@ -644,7 +666,9 @@ public enum CLI {
                 if case .signed? = identity {} else if let path = event.path { lines.append("    " + Describe.terminalSafe(path)) }
                 // An interpreter's script, which its command line names: it tells tools apart, and proves nothing.
                 if let script = event.script { lines.append("    running " + Describe.terminalSafe(script)) }
-                if let identity { lines.append("    " + Style.command(approveCommand(identity, host: event.host))) }
+                if let identity {
+                    lines.append("    " + Style.command(approveCommand(identity, hosts: [event.host], script: event.script)))
+                }
             }
         } else if reply.denials.isEmpty {
             lines.append("Nothing waiting.")
@@ -661,7 +685,7 @@ public enum CLI {
                 guard let identity = group[0].app.identity else { continue }
                 for start in stride(from: 0, to: group.count, by: maximumApprovalHosts) {
                     let hosts = group[start..<min(start + maximumApprovalHosts, group.count)].map(\.host)
-                    lines.append("    " + Style.command(approveCommand(identity, hosts: hosts)))
+                    lines.append("    " + Style.command(approveCommand(identity, hosts: hosts, script: group[0].script)))
                 }
             }
         }
@@ -672,26 +696,33 @@ public enum CLI {
         return lines
     }
 
-    /// Rows of app → host and the time left, in columns as wide as the longest app and host.
+    /// Rows of app → host and the time left, in columns as wide as the longest app and host; an
+    /// interpreter's entry for one script says so after the time.
     private static func columns(_ entries: [ApprovalSummary]) -> (ApprovalSummary) -> String {
         let nameWidth = min(entries.map { name($0).count }.max() ?? 0, 40)
         let hostWidth = min(entries.map(\.host.count).max() ?? 0, 40)
         return { entry in
             let label = name(entry)
+            let scope: String
+            switch entry.scope {
+            case .any: scope = ""
+            case .script(let script?): scope = "  running " + Describe.script(script)
+            case .script(nil): scope = "  with no script"
+            }
             return "  " + label.padding(toLength: max(label.count, nameWidth), withPad: " ", startingAt: 0) + " → " +
                 entry.host.padding(toLength: max(entry.host.count, hostWidth), withPad: " ", startingAt: 0) +
-                "  " + Describe.left(entry.secondsLeft)
+                "  " + Describe.left(entry.secondsLeft) + scope
         }
     }
 
     private static func name(_ entry: ApprovalSummary) -> String { entry.app.identity?.name ?? "unknown app" }
 
-    /// The entries of each app together, apps in the order they first appear.
+    /// The entries of each app and script together, in the order they first appear.
     private static func byApp(_ entries: [ApprovalSummary]) -> [[ApprovalSummary]] {
         var groups: [[ApprovalSummary]] = []
         var index: [String: Int] = [:]
         for entry in entries {
-            let key = entry.app.identity?.label ?? ""
+            let key = (entry.app.identity?.label ?? "") + "\u{0}" + (entry.script ?? "") + (entry.noScript == true ? "\u{0}" : "")
             if let at = index[key] { groups[at].append(entry) } else { index[key] = groups.count; groups.append([entry]) }
         }
         return groups
@@ -702,15 +733,30 @@ public enum CLI {
         approveCommand(identity, hosts: [host])
     }
 
-    /// The `blackice approve` line for an app and its hosts, one `--host` each.
-    static func approveCommand(_ identity: AppIdentity, hosts: [String]) -> String {
+    /// The `blackice approve` line for an app and its hosts, one `--host` each. For an
+    /// interpreter's script that an answer can name and the terminal shows as it is, `--script`
+    /// too, quoted for the shell; otherwise the line approves every script, which only a person
+    /// with Touch ID can.
+    static func approveCommand(_ identity: AppIdentity, hosts: [String], script: String? = nil) -> String {
         let hostOptions = hosts.map { " --host \($0)" }.joined()
+        let scriptOption = script.flatMap { ScriptScope.canName($0) && Describe.terminalSafe($0) == $0 ? $0 : nil }
+            .map { " --script " + shellQuoted($0) } ?? ""
         switch identity {
         case .signed(let signed):
             return "blackice approve --app \(signed.signingID)" + (signed.teamID.map { " --team \($0)" } ?? "") + hostOptions
+                + scriptOption
         case .cdhash(let hash):
-            return "blackice approve --cdhash \(hash)" + hostOptions
+            return "blackice approve --cdhash \(hash)" + hostOptions + scriptOption
         }
+    }
+
+    /// One shell word: as it is when it has only characters no shell treats specially, otherwise
+    /// in single quotes, with each single quote closed, escaped and opened again.
+    static func shellQuoted(_ text: String) -> String {
+        let plain = !text.isEmpty && text.unicodeScalars.allSatisfy {
+            ("a"..."z").contains($0) || ("A"..."Z").contains($0) || ("0"..."9").contains($0) || "/._-+,:@%=".unicodeScalars.contains($0)
+        }
+        return plain ? text : "'" + text.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 
     /// The exit status for an answer: 0 when done, 77 when the extension refused it, 64 for a
@@ -793,6 +839,14 @@ public enum CLI {
             index += 1
         }
         return options
+    }
+
+    /// `--script`: an interpreter's script as `pending` shows it.
+    private static func script(_ text: String, command: String) throws -> String {
+        guard ScriptScope.canName(text) else {
+            throw UsageError("\(command): --script takes the script's full path, or -m MODULE, as blackice pending shows it")
+        }
+        return text
     }
 
     /// `--app` with an optional `--team`, or `--cdhash` alone; and `--host`.
