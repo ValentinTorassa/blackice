@@ -84,8 +84,15 @@ jobs:
         working-directory: macos
         run: swift build -Xswiftc -warnings-as-errors
 
+      # Into a file, printed after: the parallel tests start with a burst of hundreds of lines, and
+      # written straight to the job's log they filled its pipe and held every test for seconds
+      # (7 November 2026), past the deadlines of the tests that time hooks.
       - name: Test
-        run: macos/test.sh
+        run: |
+          status=0
+          macos/test.sh > "$RUNNER_TEMP/swift-test.log" 2>&1 || status=$?
+          cat "$RUNNER_TEMP/swift-test.log"
+          exit "$status"
 
       - name: Smoke test the binary
         run: macos/smoke.sh
