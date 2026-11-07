@@ -5,7 +5,7 @@ Install blackice, start it, answer what waits, let an agent answer, upgrade and 
 blackice 1.0.2 has run on one Mac, with macOS 27.0.1; macOS 14 and 15 are not tested yet. A `blackice.toml` that
 works in 1.0 keeps working in every 1.x.
 
-You need a Mac with Apple silicon, macOS 14 or later, and an admin account.
+You need a Mac with Apple silicon, macOS 14.4 or later, and an admin account.
 
 ## With the install script
 

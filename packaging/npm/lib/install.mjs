@@ -19,6 +19,7 @@ import {
   INSTALLED_APP,
   gatekeeperProblems,
   isOlderBuild,
+  macosProblem,
   parseChecksum,
   releaseAssets,
   signatureProblems,
@@ -29,6 +30,7 @@ const DITTO = '/usr/bin/ditto'
 const CODESIGN = '/usr/bin/codesign'
 const SPCTL = '/usr/sbin/spctl'
 const PLIST_BUDDY = '/usr/libexec/PlistBuddy'
+const SW_VERS = '/usr/bin/sw_vers'
 const MAX_ZIP_BYTES = 200 * 1024 * 1024
 const MAX_CHECKSUM_BYTES = 4096
 const MAX_REDIRECTS = 5
@@ -311,9 +313,13 @@ export function nextSteps(version, replaced) {
  * refusal comes at once, and both again right before the replacement (`placeApp`). Never activates
  * the extension or loads the daemon; it prints how to.
  */
-export async function install({ version, force = false, log = console.log, platform = process.platform, arch = process.arch }) {
+export async function install({
+  version, force = false, log = console.log, platform = process.platform, arch = process.arch, macos,
+}) {
   check(platform === 'darwin', 'blackice runs on macOS only')
   check(arch === 'arm64', 'the blackice build is for Apple silicon (arm64) only')
+  const tooOld = macosProblem(macos ?? run(SW_VERS, ['-productVersion']).stdout)
+  check(tooOld === null, tooOld)
   const assets = releaseAssets(version)
   check(!exists(INSTALLED_APP) || force, alreadyThere(INSTALLED_APP))
   const userAgent = `blackice-npm/${version}`

@@ -459,7 +459,7 @@ final class MenuController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         item.representedObject = choice
         item.state = choice.checked ? .on : .off
         item.isEnabled = choice.enabled
-        if #available(macOS 14.4, *) { item.subtitle = choice.detail }
+        item.subtitle = choice.detail
     }
 
     /// The event's identity, connections, address and path, then the answers.

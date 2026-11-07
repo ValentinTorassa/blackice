@@ -18,7 +18,7 @@ each release in [CHANGELOG.md](CHANGELOG.md), and the open problems in [`docs/pl
 
 ## Install
 
-Apple silicon and macOS 14 or later.
+Apple silicon and macOS 14.4 or later.
 
 ```console
 $ curl -fsSL https://blackice-macos.vercel.app/install.sh | sh

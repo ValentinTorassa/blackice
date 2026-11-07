@@ -8,7 +8,7 @@ let systemSettings: [SwiftSetting] = [.swiftLanguageMode(.v5)]
 
 let package = Package(
     name: "blackice",
-    platforms: [.macOS(.v14)],
+    platforms: [.macOS("14.4")],
     products: [
         .executable(name: "blackice", targets: ["blackice"]),
         // The system extension's executable; scripts/build-app.sh puts it inside Blackice.app.
