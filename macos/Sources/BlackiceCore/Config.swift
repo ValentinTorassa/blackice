@@ -86,22 +86,23 @@ public struct Hook: Equatable, Sendable {
 
 /// `program`, `args`, `env`, `app`, `team`, `stdin` and `instructions` in a [[hook]].
 public struct HookProgram: Equatable, Sendable {
-    /// Absolute. Started with posix_spawn, with no shell and no PATH lookup.
+    /// Absolute. Started directly, with no shell and no PATH lookup.
     public let path: String
     /// argv[1...]; argv[0] is `path`.
     public let arguments: [String]
     /// Set on top of the environment the daemon builds; `env = ["NAME=value", ...]` in the file.
     public let environment: [String: String]
-    /// The signing identifier and Team ID the running program must have, checked as [[allow]]
-    /// rules check apps. No Team ID means Apple platform code.
+    /// The signing identifier and Team ID the program must have: the kernel starts it only with
+    /// them (HookRunner.launchRequirement), and the daemon checks the running code again as
+    /// [[allow]] rules check apps. No Team ID means Apple platform code.
     public let identity: SigningIdentity
-    /// Whether the event comes on stdin too (`stdin = "event"`, the default). With `stdin =
-    /// "none"`, stdin is empty, and the event is only in the file: for a program that adds what
-    /// comes on stdin to a model's prompt (`claude -p`), where the event should arrive as data.
+    /// Whether the event comes on stdin too (`stdin = "event"`, the default); with `"none"` it is
+    /// only in its file. Since 1.0.3 a hook that names its `instructions` has no event file and
+    /// always gets the event on stdin, whatever this says.
     public let eventOnStdin: Bool
-    /// The instructions the daemon writes into the event's directory before the program starts
-    /// (`instructions = "claude-code"`), from blackice itself rather than a file in the agent's
-    /// home that any program of the user could change. nil writes none.
+    /// The agent whose instructions the daemon passes the program, with the owner's notes, in the
+    /// agent's own flags or environment (`instructions = "claude-code"`; AgentInstructions.launch),
+    /// from blackice itself rather than a file any program of the user could change. nil passes none.
     public let instructions: AgentInstructions?
 
     public init(path: String, arguments: [String] = [], environment: [String: String] = [:], identity: SigningIdentity,
@@ -155,8 +156,9 @@ public struct BlackiceConfig: Equatable, Sendable {
     public let allow: [AllowRule]
     public let hooks: [Hook]
     /// The owner's own guidance for the deciding agent (`notes` in [agent]): plain text, which the
-    /// daemon writes as notes.md into each event's directory. It is part of the configuration, so
-    /// it is loaded with Touch ID like the hooks. nil when unset or blank.
+    /// daemon passes an agent's program hook after its instructions, and writes as notes.md into
+    /// the directory of a hook that names no instructions. It is part of the configuration, so it is loaded with Touch ID like
+    /// the hooks. nil when unset or blank.
     public let agentNotes: String?
     /// Who answers in ask mode (`answers` in [agent]). nil when unset: every hook runs.
     public let answers: Answerer?

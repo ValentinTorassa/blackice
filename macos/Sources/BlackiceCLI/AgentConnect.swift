@@ -7,9 +7,10 @@ import BlackiceCore
 // rules that let it read files and nothing else, no shell included; let it decide one sample
 // event through the hook runner, reading its answer from its last line of output and passing it
 // nowhere; add a rule that lets it reach its model in every mode, and a hook that starts it
-// directly, checks its signature first and names its instructions; load it. The instructions
-// come from blackice itself: the daemon writes them into each event's directory (see
-// AgentInstructions), so nothing in the agent's home says how to decide. What differs between
+// directly, with its signature as a launch requirement, and names its instructions; load it. The
+// instructions come from blackice itself: the daemon passes them, with the owner's notes, in the
+// agent's own flags or environment each time, and the event on stdin (see AgentInstructions), so
+// nothing in the agent's home, or in any file, says how to decide. What differs between
 // agents (where its settings live, how it signs in, its arguments) is in its `AgentProfile`. fx
 // is the first. Claude Code (claude-code) has no settings file: its limits are its arguments.
 // opencode decides with a provider chosen when it is connected, and the rule names that
@@ -28,7 +29,7 @@ public struct AgentProfile: Sendable {
     /// Inside the agent home: its own folder, and its settings file, when blackice writes one.
     let folder: String
     let settingsFile: String?
-    /// What the daemon writes into each event's directory for it (`instructions` in its hook).
+    /// What the daemon passes it each time (`instructions` in its hook).
     let instructions: AgentInstructions
     /// The model its hook asks for unless `--model` names another: a small one, since each
     /// decision is a short read and a two-line answer.
@@ -55,11 +56,9 @@ public struct AgentProfile: Sendable {
     var advice: @Sendable (_ output: String) -> [String] = { _ in [] }
     /// Text that only this agent's hook holds in its `args`, for hooks written before they named
     /// their instructions: a hook with it is this agent's.
-    var hookMarker = AgentProfile.prompt
+    var hookMarker: String { instructions.filedPrompt }
     /// What keeps it to deciding, said once its home is ready, when it has no settings file.
     var limits: String?
-    /// Whether its hook gets the event on stdin (`stdin = "none"` in blackice.toml when not).
-    var eventOnStdin = true
     /// The environment that makes `installer` put it in this folder and change nothing else, for
     /// when the copy on PATH cannot be named by a rule (a development build, unsigned or ad hoc
     /// signed); nil when its installer cannot do that.
@@ -88,11 +87,11 @@ public struct AgentProfile: Sendable {
         environment: { ["HOME": $0, "FX_DISABLE_KEYCHAIN": "1"] },
         statusArguments: ["status"], loginArguments: ["login", "vercel"],
         signedIn: { CLI.fxSignedIn($0) }, settings: { try CLI.fxSettings($0) },
-        // With stdout not a terminal, fx prints its reply as plain Markdown; the skill, which fx
-        // finds in its workspace's skills/ folder, ends it with the answer.
-        // --system replaces fx's own system prompt, written for coding, with two sentences: on 5
-        // November 2026 that took 3,700 of the 22,000 tokens each decision read.
-        askArguments: { _, model in ["ask", "--no-save", "--no-color", "--model", model, "--system", CLI.fxSystemPrompt, prompt] },
+        // With stdout not a terminal, fx prints its reply as plain Markdown, which the skill ends
+        // with the answer. The daemon adds `--system` with the skill, which replaces fx's own
+        // system prompt, written for coding (on 5 November 2026 that took 3,700 of the 22,000
+        // tokens each decision read), and the event on stdin is the whole prompt.
+        askArguments: { _, model in AgentInstructions.fx.hookArguments(model: model) },
         // Seen on 3 November 2026: a Vercel team with no card on file gets HTTP 403 from AI Gateway.
         // Seen on 4 November 2026: a team with no credits left gets HTTP 502, insufficient_funds.
         advice: { stderr in
@@ -143,11 +142,7 @@ public struct AgentProfile: Sendable {
                    "CLAUDE_CONFIG_DIR=~/.config/blackice/agent/.claude claude auth login"]
                 : []
         },
-        hookMarker: CLI.claudeCodePrompt,
-        limits: "reads the event only: no shell, no web, no MCP servers",
-        // claude -p adds what comes on stdin to its prompt. The event reaches it only through the
-        // Read tool, as data.
-        eventOnStdin: false)
+        limits: "no tools at all: no shell, no files, no web, no MCP servers")
 
     /// Codex (`codex exec`), signed in with a ChatGPT plan. CODEX_HOME in the agent home holds its
     /// own sign-in, apart from yours in ~/.codex.
@@ -174,10 +169,7 @@ public struct AgentProfile: Sendable {
                    "CODEX_HOME=~/.config/blackice/agent/.codex codex login"]
                 : []
         },
-        hookMarker: CLI.codexPrompt,
-        limits: "reads the event only: no writes, no network, no MCP servers",
-        // codex exec adds what comes on stdin to its prompt. The event reaches it only as a file.
-        eventOnStdin: false)
+        limits: "no writes, no network, no MCP servers, no skills")
 
     /// opencode with the first provider in its list; `agent connect opencode` asks which one.
     public static let opencode = openCode(AgentProvider.openCode[0])
@@ -207,18 +199,12 @@ public struct AgentProfile: Sendable {
                        "HOME=~/.config/blackice/agent/.opencode opencode auth login --standalone \(provider.id)"]
                     : []
             },
-            hookMarker: CLI.openCodePrompt,
-            limits: "reads the event only: no shell, no edits, no web, no MCP servers",
-            // opencode run adds what comes on stdin to its message. The event reaches it only as a file.
-            eventOnStdin: false,
+            limits: "no tools at all: no shell, no files, no web, no MCP servers",
             installFolders: [".opencode/bin"],
             providers: AgentProvider.openCode, forProvider: { openCode($0) }, provider: provider)
     }
 
     public static let known = [fx, claudeCode, codex, opencode]
-
-    /// What the hook asks the agent. A hook whose line holds it already uses the blackice skill.
-    public static let prompt = "Use the blackice skill to decide whether to approve the pending connection"
 }
 
 /// A provider an agent can decide with, and what blackice lets the agent reach for it.
@@ -557,7 +543,7 @@ extension CLI {
     static func agentHook(_ profile: AgentProfile, executable: String, agentHome: String,
                           identity: SigningIdentity, model: String) -> HookProgram {
         HookProgram(path: executable, arguments: profile.askArguments(agentHome, model), environment: profile.environment(agentHome),
-                    identity: identity, eventOnStdin: profile.eventOnStdin, instructions: profile.instructions)
+                    identity: identity, instructions: profile.instructions)
     }
 
     /// The provider an agent decides with: the one `--model PROVIDER/MODEL` names, or the one picked
@@ -647,7 +633,6 @@ extension CLI {
             lines.append("env = [" + program.environment.sorted { $0.key < $1.key }
                 .map { tomlString($0.key + "=" + $0.value) }.joined(separator: ", ") + "]")
         }
-        if !program.eventOnStdin { lines.append("stdin = \"none\"") }
         if let instructions = program.instructions { lines.append("instructions = " + tomlString(instructions.rawValue)) }
         return lines
     }
@@ -699,60 +684,21 @@ extension CLI {
 
     // MARK: - Claude Code
 
-    /// What Claude Code's hook asks it. Its hook's `args` hold it, and nothing else does.
-    static let claudeCodePrompt = "Decide the pending blackice connection in event.json."
-
     /// Claude Code's configuration directory in the agent home (CLAUDE_CONFIG_DIR).
     static func claudeCodeConfigDirectory(agentHome: String) -> String { agentHome + "/.claude" }
 
-    /// Claude Code's `args`: print mode with Read as its only tool, confined to the event's
-    /// directory (--restricted, which also ignores the settings files); no CLAUDE.md, hooks,
-    /// plugins or MCP servers (--safe-mode, --strict-mcp-config); nothing saved; the instructions
-    /// the daemon writes into the event's directory as its whole system prompt; plain text, whose
-    /// last line is the answer. Checked against Claude Code 2.1.317.
-    /// integrations/eval/agents/claude-code.sh runs the same (a test checks).
-    static func claudeCodeArguments(model: String) -> [String] {
-        ["-p", "--restricted", "--safe-mode", "--tools", "Read", "--strict-mcp-config", "--no-session-persistence",
-         "--permission-prompts", "none", "--model", model, "--max-turns", "3", "--output-format", "text",
-         "--system-prompt-file", "instructions.md", claudeCodePrompt]
-    }
-
-    /// What the hook asks Codex.
-    static let codexPrompt = "Decide the pending blackice connection described in event.json."
+    /// Claude Code's `args` (AgentInstructions.hookArguments): print mode with no tools; the
+    /// daemon adds the instructions and the notes.
+    static func claudeCodeArguments(model: String) -> [String] { AgentInstructions.claudeCode.hookArguments(model: model) }
 
     /// Codex's own home, CODEX_HOME, inside the agent home.
     static func codexHome(agentHome: String) -> String { agentHome + "/.codex" }
 
-    /// Codex's `args`: one `codex exec` request, checked against Codex 0.166.0.
-    /// - Nothing of yours: no config.toml (--ignore-user-config), no exec-policy rules
-    ///   (--ignore-rules), no AGENTS.md from the working directory (project_doc_max_bytes=0), no
-    ///   hooks, plugins, apps, subagents, image generation, browser or computer use, no web search,
-    ///   no session saved (--ephemeral) and no history. --strict-config refuses a key it does not know.
-    /// - The instructions the daemon writes into the event's directory replace Codex's own
-    ///   (model_instructions_file, relative to the working directory).
-    /// - Its commands run in a sandbox that reads only the event's directory and the system's own
-    ///   files (`:minimal`), writes nothing and has no network. Not `--sandbox read-only`: that
-    ///   reads the whole disk, your home included, and takes the place of the profile when both are given.
-    ///   Nothing asks for approval (approval_policy never), and the shell is not a login shell.
-    /// integrations/eval/agents/codex.sh runs the same (a test checks).
-    static func codexArguments(model: String) -> [String] {
-        ["exec", "--strict-config", "--skip-git-repo-check", "--ephemeral", "--ignore-user-config", "--ignore-rules",
-         "--color", "never", "-m", model,
-         "-c", "model_reasoning_effort=\"low\"",
-         "-c", "model_instructions_file=\"instructions.md\"",
-         "-c", "project_doc_max_bytes=0",
-         "-c", "default_permissions=\"blackice\"",
-         "-c", "permissions.blackice.filesystem={\":minimal\"=\"read\",\":workspace_roots\"=\"read\"}",
-         "-c", "approval_policy=\"never\"",
-         "-c", "allow_login_shell=false",
-         "-c", "web_search=\"disabled\"",
-         "-c", "analytics.enabled=false",
-         "-c", "feedback.enabled=false",
-         "-c", "history.persistence=\"none\"",
-         "--disable", "hooks", "--disable", "plugins", "--disable", "apps", "--disable", "multi_agent",
-         "--disable", "image_generation", "--disable", "browser_use", "--disable", "computer_use",
-         codexPrompt]
-    }
+    /// Codex's `args` (AgentInstructions.hookArguments): one `codex exec` with nothing of yours.
+    /// Its commands run in a sandbox that reads only the working directory and the system's own
+    /// files (`:minimal`). Not `--sandbox read-only`: that reads the whole disk, your home included,
+    /// and takes the place of the profile when both are given.
+    static func codexArguments(model: String) -> [String] { AgentInstructions.codex.hookArguments(model: model) }
 
     /// `codex login status` says "Logged in using ChatGPT" (or an API key) once it is signed in,
     /// and "Not logged in" before.
@@ -762,43 +708,22 @@ extension CLI {
 
     // MARK: - opencode
 
-    /// What the hook asks opencode.
-    static let openCodePrompt = "Decide whether to approve the pending blackice connection in event.json."
-
-    /// opencode's `args`: one `opencode run` with a server of its own (--standalone: the shared
-    /// background service runs with your HOME), as the blackice agent that the configuration in its
-    /// environment defines. Checked against opencode 2.2.5.
-    /// integrations/eval/agents/opencode.sh runs the same (a test checks).
-    static func openCodeArguments(model: String) -> [String] {
-        ["run", "--standalone", "--agent", "blackice", "--model", model, openCodePrompt]
-    }
-
-    /// The configuration opencode gets in OPENCODE_CONFIG_CONTENT, which comes after its global and
-    /// project files and so wins over them: an agent whose whole system prompt is the instructions
-    /// the daemon writes into the event's directory, its working directory, with a few steps; the
-    /// read tool and no other, inside that directory (external_directory), for every agent and for
-    /// this one, each tool named, since a file's rule for one would otherwise stay; no update check
-    /// and no sharing.
-    static let openCodeConfiguration: String = {
-        let rules = ["*", "read", "bash", "edit", "glob", "grep", "task", "todowrite", "skill", "lsp", "question",
-                     "webfetch", "websearch", "external_directory", "doom_loop"]
-            .map { "\"\($0)\":\"\($0 == "read" ? "allow" : "deny")\"" }.joined(separator: ",")
-        return "{\"agent\":{\"blackice\":{\"mode\":\"primary\",\"prompt\":\"{file:./instructions.md}\",\"steps\":4,"
-            + "\"permission\":{\(rules)}}},\"autoupdate\":false,\"permission\":{\(rules)},\"share\":\"disabled\"}"
-    }()
+    /// opencode's `args` (AgentInstructions.hookArguments): one `opencode run` with a server of its
+    /// own (--standalone: the shared background service runs with your HOME), as the blackice
+    /// agent that the configuration the daemon puts in its environment defines.
+    static func openCodeArguments(model: String) -> [String] { AgentInstructions.opencode.hookArguments(model: model) }
 
     /// opencode's environment, for its sign-in, its status and the hook:
     /// - HOME is its own folder in the agent home, where it keeps its sign-in and its sessions.
-    /// - XDG_CONFIG_HOME is `.`: its global configuration folder is `opencode/` in its working
-    ///   directory, which it creates empty. For the hook that is the event's new private
-    ///   directory, so no opencode.json, AGENTS.md, plugin or skill that a program wrote into a
-    ///   folder of yours is loaded.
-    /// - No project files either (OPENCODE_DISABLE_PROJECT_CONFIG: no opencode.json or AGENTS.md
-    ///   from the folders above the event's), nothing of ~/.claude, no update check and no model
+    /// - No project files (OPENCODE_DISABLE_PROJECT_CONFIG: no opencode.json or AGENTS.md from the
+    ///   folders above the working directory), nothing of ~/.claude, no update check and no model
     ///   list from the network: it knows the models of a provider it is signed in to.
+    /// For the hook, the daemon adds the configuration with the instructions
+    /// (OPENCODE_CONFIG_CONTENT) and a new, empty configuration folder for each event
+    /// (XDG_CONFIG_HOME), so no opencode.json, AGENTS.md, plugin or skill that a program wrote
+    /// into a folder of yours is loaded.
     static func openCodeEnvironment(agentHome: String) -> [String: String] {
-        ["HOME": openCodeHome(agentHome: agentHome), "XDG_CONFIG_HOME": ".",
-         "OPENCODE_CONFIG_CONTENT": openCodeConfiguration,
+        ["HOME": openCodeHome(agentHome: agentHome),
          "OPENCODE_DISABLE_PROJECT_CONFIG": "1", "OPENCODE_DISABLE_CLAUDE_CODE": "1",
          "OPENCODE_DISABLE_AUTOUPDATE": "1", "OPENCODE_DISABLE_MODELS_FETCH": "1"]
     }
@@ -819,10 +744,6 @@ extension CLI {
             return item["id"] as? String == provider && connections.contains { ($0["type"] as? String).map { $0 != "env" } ?? false }
         }
     }
-
-    /// What replaces fx's built-in system prompt in the hook (`fx ask --system`). fx still adds its
-    /// tools and the blackice skill, which says how to decide.
-    static let fxSystemPrompt = "You answer for blackice, a network filter on a Mac: one app wants to reach one host, and you decide whether to approve it. The blackice skill in this workspace says how to read the event and how to answer. Follow it exactly and answer in its format."
 
     /// `claude auth status --json` prints an object whose `loggedIn` is true once it is signed in.
     static func claudeCodeSignedIn(_ status: String) -> Bool {
@@ -846,9 +767,13 @@ extension CLI {
         case .failure(.exitStatus(let status))?: return .none("exited with status \(status) and no answer")
         case .failure(.signaled(let signal))?: return .none("died from signal \(signal)")
         case .failure(.deadline)?: return .none("gave no answer in \(seconds) s")
+        case .failure(.unsafeHome(let path))?:
+            return .none("answered, but \(path) appeared in its home meanwhile, which it would load as instructions")
         case nil:
             switch result.outcome {
             case .refused(let found): return .none("is signed as \(found) and the hook would not start it")
+            case .unsafeHome(let path):
+                return .none("was not started: its home holds \(path), which it would load as instructions, and blackice did not put it there")
             case .failedToStart(let reason): return .none("did not start: \(reason)")
             case .dropped(let reason): return .none("did not run (\(reason.rawValue))")
             case .exited, .signaled, .timedOut: return .none("gave no answer")
@@ -1083,8 +1008,8 @@ extension CLI {
         if executable != first { say("\(shownFirst) is unsigned or ad hoc signed, so blackice uses \(shownExecutable).") }
         done("\(shownExecutable) (\(ConfigWizard.describe(identity)))")
 
-        // Its own home: a sign-in, and the rules. The instructions are not there: the daemon writes
-        // them, from blackice itself, into each event's directory.
+        // Its own home: a sign-in, and the rules. The instructions are not there: the daemon passes
+        // them, from blackice itself, on the agent's command line or in its environment.
         let homeShown = Describe.path(paths.home, home: interaction.home)
         guard fitsConfig(paths.home) else {
             return fail(ExitCode.unavailable, "\(homeShown) has a control character in its path, which blackice.toml cannot hold.")

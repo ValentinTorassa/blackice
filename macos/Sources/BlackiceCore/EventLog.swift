@@ -175,6 +175,10 @@ public final class EventLog: @unchecked Sendable {
                 fields["type"] = .string("hook_refused")
                 fields["reason"] = .string("signature")
                 fields["found"] = .string(found)
+            case .unsafeHome(let path):
+                fields["type"] = .string("hook_refused")
+                fields["reason"] = .string("agent_home")
+                fields["path"] = .string(path)
             }
             if !result.stderr.isEmpty {
                 let cut = result.stderr.count > maximumStderrCharacters
@@ -201,6 +205,7 @@ public final class EventLog: @unchecked Sendable {
             case .exitStatus(let status): fields["status"] = .int(Int(status))
             case .signaled(let signal): fields["signal"] = .int(Int(signal))
             case .output(.unrecognized(let prefix)): fields["line_prefix"] = .string(prefix)
+            case .unsafeHome(let path): fields["path"] = .string(path)
             case .deadline, .output: break
             }
         case .answerRefused(let eventID, let hookLine, let reason):

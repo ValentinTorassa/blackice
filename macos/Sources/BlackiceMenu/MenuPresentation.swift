@@ -104,13 +104,16 @@ public struct MenuContext: Equatable, Sendable {
     /// "0.3.2 (build 15)", from Blackice.app's Info.plist; nil for a build outside the app.
     public var version: String?
     public var recent: [RecentDecision]
-    /// When the daemon last refused a hook program whose signature did not match.
+    /// When the daemon last refused a hook program whose signature did not match, or whose agent's
+    /// home had a file blackice did not put there (`hookRefusedForHome`).
     public var hookRefused: Date?
+    public var hookRefusedForHome: Bool
 
-    public init(version: String?, recent: [RecentDecision] = [], hookRefused: Date? = nil) {
+    public init(version: String?, recent: [RecentDecision] = [], hookRefused: Date? = nil, hookRefusedForHome: Bool = false) {
         self.version = version
         self.recent = recent
         self.hookRefused = hookRefused
+        self.hookRefusedForHome = hookRefusedForHome
     }
 }
 
@@ -257,7 +260,9 @@ public enum MenuPresentation {
             entries.append(MenuEntry(.note, key: "hooks", title: line))
         }
         if let refused = context.hookRefused, now.timeIntervalSince(refused) < refusedHookWindow {
-            entries.append(MenuEntry(.note, key: "hooks.refused", title: "A hook's signature did not match",
+            let title = context.hookRefusedForHome ? "A hook did not answer: its agent's home changed"
+                : "A hook's signature did not match"
+            entries.append(MenuEntry(.note, key: "hooks.refused", title: title,
                                      detail: short(refused, now: now)))
         }
         // `blackice stop`, with Touch ID: the quit item below leaves the filter running, and

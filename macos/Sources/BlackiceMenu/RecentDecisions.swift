@@ -34,13 +34,17 @@ public struct RecentDecision: Equatable, Sendable {
 public struct EventLogSummary: Equatable, Sendable {
     /// Newest first.
     public var decisions: [RecentDecision]
-    /// The last `hook_refused`: the daemon killed a hook program whose signature did not match,
-    /// so that hook decides nothing.
+    /// The last `hook_refused`: the daemon did not start a hook program, or killed it, because its
+    /// signature did not match or its agent's home had a file blackice did not put there; or such a
+    /// file voided its answer (`hook_no_answer`, reason `agent_home`). That hook decides nothing.
     public var hookRefused: Date?
+    /// Whether the last of those was about the agent's home.
+    public var hookRefusedForHome: Bool
 
-    public init(decisions: [RecentDecision] = [], hookRefused: Date? = nil) {
+    public init(decisions: [RecentDecision] = [], hookRefused: Date? = nil, hookRefusedForHome: Bool = false) {
         self.decisions = decisions
         self.hookRefused = hookRefused
+        self.hookRefusedForHome = hookRefusedForHome
     }
 }
 
@@ -73,7 +77,8 @@ public final class RecentDecisions {
             cached = Self.parse(data, partialFirstLine: start > 0, limit: 32)
             stamp = (info.st_size, info.st_mtimespec)
         }
-        return EventLogSummary(decisions: Array(cached.decisions.prefix(limit)), hookRefused: cached.hookRefused)
+        return EventLogSummary(decisions: Array(cached.decisions.prefix(limit)), hookRefused: cached.hookRefused,
+                               hookRefusedForHome: cached.hookRefusedForHome)
     }
 
     /// How long after a hook's answer the events it closed get their verdicts. One answer closes
@@ -129,7 +134,11 @@ public final class RecentDecisions {
                 refused.insert("\(id) \(hookLine)")
             case "hook_refused", "hook_no_answer", "hook_dropped", "hook_failed":
                 running[id]?.remove(hookLine)
-                if type == "hook_refused" { summary.hookRefused = date ?? summary.hookRefused }
+                let home = object["reason"] as? String == "agent_home"
+                if type == "hook_refused" || (type == "hook_no_answer" && home) {
+                    summary.hookRefused = date ?? summary.hookRefused
+                    summary.hookRefusedForHome = home
+                }
             case "verdict":
                 guard let raw = object["verdict"] as? String, let verdict = Verdict(rawValue: raw) else { continue }
                 verdicts.append((id, verdict, date))

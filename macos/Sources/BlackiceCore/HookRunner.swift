@@ -1,28 +1,45 @@
 import Darwin
 import Foundation
+import LightweightCodeRequirements
 
 // Runs the [[hook]] commands for one event.
 //
 // What runs comes from blackice.toml, which the user wrote and the strict parser accepted: a
 // `program`, started directly with its `args`, or a `run` line, started as `/bin/sh -c RUN`.
-// Nothing from the event is ever put into a command line. A program starts suspended, and runs
-// only when its code signature names the `app` and `team` of its hook; otherwise it is killed
-// before it runs a single instruction (`refused`). A `run` line has no such check.
+// Nothing from the event is ever put into a command line. A program is started with a launch
+// requirement built from its hook's `app` and `team` (`launchRequirement(for:)`): the kernel
+// checks the code during exec and kills it before its first instruction when it does not match,
+// so a program swapped for another, or one that another program of the user stops and lets run
+// first, never gets to answer. Once it runs, its code signature is checked again by its PID, and
+// the hook is refused (`refused`) when either check fails. The kernel checks only the code the
+// hook starts: a program that starts another in its place (exec) is refused when the second check
+// sees the other one, and may be let through when it comes too late, so a hook names the agent's
+// own executable, never a wrapper. Apple's own code that starts other Apple code, as /bin/sh
+// starts bash, passes. A `run` line has no check.
 //
-// The event, without its token, reaches the hook in exactly two ways:
-//   - as JSON on stdin, unless its hook says `stdin = "none"` (programs only), when stdin is empty;
-//   - as the same bytes in a 0600 file inside a private 0700 directory, named in
-//     BLACKICE_EVENT_FILE (BLACKICE_EVENT_ID holds the event ID). The hook also runs in
-//     that directory, and the directory is deleted once the hook is done.
-// A program hook with `instructions` also finds its agent's instructions in that directory,
-// written from blackice itself (AgentInstructions) before the program starts, and every hook
-// finds the owner's notes from [agent] as notes.md when the configuration has them.
-// The token never reaches a hook. The hook answers on stdout (see HookAnswer): the runner keeps
-// the first `stdoutLimit` bytes and the first `stderrLimit` bytes of stderr, and drains the rest.
+// A program hook that names its agent's instructions (`instructions = "codex"`) gets no files. The
+// event, without its token, comes as JSON on stdin; the instructions and the owner's notes come in
+// the agent's flags or environment (AgentInstructions.launch); it runs in /var/empty, which
+// belongs to root. Up to 1.0.2 all of them were files the user owns, which any program of the user
+// could rewrite while the agent read them. opencode alone also gets a new private folder for its
+// configuration. Before such a hook starts and again once it exits, its agent's home is checked
+// for files the agent would load as instructions (AgentInstructions.plantedFile): one found before
+// means the hook does not start (`unsafeHome`), one found after means its answer does not count.
 //
-// Each hook gets its own process group. At the deadline the group gets SIGTERM and, after a
-// grace period, SIGKILL. When the hook's shell exits, whatever it left behind in its group
-// is killed too. A process that leaves the group on purpose (setsid, setpgid) escapes this.
+// Any other hook, a `run` line or a program that names no instructions, gets what it got in 1.0,
+// since blackice cannot know what it reads: the event on stdin (for a program, unless its hook
+// says `stdin = "none"`), and the same bytes in a 0600 file inside a private 0700 directory, named
+// in BLACKICE_EVENT_FILE, with the owner's notes from [agent] as notes.md beside it. It runs in
+// that directory, which is deleted once it is done. Every hook gets the event's ID in
+// BLACKICE_EVENT_ID. The token never reaches a hook. The hook answers on stdout (see HookAnswer):
+// the runner keeps the first `stdoutLimit` bytes and the first `stderrLimit` bytes of stderr, and
+// drains the rest.
+//
+// Hooks are started with Process, which on macOS puts the child in a process group of its own,
+// passes it only stdin, stdout and stderr, and gives it every signal at its default with none
+// blocked (HookRunnerTests checks all three). At the deadline the group gets SIGTERM and, after a
+// grace period, SIGKILL. When the hook exits, whatever it left behind in its group is killed too.
+// A process that leaves the group on purpose (setsid, setpgid) escapes this.
 //
 // At most `maximumConcurrent` hooks run at once. A hook that finds no free slot waits for one,
 // without holding a thread. Waiting hooks take turns between apps, first come first served
@@ -44,11 +61,16 @@ public struct HookResult: Equatable, Sendable {
         case timedOut(signal: Int32)
         /// The hook was not started.
         case dropped(DropReason)
-        /// posix_spawn or the event file failed.
+        /// The program could not be started, or the event's file or folder could not be made.
         case failedToStart(String)
-        /// The program's code signature did not name its hook's app and team, so it was killed
-        /// before it ran. `found` is what it was (`IdentityResolution.label`).
+        /// The program's code signature did not name its hook's app and team: the kernel did not
+        /// start it, or it was killed as soon as the check after its start saw what it was. `found`
+        /// is what it was (`IdentityResolution.label`, or the file's identity when the running code
+        /// could not be read).
         case refused(found: String)
+        /// The agent's home holds a file the agent would load as instructions, which blackice did
+        /// not put there (`AgentInstructions.plantedFile`), so the hook was not started.
+        case unsafeHome(path: String)
     }
 
     public enum DropReason: String, Equatable, Sendable {
@@ -76,9 +98,12 @@ public struct HookResult: Equatable, Sendable {
     public let duration: TimeInterval
     /// How long the hook waited for a slot; 0 when one was free.
     public let waited: TimeInterval
+    /// A file the agent would load as instructions that was in its home once the hook exited,
+    /// though not before it started: whatever the hook answered does not count.
+    public let unsafeHome: String?
 
     public init(hookLine: Int, outcome: Outcome, stderr: String, stderrTruncated: Bool, duration: TimeInterval,
-                waited: TimeInterval = 0, stdout: Data = Data(), stdoutTruncated: Bool = false) {
+                waited: TimeInterval = 0, stdout: Data = Data(), stdoutTruncated: Bool = false, unsafeHome: String? = nil) {
         self.hookLine = hookLine
         self.outcome = outcome
         self.stderr = stderr
@@ -87,19 +112,25 @@ public struct HookResult: Equatable, Sendable {
         self.stdoutTruncated = stdoutTruncated
         self.duration = duration
         self.waited = waited
+        self.unsafeHome = unsafeHome
     }
 
     /// The hook's answer, or why it has none. nil when the hook did not run (dropped, failed to
     /// start or refused), which its own record says. An answer counts only from a hook that
-    /// exited with status 0 before its deadline.
+    /// exited with status 0 before its deadline, with its agent's home as it was when it started.
     public var answer: Result<HookAnswer, HookResult.NoAnswer>? {
+        switch outcome {
+        case .dropped, .failedToStart, .refused, .unsafeHome: return nil
+        case .exited, .signaled, .timedOut: break
+        }
+        if let unsafeHome { return .failure(.unsafeHome(unsafeHome)) }
         switch outcome {
         case .exited(let status) where status == 0:
             return HookAnswer.parse(stdout, truncated: stdoutTruncated).mapError { .output($0) }
         case .exited(let status): return .failure(.exitStatus(status))
         case .signaled(let signal): return .failure(.signaled(signal))
         case .timedOut: return .failure(.deadline)
-        case .dropped, .failedToStart, .refused: return nil
+        case .dropped, .failedToStart, .refused, .unsafeHome: return nil
         }
     }
 
@@ -111,6 +142,8 @@ public struct HookResult: Equatable, Sendable {
         case deadline
         /// It exited with status 0, but its output holds no answer.
         case output(HookAnswer.Missing)
+        /// This file, which the agent would load as instructions, was in its home once it exited.
+        case unsafeHome(String)
 
         public var reason: String {
             switch self {
@@ -118,6 +151,7 @@ public struct HookResult: Equatable, Sendable {
             case .signaled: return "signaled"
             case .deadline: return "deadline"
             case .output(let missing): return missing.reason
+            case .unsafeHome: return "agent_home"
             }
         }
     }
@@ -148,14 +182,21 @@ public final class HookRunner: @unchecked Sendable {
         public var gracePeriod: TimeInterval
         public var stderrLimit: Int
         public var stdoutLimit: Int
-        /// The identity of a program hook, started suspended and not yet reaped. Tests replace it.
+        /// The identity of a program hook just after it started, before its stdin is written.
+        /// Tests replace it.
         public var identify: @Sendable (pid_t) -> IdentityResolution
+        /// A file in the agent's home that it would load as instructions, given the program and the
+        /// environment it runs with; nil when there is none. Tests replace it.
+        public var unsafeHome: @Sendable (HookProgram, [String: String]) -> String?
 
         public init(workDirectory: URL, environment: [String: String], maximumConcurrent: Int = 4,
                     maximumWaiting: Int = 256, minimumStartBudget: TimeInterval = 10,
                     gracePeriod: TimeInterval = 2, stderrLimit: Int = 4096,
                     stdoutLimit: Int = HookAnswer.maximumOutputBytes,
-                    identify: @escaping @Sendable (pid_t) -> IdentityResolution = { CodeIdentity.resolve(childPID: $0) }) {
+                    identify: @escaping @Sendable (pid_t) -> IdentityResolution = { CodeIdentity.resolve(childPID: $0) },
+                    unsafeHome: @escaping @Sendable (HookProgram, [String: String]) -> String? = {
+                        $0.instructions?.plantedFile(environment: $1)
+                    }) {
             self.workDirectory = workDirectory
             self.environment = environment
             self.maximumConcurrent = maximumConcurrent
@@ -165,6 +206,7 @@ public final class HookRunner: @unchecked Sendable {
             self.stderrLimit = stderrLimit
             self.stdoutLimit = stdoutLimit
             self.identify = identify
+            self.unsafeHome = unsafeHome
         }
     }
 
@@ -172,6 +214,27 @@ public final class HookRunner: @unchecked Sendable {
     /// launchd's PATH for agents. A hook that needs more sets PATH in its `env` or its `run` line.
     public static let defaultPath = "/usr/bin:/bin:/usr/sbin:/sbin"
     public static let language = "en_US.UTF-8"
+    /// Where program hooks run: empty, and root's, so nothing there was put by a program of the user.
+    public static let programDirectory = "/var/empty"
+
+    /// What the kernel requires of a program hook's code before it runs a single instruction: the
+    /// hook's signing identifier and Team ID with a Developer ID signature, or, with no Team ID,
+    /// the signing identifier of Apple platform code. Code signed any other way (Apple Development,
+    /// the Mac App Store, ad hoc) does not start, though up to 1.0.2 the check after a suspended
+    /// start took some of it.
+    public static func launchRequirement(for identity: SigningIdentity) throws -> LaunchCodeRequirement {
+        guard let team = identity.teamID else {
+            return try LaunchCodeRequirement.allOf {
+                SigningIdentifier(identity.signingID)
+                ValidationCategory(.platform)
+            }
+        }
+        return try LaunchCodeRequirement.allOf {
+            TeamIdentifier(team)
+            SigningIdentifier(identity.signingID)
+            ValidationCategory(.developerID)
+        }
+    }
 
     public let options: Options
     private let lock = NSLock()
@@ -206,7 +269,7 @@ public final class HookRunner: @unchecked Sendable {
 
     /// The hook environment, built by the daemon rather than inherited from whoever started it:
     /// HOME, USER and LOGNAME from the user database, TMPDIR from confstr, a fixed PATH and LANG.
-    /// The runner adds BLACKICE_EVENT_FILE and BLACKICE_EVENT_ID.
+    /// The runner adds BLACKICE_EVENT_ID, and BLACKICE_EVENT_FILE for a hook that names no instructions.
     public static func environment(for account: UserAccount) -> [String: String] {
         ["HOME": account.home, "USER": account.name, "LOGNAME": account.name, "TMPDIR": account.temporaryDirectory,
          "PATH": defaultPath, "LANG": language]
@@ -228,8 +291,8 @@ public final class HookRunner: @unchecked Sendable {
 
     /// Runs `hooks` for `event` side by side and returns one result per hook, in file order.
     /// Each hook is killed at `event.deadline` or after `timeoutSeconds`, whichever comes first.
-    /// `notes`, the owner's notes for the agent from the configuration, go in each event's
-    /// directory as notes.md.
+    /// `notes`, the owner's notes for the agent from the configuration, go to a program hook with
+    /// its instructions, and into the directory of any other hook as notes.md.
     public func run(_ hooks: [Hook], for event: HookEvent, timeoutSeconds: Int, notes: String? = nil,
                     progress: @escaping @Sendable (HookProgress) -> Void = { _ in }) async -> [HookResult] {
         await withTaskGroup(of: HookResult.self) { group in
@@ -297,75 +360,113 @@ public final class HookRunner: @unchecked Sendable {
         defer { releaseSlot() }
         let started = uptime()
         func finish(_ outcome: HookResult.Outcome, stderr: String = "", truncated: Bool = false,
-                    stdout: Data = Data(), stdoutTruncated: Bool = false) -> HookResult {
+                    stdout: Data = Data(), stdoutTruncated: Bool = false, unsafeHome: String? = nil) -> HookResult {
             HookResult(hookLine: hook.line, outcome: outcome, stderr: stderr, stderrTruncated: truncated,
-                       duration: uptime() - started, waited: waited, stdout: stdout, stdoutTruncated: stdoutTruncated)
+                       duration: uptime() - started, waited: waited, stdout: stdout, stdoutTruncated: stdoutTruncated,
+                       unsafeHome: unsafeHome)
         }
 
         let budget = min(event.deadline.timeIntervalSinceNow, TimeInterval(timeoutSeconds))
         guard budget > 0 else { return finish(.dropped(.deadlinePassed)) }
 
-        let json: Data
-        let directory: URL
-        do {
-            json = try event.input.jsonData()
-            directory = try makeEventDirectory()
-        } catch {
-            return finish(.failedToStart("\(error)"))
-        }
-        defer { try? FileManager.default.removeItem(at: directory) }
-        let eventFile = directory.appendingPathComponent("event.json")
-        do {
-            try writePrivateFile(eventFile, json)
-            var files = hook.program?.instructions?.files ?? []
-            if let notes { files.append(AgentFile(path: "notes.md", text: notes.hasSuffix("\n") ? notes : notes + "\n")) }
-            try writeAgentFiles(files, into: directory)
-        } catch {
-            return finish(.failedToStart("\(error)"))
-        }
-
         func usable(_ key: String, _ value: String) -> Bool {
             !key.hasPrefix("BLACKICE_") && !key.isEmpty && !key.contains("=") && !key.contains("\0") && !value.contains("\0")
         }
         var environment = options.environment.filter(usable)
-        if let program = hook.program {
-            environment.merge(program.environment.filter(usable)) { $1 }
-        }
-        environment["BLACKICE_EVENT_FILE"] = eventFile.path
-        environment["BLACKICE_EVENT_ID"] = event.id
-
-        let child: SpawnedHook
+        // A folder of the hook's own: the event and the notes of a hook that names no instructions,
+        // or opencode's configuration.
+        var directory: URL?
+        defer { if let directory { try? FileManager.default.removeItem(at: directory) } }
+        let json: Data
+        var eventOnStdin = true
+        let start: (executable: String, arguments: [String], directory: String, requirement: LaunchCodeRequirement?)
         do {
+            json = try event.input.jsonData()
             if let program = hook.program {
-                child = try spawn(program.path, [program.path] + program.arguments, environment: environment,
-                                  directory: directory, suspended: true)
+                environment.merge(program.environment.filter(usable)) { $1 }
+                if let found = options.unsafeHome(program, environment) { return finish(.unsafeHome(path: found)) }
+            }
+            let requirement = try hook.program.map { try Self.launchRequirement(for: $0.identity) }
+            if let program = hook.program, let instructions = program.instructions {
+                var folder: String?
+                if instructions.needsConfigurationFolder {
+                    let made = try makeEventDirectory()
+                    directory = made
+                    let configuration = made.appendingPathComponent("opencode", isDirectory: true)
+                    guard mkdir(configuration.path, 0o700) == 0 else {
+                        throw FileSafetyError(configuration.path, "cannot create the folder: \(errnoText(errno))")
+                    }
+                    folder = made.path
+                }
+                let launch = instructions.launch(arguments: program.arguments, notes: notes, configurationFolder: folder)
+                environment.merge(launch.environment.filter(usable)) { $1 }
+                start = (program.path, launch.arguments, Self.programDirectory, requirement)
             } else {
-                child = try spawn(Self.shell, [Self.shell, "-c", hook.run ?? ""], environment: environment,
-                                  directory: directory, suspended: false)
+                let made = try makeEventDirectory()
+                directory = made
+                let eventFile = made.appendingPathComponent("event.json")
+                try writePrivateFile(eventFile, json)
+                if let notes {
+                    try writePrivateFile(made.appendingPathComponent("notes.md"), Data((notes.hasSuffix("\n") ? notes : notes + "\n").utf8))
+                }
+                environment["BLACKICE_EVENT_FILE"] = eventFile.path
+                if let program = hook.program {
+                    eventOnStdin = program.eventOnStdin
+                    start = (program.path, program.arguments, made.path, requirement)
+                } else {
+                    start = (Self.shell, ["-c", hook.run ?? ""], made.path, nil)
+                }
             }
         } catch {
             return finish(.failedToStart("\(error)"))
         }
-        if let program = hook.program {
-            // The program has not run yet. It runs only if it is the code its hook names.
-            let found = options.identify(child.pid)
-            guard found == .verified(program.identity) else {
-                _ = kill(-child.pid, SIGKILL)
-                var status: Int32 = 0
-                while waitpid(child.pid, &status, 0) < 0, errno == EINTR {}
-                close(child.stdin); close(child.stdout); close(child.stderr)
-                return finish(.refused(found: found.label))
-            }
-            _ = kill(child.pid, SIGCONT)
-        }
-        progress(.started(hookLine: hook.line, pid: child.pid, waited: waited))
+        environment["BLACKICE_EVENT_ID"] = event.id
 
+        let child: SpawnedHook
+        do {
+            child = try spawn(start.executable, start.arguments, environment: environment, directory: start.directory,
+                              requirement: start.requirement)
+        } catch {
+            return finish(.failedToStart("\(error)"))
+        }
+        // Read from the start, so that a hook that writes much before the check below never blocks.
         let collector = OutputCollector(limit: options.stderrLimit)
         collector.start(reading: child.stderr)
         let answer = OutputCollector(limit: options.stdoutLimit)
         answer.start(reading: child.stdout)
-        // `stdin = "none"`: stdin ends at once, and the event is only in the file.
-        feed(hook.program?.eventOnStdin == false ? Data() : json, to: child.stdin)
+
+        if let program = hook.program {
+            // The kernel checked the code at exec. This checks it again, and refuses the hook when
+            // the running code is another's, or cannot be read and does not exit on its own: code
+            // the kernel would not start dies of SIGKILL before its first instruction, and its PID
+            // names no valid code by then. A hook that already exited with a status of its own
+            // cannot be read either, but it ran only because the kernel let it; it has not had the
+            // event yet.
+            // Apple's own code may have started other Apple code in its place, as /bin/sh starts
+            // bash: the kernel checked the first, and the system volume holds both. Apple code the
+            // kernel refused can still read as itself for a moment before its SIGKILL lands, so that
+            // case also waits to see it was not killed.
+            let found = options.identify(child.pid)
+            let otherCode = found.appIdentity != nil
+            var expected = found == .verified(program.identity)
+            if !expected, program.identity.teamID == nil, found.verifiedIdentity.map({ $0.teamID == nil }) == true {
+                expected = !killedAtOnce(child)
+            }
+            if !expected, otherCode || !exitedOnItsOwn(child) {
+                _ = kill(-child.pid, SIGKILL)
+                waitForTermination(child)
+                close(child.stdin)
+                collector.stop(after: 0)
+                answer.stop(after: 0)
+                _ = collector.finish()
+                _ = answer.finishData()
+                // What the file is, when the running code could not be read.
+                let label = otherCode ? found.label : CodeIdentity.identity(atPath: program.path)?.label ?? found.label
+                return finish(.refused(found: label))
+            }
+        }
+        progress(.started(hookLine: hook.line, pid: child.pid, waited: waited))
+        feed(eventOnStdin ? json : Data(), to: child.stdin)
 
         let killAt = started + budget
         var lastSignal: Int32?
@@ -382,27 +483,30 @@ public final class HookRunner: @unchecked Sendable {
             }
             usleep(10_000)
         }
-        // The shell is a zombie now, so its PID, which is also the group ID, cannot be reused yet.
-        // Anything it left running in its group goes with it.
+        // Anything the hook left running in its group goes with it. Process reaps the hook itself,
+        // and may have done so already; the group's ID stays taken while any process is in it.
         _ = kill(-child.pid, SIGKILL)
-        var status: Int32 = 0
-        while waitpid(child.pid, &status, 0) < 0, errno == EINTR {}
+        waitForTermination(child)
 
         collector.stop(after: 0.2)
         answer.stop(after: 0.2)
         let (stderr, truncated) = collector.finish()
         let (stdout, stdoutTruncated) = answer.finishData()
 
-        let low = status & 0x7F
+        let status = child.process.terminationStatus
+        let killed = child.process.terminationReason == .uncaughtSignal
         let outcome: HookResult.Outcome
         if let lastSignal {
-            outcome = .timedOut(signal: low != 0 && low != 0x7F ? low : lastSignal)
-        } else if low == 0 {
-            outcome = .exited(status: (status >> 8) & 0xFF)
+            outcome = .timedOut(signal: killed ? status : lastSignal)
+        } else if killed {
+            outcome = .signaled(signal: status)
         } else {
-            outcome = .signaled(signal: low)
+            outcome = .exited(status: status)
         }
-        return finish(outcome, stderr: stderr, truncated: truncated, stdout: stdout, stdoutTruncated: stdoutTruncated)
+        // A file that appeared in the agent's home while it ran voids its answer.
+        let changed = hook.program.flatMap { options.unsafeHome($0, environment) }
+        return finish(outcome, stderr: stderr, truncated: truncated, stdout: stdout, stdoutTruncated: stdoutTruncated,
+                      unsafeHome: changed)
     }
 
     /// Event IDs end up in an environment variable and the log; only plain characters are accepted.
@@ -524,16 +628,20 @@ public final class HookRunner: @unchecked Sendable {
     }
 
     private struct SpawnedHook {
+        let process: Process
         let pid: pid_t
         let stdin: Int32
         let stdout: Int32
         let stderr: Int32
     }
 
-    /// Starts `executable` with `arguments` (argv[0] included). With `suspended`, the child is
-    /// stopped before its first instruction until it gets SIGCONT.
-    private func spawn(_ executable: String, _ arguments: [String], environment: [String: String], directory: URL,
-                       suspended: Bool) throws -> SpawnedHook {
+    /// Starts `executable` with `arguments` (argv[1...]) in `directory`, with exactly `environment`.
+    /// With a `requirement`, the kernel starts the code only when it meets it, and otherwise kills
+    /// it before its first instruction (Process.run does not throw then). Process passes the
+    /// arguments and the environment decomposed, as file names are (NFD): an `ñ` in the notes
+    /// reaches the agent as `n` and a combining tilde. Up to 1.0.2 they went as written.
+    private func spawn(_ executable: String, _ arguments: [String], environment: [String: String], directory: String,
+                       requirement: LaunchCodeRequirement?) throws -> SpawnedHook {
         var pipes: [[Int32]] = []
         for _ in 0..<3 {
             var ends: [Int32] = [-1, -1]
@@ -545,54 +653,32 @@ public final class HookRunner: @unchecked Sendable {
             pipes.append(ends)
         }
         let (input, output, errors) = (pipes[0], pipes[1], pipes[2])
+        // Not into another hook started meanwhile; Process puts the child's ends on 0, 1 and 2.
         for fd in pipes.joined() { _ = fcntl(fd, F_SETFD, FD_CLOEXEC) }
 
-        var actions: posix_spawn_file_actions_t?
-        posix_spawn_file_actions_init(&actions)
-        defer { posix_spawn_file_actions_destroy(&actions) }
-        posix_spawn_file_actions_adddup2(&actions, input[0], 0)
-        posix_spawn_file_actions_adddup2(&actions, output[1], 1)
-        posix_spawn_file_actions_adddup2(&actions, errors[1], 2)
-        posix_spawn_file_actions_addchdir_np(&actions, directory.path)
-
-        var attributes: posix_spawnattr_t?
-        posix_spawnattr_init(&attributes)
-        defer { posix_spawnattr_destroy(&attributes) }
-        // Own process group; only descriptors 0-2 from the file actions are inherited; every signal
-        // back to its default disposition and none blocked, whatever the daemon itself ignores.
-        var flags = POSIX_SPAWN_SETPGROUP | POSIX_SPAWN_CLOEXEC_DEFAULT | POSIX_SPAWN_SETSIGDEF | POSIX_SPAWN_SETSIGMASK
-        if suspended { flags |= POSIX_SPAWN_START_SUSPENDED }
-        posix_spawnattr_setflags(&attributes, Int16(flags))
-        posix_spawnattr_setpgroup(&attributes, 0)
-        var defaults = sigset_t()
-        sigfillset(&defaults)
-        sigdelset(&defaults, SIGKILL)
-        sigdelset(&defaults, SIGSTOP)
-        posix_spawnattr_setsigdefault(&attributes, &defaults)
-        var mask = sigset_t()
-        sigemptyset(&mask)
-        posix_spawnattr_setsigmask(&attributes, &mask)
-
-        let argv = cStrings(arguments)
-        let envp = cStrings(environment.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" })
-        defer { argv.forEach { free($0) }; envp.forEach { free($0) } }
-
-        var pid: pid_t = 0
-        let status = posix_spawn(&pid, executable, &actions, &attributes, argv, envp)
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: executable)
+        process.arguments = arguments
+        process.environment = environment
+        process.currentDirectoryURL = URL(fileURLWithPath: directory, isDirectory: true)
+        process.standardInput = FileHandle(fileDescriptor: input[0], closeOnDealloc: false)
+        process.standardOutput = FileHandle(fileDescriptor: output[1], closeOnDealloc: false)
+        process.standardError = FileHandle(fileDescriptor: errors[1], closeOnDealloc: false)
+        process.launchRequirement = requirement
+        do {
+            try process.run()
+        } catch {
+            pipes.joined().forEach { close($0) }
+            throw FileSafetyError(executable, "cannot start the hook: \((error as NSError).localizedDescription)")
+        }
         close(input[0])
         close(output[1])
         close(errors[1])
-        guard status == 0 else {
-            close(input[1])
-            close(output[0])
-            close(errors[0])
-            throw FileSafetyError(executable, "cannot start the hook: \(errnoText(status))")
-        }
-        return SpawnedHook(pid: pid, stdin: input[1], stdout: output[0], stderr: errors[0])
+        return SpawnedHook(process: process, pid: process.processIdentifier, stdin: input[1], stdout: output[0], stderr: errors[0])
     }
 
     /// Writes the event to the hook's stdin without ever blocking or raising SIGPIPE. A hook that
-    /// exits or stops reading early loses the rest of stdin; it still has the event file.
+    /// exits or stops reading early loses the rest of stdin.
     private func feed(_ data: Data, to fd: Int32) {
         _ = fcntl(fd, F_SETNOSIGPIPE, 1)
         _ = fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK)
@@ -612,12 +698,40 @@ public final class HookRunner: @unchecked Sendable {
         close(fd)
     }
 
-    /// True once the process has exited. WNOWAIT leaves it a zombie, to be reaped by waitpid.
+    /// True once the process has exited: a zombie (WNOWAIT leaves it one), or reaped by Process.
     private func hasExited(_ pid: pid_t) -> Bool {
         var info = siginfo_t()
         let result = waitid(P_PID, id_t(pid), &info, WEXITED | WNOHANG | WNOWAIT)
         if result == 0 { return info.si_pid == pid }
         return errno != EINTR
+    }
+
+    /// Waits until Process has reaped the hook, so that its status is known.
+    private func waitForTermination(_ child: SpawnedHook) {
+        while child.process.isRunning { usleep(2_000) }
+    }
+
+    /// Whether the hook dies of SIGKILL within 50 ms of its start, as code the kernel refused does.
+    private func killedAtOnce(_ child: SpawnedHook) -> Bool {
+        let giveUp = uptime() + 0.05
+        while !hasExited(child.pid) {
+            guard uptime() < giveUp else { return false }
+            usleep(2_000)
+        }
+        waitForTermination(child)
+        return child.process.terminationReason == .uncaughtSignal && child.process.terminationStatus == SIGKILL
+    }
+
+    /// Whether the hook exits within a second with an exit status of its own, not killed by a
+    /// signal: one the kernel would not start dies of SIGKILL at once.
+    private func exitedOnItsOwn(_ child: SpawnedHook) -> Bool {
+        let giveUp = uptime() + 1
+        while !hasExited(child.pid) {
+            guard uptime() < giveUp else { return false }
+            usleep(5_000)
+        }
+        waitForTermination(child)
+        return child.process.terminationReason == .exit
     }
 }
 
@@ -684,10 +798,6 @@ private final class OutputCollector: @unchecked Sendable {
 }
 
 private func uptime() -> TimeInterval { ProcessInfo.processInfo.systemUptime }
-
-private func cStrings(_ strings: [String]) -> [UnsafeMutablePointer<CChar>?] {
-    strings.map { strdup($0) } + [nil]
-}
 
 func writeAll(_ fd: Int32, _ data: Data, path: String) throws {
     try data.withUnsafeBytes { buffer in

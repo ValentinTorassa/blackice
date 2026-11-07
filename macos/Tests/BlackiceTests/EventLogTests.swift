@@ -109,6 +109,7 @@ struct EventLogTests {
             (.dropped(.queueFull), "hook_dropped", "reason", "queue_full"),
             (.failedToStart("no shell"), "hook_failed", "error", "no shell"),
             (.refused(found: "invalid_signature"), "hook_refused", "found", "invalid_signature"),
+            (.unsafeHome(path: "/h/.codex/AGENTS.md"), "hook_refused", "path", "/h/.codex/AGENTS.md"),
         ]
         for (outcome, type, key, value) in cases {
             let data = try EventLog.encode(.hookFinished(eventID: "ev-1", result(outcome)), at: Date())
@@ -120,6 +121,19 @@ struct EventLogTests {
             #expect(record["stderr"] == nil)
             #expect(record["waited_ms"] == nil)
         }
+    }
+
+    /// Why a hook was refused, and why an answer did not count: the signature, or the agent's home.
+    @Test func aRefusalSaysWhy() throws {
+        func record(_ entry: LogRecord) throws -> [String: Any] {
+            try #require(try JSONSerialization.jsonObject(with: EventLog.encode(entry, at: Date())) as? [String: Any])
+        }
+        #expect(try record(.hookFinished(eventID: "ev-1", result(.refused(found: "x"))))["reason"] as? String == "signature")
+        let home = try record(.hookFinished(eventID: "ev-1", result(.unsafeHome(path: "/h/.fx/AGENTS.md"))))
+        #expect(home["reason"] as? String == "agent_home" && home["path"] as? String == "/h/.fx/AGENTS.md")
+        let voided = try record(.hookNoAnswer(eventID: "ev-1", hookLine: 9, .unsafeHome("/h/.fx/AGENTS.md")))
+        #expect(voided["type"] as? String == "hook_no_answer" && voided["reason"] as? String == "agent_home")
+        #expect(voided["path"] as? String == "/h/.fx/AGENTS.md")
     }
 
     /// A hook that had to wait for a slot: hook_queued, then waited_ms on its start and its end.
