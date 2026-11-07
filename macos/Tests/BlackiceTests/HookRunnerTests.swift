@@ -157,10 +157,11 @@ struct HookRunnerTests {
     @Test func theEventDeadlineWinsOverALongerTimeout() async throws {
         let dir = try makePrivateDirectory()
         defer { removeTree(dir) }
-        let results = try await testRunner(dir).run([hook("sleep 30")], for: testEvent(deadlineIn: 0.8), timeoutSeconds: 60)
+        // Room for a slow CI runner to start the hook before the deadline.
+        let results = try await testRunner(dir).run([hook("sleep 30")], for: testEvent(deadlineIn: 2), timeoutSeconds: 60)
         let result = try #require(results.first)
         #expect(result.outcome == .timedOut(signal: SIGTERM))
-        #expect(result.duration < 4, "took \(result.duration) s")
+        #expect(result.duration < 5, "took \(result.duration) s")
     }
 
     @Test func nothingRunsAfterTheDeadline() async throws {
@@ -240,7 +241,8 @@ struct HookRunnerTests {
                 }
             }
         }
-        let tasks = [launch("ev-a1", "com.example.a", "sleep 0.5")]
+        // Long enough for the three others to queue behind it, even on a slow CI runner.
+        let tasks = [launch("ev-a1", "com.example.a", "sleep 2")]
         #expect(await eventually { runner.runningCount == 1 })
         var queued = tasks
         for (index, (id, app)) in [("ev-a2", "com.example.a"), ("ev-a3", "com.example.a"),
@@ -419,9 +421,11 @@ struct HookRunnerTests {
         let configured = set.filedArguments(model: "m")
         let program = HookProgram(path: "/bin/echo", arguments: configured, environment: ["HOME": dir.path],
                                   identity: SigningIdentity(signingID: "com.apple.echo", teamID: nil), instructions: set)
+        // echo exits before its code can be read; where the kernel did not check it at exec (SIP
+        // off, as on CI) that refuses it (anEarlyExitCountsOnlyWhereTheKernelChecks).
         let runner = try HookRunner(options: .init(
             workDirectory: dir.appendingPathComponent("work"), environment: HookRunner.environment(for: try UserAccount.current()),
-            stdoutLimit: 1 << 20))
+            stdoutLimit: 1 << 20, kernelChecksLaunch: { true }))
         let results = await runner.run([Hook(program: program, line: 1)], for: testEvent(), timeoutSeconds: 10, notes: "Use node.")
         let result = try #require(results.first)
         #expect(result.outcome == .exited(status: 0))
@@ -499,7 +503,7 @@ struct HookRunnerTests {
                 let found = AgentInstructions.codex.plantedFile(environment: environment)
                 checks.append(found)
                 return found
-            }))
+            }, kernelChecksLaunch: { true }))
         let program = HookProgram(path: "/bin/bash", arguments: ["-c", "mkdir -p \"$CODEX_HOME\" && touch \"$CODEX_HOME/AGENTS.md\"; echo 'approve 24h'"],
                                   environment: ["CODEX_HOME": codexHome.path],
                                   identity: SigningIdentity(signingID: "com.apple.bash", teamID: nil))
@@ -535,7 +539,8 @@ struct HookRunnerTests {
         defer { removeTree(dir) }
         let other = SigningIdentity(signingID: "com.apple.echo", teamID: "ABCDE12345")
         let program = HookProgram(path: "/bin/echo", arguments: ["approve 24h"], identity: other)
-        let real = try await testRunner(dir).run([Hook(program: program, line: 1)], for: testEvent(), timeoutSeconds: 10)
+        let real = try await testRunner(dir, kernelChecks: { HookRunner.kernelChecksLaunch })
+            .run([Hook(program: program, line: 1)], for: testEvent(), timeoutSeconds: 10)
         #expect(real.map(\.outcome) == [.refused(found: "apple/com.apple.echo")])
         #expect(real.first?.answer == nil && real.first?.stdout.isEmpty == true)
         // With SIP off the kernel lets it run; the check by PID above is all there is.
@@ -563,8 +568,8 @@ struct HookRunnerTests {
             let program = HookProgram(path: "/bin/sh", arguments: ["-c", "touch \(quotedPath(marker)); echo 'approve 24h'"],
                                       identity: expected)
             let progress = Recorder<String>()
-            let results = try await testRunner(dir).run([Hook(program: program, line: 3)], for: testEvent(),
-                                                         timeoutSeconds: 10) { update in
+            let results = try await testRunner(dir, kernelChecks: { HookRunner.kernelChecksLaunch })
+                .run([Hook(program: program, line: 3)], for: testEvent(), timeoutSeconds: 10) { update in
                 if case .started = update { progress.append("started") }
             }
             let result = try #require(results.first)

@@ -97,6 +97,22 @@ struct EventLogTests {
         #expect(record["port"] as? Int == 443)
         #expect(record["token"] == nil)
         #expect((record["ts"] as? String)?.hasSuffix("Z") == true)
+        #expect(record["app_script"] == nil)
+    }
+
+    /// The script an interpreter ran is kept with the event, as the agent saw it.
+    @Test func anInterpretersScriptIsLogged() throws {
+        let dir = try makePrivateDirectory()
+        defer { removeTree(dir) }
+        let url = dir.appendingPathComponent("events.jsonl")
+        let log = try EventLog(url: url)
+        let app = HookEvent.App(AppIdentity.cdhash(String(repeating: "ab", count: 20)), path: "/opt/homebrew/bin/python3",
+                                script: "/opt/homebrew/bin/aws")
+        try log.append(.eventReceived(try HookEvent.connection(app: app, host: "sts.amazonaws.com", ip: "203.0.113.7",
+                                                               port: 443, deadline: Date().addingTimeInterval(30))))
+        let record = try #require(try lines(url).first)
+        #expect(record["app_script"] as? String == "/opt/homebrew/bin/aws")
+        #expect(record["app_cdhash"] as? String == String(repeating: "ab", count: 20))
     }
 
     @Test func eachOutcomeHasItsRecordType() throws {

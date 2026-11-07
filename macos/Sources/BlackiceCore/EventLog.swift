@@ -131,6 +131,8 @@ public final class EventLog: @unchecked Sendable {
             fields["app_team_id"] = event.app.teamID.map(Field.string)
             fields["app_cdhash"] = event.app.cdhash.map(Field.string)
             fields["app_path"] = event.app.path.map(Field.string)
+            // What the agent was shown, never trusted (ProcessArguments): the review of its answers needs it.
+            fields["app_script"] = event.app.script.map(Field.string)
             fields["host"] = event.host.map(Field.string)
             fields["ip"] = .string(event.ip)
             fields["port"] = .int(Int(event.port))
