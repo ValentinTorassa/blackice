@@ -128,13 +128,13 @@ With `apple_services = true`, the default, a built-in list lets macOS's own serv
 
 In ask mode the daemon runs each `[[hook]]` with `on = "connection"` for a connection that waits. The agent a hook runs needs a rule to reach its model, or it waits on its own approval; `agent connect` adds both.
 
-- `program` is an absolute path. The daemon starts it with no shell, and only when its signature names `app` and `team`; otherwise it is killed before it runs, and the log says `hook_refused`.
+- `program` is an absolute path. The daemon starts it with no shell, and macOS runs it only when its signature names `app` and `team`: a Developer ID signature with that Team ID, or, with no `team`, Apple's own code. Otherwise it is killed before it runs, and the log says `hook_refused`. Name the agent's own executable, not a script or wrapper that starts it.
 - `args` lists the arguments, as strings. Nothing from the event is ever put in them.
 - `env` adds `NAME=value` strings to the [environment](#the-hooks-environment). A name may not start with `BLACKICE_`.
-- `stdin = "none"` keeps the event off stdin, so it is only in its file. The default, `"event"`, sends it on stdin too.
-- `instructions` (`"fx"`, `"claude-code"`, `"codex"` or `"opencode"`) has the daemon write that agent's instructions, from blackice itself, into the event's directory.
+- `stdin = "none"` keeps the event off stdin, so it is only in its file, for a program that names no `instructions`. The default, `"event"`, sends it on stdin too.
+- `instructions` (`"fx"`, `"claude-code"`, `"codex"` or `"opencode"`) has the daemon pass that agent its instructions, from blackice itself, and your notes, on its command line or in its environment. The agent gets the event on stdin, whatever `stdin` says, runs in `/var/empty`, and gets no file. The daemon also looks in the agent's home first: a file there that Codex or fx would load as instructions, and that blackice did not put there, keeps the hook from starting (`hook_refused`, reason `agent_home`), and one that appears while it runs voids its answer. The connection then waits for you.
 
-`run = '…'`, in place of `program`, is a line for `/bin/sh -c`. Nothing checks what it starts, so any program running as you can put something else in its place. It takes no `app`, `team`, `args`, `env`, `stdin` or `instructions`.
+`run = '…'`, in place of `program`, is a line for `/bin/sh -c`. Nothing checks what it starts, so any program running as you can put something else in its place. It takes no `app`, `team`, `args`, `env`, `stdin` or `instructions`, and gets the event as a file too, as a `program` that names no `instructions` does (below).
 
 ## The agent table
 
@@ -148,7 +148,7 @@ Deny analytics and tracking hosts, such as stats.example.com, whatever the app.
 ```
 
 - `answers` names the agent whose hook runs: `"fx"`, `"claude-code"`, `"codex"`, `"opencode"`, or `"you"` for none. Hooks without `instructions` run either way. With no `answers`, every hook runs.
-- `notes` is your guidance for the agent: what you use for work, what you never want reached. The daemon writes it as `notes.md` beside the event, and the agent follows it for judgment calls, never over its safety rules. Plain text, at most 4 KiB, and the only value that may span lines. Like the hooks, it changes only with your Touch ID.
+- `notes` is your guidance for the agent: what you use for work, what you never want reached. The daemon passes it to the agent after its instructions, and the agent follows it for judgment calls, never over its safety rules. A hook that names no `instructions` gets it as `notes.md` beside the event's file. Plain text, at most 4 KiB, and the only value that may span lines. Like the hooks, it changes only with your Touch ID.
 
 ## The hook's environment
 
@@ -160,13 +160,14 @@ The daemon builds the environment a hook starts with:
 | `TMPDIR` | That user's temporary directory. |
 | `PATH` | `/usr/bin:/bin:/usr/sbin:/sbin` |
 | `LANG` | `en_US.UTF-8` |
-| `BLACKICE_EVENT_FILE`, `BLACKICE_EVENT_ID` | The event's file and ID. |
+| `BLACKICE_EVENT_ID` | The event's ID. |
+| `BLACKICE_EVENT_FILE` | The event's file, for a hook that names no `instructions`. |
 
-A `program` hook's `env` may replace any of these but the last two.
+A `program` hook's `env` may replace any of these but the `BLACKICE_` ones.
 
 ## The event a hook receives
 
-The daemon writes the event to `event.json`, in a private directory that is the hook's working directory and is deleted afterwards, and names the file in `BLACKICE_EVENT_FILE`. Unless the hook says `stdin = "none"`, it gets the event on stdin too.
+A hook that names an agent's `instructions` gets the event on stdin only, and no file: up to 1.0.2 it got the event, the instructions and the notes as files in a folder of yours, which any program running as you could change while the agent read them. For any other hook the daemon writes the event to `event.json`, in a private directory that is the hook's working directory and is deleted afterwards, and names the file in `BLACKICE_EVENT_FILE`. Unless the hook says `stdin = "none"`, it gets the event on stdin too.
 
 ```json
 {

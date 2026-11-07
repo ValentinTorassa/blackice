@@ -18,11 +18,12 @@ answer, and the daemon passes that on. That way has not yet run on a Mac.
 
 ## Where the skill comes from
 
-fx looks for skills in `~/.fx/skills`, `~/.agents/skills` and `~/.claude/skills`, and in a
-workspace's `.fx/skills`, `.agents/skills`, `.claude/skills` and `skills/`. Up to 0.4.0 the skill went in the
-agent's own home, where any program running as you could rewrite it. Now the hook says `instructions = "fx"`,
-and for each event the daemon writes the skill from blackice itself as `skills/blackice/SKILL.md` in the event's
-directory, which is fx's workspace. `agent connect` removes the old copy in `~/.fx/skills` of the agent home.
+The skill is not loaded as a skill any more. The hook says `instructions = "fx"`, and since 1.0.3 the daemon passes
+its text, from blackice itself and without its front matter, with `--system`, the owner's notes after it, and the
+event on stdin. Up to 0.4.0 the skill went in the agent's own home, and up to 1.0.2 the daemon wrote it as
+`skills/blackice/SKILL.md` in the event's directory, fx's workspace, with the event as `event.json`: either way a
+file that any program running as you could rewrite while fx read it. `agent connect` removes the old copy in
+`~/.fx/skills` of the agent home.
 
 ## A development build
 
@@ -44,35 +45,38 @@ on = "connection"
 program = "/Users/me/.local/bin/fx"
 app = "com.vercel.fx"
 team = "JW6Y669B67"
-args = ["ask", "--no-save", "--no-color", "--model", "anthropic/claude-haiku-5.5", "--system", "You answer for blackice, a network filter on a Mac: one app wants to reach one host, and you decide whether to approve it. The blackice skill in this workspace says how to read the event and how to answer. Follow it exactly and answer in its format.", "Use the blackice skill to decide whether to approve the pending connection"]
+args = ["ask", "--no-save", "--no-color", "--model", "anthropic/claude-haiku-5.5"]
 env = ["HOME=/Users/me/.config/blackice/agent", "FX_DISABLE_KEYCHAIN=1"]
 instructions = "fx"
 ```
 
+The daemon starts it as `fx ask --system <the skill and the notes> --no-save …`, with the event on stdin and
+`/var/empty` as its working directory. A hook from 1.0, whose `--system` and prompt pointed fx at the skill in its
+workspace, runs the same way.
+
 - **`program`** is the absolute path of fx. The daemon starts it directly, with `args`, and no shell.
 - **`app`** and **`team`** are fx's signing identifier and Team ID, as in an `[[allow]]` rule. Read them with
-  `codesign -dv ~/.local/bin/fx` (`Identifier=` and `TeamIdentifier=`). The daemon starts fx suspended, checks the
-  signature of the process it started, and kills it before it runs if the signature does not name both. An
-  upgrade of fx that keeps its identity needs no change; a program put in its place by something else never runs.
+  `codesign -dv ~/.local/bin/fx` (`Identifier=` and `TeamIdentifier=`). macOS starts fx only when its code has both
+  with Vercel's Developer ID signature, and the daemon checks the process again once it runs. An upgrade of fx that
+  keeps its identity needs no change; a program put in its place by something else never runs.
 - **`--model`** picks the model for each decision over the one in fx's settings. AI Gateway bills it to the Vercel
   team fx signed in with, and a decision is a short read and a two-line answer, so `agent connect` writes a small
   one: Claude Haiku 5.5, which `fx models` priced at $0.10 and $0.50 per million tokens in and out on 5 November
   2026, a hundredth of Claude Fable 5.1. `agent connect fx --model ID` writes another; `fx models` lists them.
-- **`--system`** replaces fx's built-in system prompt, written for coding, with two sentences that say what the job
-  is. fx still sends its tools and the blackice skill. On 5 November 2026 that cut each decision's input from about
-  22,000 tokens to about 18,300 with Haiku 5.5, most of them read from the prompt cache either way.
+- **`--system`**, which the daemon adds, replaces fx's built-in system prompt, written for coding, with the skill
+  and the notes. fx still adds its tools, skills and project context ("tool, skill, project, and runtime context
+  still apply", in `fx help`). On 5 November 2026 replacing the built-in prompt cut each decision's input from about
+  22,000 tokens to about 18,300 with Haiku 5.5, most of them read from the prompt cache either way. A hook's own
+  `--system` is dropped.
+- **No prompt**: `fx ask` takes its prompt from stdin when it is given none, so the event is the whole prompt.
 - **`env`** is added to the environment the daemon builds. `HOME` points fx at a home of its own, with its own
   login and the rules below, so they don't apply to the fx you use yourself. fx's documentation describes
   `FX_HOME` for this, but v0.0.16 does not read it. `FX_DISABLE_KEYCHAIN=1` keeps fx's login in that home rather
   than in your keychain.
-- **`instructions`** has the daemon write the blackice skill into the event's directory before fx starts.
+- **`instructions`** has the daemon pass the skill and the notes (the skill has fx follow them for judgment calls,
+  never over its safety rules), and look in fx's home before it starts the hook and again once it exits (below).
 
-The daemon starts each hook in a new private directory holding the event as `event.json`, the skill as
-`skills/blackice/SKILL.md` and, when `blackice.toml` has `notes` in `[agent]`, the owner's notes as `notes.md`
-(the skill has fx follow them for judgment calls, never over its safety rules), and names the event's file in
-`BLACKICE_EVENT_FILE`. That directory is fx's workspace,
-so fx can read the event without reaching outside it. The event also goes to the hook on stdin, but `fx ask`
-treats stdin as its prompt, so the skill reads the file. The event has no token: the hook never sees it.
+The event has no token: the hook never sees it.
 
 ## The answer
 
@@ -101,7 +105,7 @@ happened with AI Gateway: `HTTP 502 · insufficient_funds`, since the team had n
 
 ## Permissions
 
-The agent only has to read files: `event.json` and the skill. Set up its home once:
+The agent has nothing to read: the event and the skill are its prompt. Set up its home once:
 
 ```console
 $ agent="$HOME/.config/blackice/agent"
@@ -127,20 +131,26 @@ Then add these keys to `$agent/.fx/settings.json`, which `fx login` creates:
 - **`edit`** refuses file changes. fx counts writing a new file as an edit.
 - **`web_fetch`** and **`web_search`** keep the agent off the web, so it can't look the host
   up and no web page ends up in what it reads.
-- Reading files is left alone: the agent has to read `event.json` and the skill.
+- Reading files is left alone, as up to 1.0.2 the agent read `event.json` and the skill. It no longer needs to.
 - `fx permissions`, run with the same `HOME`, shows the mode and the rules fx loaded.
 
 Don't add MCP servers to this home: their tools are not covered by these rules. And keep in mind that any program
 running as you can change the rules and the login in this home, or add a skill there, and through them what fx
-answers: fx loads skills from its home as well as from its workspace, and which of two skills named blackice it
-reads is up to fx. The signature check covers fx itself, and the skill comes from blackice, not the other files fx
-reads.
+answers: fx loads its `AGENTS.md`, its skills and the skills of other agents in its `HOME`, and its rules and
+provider from its settings. Since 1.0.3 the daemon looks before it starts fx and again once it exits: an
+`AGENTS.md` in `.fx`, a skill (a folder with a `SKILL.md`) in `.fx/skills`, `.claude/skills`, `.codex/skills`,
+`.agents/skills`, `.claw/skills` or `.config/opencode/skills`, or settings whose `permission_mode` or rules are not
+the ones above, or that name a provider other than AI Gateway, mean fx does not start (`hook_refused`, reason
+`agent_home`), or that its answer does not count (`hook_no_answer`, reason `agent_home`), and the connection waits
+for you. That only detects the change, and a program that adds the file after the first look and removes it before
+the second wins. The signature check covers fx itself.
 
 ## Checking the skill
 
 fx's eval is the one every decider shares, [`../eval/run.sh`](../eval/run.sh)
 (`eval/run.sh` here runs it). It starts fx once per event in [`../eval/events/`](../eval/events/) as the daemon
-starts a program hook, with fx's `args` and `env`, `BLACKICE_EVENT_FILE` set and the event on stdin. It reads each
+starts a program hook, with fx's `args` and `env`, the skill and the notes in `--system`, the event on stdin and
+`/var/empty` as its working directory. It reads each
 answer from fx's stdout with the daemon's rules (exit status 0, at most 64 KiB, the last non-empty line) and
 compares it with [`../eval/cases.json`](../eval/cases.json). Nothing is allowed or blocked.
 
@@ -148,11 +158,9 @@ compares it with [`../eval/cases.json`](../eval/cases.json). Nothing is allowed 
 $ AGENT_HOME="$HOME/.config/blackice/agent" integrations/eval/run.sh --agent fx /path/to/fx
 ```
 
-Each event gets its own private directory with `event.json` and the repository's copy of the
-skill in it, and fx runs there, as under the hook. `AGENT_HOME` is the `HOME` fx runs with, with
-`FX_DISABLE_KEYCHAIN=1` as in the hook; without it, fx runs with your own `HOME`. `MODEL=id` picks another model
-than the hook's. `NOTES=file` puts that file in
-each event's directory as `notes.md`, as the daemon does with `notes` in `[agent]`. `KEEP=1` keeps the work
+The skill is the repository's copy. `AGENT_HOME` is the `HOME` fx runs with, with `FX_DISABLE_KEYCHAIN=1` as in
+the hook; without it, fx runs with your own `HOME`. `MODEL=id` picks another model than the hook's. `NOTES=file`
+passes that file's text as the owner's notes, as the daemon does with `notes` in `[agent]`. `KEEP=1` keeps the work
 directory with fx's stdout and stderr for each event.
 
 There are 33 events. The first twelve were fx's own, and they cover:
@@ -181,7 +189,8 @@ to PyPI, `cargo` in `~/.cargo/bin` to the crates.io index and a Homebrew `gh` to
 approve), and an unknown binary in a hidden folder that is no toolchain's and `curl` to an Azure storage account that
 is not GitHub's (both deny).
 
-The eval has not run with fx and the 0.4.0 skill yet. With the 0.3 skill, which had fx run `blackice approve` and `deny`
+The eval has not run with fx and the skill in `--system`, as since 1.0.3, yet. It has not run with the 0.4.0 skill
+either. With the 0.3 skill, which had fx run `blackice approve` and `deny`
 with the token, against a stub:
 
 On 2 November 2026, with fx 0.0.16 signed in with a ChatGPT account, four runs each came out

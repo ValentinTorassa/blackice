@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+Changed:
+- blackice needs macOS 14.4 or later: the daemon starts `program` hooks with a launch requirement, so macOS runs one
+  only when its signature names the hook's `app` and `team`, with a Developer ID (or, with no `team`, Apple's own
+  code). Until now the daemon started it suspended and checked it before letting it run, and a program that stopped
+  the hook and let it run first got past the check.
+- A hook that names an agent's `instructions` gets no files: the instructions and the owner's notes come on its
+  command line (Claude Code, Codex, fx) or in its environment (opencode), the event on stdin, and it runs in
+  `/var/empty`. Claude Code runs with no tools at all. A hook from 1.0 runs the same way. Until now all three were
+  files in a folder any program running as you could change while the agent read them.
+- The daemon looks in Codex's and fx's homes before it starts their hook and once it exits. A file there that they
+  would load as instructions, such as `AGENTS.md` or a skill, keeps the hook from starting, or voids its answer
+  (`agent_home` in the log and the menu), and the connection waits for you. Until now nothing looked. This only
+  detects the file, and can miss one added and removed while the hook runs.
+
 Fixed:
 - An approval that lands while the configuration changes no longer lets its connections through under the new one.
   Until now a switch to block-all at that moment missed them, and the old approval let them go.

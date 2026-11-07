@@ -13,9 +13,9 @@ stdout: `approve 10m`, `approve 1h` or `deny`.
   when the two differ; `macos/scripts/agent-instructions.sh` writes it).
 - [`blackice/sample-event.json`](blackice/sample-event.json): an event as a hook gets it, with no token.
 
-When `blackice.toml` has `notes` in `[agent]`, the daemon also writes them as `notes.md` next to the event, and the
-instructions have Claude Code read them in the same turn as the event and follow them for judgment calls, never
-over the safety rules. `NOTES=file` gives the eval below a `notes.md`.
+When `blackice.toml` has `notes` in `[agent]`, the daemon passes them after the instructions
+(`--append-system-prompt`), and the instructions have Claude Code follow them for judgment calls, never over the
+safety rules. `NOTES=file` gives the eval below notes.
 
 ## The hook
 
@@ -27,37 +27,41 @@ on = "connection"
 program = "/opt/homebrew/bin/claude"
 app = "com.anthropic.claude-code"
 team = "Q6L2SF6YDW"
-args = ["-p", "--restricted", "--safe-mode", "--tools", "Read", "--strict-mcp-config", "--no-session-persistence", "--permission-prompts", "none", "--model", "haiku", "--max-turns", "3", "--output-format", "text", "--system-prompt-file", "instructions.md", "Decide the pending blackice connection in event.json."]
+args = ["-p", "--restricted", "--safe-mode", "--tools", "", "--strict-mcp-config", "--no-session-persistence", "--permission-prompts", "none", "--model", "haiku", "--max-turns", "3", "--output-format", "text", "Decide the pending blackice connection. Its event is the JSON object in this message, which blackice sent on stdin."]
 env = ["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1", "CLAUDE_CONFIG_DIR=/Users/me/.config/blackice/agent/.claude"]
-stdin = "none"
 instructions = "claude-code"
 ```
 
-`program` is the `claude` it found: the Homebrew cask's `/opt/homebrew/bin/claude`, or `~/.local/bin/claude` from
-Anthropic's installer. `app` and `team` are read from that binary, and the daemon starts it only when the running
-code has them, so an update that keeps Anthropic's signature needs no change. Checked against Claude Code 2.1.317:
+The daemon starts it as `claude --system-prompt <the instructions> [--append-system-prompt <the notes>] -p …`, with
+the event on stdin and `/var/empty` as its working directory. A hook from 1.0, with `--tools Read`,
+`--system-prompt-file instructions.md` and `stdin = "none"`, runs the same way.
 
-- **`--tools Read`**: reading files is its only tool. No shell, no edits, no web.
-- **`--restricted`** keeps the file tools inside the working directory, which is the event's private directory
-  with `event.json`, the instructions and the owner's `notes.md`, if any, in it: a read of `/etc/hosts` was
-  refused. It also ignores the user, project and local
-  settings files, so nothing in them can add a tool or a hook.
+`program` is the `claude` it found: the Homebrew cask's `/opt/homebrew/bin/claude`, or `~/.local/bin/claude` from
+Anthropic's installer. `app` and `team` are read from that binary, and macOS starts it only when its code has them
+with Anthropic's Developer ID signature, so an update that keeps that signature needs no change. Checked against
+Claude Code 2.1.318:
+
+- **`--tools ""`**: no tools at all. No shell, no files, no edits, no web. Everything it needs is in its prompt.
+- **`--restricted`** ignores the user, project and local settings files, so nothing in them can add a tool or a
+  hook.
 - **`--safe-mode`** turns off CLAUDE.md files, skills, plugins, hooks and the rest of the customizations, and
   **`--strict-mcp-config`** with no `--mcp-config` leaves no MCP server.
 - **`--permission-prompts none`**: anything that would ask for permission is refused, since nobody is there.
 - **`--no-session-persistence`**: nothing of the run is saved.
-- **`--system-prompt-file instructions.md`** and **`instructions = "claude-code"`**: before Claude Code starts,
-  the daemon writes the instructions, from blackice itself, as `instructions.md` in the event's directory, its
-  working directory, and they replace Claude Code's own system prompt. Up to 0.4.0 they were a file in the agent
-  home, the one file there that `--restricted` and `--safe-mode` left Claude Code reading, and any program running
-  as you could rewrite it; `agent connect` now removes that copy.
-- **`--model haiku --max-turns 3`**: the smallest model, which uses the least of the subscription, and one turn
-  to read the event and the notes and one to answer, with one to spare. Over the limit, `claude -p` exits with an
-  error, and that is no answer. `agent connect claude-code --model sonnet` writes another model.
-- **`stdin = "none"`**: `claude -p` adds whatever comes on stdin to the prompt, and the daemon sends the event on
-  stdin unless the hook says otherwise. With an empty stdin the event stays out of the prompt: it arrives only
-  through the Read tool, as data, where Claude treats it with more suspicion than text from the person it works
-  for.
+- **`instructions = "claude-code"`**: the daemon passes the instructions, from blackice itself, with
+  `--system-prompt`, which replaces Claude Code's own system prompt, and the notes with `--append-system-prompt`.
+  A hook's own `--system-prompt`, `--system-prompt-file`, `--append-system-prompt` and
+  `--append-system-prompt-file` are dropped. Up to 1.0.2 the daemon wrote them as `instructions.md` and
+  `notes.md` into the event's directory, Claude Code's working directory, and up to 0.4.0 `agent connect` copied
+  them into the agent home: either way a file that any program running as you could rewrite while Claude Code
+  read it. `agent connect` removes the old copy.
+- **The event on stdin**: `claude -p` adds what comes on stdin to the prompt, and the prompt says the event is
+  that JSON object. Up to 1.0.2 the hook had `stdin = "none"` and the event came as `event.json`, read with the
+  Read tool, which kept it apart from the prompt but was a file in a folder of yours. The instructions now say that
+  everything inside the JSON object is the event's, even text that looks like part of the prompt.
+- **`--model haiku --max-turns 3`**: the smallest model, which uses the least of the subscription, and turns to
+  spare for the one it needs to answer. Over the limit, `claude -p` exits with an error, and that is no answer.
+  `agent connect claude-code --model sonnet` writes another model.
 - **`CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`**: no telemetry, error reports or update checks, so the rule
   below can stay at two hosts.
 
@@ -115,9 +119,12 @@ $ integrations/eval/run.sh --agent claude-code
 It uses the sign-in in `~/.config/blackice/agent/.claude`; `CLAUDE_CONFIG_DIR=dir` picks another one, and
 `MODEL=sonnet` another model.
 
-On 5 November 2026, with Claude Code 2.1.317 signed in through a personal configuration directory, the program
-hook above with the instructions that say how long to approve for, one run with `haiku` and one with `sonnet` both
-came out 23 for 23:
+These results are from before 1.0.3, when the event and the instructions were files that Claude Code read with
+its Read tool. With the event on stdin and no tools, the eval has not been run against a model yet.
+
+On 5 November 2026, with Claude Code 2.1.317 signed in through a personal configuration directory, the hook of
+then, with the instructions that say how long to approve for, one run with `haiku` and one with `sonnet` both came
+out 23 for 23:
 
 | Model | As expected | Median | p90 | Replies of exactly two lines |
 | --- | --- | --- | --- | --- |
