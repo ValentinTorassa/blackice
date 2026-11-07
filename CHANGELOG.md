@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.0.3 (7 November 2026)
 
 New:
 - An `[[allow]]` rule can name ad hoc signed code, such as Homebrew's `gh`, by `cdhash = "…"` in place of `app` and
