@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+Fixed:
+- A hook the Mac slept through is killed when the Mac wakes past its event's deadline. Until now its timeout counted
+  only time awake, so it ran on for up to its whole timeout after its event had timed out, held a slot, and its answer
+  was refused: on 8 November four of them held all 4 slots for 12 minutes after a sleep, and the next 4 events got no
+  hook.
+
 ## 1.0.3 (7 November 2026)
 
 New:
