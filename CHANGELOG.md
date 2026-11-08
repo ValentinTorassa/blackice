@@ -7,6 +7,10 @@ Fixed:
   only time awake, so it ran on for up to its whole timeout after its event had timed out, held a slot, and its answer
   was refused: on 8 November four of them held all 4 slots for 12 minutes after a sleep, and the next 4 events got no
   hook.
+- A host's answers 2 s old or older that miss the address a connection goes to are looked up again before they
+  count as a mismatch. Until now answers were kept 30 s, and a CDN that rotates its addresses every few seconds
+  missed: about 2 % of a mail CLI's approved connections to outlook.office365.com were dropped as
+  `approved;address_mismatch`, each after an event the agent approved again.
 
 ## 1.0.3 (7 November 2026)
 

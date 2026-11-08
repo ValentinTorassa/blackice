@@ -311,6 +311,31 @@ public final class HostAddressCache: @unchecked Sendable {
         return Self.check(address, against: cached)
     }
 
+    /// Answers this old or older that miss an address are looked up again before they count as a
+    /// mismatch. Younger ones are what the resolver says now, so a burst still costs one lookup.
+    public static let refreshAfter: TimeInterval = 2
+
+    /// `check`, for a flow that can wait for a lookup: answers older than `refreshAfter` that miss
+    /// its address read as not looked up, so the caller looks the host up again and decides on
+    /// what the resolver says now. CDNs answer with TTLs of seconds and rotate their addresses: on
+    /// 8 November 2026 outlook.office365.com had A records of 2 to 4 s and 13 answer sets in
+    /// 3 minutes, and the first address of half its answers was not in answers up to 30 s old.
+    /// A failed lookup (no answers) and an address that cannot be checked stay a mismatch.
+    public func checkOrRefresh(host: String, address: IPAddress?) -> AddressCheck {
+        lock.lock()
+        let entry = entries[host]
+        let now = clock()
+        lock.unlock()
+        guard let entry, entry.expires > now else { return .unknown }
+        let result = Self.check(address, against: entry.addresses)
+        let lookedUpAt = entry.expires - ttl
+        if result == .mismatch, !entry.addresses.isEmpty, address?.isCheckable == true,
+           now - lookedUpAt >= Self.refreshAfter {
+            return .unknown
+        }
+        return result
+    }
+
     /// A link-local address matches only an answer on the same interface, and never when its
     /// interface is not known.
     public static func check(_ address: IPAddress?, against answers: Set<IPAddress>) -> AddressCheck {
