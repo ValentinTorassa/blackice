@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.0.4 (8 November 2026)
 
 Fixed:
 - A hook the Mac slept through is killed when the Mac wakes past its event's deadline. Until now its timeout counted

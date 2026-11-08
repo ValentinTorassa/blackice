@@ -20,7 +20,7 @@
 
 set -eu
 
-VERSION=1.0.3
+VERSION=1.0.4
 # The SHA-256 of Blackice-$VERSION.zip, the file package.sh wrote and the release holds. The zip
 # must match it and the release's .sha256 file, so this script and the GitHub release must agree.
 # Each release sets it with VERSION.
