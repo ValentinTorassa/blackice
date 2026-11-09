@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.0.5 (9 November 2026)
 
 Changed:
 - In ask mode a connection that a rule, the Apple services table or an approval allows by name, but whose address
