@@ -192,6 +192,9 @@ public final class HookRunner: @unchecked Sendable {
         public var unsafeHome: @Sendable (HookProgram, [String: String]) -> String?
         /// Whether the kernel checks a launch requirement on this Mac. Tests replace it.
         public var kernelChecksLaunch: @Sendable () -> Bool
+        /// The time of day, which counts the time the Mac sleeps, as an event's deadline does. A
+        /// hook's own timeout is measured in time awake. Tests replace it to stand for a sleep.
+        public var wallClock: @Sendable () -> Date
 
         public init(workDirectory: URL, environment: [String: String], maximumConcurrent: Int = 4,
                     maximumWaiting: Int = 256, minimumStartBudget: TimeInterval = 10,
@@ -201,7 +204,8 @@ public final class HookRunner: @unchecked Sendable {
                     unsafeHome: @escaping @Sendable (HookProgram, [String: String]) -> String? = {
                         $0.instructions?.plantedFile(environment: $1)
                     },
-                    kernelChecksLaunch: @escaping @Sendable () -> Bool = { HookRunner.kernelChecksLaunch }) {
+                    kernelChecksLaunch: @escaping @Sendable () -> Bool = { HookRunner.kernelChecksLaunch },
+                    wallClock: @escaping @Sendable () -> Date = { Date() }) {
             self.workDirectory = workDirectory
             self.environment = environment
             self.maximumConcurrent = maximumConcurrent
@@ -213,6 +217,7 @@ public final class HookRunner: @unchecked Sendable {
             self.identify = identify
             self.unsafeHome = unsafeHome
             self.kernelChecksLaunch = kernelChecksLaunch
+            self.wallClock = wallClock
         }
     }
 
@@ -323,7 +328,9 @@ public final class HookRunner: @unchecked Sendable {
     }
 
     /// Runs `hooks` for `event` side by side and returns one result per hook, in file order.
-    /// Each hook is killed at `event.deadline` or after `timeoutSeconds`, whichever comes first.
+    /// Each hook is killed at `event.deadline` or after `timeoutSeconds`, whichever comes first. The
+    /// deadline counts the time the Mac sleeps and the timeout does not, so a hook the Mac slept
+    /// through dies when it wakes past the deadline, and holds no slot for an event that is over.
     /// `notes`, the owner's notes for the agent from the configuration, go to a program hook with
     /// its instructions, and into the directory of any other hook as notes.md.
     public func run(_ hooks: [Hook], for event: HookEvent, timeoutSeconds: Int, notes: String? = nil,
@@ -399,7 +406,7 @@ public final class HookRunner: @unchecked Sendable {
                        unsafeHome: unsafeHome)
         }
 
-        let budget = min(event.deadline.timeIntervalSinceNow, TimeInterval(timeoutSeconds))
+        let budget = min(event.deadline.timeIntervalSince(options.wallClock()), TimeInterval(timeoutSeconds))
         guard budget > 0 else { return finish(.dropped(.deadlinePassed)) }
 
         func usable(_ key: String, _ value: String) -> Bool {
@@ -503,12 +510,15 @@ public final class HookRunner: @unchecked Sendable {
         progress(.started(hookLine: hook.line, pid: child.pid, waited: waited))
         feed(eventOnStdin ? json : Data(), to: child.stdin)
 
+        // `killAt` is in time awake. A sleep stops that clock but not the deadline's, so the time of
+        // day is checked too: on 8 November 2026 four hooks the Mac slept through held every slot
+        // for 12 minutes after their events had timed out, and the events after them got no hook.
         let killAt = started + budget
         var lastSignal: Int32?
         var termSentAt: TimeInterval = 0
         while !hasExited(child.pid) {
             let now = uptime()
-            if lastSignal == nil, now >= killAt {
+            if lastSignal == nil, now >= killAt || options.wallClock() >= event.deadline {
                 _ = kill(-child.pid, SIGTERM)
                 lastSignal = SIGTERM
                 termSentAt = now

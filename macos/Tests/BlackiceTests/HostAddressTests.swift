@@ -152,6 +152,47 @@ struct HostAddressCacheTests {
         #expect(resolver.lookups("api.example.com") == 2)
     }
 
+    @Test func aMissAgainstOlderAnswersIsLookedUpAgain() {
+        // A CDN that rotates its addresses every few seconds, as outlook.office365.com does.
+        let resolver = FakeResolver(["outlook.example.com": ["52.97.28.130", "52.97.51.82"]])
+        let clock = Clock()
+        let cache = HostAddressCache(resolver: resolver, ttl: 30, clock: { clock.now })
+        cache.lookUp("outlook.example.com")
+        let rotated = ip("52.97.106.50")
+        // Answers just looked up are what the resolver says now: a miss is a miss.
+        clock.advance(1)
+        #expect(cache.checkOrRefresh(host: "outlook.example.com", address: rotated) == .mismatch)
+        #expect(cache.checkOrRefresh(host: "outlook.example.com", address: ip("52.97.51.82")) == .match)
+        // Older ones that miss it are looked up again, and the new answers decide.
+        clock.advance(HostAddressCache.refreshAfter)
+        #expect(cache.checkOrRefresh(host: "outlook.example.com", address: rotated) == .unknown)
+        #expect(cache.checkOrRefresh(host: "outlook.example.com", address: ip("52.97.28.130")) == .match)
+        // The plain check, for a flow that cannot wait, still calls it a mismatch.
+        #expect(cache.check(host: "outlook.example.com", address: rotated) == .mismatch)
+        resolver.set("outlook.example.com", ["52.97.106.50", "52.97.23.210"])
+        cache.lookUp("outlook.example.com")
+        #expect(cache.checkOrRefresh(host: "outlook.example.com", address: rotated) == .match)
+        // An address that is not among the new answers either stays a mismatch until they age.
+        let elsewhere = ip("203.0.113.7")
+        #expect(cache.checkOrRefresh(host: "outlook.example.com", address: elsewhere) == .mismatch)
+        #expect(resolver.lookups("outlook.example.com") == 2)
+    }
+
+    @Test func aFailedLookupOrAnUncheckableAddressIsNotLookedUpAgain() {
+        let clock = Clock()
+        let cache = HostAddressCache(resolver: FakeResolver(["gone.example.com": nil, "printer.local": ["fe80::1%1"]]),
+                                     ttl: 30, clock: { clock.now })
+        cache.lookUp("gone.example.com")
+        cache.lookUp("printer.local")
+        clock.advance(10)
+        #expect(cache.checkOrRefresh(host: "gone.example.com", address: ip("203.0.113.7")) == .mismatch)
+        #expect(cache.checkOrRefresh(host: "printer.local", address: ip("fe80::1")) == .mismatch)
+        #expect(cache.checkOrRefresh(host: "printer.local", address: nil) == .mismatch)
+        // Expired answers are unknown, as with check.
+        clock.advance(20)
+        #expect(cache.checkOrRefresh(host: "gone.example.com", address: ip("203.0.113.7")) == .unknown)
+    }
+
     @Test func staysBounded() {
         let clock = Clock()
         let cache = HostAddressCache(resolver: FakeResolver([:]), ttl: 30, limit: 2, clock: { clock.now })

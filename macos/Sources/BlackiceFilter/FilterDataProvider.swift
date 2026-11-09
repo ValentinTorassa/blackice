@@ -439,7 +439,8 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
             },
             address: { [addresses] host, address in
                 if let resolved, resolved.host == host { return HostAddressCache.check(address, against: resolved.answers) }
-                return addresses.check(host: host, address: address)
+                // Answers a few seconds old that miss the address are looked up again first.
+                return addresses.checkOrRefresh(host: host, address: address)
             },
             denied: { [denials = ask.denials] identity, host in
                 denials.covers(identity, host: host, scope: scope, now: now)

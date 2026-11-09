@@ -164,6 +164,27 @@ struct HookRunnerTests {
         #expect(result.duration < 5, "took \(result.duration) s")
     }
 
+    @Test func aHookTheMacSleptThroughDiesWhenItWakesPastTheDeadline() async throws {
+        let dir = try makePrivateDirectory()
+        defer { removeTree(dir) }
+        // A sleep stops the clock of time awake that a hook's timeout counts, but not the time of
+        // day the event's deadline counts. Here the time of day jumps an hour, as across a sleep,
+        // once the hook has started: well inside its 30 s timeout.
+        let started = Recorder<Bool>()
+        let slept: @Sendable () -> Date = { Date().addingTimeInterval(started.items.isEmpty ? 0 : 3600) }
+        let runner = try HookRunner(options: .init(
+            workDirectory: dir.appendingPathComponent("work", isDirectory: true),
+            environment: HookRunner.environment(for: try UserAccount.current()),
+            gracePeriod: 0.3, kernelChecksLaunch: { true }, wallClock: slept))
+        let results = await runner.run([hook("sleep 30")], for: testEvent(deadlineIn: 30), timeoutSeconds: 30) { update in
+            if case .started = update { started.append(true) }
+        }
+        let result = try #require(results.first)
+        #expect(result.outcome == .timedOut(signal: SIGTERM))
+        #expect(result.duration < 5, "took \(result.duration) s")
+        #expect(runner.runningCount == 0)
+    }
+
     @Test func nothingRunsAfterTheDeadline() async throws {
         let dir = try makePrivateDirectory()
         defer { removeTree(dir) }
