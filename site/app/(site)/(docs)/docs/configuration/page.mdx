@@ -41,7 +41,7 @@ Each `[[allow]]` rule names one app and the hosts it may reach, in every mode an
 - `app` and `team` are checked against the signature of the running code. Leave `team` out only for Apple's own programs, which macOS signs without one.
 - `cdhash`, in place of `app` and `team`, names one build of [ad hoc signed code](#ad-hoc-signed-code).
 - `hosts` takes host names (`api.example.com`), `*.example.com` (every subdomain, not `example.com` itself), and [addresses and ranges](#addresses-and-ranges), at most 256 entries.
-- A host name counts only when the address the app connects to was among that name's DNS answers. Otherwise ask mode asks and block-all drops, as `address_mismatch`.
+- A host name counts only when the address the app connects to was among that name's DNS answers. Otherwise the connection is dropped as `address_mismatch`, without asking: an approval would not let it through. Ask mode asks only about an app and host that nothing allows yet, and the approval counts from the app's next connection.
 - On port 443 the TLS server name the app sends must match too, or the connection is dropped as `server_name_mismatch`.
 - With Encrypted Client Hello, blackice sees only the provider's front end, such as `cloudflare-ech.com`. A rule or approval for that name lets the app reach every site behind it.
 

@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+Changed:
+- In ask mode a connection that a rule, the Apple services table or an approval allows by name, but whose address
+  is not among the host's answers even after a fresh lookup, is dropped at once as `address_mismatch`, as in
+  block-all. Until now it raised an event, and the agent's approval could not let it through: in 18 hours on one
+  Mac, 100 such events, every one approved and its connection dropped anyway, each holding one of the 4 hook slots
+  for about 3 s. An app and host that nothing allows yet are still asked about, since the approval counts from the
+  app's next connection.
+
 ## 1.0.4 (8 November 2026)
 
 Fixed:

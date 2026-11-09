@@ -299,7 +299,8 @@ struct AppleServicesPolicyTests {
         #expect(decide(facts, blockAll, mismatching) == .drop(reason: "address_mismatch"))
         #expect(decide(flow(cloudd, "p01-ckdatabase.icloud.com", address: nil), blockAll) == .drop(reason: "no_address"))
         let ask = try snapshot(.ask)
-        #expect(decide(facts, ask, mismatching) == .ask(reason: "address_mismatch", addressMatches: false))
+        // Ask mode drops it too: an approval would not release a flow whose address mismatches.
+        #expect(decide(facts, ask, mismatching) == .drop(reason: "address_mismatch"))
     }
 
     @Test func serverNameOfAHeldServiceFlow() throws {

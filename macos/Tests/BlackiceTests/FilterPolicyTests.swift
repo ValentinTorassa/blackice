@@ -153,15 +153,16 @@ struct FilterPolicyTests {
             (flow(agent, "other.example.com"), context(answers: ["other.example.com": ["198.51.100.9"]]),
              .ask(reason: "no_rule", addressMatches: false)),
             // An approval counts once the address checks out (on the TLS port, the server name is
-            // read next); a mismatch asks again.
+            // read next). A mismatch of an approved pair, or of a rule's, is dropped with no event:
+            // no answer could let that flow through.
             (flow(agent, "other.example.com"),
              context(approved: [key(agent, "other.example.com")], answers: ["other.example.com": here]),
              .readServerName),
             (flow(agent, "other.example.com"),
              context(approved: [key(agent, "other.example.com")], answers: ["other.example.com": ["198.51.100.9"]]),
-             .ask(reason: "address_mismatch", addressMatches: false)),
+             .drop(reason: "address_mismatch")),
             (flow(agent, "api.example.com"), context(answers: ["api.example.com": ["198.51.100.9"]]),
-             .ask(reason: "address_mismatch", addressMatches: false)),
+             .drop(reason: "address_mismatch")),
             // An approval names the app and the host, any port.
             (flow(agent, "other.example.com", port: 8443),
              context(approved: [key(agent, "other.example.com")], answers: ["other.example.com": here]),
@@ -622,8 +623,8 @@ struct FlowLogLineTests {
     @Test func askAndResolveVerdicts() throws {
         let snapshot = try policySnapshot(.ask)
         let asked = try object(FlowLogLine(flow: flow(agent, "other.example.com"),
-                                           verdict: .ask(reason: "address_mismatch", addressMatches: false), snapshot: snapshot))
-        #expect(asked["verdict"] as? String == "ask" && asked["reason"] as? String == "address_mismatch")
+                                           verdict: .ask(reason: "no_rule", addressMatches: false), snapshot: snapshot))
+        #expect(asked["verdict"] as? String == "ask" && asked["reason"] as? String == "no_rule")
         let resolving = try object(FlowLogLine(flow: flow(agent, "other.example.com"),
                                                verdict: .resolveHost("other.example.com"), snapshot: snapshot))
         #expect(resolving["verdict"] as? String == "resolve" && resolving["reason"] as? String == "resolving_host")

@@ -7,8 +7,8 @@ import Foundation
 // the TLS server name it sends) and the address it connects to. So before a rule or an approval
 // counts, the host is resolved with the system resolver and the flow's remote address must be
 // among the answers. Answers are cached for a short, fixed time. A mismatch is not an error: the
-// rule or approval simply does not match, so ask mode asks and block-all drops, and the verdict's
-// reason says "address_mismatch".
+// rule or approval simply does not match, so the flow is dropped with "address_mismatch" as the
+// verdict's reason. Ask mode asks only about a pair nothing names, for the app's next connection.
 //
 // Known limits: the system resolver may give this lookup different answers than it gave the app
 // (round-robin and CDN answers that change between queries), which shows up as a mismatch; and
