@@ -33,8 +33,9 @@ like this:
   tell.
 - `app.title`, only for an interpreter with no `app.script`: the title its process wrote over its
   command line, as node does for npm (`npm install`, `npm run build`). No script can be read
-  then, and the title says which tool it is. The process chose it, so like a script's name it
-  proves nothing on its own: weigh it with the path and the host.
+  then, and the title says which tool it is. blackice sends its first three words at most, and
+  nothing from the first option on: the rest can hold a token. The process chose it, so like a
+  script's name it proves nothing on its own: weigh it with the path and the host.
 - `host`: the host name, when the system or the TLS handshake gave one. `ip` and `port`: the
   destination.
 - When `host` is the same text as `ip`, the program connected to an address and nothing gave

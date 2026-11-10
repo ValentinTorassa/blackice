@@ -729,8 +729,8 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
             let unread = (self.maintenanceTicks + 1) % 60 == 0 ? self.dnsFlows.takeUnread() : 0
             self.dnsLock.unlock()
             for flow in idle { self.update(flow, using: .allow(), for: .any) }
-            // Each minute: the answers that went unread because more DNS flows came than are read at once.
-            if unread > 0 { self.control("dns_answers_unread", "\(unread)") }
+            // Each minute: the DNS flows let go with a query unanswered, because more came than are read at once.
+            if unread > 0 { self.control("dns_flows_unread", "\(unread)") }
             self.maintenanceTicks += 1
             if self.maintenanceTicks % 60 == 0 { self.saveIdentities() }
             // Each minute even with no change, so the file's time of day stays close to now.

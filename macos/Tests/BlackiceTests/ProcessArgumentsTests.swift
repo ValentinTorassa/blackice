@@ -91,8 +91,19 @@ struct ProcessArgumentsTests {
             // perl pads with spaces, and the environment follows.
             (["npm run wait", "      ", "HOME=/Users/me", "TOKEN=secret", ""], "npm run wait"),
             (["next-server (v16.4.1)   ", ""], "next-server (v16.4.1)"),
+            (["npm  run   wait", ""], "npm run wait"),
             (["", ""], nil),
             (["evil\u{1B}[2Jname", ""], nil),
+            // A title is a command line again: three words, and none from the first option,
+            // assignment or URL on, where a token can be.
+            (["npm exec vercel --token sk-secret", "", ""], "npm exec vercel"),
+            (["npm exec --token sk-secret vercel", ""], "npm exec"),
+            (["npm view left-pad version", ""], "npm view left-pad"),
+            (["npm config set //registry.npmjs.org/:_authToken=secret", ""], "npm config set"),
+            (["worker TOKEN=secret", ""], "worker"),
+            (["fetch https://me:secret@example.com/x.tgz", ""], "fetch"),
+            (["--token sk-secret", ""], nil),
+            (["TOKEN=secret", ""], nil),
             // As it was started: argv[0] is no title.
             (["node", "/opt/homebrew/bin/npm", "run", "wait"], nil),
             (["node"], nil),

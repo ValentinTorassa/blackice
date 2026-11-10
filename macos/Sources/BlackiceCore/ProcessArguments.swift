@@ -9,8 +9,8 @@ import Foundation
 // agent and the owner's notes. Any program can start an interpreter with any script name, so the
 // script is shown and never trusted: no rule names it, and an answer for it only narrows what the
 // answer covers (ScriptScope). Only the script is taken, never the other arguments, which can hold
-// tokens. A process that wrote a title over its arguments has no script left to read: its title is
-// shown in the script's place, and trusted as little.
+// tokens. A process that wrote a title over its arguments has no script left to read: the first
+// words of its title are shown in the script's place, and trusted as little.
 public enum ProcessArguments {
     /// What an interpreter's command line names.
     public struct Named: Equatable, Sendable {
@@ -86,20 +86,32 @@ public enum ProcessArguments {
 
     private static func blank(_ argument: String) -> Bool { argument.utf8.allSatisfy { $0 == 0x20 } }
 
-    /// The title of a process that wrote one over its arguments, cut to `maximumTitleBytes`. nil
-    /// for a command line as it was started, and for a title with a control character. A process
+    /// The words of a title that an event shows.
+    static let maximumTitleWords = 3
+
+    /// The title of a process that wrote one over its arguments: its first words, at most
+    /// `maximumTitleWords` and none from the first that is an option (`-`), an assignment (`=`) or
+    /// a URL (`://`) on, cut to `maximumTitleBytes`. A title is a command line again: npm's is its
+    /// command and that command's own arguments (`npm exec vercel --token ...` for `npx vercel
+    /// --token ...`), which can hold a token as any arguments can, and an event goes to the agent
+    /// and into the log. The first words say which tool it is. nil for a command line as it was
+    /// started, for a title with a control character, and for one with no word to show. A process
     /// picks its title as it picks its arguments, so it is shown and never trusted.
     static func title(_ arguments: [String]) -> String? {
         guard rewritten(arguments) else { return nil }
+        var words: [Substring] = []
+        for word in arguments[0].split(separator: " ") {
+            guard words.count < maximumTitleWords, !word.hasPrefix("-"), !word.contains("="), !word.contains("://") else { break }
+            words.append(word)
+        }
         var title = ""
         var bytes = 0
-        for character in arguments[0] {
+        for character in words.joined(separator: " ") {
             bytes += character.utf8.count
             guard bytes <= HookEvent.maximumTitleBytes else { break }
             title.append(character)
         }
-        while title.last == " " { title.removeLast() }
-        return validTitle(title) ? title : nil
+        return !title.isEmpty && validTitle(title) ? title : nil
     }
 
     /// The script in an interpreter's argv: the first argument that is not an option, after the

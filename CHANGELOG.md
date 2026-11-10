@@ -5,7 +5,8 @@
 New:
 - `blackice deny --all` forgets every approval, with one Touch ID. What waits keeps waiting, remembered denials
   stay, and connections already let through go on. Since 1.0.6 approvals outlast a stop, an upgrade and a restart
-  of the Mac, and `blackice deny` takes back one app and host at a time: nothing cleared them all.
+  of the Mac, and `blackice deny` takes back one app and host at a time: nothing cleared them all. It works while
+  blackice is on; off, it says so before asking for Touch ID, and the saved approvals wait for the next start.
 
 Fixed:
 - Every connection the filter drops is counted, and delayed once its app has had 64 dropped within 2 s, wherever
@@ -29,8 +30,8 @@ Fixed:
   still handed its addresses to apps, and the filter looked the host up itself. With the CNAMEs followed back
   and nothing else, the mail CLI's listing every 10 s still failed on `address_mismatch` in 2 of 180 runs. In
   the first the resolver followed a CNAME 322 s old whose TTL was 295 s, and gave the CLI the addresses under
-  one name and the filter's lookup, 65 ms later, those under another. Names and CNAMEs now last that long, and
-  5 s more.
+  one name and the filter's lookup, 65 ms later, those under another. Names and CNAMEs now last that long and
+  5 s more, for a TTL counted as 30 s at least, and at most 5 minutes for a name and a day for a CNAME.
 - A burst of DNS lookups no longer leaves the answers after it unread. The filter read at most 256 of the
   resolver's DNS flows at once, counted each for two more minutes once it had let it go, and did not read a new
   flow when the table was full. On 10 November a network came back after an outage with 267 resolver flows in
@@ -38,7 +39,8 @@ Fixed:
   outlook.office365.com up itself five times in them, and the second of the two failed runs above was one. A
   test's 611 resolver flows in half a minute did the same to the next host looked up. The filter now reads 512 flows
   at once, a new flow takes the place of the one quiet the longest, and the flows let go are counted apart, at
-  most 4,096. An answer that still goes unread is counted, each minute, in `control dns_answers_unread`.
+  most 4,096. A flow let go to make room with a query still unanswered is counted, each minute, in `control
+  dns_flows_unread`.
 - A TCP connection to a link-local IPv6 address is asked about. It was dropped as `no_host` with no event, since
   the address could be any host on any link without its interface: on 10 November identityservicesd's
   connections to a peer on a `utun` interface all were. macOS gives the filter no interface for a connection's
@@ -51,10 +53,13 @@ Fixed:
   joined that to the process's folder: the event's `app.script` was the folder npm ran in, and each folder was
   asked about and answered apart. From 7 to 10 November, 15 of node's 77 events with a script named a folder that
   still exists, and on 10 November the agent denied node registry.npmjs.org nine times, each for a script path
-  under `/private/tmp`. A process that wrote over its command line now has no script, and its event has `app.title`,
-  the title it gave itself, cut to 64 bytes. The agent reads it, `blackice pending` and the menu show it (`calls
-  itself npm run build`), `events.jsonl` keeps it as `app_title`, and no decision reads it: the process chose it.
-  An answer for such an event covers the interpreter whenever no script can be read, whatever its title.
+  under `/private/tmp`. A process that wrote over its command line now has no script, and its event has `app.title`:
+  the first three words of the title it gave itself, none from the first option, assignment or URL on, cut to 64
+  bytes. A title is a command line again, and can hold a token as arguments can: npm 11.20.0 titles `npm run x --
+  --token …` as `npm run x --token …`, and the event shows `npm run x`. The agent reads it, `blackice pending` and
+  the menu show it (`calls itself npm run build`), `events.jsonl` keeps it as `app_title`, and no decision reads it:
+  the process chose it. The agent's answer for such an event covers the interpreter whenever no script can be read,
+  whatever its title; a person's `approve` with no `--script` covers every script the interpreter runs, as before.
 - An environment string is never read as a script. macOS gives a process's arguments and then its environment
   with nothing between them, and a title as long as the arguments leaves no NUL to count them by: on 10 November
   `node x.js` with a title of 20 bytes read as `my-long-s` and then its first environment string, which 1.0.6

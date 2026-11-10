@@ -311,9 +311,18 @@ public final class NESystemControl: SystemControlling {
 
     /// `blackice deny --all`: a person confirms with Touch ID, then the extension forgets every
     /// approval. Trusted the way `answer` is.
+    static let forgetWhileOff = "blackice deny: blackice is off, and --all works only while it is on. "
+        + "The approvals of its last run come back when it starts: run blackice start, then blackice deny --all."
+
     public func forgetApprovals(output: SystemOutput) -> Int32 {
         guard Self.isSignedHost(), let teamID = CodeIdentity.current()?.teamID else {
             return UnsignedSystem().forgetApprovals(output: output)
+        }
+        // Off: the filter that holds the approvals is not there to tell, and the ones it saved come
+        // back when it starts. Said before Touch ID is asked for, since nothing would be forgotten.
+        if let (_, saved) = loadSaved(SystemOutput(stdout: { _ in }, stderr: { _ in })), !saved.enabled {
+            output.stderr(Self.forgetWhileOff)
+            return ExitCode.unavailable
         }
         guard confirm(.forgetApprovals, output) else { return ExitCode.noPermission }
         do {

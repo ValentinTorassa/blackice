@@ -455,8 +455,9 @@ public struct DNSFlowTable<ID: Hashable, Flow> {
         return idle
     }
 
-    /// How many flows were let go to make room before an answer they waited for came, since the
-    /// last call: answers nobody read. Then 0.
+    /// How many flows were let go to make room with a query of theirs unanswered, since the last
+    /// call. Then 0. A flow, not an answer: one flow can wait for several answers, and for one
+    /// that never comes.
     public mutating func takeUnread() -> Int {
         defer { unread = 0 }
         return unread
@@ -492,7 +493,10 @@ public struct DNSFlowTable<ID: Hashable, Flow> {
 /// outlook.office365.com was three CNAMEs of 300, 300 and 45 s and eight addresses of 15 s under
 /// the last name, replaced by eight others at each query: an answer that brought new addresses
 /// then named the chain's end or its middle, not the host the app asked for, and blackice's own
-/// lookup a moment later got other addresses.
+/// lookup a moment later got other addresses. A CNAME goes when its time is up, when the table is
+/// full or with `removeAll`: not when the network changes, and not when a later answer gives its
+/// name another target, since two resolvers of one Mac can each hold their own (docs/plan.md,
+/// "Limits of the host check").
 ///
 /// Bounded: at most `maximumNamesPerAddress` names per address (when full, the name closest to
 /// expiring goes) and `maximumAddresses` addresses (when full, expired entries go, then the
