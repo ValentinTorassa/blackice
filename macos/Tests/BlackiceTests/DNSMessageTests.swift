@@ -552,10 +552,8 @@ struct DNSFlowReaderTests {
 struct DNSFlowTableTests {
     @Test func readsFlowsUntilIdleThenLetsThemGo() {
         var table = DNSFlowTable<Int, String>(limit: 2)
-        #expect(table.add(1, flow: "one", stream: false, now: 0) == true)
-        #expect(table.add(2, flow: "two", stream: false, now: 0) == true)
-        // Full: the third flow passes unread.
-        #expect(table.add(3, flow: "three", stream: false, now: 0) == false)
+        #expect(table.add(1, flow: "one", stream: false, now: 0) == nil)
+        #expect(table.add(2, flow: "two", stream: false, now: 0) == nil)
         #expect(table.data(3, Data(), offset: 0, outbound: true, now: 0) == .unknown)
 
         #expect(table.data(1, query("example.org", id: 5), offset: 0, outbound: true, now: 1) == .pass([]))
@@ -573,34 +571,93 @@ struct DNSFlowTableTests {
         #expect(table.expire(now: 119).isEmpty)
         #expect(table.expire(now: 120) == ["two"])
         #expect(table.data(2, query("example.org"), offset: 0, outbound: true, now: 121) == .stop([]))
-        #expect(table.count == 2)
+        #expect(table.count == 1 && table.rememberedCount == 1)
         // One, idle since 2, is let go; two, let go at 120, is forgotten at 240.
         #expect(table.expire(now: 239) == ["one"])
         #expect(table.expire(now: 240) == [])
         #expect(table.data(2, Data(), offset: 0, outbound: true, now: 241) == .unknown)
         #expect(table.data(1, Data(), offset: 0, outbound: true, now: 241) == .stop([]))
         #expect(table.letGo(1, now: 241) && !table.letGo(2, now: 241))
+        #expect(table.takeUnread() == 0)
+    }
+
+    // 10 November 2026: 267 resolver flows in the two minutes around a network coming back filled a
+    // table of 256 that refused new flows, and the answers of the next two minutes went unread.
+    @Test func aFullTableLetsItsQuietestFlowGoToReadANewOne() {
+        var table = DNSFlowTable<Int, String>(limit: 2)
+        #expect(table.add(1, flow: "one", stream: false, now: 0) == nil)
+        #expect(table.add(2, flow: "two", stream: false, now: 1) == nil)
+        // One asked and was answered; two asked at 3 and waits. One is the quieter of the two.
+        #expect(table.data(1, query("example.org", id: 5), offset: 0, outbound: true, now: 2) == .pass([]))
+        #expect(table.data(1, response("example.org", id: 5, addresses: [("203.0.113.9", 60)]), offset: 0, outbound: false, now: 2)
+            == .pass([learned("example.org", "203.0.113.9", 60)]))
+        #expect(table.data(2, query("example.net", id: 6), offset: 0, outbound: true, now: 3) == .pass([]))
+        #expect(table.add(3, flow: "three", stream: false, now: 4) == "one")
+        #expect(table.count == 2 && table.rememberedCount == 1 && table.takeUnread() == 0)
+        // The new flow is read, and so is the one that stayed; the one let go passes.
+        #expect(table.data(3, query("example.com", id: 7), offset: 0, outbound: true, now: 4) == .pass([]))
+        #expect(table.data(3, response("example.com", id: 7, addresses: [("203.0.113.7", 60)]), offset: 0, outbound: false, now: 5)
+            == .pass([learned("example.com", "203.0.113.7", 60)]))
+        #expect(table.data(1, query("example.org", id: 8), offset: 0, outbound: true, now: 5) == .stop([]))
+        // Two still waits for its answer when a fourth flow takes its place: an answer nobody reads.
+        #expect(table.add(4, flow: "four", stream: false, now: 6) == "two")
+        #expect(table.data(2, response("example.net", id: 6, addresses: [("203.0.113.8", 60)]), offset: 0, outbound: false, now: 6)
+            == .stop([]))
+        #expect(table.takeUnread() == 1 && table.takeUnread() == 0)
+        // A flow already here is not a new one: nothing makes room for it.
+        #expect(table.add(4, flow: "four", stream: false, now: 7) == nil && table.count == 2)
+        // The flows let go are forgotten in their turn, 120 s after each.
+        #expect(table.expire(now: 123).isEmpty && table.rememberedCount == 2)
+        #expect(table.expire(now: 124).isEmpty && table.rememberedCount == 1)
+        #expect(table.data(1, Data(), offset: 0, outbound: true, now: 125) == .unknown)
+        #expect(table.data(2, Data(), offset: 0, outbound: true, now: 125) == .stop([]))
+        // A limit below 1 reads one flow.
+        var none = DNSFlowTable<Int, String>(limit: 0, rememberedLimit: 0)
+        #expect(none.limit == 1 && none.rememberedLimit == 1)
+        #expect(none.add(1, flow: "a", stream: false, now: 0) == nil && none.add(2, flow: "b", stream: false, now: 1) == "a")
+    }
+
+    @Test func rememberedFlowsAreBounded() {
+        var table = DNSFlowTable<Int, String>(limit: 8, rememberedLimit: 2)
+        for id in 1...4 { #expect(table.add(id, flow: "f\(id)", stream: false, now: 0) == nil) }
+        #expect(table.letGo(1, now: 1) && table.letGo(2, now: 2))
+        #expect(table.rememberedCount == 2)
+        // A third flow let go: the one let go first is forgotten.
+        #expect(table.letGo(3, now: 3) && table.rememberedCount == 2)
+        #expect(table.data(1, Data(), offset: 0, outbound: true, now: 4) == .unknown)
+        #expect(table.data(2, Data(), offset: 0, outbound: true, now: 4) == .stop([]))
+        #expect(table.data(3, Data(), offset: 0, outbound: true, now: 4) == .stop([]))
+        // Letting a flow go twice counts it once and does not start its two minutes again.
+        #expect(table.letGo(3, now: 50) && table.rememberedCount == 2)
+        #expect(table.data(4, query("example.org", id: 1), offset: 0, outbound: true, now: 60) == .pass([]))
+        #expect(table.expire(now: 122).isEmpty && table.rememberedCount == 1)
+        #expect(table.expire(now: 123).isEmpty && table.rememberedCount == 0)
+        // A flow that was let go and starts again is read again.
+        #expect(table.letGo(4, now: 124) && table.add(4, flow: "f4", stream: false, now: 125) == nil)
+        #expect(table.rememberedCount == 0 && table.count == 1)
+        #expect(table.data(4, query("example.org", id: 2), offset: 0, outbound: true, now: 126) == .pass([]))
     }
 
     @Test func aStoppedOrLetGoFlowPassesUntilForgotten() {
         var table = DNSFlowTable<Int, String>()
-        #expect(table.add(1, flow: "tcp", stream: true, now: 0) == true)
+        #expect(table.limit == 512 && table.rememberedLimit == 4096)
+        #expect(table.add(1, flow: "tcp", stream: true, now: 0) == nil)
         // A gap in the stream stops the reader; data still on its way passes.
         #expect(table.data(1, Data([0, 5, 1]), offset: 7, outbound: false, now: 1) == .stop([]))
         #expect(table.data(1, Data(), offset: 0, outbound: true, now: 2) == .stop([]))
         // The caller lets a flow go when NetworkExtension reports its data complete.
-        #expect(table.add(2, flow: "udp", stream: false, now: 0) == true)
+        #expect(table.add(2, flow: "udp", stream: false, now: 0) == nil)
         #expect(table.letGo(2, now: 5) && !table.letGo(9, now: 5))
         #expect(table.data(2, query("example.org"), offset: 0, outbound: true, now: 6) == .stop([]))
         // Neither needs telling NetworkExtension again; each is forgotten idleSeconds later.
-        #expect(table.expire(now: 120).isEmpty && table.count == 2)
-        #expect(table.expire(now: 121).isEmpty && table.count == 1)
-        #expect(table.expire(now: 125).isEmpty && table.count == 0)
+        #expect(table.expire(now: 120).isEmpty && table.count == 0 && table.rememberedCount == 2)
+        #expect(table.expire(now: 121).isEmpty && table.rememberedCount == 1)
+        #expect(table.expire(now: 125).isEmpty && table.rememberedCount == 0)
         #expect(table.data(1, Data(), offset: 0, outbound: true, now: 126) == .unknown)
         // removeAll returns only the flows still being read.
-        #expect(table.add(3, flow: "a", stream: false, now: 200) && table.add(4, flow: "b", stream: false, now: 200))
+        #expect(table.add(3, flow: "a", stream: false, now: 200) == nil && table.add(4, flow: "b", stream: false, now: 200) == nil)
         #expect(table.letGo(3, now: 200) == true)
-        #expect(table.removeAll() == ["b"] && table.count == 0)
+        #expect(table.removeAll() == ["b"] && table.count == 0 && table.rememberedCount == 0)
     }
 }
 
@@ -628,25 +685,31 @@ struct DNSNameTableTests {
         table.record([learned(last, "40.104.46.50", 15)])
         #expect(table.names(for: ip("40.104.46.50")) == [last])
         #expect(table.aliases(for: ip("40.104.46.50")) == [middle, first, host])
-        // 30 s on, the 45 s CNAME has gone and the resolver asks for the middle name: it comes back.
-        clock.advance(30)
-        #expect(table.aliases(for: ip("40.104.46.50")).isEmpty)
+        // The resolver answers from the 45 s CNAME for 58 s, a quarter more and 2 s: 55 s after it
+        // came, an answer for the last name still counts for the host.
+        clock.advance(35)
+        table.record([learned(last, "40.104.46.51", 15)])
+        #expect(table.aliases(for: ip("40.104.46.51")) == [middle, first, host])
+        // 10 s on the CNAME has gone, there and here, and the resolver asks for the middle name: it comes back.
+        clock.advance(10)
+        #expect(table.names(for: ip("40.104.46.51")) == [last] && table.aliases(for: ip("40.104.46.51")).isEmpty)
         table.record([learned(middle, "52.96.88.2", 15)], aliases: [alias(middle, last, 45)])
         #expect(table.names(for: ip("52.96.88.2")) == [middle] && table.aliases(for: ip("52.96.88.2")) == [first, host])
         // An address nothing was said about has no alias, and the names themselves are as before.
         #expect(table.aliases(for: ip("203.0.113.1")).isEmpty && table.aliases(for: nil).isEmpty)
-        // The 300 s CNAMEs go 300 s after they were read; the address's own name went before.
-        clock.advance(29.5)
+        // The 300 s CNAMEs go 382 s after they were read: 377 s as the resolver keeps them, and 5 s.
+        clock.advance(316.5)
+        table.record([learned(middle, "52.96.88.2", 15)])
         #expect(table.aliases(for: ip("52.96.88.2")) == [first, host])
         clock.advance(0.5)
-        #expect(table.names(for: ip("52.96.88.2")).isEmpty && table.aliases(for: ip("52.96.88.2")).isEmpty)
+        #expect(table.names(for: ip("52.96.88.2")) == [middle] && table.aliases(for: ip("52.96.88.2")).isEmpty)
         table.removeAll()
         #expect(table.aliasTargetCount == 0)
     }
 
-    @Test func aliasesLastForTheirTTLAndAreBounded() {
-        #expect(DNSNameTable.aliasLifetime(ttl: 0) == 30 && DNSNameTable.aliasLifetime(ttl: 3600) == 3600)
-        #expect(DNSNameTable.aliasLifetime(ttl: 172_800) == 86_400 && DNSNameTable.aliasLifetime(ttl: .max) == 86_400)
+    @Test func aliasesLastAsLongAsTheResolverKeepsThemAndAreBounded() {
+        #expect(DNSNameTable.aliasLifetime(ttl: 0) == 44 && DNSNameTable.aliasLifetime(ttl: 3600) == 4507)
+        #expect(DNSNameTable.aliasLifetime(ttl: 172_800) == 108_007 && DNSNameTable.aliasLifetime(ttl: .max) == 108_007)
         let clock = Clock()
         let table = DNSNameTable(maximumAddresses: 2, maximumNamesPerAddress: 2, clock: { clock.now })
         table.record([learned("end.example.net", "203.0.113.7", 300)],
@@ -671,23 +734,32 @@ struct DNSNameTableTests {
         #expect(wide.aliases(for: ip("203.0.113.9")).count == DNSNameTable.maximumAliasesFollowed)
     }
 
-    @Test func namesLastForTheirTTLBetweenTheBounds() {
-        #expect(DNSNameTable.lifetime(ttl: 0) == 30 && DNSNameTable.lifetime(ttl: 60) == 60)
-        #expect(DNSNameTable.lifetime(ttl: 86_400) == 300 && DNSNameTable.lifetime(ttl: .max) == 300)
+    // mDNSResponder answers from a record for its TTL, a quarter more and 2 s, and at least 15 s: on
+    // 10 November 2026 it asked the network again 77 s after a 60 s CNAME and 15 s after 3 s addresses.
+    @Test func theResolverKeepsARecordLongerThanItsTTL() {
+        #expect(DNSNameTable.kept(ttl: 60) == 77 + DNSNameTable.slack && DNSNameTable.kept(ttl: 30) == 39 + DNSNameTable.slack)
+        #expect(DNSNameTable.kept(ttl: 18) == 24 + DNSNameTable.slack && DNSNameTable.kept(ttl: 15) == 20 + DNSNameTable.slack)
+        #expect(DNSNameTable.kept(ttl: 3) == 15 + DNSNameTable.slack && DNSNameTable.kept(ttl: 0) == 15 + DNSNameTable.slack)
+        #expect(DNSNameTable.kept(ttl: 295) == 370 + DNSNameTable.slack && DNSNameTable.slack == 5)
+    }
+
+    @Test func namesLastAsLongAsTheResolverKeepsThemBetweenTheBounds() {
+        #expect(DNSNameTable.lifetime(ttl: 0) == 44 && DNSNameTable.lifetime(ttl: 60) == 82)
+        #expect(DNSNameTable.lifetime(ttl: 86_400) == 382 && DNSNameTable.lifetime(ttl: .max) == 382)
         let clock = Clock()
         let table = DNSNameTable(clock: { clock.now })
         table.record([learned("api.github.com", "140.82.121.6", 60), learned("short.example.org", "203.0.113.1", 0),
                       learned("long.example.org", "203.0.113.2", 86_400)])
         #expect(table.names(for: ip("140.82.121.6")) == ["api.github.com"])
-        clock.advance(29.5)
+        clock.advance(43.5)
         #expect(table.names(for: ip("203.0.113.1")) == ["short.example.org"])
         clock.advance(0.5)
         #expect(table.names(for: ip("203.0.113.1")).isEmpty)
-        clock.advance(29.5)
+        clock.advance(37.5)
         #expect(table.names(for: ip("140.82.121.6")) == ["api.github.com"])
         clock.advance(0.5)
         #expect(table.names(for: ip("140.82.121.6")).isEmpty)
-        clock.advance(239.5)
+        clock.advance(299.5)
         #expect(table.names(for: ip("203.0.113.2")) == ["long.example.org"])
         clock.advance(0.5)
         #expect(table.names(for: ip("203.0.113.2")).isEmpty)
@@ -704,9 +776,9 @@ struct DNSNameTableTests {
         #expect(table.names(for: nil).isEmpty && table.names(for: ip("198.51.100.1")).isEmpty)
         // A shorter answer does not cut a name's time short.
         table.record([learned("b.example.com", "203.0.113.7", 30)])
-        clock.advance(70)
+        clock.advance(90)
         #expect(table.names(for: ip("203.0.113.7")) == ["b.example.com"])
-        clock.advance(50)
+        clock.advance(67)
         #expect(table.names(for: ip("203.0.113.7")).isEmpty)
     }
 
@@ -733,7 +805,7 @@ struct DNSNameTableTests {
         #expect(addresses.addressCount == 2)
         #expect(addresses.names(for: ip("203.0.113.2")).isEmpty && !addresses.names(for: ip("203.0.113.1")).isEmpty)
         // Expired entries go first.
-        clock.advance(70)
+        clock.advance(90)
         addresses.record([learned("w.example.com", "203.0.113.4", 60)])
         #expect(addresses.names(for: ip("203.0.113.1")) == ["x.example.com"])
         #expect(addresses.names(for: ip("203.0.113.4")) == ["w.example.com"])

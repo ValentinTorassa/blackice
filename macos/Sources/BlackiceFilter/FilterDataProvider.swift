@@ -299,10 +299,11 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
         case .learnNames:
             guard let socket else { return .allow() }
             dnsLock.lock()
-            let reading = dnsFlows.add(flow.identifier, flow: socket, stream: tcp, now: Self.now)
+            let evicted = dnsFlows.add(flow.identifier, flow: socket, stream: tcp, now: Self.now)
             dnsLock.unlock()
-            // A full table only means this flow's answers go unread; it passes either way.
-            guard reading else { return .allow() }
+            // A full table let its quietest flow go to read this one. Its data passes from now on;
+            // update() is not allowed inside a flow callback, so it is told from the lifecycle queue.
+            if let evicted { lifecycle.async { [weak self] in self?.update(evicted, using: .allow(), for: .any) } }
             return .filterDataVerdict(withFilterInbound: true, peekInboundBytes: Self.dnsPeekBytes,
                                       filterOutbound: true, peekOutboundBytes: Self.dnsPeekBytes)
         }
@@ -725,8 +726,11 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
             // Idle DNS flows stop being read; their data passes from now on.
             self.dnsLock.lock()
             let idle = self.dnsFlows.expire(now: now)
+            let unread = (self.maintenanceTicks + 1) % 60 == 0 ? self.dnsFlows.takeUnread() : 0
             self.dnsLock.unlock()
             for flow in idle { self.update(flow, using: .allow(), for: .any) }
+            // Each minute: the answers that went unread because more DNS flows came than are read at once.
+            if unread > 0 { self.control("dns_answers_unread", "\(unread)") }
             self.maintenanceTicks += 1
             if self.maintenanceTicks % 60 == 0 { self.saveIdentities() }
             // Each minute even with no change, so the file's time of day stays close to now.

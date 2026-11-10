@@ -21,7 +21,24 @@ Fixed:
   300 and 45 s and eight addresses of 15 s, with eight others at each query: a mail CLI's approved connections
   there were dropped as `address_mismatch` in 10 of 239 runs, 9 of them among the 34 runs in which the resolver
   sent three queries, and each time the CLI got through on a later address. The filter now keeps the CNAMEs it
-  reads, each for its TTL and at most a day, and follows them back from an address's name.
+  reads, each as long as the resolver keeps it, and follows them back from an address's name.
+- The names and CNAMEs the filter reads last as long as the resolver answers from them. mDNSResponder keeps a
+  record for its TTL, a quarter more and 2 s, and for at least 15 s: asked for outlook.office365.com twice a
+  second on 10 November, it asked the network again 77 s after a CNAME of 60 s, 39 s after one of 30 s and 15 s
+  after addresses of 3 to 9 s. The filter kept a name for its TTL, so the name went here while the resolver
+  still handed its addresses to apps, and the filter looked the host up itself. With the CNAMEs followed back
+  and nothing else, the mail CLI's listing every 10 s still failed on `address_mismatch` in 2 of 180 runs. In
+  the first the resolver followed a CNAME 322 s old whose TTL was 295 s, and gave the CLI the addresses under
+  one name and the filter's lookup, 65 ms later, those under another. Names and CNAMEs now last that long, and
+  5 s more.
+- A burst of DNS lookups no longer leaves the answers after it unread. The filter read at most 256 of the
+  resolver's DNS flows at once, counted each for two more minutes once it had let it go, and did not read a new
+  flow when the table was full. On 10 November a network came back after an outage with 267 resolver flows in
+  two minutes, 156 of them in one second: the table stayed full for two minutes, the filter looked
+  outlook.office365.com up itself five times in them, and the second of the two failed runs above was one. A
+  test's 611 resolver flows in half a minute did the same to the next host looked up. The filter now reads 512 flows
+  at once, a new flow takes the place of the one quiet the longest, and the flows let go are counted apart, at
+  most 4,096. An answer that still goes unread is counted, each minute, in `control dns_answers_unread`.
 - A TCP connection to a link-local IPv6 address is asked about. It was dropped as `no_host` with no event, since
   the address could be any host on any link without its interface: on 10 November identityservicesd's
   connections to a peer on a `utun` interface all were. macOS gives the filter no interface for a connection's
