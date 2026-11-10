@@ -537,8 +537,9 @@ and each run on a Mac is recorded in [`evidence/`](../evidence/).
   once, and one whose `connect()` macOS fails by itself still cost that (a program started from a terminal got
   "No route to host" from `connect()` to a link-local address within 0.1 ms, with its flow paused or dropped). The
   identityservicesd loop stopped when build 39 replaced build 38 and has not come back, so the delay was not seen
-  on it. The delay is counted per app, by its identity, so code signed ad hoc under many cdhashes is counted
-  apart. Whether identityservicesd's link should pass in ask mode is not decided: it carries no host name, and
+  on it. Drops for a full table are not counted towards the delay: in the fault tests' bursts `nscurl` had 1,105
+  connections dropped at once as `lookup_capacity_app` (build 38) and 496 as `ask_capacity` (build 40). The delay
+  is counted per app, by its identity, so code signed ad hoc under many cdhashes is counted apart. Whether identityservicesd's link should pass in ask mode is not decided: it carries no host name, and
   while it is dropped whatever needs the iPhone does not work.
 - **Before the owner logs in.** With FileVault on, the filter starts when the owner logs in, not when the Mac
   starts: on 10 November 2026 the Mac started at 07:59 and the filter at 08:31, at the login. Until then nothing
