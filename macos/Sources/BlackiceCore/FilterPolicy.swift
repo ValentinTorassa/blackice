@@ -490,9 +490,14 @@ public enum FilterPolicy {
             if approved { return .allow(reason: "approval" + suffix) }
             return .ask(reason: "no_rule", addressMatches: true)
         case .mismatch:
-            let named = line != nil || service || approved
-            if !ask { return .drop(reason: "address_mismatch") }
-            return .ask(reason: named ? "address_mismatch" : "no_rule", addressMatches: false)
+            // A pair that a rule, the Apple services table or an approval names is dropped in ask
+            // mode too: no answer could let this flow through, since an approval never releases a
+            // flow whose address mismatches. Asking held a hook slot for nothing: in 18 hours of
+            // 1.0.3 on the owner's Mac, 100 such events, each approved and its flow dropped anyway.
+            if !ask || line != nil || service || approved { return .drop(reason: "address_mismatch") }
+            // With nothing naming the pair the answer still counts: an approval lets the app's
+            // next connection through once its address checks out.
+            return .ask(reason: "no_rule", addressMatches: false)
         }
     }
 

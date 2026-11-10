@@ -121,10 +121,7 @@ struct CDHashRuleTests {
             let facts = flow(gh, "api.github.com", port: 8443)
             #expect(decide(facts, rules, context(address: .unknown)) == .resolveHost("api.github.com"), "\(mode)")
             #expect(decide(flow(gh, "api.github.com", address: nil), rules) == .drop(reason: "no_address"))
-            let mismatch = decide(facts, rules, context(address: .mismatch))
-            let expected = mode == .blockAll ? FlowVerdict.drop(reason: "address_mismatch")
-                : FlowVerdict.ask(reason: "address_mismatch", addressMatches: false)
-            #expect(mismatch == expected)
+            #expect(decide(facts, rules, context(address: .mismatch)) == .drop(reason: "address_mismatch"), "\(mode)")
         }
     }
 
