@@ -60,13 +60,16 @@ public struct ApprovalKey: Hashable, Sendable {
     }
 }
 
-/// Approvals in memory, each with an expiry. Gone when the extension stops. AskState keeps its
-/// remembered denials in one too.
+/// Approvals in memory, each with an expiry. The extension saves its approvals to a file and
+/// reads them back when it starts (SavedApprovals), so they outlast an upgrade or a restart of the
+/// Mac. AskState keeps its remembered denials in one too, never saved.
 public struct ApprovalTable: Sendable {
     public static let maximumSeconds = 86_400
     public static let maximumEntries = 1024
 
     private var expiries: [ApprovalKey: TimeInterval] = [:]
+    /// Goes up with each change, so the extension saves only a table that changed.
+    public private(set) var revision = 0
 
     public init() {}
 
@@ -86,6 +89,7 @@ public struct ApprovalTable: Sendable {
         }
         let kept = max(expiries[key] ?? 0, expires)
         expiries[key] = kept
+        revision += 1
         return kept
     }
 
@@ -104,7 +108,9 @@ public struct ApprovalTable: Sendable {
     /// True when there was one.
     @discardableResult
     public mutating func remove(_ key: ApprovalKey) -> Bool {
-        expiries.removeValue(forKey: key) != nil
+        guard expiries.removeValue(forKey: key) != nil else { return false }
+        revision += 1
+        return true
     }
 
     /// Removes what an answer for `key` takes back: for one script, that entry; for any script,
@@ -114,14 +120,22 @@ public struct ApprovalTable: Sendable {
         guard key.scope == .any else { return remove(key) }
         let before = expiries.count
         expiries = expiries.filter { $0.key.identity != key.identity || $0.key.host != key.host }
-        return expiries.count != before
+        guard expiries.count != before else { return false }
+        revision += 1
+        return true
     }
 
     public mutating func expire(now: TimeInterval) {
+        let before = expiries.count
         expiries = expiries.filter { $0.value > now }
+        if expiries.count != before { revision += 1 }
     }
 
-    public mutating func removeAll() { expiries.removeAll() }
+    public mutating func removeAll() {
+        guard !expiries.isEmpty else { return }
+        expiries.removeAll()
+        revision += 1
+    }
 
     public func summaries(now: TimeInterval) -> [ApprovalSummary] {
         expiries.filter { $0.value > now }
@@ -129,6 +143,63 @@ public struct ApprovalTable: Sendable {
                                    secondsLeft: Int(($0.value - now).rounded(.up)), scope: $0.key.scope) }
             .sorted { ($0.host, $0.app.signingID ?? $0.app.cdhash ?? "", $0.script ?? "")
                 < ($1.host, $1.app.signingID ?? $1.app.cdhash ?? "", $1.script ?? "") }
+    }
+}
+
+/// The approvals the extension saves, with the time of day they were saved at, so they outlast
+/// an upgrade or a restart of the Mac (decided on 10 November 2026). Each keeps what it had left:
+/// restored, it loses the time of day gone by since, and a clock set back never lengthens it.
+/// The file is root's, mode 0600, beside the identity cache; remembered denials are not saved.
+public struct SavedApprovals: Codable, Equatable, Sendable {
+    public static let currentVersion = 1
+
+    public let version: Int
+    /// Seconds since 1970.
+    public let savedAt: Double
+    public let approvals: [ApprovalSummary]
+
+    public init(savedAt: Double, approvals: [ApprovalSummary]) {
+        version = Self.currentVersion
+        self.savedAt = savedAt
+        self.approvals = approvals
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case version
+        case savedAt = "saved_at"
+        case approvals
+    }
+}
+
+extension ApprovalTable {
+    /// The file's contents: the approvals left at `now` (monotonic seconds), saved at `timeOfDay`
+    /// (seconds since 1970).
+    public func saved(now: TimeInterval, timeOfDay: Double) -> Data? {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        return try? encoder.encode(SavedApprovals(savedAt: timeOfDay, approvals: summaries(now: now)))
+    }
+
+    /// Adds the approvals in a file `saved` wrote, each for what it had left less the time of day
+    /// gone by since. Returns how many were added; nil for a file this version did not write, or
+    /// one with an entry that is not valid, which adds nothing.
+    @discardableResult
+    public mutating func restore(_ data: Data, now: TimeInterval, timeOfDay: Double) -> Int? {
+        guard let file = try? JSONDecoder().decode(SavedApprovals.self, from: data),
+              file.version == SavedApprovals.currentVersion, file.savedAt.isFinite,
+              file.approvals.count <= Self.maximumEntries,
+              file.approvals.allSatisfy({ $0.isValid && $0.secondsLeft <= Self.maximumSeconds }) else { return nil }
+        let gone = max(0, timeOfDay - file.savedAt)
+        var added = 0
+        for approval in file.approvals {
+            guard let identity = approval.app.identity else { continue }
+            let left = Double(approval.secondsLeft) - gone
+            guard left >= 1 else { continue }
+            add(ApprovalKey(identity: identity, host: approval.host, scope: approval.scope),
+                seconds: Int(left), now: now)
+            added += 1
+        }
+        return added
     }
 }
 

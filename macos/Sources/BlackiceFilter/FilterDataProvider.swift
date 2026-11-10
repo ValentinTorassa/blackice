@@ -66,6 +66,7 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
     /// Seconds of maintenance since start, and the identity cache's change count when last saved.
     private var maintenanceTicks = 0
     private var savedIdentityChanges = -1
+    private var savedApprovalsRevision = -1
     private let heldLock = NSLock()
     private var held: [UUID: Held] = [:]
     private let flowLog = Logger(subsystem: BlackiceIdentifiers.logSubsystem, category: "flows")
@@ -137,6 +138,7 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
             runID = identifier
             _ = try? snapshots.install(candidate)
             restoreIdentities()
+            restoreApprovals()
         }
         apply(Self.makeSettings()) { [weak self] error in
             guard let lifecycle = self?.lifecycle else { completionHandler(error); return }
@@ -222,6 +224,8 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
 
     override func stopFilter(with reason: NEProviderStopReason, completionHandler: @escaping () -> Void) {
         lifecycle.async {
+            // Before the table is emptied below, so an upgrade's next run finds them.
+            self.saveApprovals()
             self.runID = nil
             self.observation = nil
             self.timer?.cancel(); self.timer = nil
@@ -481,11 +485,14 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
             }
             return (.hold, .nothing)
         case .resolveHost(let host):
-            switch lookups.add(paused, host: host) {
+            switch lookups.add(paused, host: host, app: facts.identity.appIdentity) {
             case .startLookup: return (.pause, .lookUp(host))
             case .waiting: return (.pause, .nothing)
             case .full:
                 log(facts, .drop(reason: "lookup_capacity"), snapshot, serverName: paused.serverName)
+                return (.drop, .nothing)
+            case .appFull:
+                log(facts, .drop(reason: "lookup_capacity_app"), snapshot, serverName: paused.serverName)
                 return (.drop, .nothing)
             }
         case .ask(_, let addressMatches):
@@ -646,6 +653,8 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
         askLock.lock()
         let outcome = ask.answer(request, now: Self.now)
         askLock.unlock()
+        // Right away, so a revoked approval does not come back after a crash.
+        lifecycle.async { [weak self] in self?.saveApprovals() }
         release(outcome.released)
         for (eventID, verdict) in outcome.verdicts { server?.send(.verdict(verdict, eventID: eventID)) }
         control("answer", "\(request.kind.rawValue) \(request.authorization.rawValue) \(outcome.reply.reason)")
@@ -673,6 +682,7 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
             for flow in idle { self.update(flow, using: .allow(), for: .any) }
             self.maintenanceTicks += 1
             if self.maintenanceTicks % 60 == 0 { self.saveIdentities() }
+            self.saveApprovals()
         }
         self.timer = timer
         timer.resume()
@@ -708,6 +718,43 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
             savedIdentityChanges = changes
         } catch {
             control("identities_not_saved", "\(error)")
+        }
+    }
+
+    // MARK: - Approvals across runs
+
+    /// Where the approvals wait for the extension's next run, after an upgrade or a restart of the
+    /// Mac (SavedApprovals). Root's, like the identity cache.
+    private static let approvalsURL = identitiesURL?.deletingLastPathComponent().appendingPathComponent("approvals.json")
+
+    /// On the lifecycle queue, at start.
+    private func restoreApprovals() {
+        guard let url = Self.approvalsURL, let data = try? Data(contentsOf: url) else { return }
+        let timeOfDay = Date().timeIntervalSince1970
+        askLock.lock()
+        let added = ask.approvals.restore(data, now: Self.now, timeOfDay: timeOfDay)
+        savedApprovalsRevision = ask.approvals.revision
+        askLock.unlock()
+        control("approvals_restored", added.map { "\($0)" } ?? "invalid_file")
+    }
+
+    /// On the lifecycle queue, while the filter runs, when the approvals changed since the last save.
+    private func saveApprovals() {
+        guard runID != nil, let url = Self.approvalsURL else { return }
+        askLock.lock()
+        let revision = ask.approvals.revision
+        let data = revision == savedApprovalsRevision
+            ? nil : ask.approvals.saved(now: Self.now, timeOfDay: Date().timeIntervalSince1970)
+        askLock.unlock()
+        guard let data else { return }
+        do {
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true,
+                                                    attributes: [.posixPermissions: 0o700])
+            try data.write(to: url, options: [.atomic])
+            _ = chmod(url.path, 0o600)
+            savedApprovalsRevision = revision
+        } catch {
+            control("approvals_not_saved", "\(error)")
         }
     }
 

@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+Changed:
+- Approvals outlast `blackice stop`, an upgrade and a restart of the Mac. The filter saves them to a file only root
+  can read or write, and each comes back with what it had left, less the time gone by. Until now they lived only in
+  the filter's memory, so each stop or upgrade cleared them and the agent was asked again about apps and hosts it
+  had approved. Remembered denials are still forgotten at a stop.
+- One app takes at most 256 of the 1,024 places for connections waiting for blackice's lookup of their host
+  (`lookup_capacity_app`). On 10 November one app's burst took them all while lookups were slow, and another app's
+  connection that a rule allowed was dropped as `lookup_capacity`.
+
 ## 1.0.5 (9 November 2026)
 
 Changed:

@@ -216,15 +216,37 @@ struct HostAddressCacheTests {
 }
 
 struct LookupWaitersTests {
+    let app = AppIdentity.cdhash(String(repeating: "a", count: 40))
+    let other = AppIdentity.cdhash(String(repeating: "b", count: 40))
+
     @Test func oneLookupPerHostAndABound() {
-        var waiters = LookupWaiters<Int>(limit: 3)
-        #expect(waiters.add(1, host: "a.example.com") == .startLookup)
-        #expect(waiters.add(2, host: "a.example.com") == .waiting)
-        #expect(waiters.add(3, host: "b.example.com") == .startLookup)
-        #expect(waiters.add(4, host: "c.example.com") == .full)
+        var waiters = LookupWaiters<Int>(limit: 3, limitPerApp: 3)
+        #expect(waiters.add(1, host: "a.example.com", app: app) == .startLookup)
+        #expect(waiters.add(2, host: "a.example.com", app: app) == .waiting)
+        #expect(waiters.add(3, host: "b.example.com", app: other) == .startLookup)
+        #expect(waiters.add(4, host: "c.example.com", app: other) == .full)
         #expect(waiters.finish("a.example.com") == [1, 2])
         #expect(waiters.count == 1 && waiters.finish("a.example.com").isEmpty)
-        #expect(waiters.add(5, host: "a.example.com") == .startLookup)
+        #expect(waiters.add(5, host: "a.example.com", app: app) == .startLookup)
         #expect(Set(waiters.removeAll()) == [3, 5] && waiters.count == 0)
+    }
+
+    // One app's burst leaves places for the others, and its own places come back as lookups end.
+    @Test func oneAppTakesAtMostItsShare() {
+        var waiters = LookupWaiters<Int>(limit: 8)
+        #expect(waiters.limitPerApp == 2)
+        #expect(waiters.add(1, host: "a.example.com", app: app) == .startLookup)
+        #expect(waiters.add(2, host: "b.example.com", app: app) == .startLookup)
+        #expect(waiters.add(3, host: "a.example.com", app: app) == .appFull)
+        #expect(waiters.add(4, host: "a.example.com", app: other) == .waiting)
+        #expect(waiters.add(5, host: "c.example.com", app: nil) == .startLookup)
+        #expect(waiters.add(6, host: "c.example.com", app: nil) == .waiting)
+        #expect(waiters.add(7, host: "c.example.com", app: nil) == .appFull)
+        #expect(waiters.finish("a.example.com") == [1, 4])
+        #expect(waiters.waitingFor(app) == 1 && waiters.waitingFor(other) == 0 && waiters.count == 3)
+        #expect(waiters.add(8, host: "d.example.com", app: app) == .startLookup)
+        #expect(waiters.add(9, host: "d.example.com", app: app) == .appFull)
+        #expect(Set(waiters.removeAll()) == [2, 5, 6, 8])
+        #expect(waiters.waitingFor(app) == 0 && waiters.waitingFor(nil) == 0)
     }
 }
