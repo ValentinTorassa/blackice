@@ -33,8 +33,6 @@ public struct VerifiedFlows: Equatable, Sendable {
     public static let appLimit = 256
     /// A destination last checked longer ago than this is not read back.
     public static let maximumAge: Double = 30 * 86_400
-    /// A destination already kept gets a new time only when it is this far from the one it has.
-    static let refreshAfter: Double = 3600
 
     public struct Destination: Hashable, Sendable {
         public let host: String
@@ -66,10 +64,10 @@ public struct VerifiedFlows: Equatable, Sendable {
 
     /// Keeps a destination this run checked and let a flow through on. An app's 17th takes the
     /// place of the one used longest ago, and so does a 257th app, by its latest. One already
-    /// kept gets the new time only when it is `refreshAfter` away from the time it has, so that a
-    /// flow let through every few seconds is something new to save once an hour, not each time.
-    /// Away on either side: a time written while the clock was ahead is replaced once the clock
-    /// is right again.
+    /// kept takes the new time, earlier or later: a time written while the clock was ahead does
+    /// not stay ahead. The times are exact, since the one to go is told by them: a tunnel dialled
+    /// again a minute ago must not count as used an hour ago. So each flow let through is
+    /// something new to save, and the extension saves at most once a minute.
     public mutating func record(app: AppIdentity, _ destination: Destination, timeOfDay: Double) {
         keep(app: app, destination, Times(checked: timeOfDay, used: timeOfDay), checking: true)
     }
@@ -85,8 +83,8 @@ public struct VerifiedFlows: Equatable, Sendable {
         var kept = apps[app] ?? [:]
         if var before = kept[destination] {
             let was = before
-            if checking, abs(times.checked - before.checked) >= Self.refreshAfter { before.checked = times.checked }
-            if abs(times.used - before.used) >= Self.refreshAfter { before.used = times.used }
+            if checking { before.checked = times.checked }
+            before.used = times.used
             guard before != was else { return }
             kept[destination] = before
         } else {
@@ -135,8 +133,8 @@ public struct VerifiedFlows: Equatable, Sendable {
     }
 
     /// Adds every destination of `other`, the one used longest ago first, so that with no room
-    /// the ones used last stay. One kept already takes each of the other's times that is
-    /// `refreshAfter` away from its own (`record`).
+    /// the ones used last stay. One kept already takes the other's times: `other` is the later
+    /// run's.
     public mutating func merge(_ other: VerifiedFlows) {
         let entries = other.apps.flatMap { app, kept in kept.map { (app: app, destination: $0.key, times: $0.value) } }
         for entry in entries.sorted(by: { $0.times.used < $1.times.used }) {
@@ -158,8 +156,8 @@ public struct SavedVerifiedFlows: Codable, Equatable, Sendable {
         public let port: UInt16
         /// When it was last checked, seconds since 1970.
         public let at: Double
-        /// When a flow last passed on it, seconds since 1970.
-        public let used: Double
+        /// When a flow last passed on it, seconds since 1970. A file with none counts `at`.
+        public let used: Double?
     }
 
     public let version: Int
@@ -181,7 +179,7 @@ extension VerifiedFlows {
                                                         at: times.checked, used: times.used))
             }
         }
-        entries.sort { ($0.used, $0.at, $0.host, $0.ip, $0.port) < ($1.used, $1.at, $1.host, $1.ip, $1.port) }
+        entries.sort { ($0.used ?? $0.at, $0.at, $0.host, $0.ip, $0.port) < ($1.used ?? $1.at, $1.at, $1.host, $1.ip, $1.port) }
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
         return try? encoder.encode(SavedVerifiedFlows(flows: entries))
@@ -197,12 +195,13 @@ extension VerifiedFlows {
         self.init()
         // Used longest ago first, as saved, so the limits keep the ones used last.
         for entry in file.flows {
+            let used = entry.used ?? entry.at
             guard let app = entry.app.identity, normalizeHost(entry.host) == entry.host, entry.port > 0,
-                  entry.at.isFinite, entry.used.isFinite,
+                  entry.at.isFinite, used.isFinite,
                   let address = IPAddress(entry.ip), address.destination == entry.ip, !address.isLinkLocal else { return nil }
             guard entry.at <= timeOfDay, timeOfDay - entry.at <= Self.maximumAge else { continue }
             keep(app: app, Destination(host: entry.host, address: address, port: entry.port),
-                 Times(checked: entry.at, used: min(entry.used, timeOfDay)), checking: true)
+                 Times(checked: entry.at, used: min(used, timeOfDay)), checking: true)
         }
         revision = 0
     }

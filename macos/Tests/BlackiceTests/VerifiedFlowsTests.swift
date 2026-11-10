@@ -170,6 +170,29 @@ struct VerifiedFlowsTests {
         full.record(app: app(vpn), other(61), timeOfDay: 20 * day + 2)
         #expect(full.count == VerifiedFlows.limitPerApp)
         #expect(full.checked(app: app(vpn), address: IPAddress(there)!, port: 443) == [endpoint: 0])
+        // The same with a restart half an hour after the last run's flows, as an upgrade is: the
+        // last run carried the tunnel at 5 s and checked 15 others up to 510 s; this run starts at
+        // 1800 s, carries the tunnel and checks one more.
+        var before = VerifiedFlows()
+        before.carry(app: app(vpn), destination(endpoint, there), checkedAt: -5 * day, timeOfDay: 5)
+        for index in 1..<VerifiedFlows.limitPerApp { before.record(app: app(vpn), other(index), timeOfDay: 60 + Double(index) * 30) }
+        let soonFile = try #require(before.saved())
+        var soon = try #require(VerifiedFlows(saved: soonFile, timeOfDay: 1800))
+        var after = VerifiedFlows()
+        after.carry(app: app(vpn), destination(endpoint, there), checkedAt: -5 * day, timeOfDay: 1805)
+        after.record(app: app(vpn), other(70), timeOfDay: 1810)
+        soon.merge(after)
+        #expect(soon.count == VerifiedFlows.limitPerApp)
+        #expect(soon.checked(app: app(vpn), address: IPAddress(there)!, port: 443) == [endpoint: -5 * day])
+        #expect(soon.names(app: app(vpn), address: other(1).address, port: 443).isEmpty)
+        // And inside one run: a tunnel dialled again every 10 s is used now, not when it first was.
+        var dialled = VerifiedFlows()
+        dialled.record(app: app(vpn), destination(endpoint, there), timeOfDay: 0)
+        for index in 1..<VerifiedFlows.limitPerApp { dialled.record(app: app(vpn), other(index), timeOfDay: Double(index)) }
+        for second in stride(from: 10.0, through: 3000, by: 10) { dialled.record(app: app(vpn), destination(endpoint, there), timeOfDay: second) }
+        dialled.record(app: app(vpn), other(80), timeOfDay: 3200)
+        #expect(dialled.names(app: app(vpn), address: IPAddress(there)!, port: 443) == [endpoint])
+        #expect(dialled.names(app: app(vpn), address: other(1).address, port: 443).isEmpty)
         // A use is saved, and one dated after now reads back as now.
         let ahead = try #require(VerifiedFlows(saved: saved, timeOfDay: 16 * day))
         #expect(ahead.checked(app: app(vpn), address: IPAddress(there)!, port: 443) == [endpoint: 0])
@@ -264,17 +287,13 @@ struct VerifiedFlowsTests {
         #expect(flows.names(app: app(vpn), address: IPAddress("203.0.113.1")!, port: 443).isEmpty)
         #expect(flows.names(app: app(vpn), address: IPAddress("203.0.113.2")!, port: 443) == [endpoint])
         #expect(flows.names(app: app(vpn), address: IPAddress("203.0.113.200")!, port: 443) == [endpoint])
-        // The same destination again is not something new to save, until an hour has gone by since
-        // the time it has: a flow let through every few seconds is dated again once an hour.
+        // The same destination at the same time is nothing new to save. At a later time it is,
+        // and so it is with the clock set back: a time written while the clock was ahead does not
+        // stay ahead.
         let revision = flows.revision
-        flows.record(app: app(vpn), destination(endpoint, "203.0.113.200"), timeOfDay: 200)
-        flows.record(app: app(vpn), destination(endpoint, "203.0.113.200"), timeOfDay: 100 + 3599)
+        flows.record(app: app(vpn), destination(endpoint, "203.0.113.200"), timeOfDay: 100)
         #expect(flows.revision == revision && flows.count == VerifiedFlows.limitPerApp)
-        flows.record(app: app(vpn), destination(endpoint, "203.0.113.200"), timeOfDay: 100 + 3600)
-        #expect(flows.revision == revision + 1)
-        // A clock set back by less than that changes nothing. Set back by more, the destination
-        // takes the new time: one written while the clock was ahead does not stay ahead.
-        flows.record(app: app(vpn), destination(endpoint, "203.0.113.200"), timeOfDay: 3700 - 3599)
+        flows.record(app: app(vpn), destination(endpoint, "203.0.113.200"), timeOfDay: 3700)
         #expect(flows.revision == revision + 1)
         flows.record(app: app(vpn), destination(endpoint, "203.0.113.200"), timeOfDay: 50)
         #expect(flows.revision == revision + 2)
@@ -336,6 +355,10 @@ struct VerifiedFlowsTests {
         }
         let good = #"{"app":{"signing_id":"com.example.vpn","team_id":"ABCDE12345"},"at":1000,"host":"edge.vpn.example.com","ip":"203.0.113.7","port":443,"used":1500}"#
         #expect(VerifiedFlows(saved: file(good), timeOfDay: 2000)?.count == 1)
+        // A file with no time of use counts the time of the check.
+        let unused = good.replacingOccurrences(of: ",\"used\":1500", with: "")
+        #expect(VerifiedFlows(saved: file(unused), timeOfDay: 2000)?.checked(app: app(vpn), address: IPAddress(there)!, port: 443)
+                == [endpoint: 1000])
         #expect(VerifiedFlows(saved: file(""), timeOfDay: 2000)?.count == 0)
         #expect(VerifiedFlows(saved: file(good, version: 2), timeOfDay: 2000) == nil)
         #expect(VerifiedFlows(saved: Data("not json".utf8), timeOfDay: 2000) == nil)
@@ -347,7 +370,6 @@ struct VerifiedFlowsTests {
                     good.replacingOccurrences(of: "203.0.113.7", with: "fe80::1%4"),
                     good.replacingOccurrences(of: "203.0.113.7", with: "fe80::1"),
                     good.replacingOccurrences(of: "\"port\":443", with: "\"port\":0"),
-                    good.replacingOccurrences(of: ",\"used\":1500", with: ""),
                     good.replacingOccurrences(of: "\"team_id\":\"ABCDE12345\"", with: "\"team_id\":\"ABCDE12345\",\"cdhash\":\"\(testCDHash)\""),
                     good.replacingOccurrences(of: "\"signing_id\":\"com.example.vpn\",", with: "")] {
             #expect(VerifiedFlows(saved: file(good + "," + bad), timeOfDay: 2000) == nil, "\(bad)")

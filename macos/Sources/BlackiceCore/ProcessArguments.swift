@@ -99,9 +99,12 @@ public enum ProcessArguments {
     /// to `maximumTitleBytes`. A title is a command line again: npm's is its command and that
     /// command's own arguments (`npm run x --token ...` for `npm run x -- --token ...`), which
     /// can hold a token as any arguments can, and an event goes to the agent and into the log. The
-    /// first words say which tool it is. Words are told apart by white space of any kind and by
-    /// code points that show nothing (`endsWord`), so a no-break space does not make one word of a
-    /// sentence. All of it is read by code point and by byte, never by character: a space that
+    /// first words say which tool it is. The words are the ones a terminal draws: white space of
+    /// any kind and the code points that draw as a blank end a word (`endsWord`), so a no-break
+    /// space does not make one word of a sentence, and the code points that draw nothing
+    /// (`isNotDrawn`: joiners, zero-width spaces, direction marks, variation selectors) are left
+    /// out, with any mark before a word's first letter, so none of them hides a `-` or breaks a
+    /// `://`. All of it is read by code point and by byte, never by character: a space that
     /// follows a prepending letter is one character with it. nil for a command line as it was
     /// started, for a control character among the words shown, and for a title with no word to
     /// show. A process picks its title as it picks its arguments, so it is shown and never
@@ -110,7 +113,10 @@ public enum ProcessArguments {
         guard rewritten(arguments) else { return nil }
         var words: [String] = []
         for scalars in arguments[0].unicodeScalars.split(whereSeparator: endsWord) {
-            let word = String(String.UnicodeScalarView(scalars))
+            var drawn = String.UnicodeScalarView(scalars.filter { !isNotDrawn($0) })
+            while let first = drawn.first, isMark(first) { drawn.removeFirst() }
+            guard !drawn.isEmpty else { continue }
+            let word = String(drawn)
             let limit = words.count == titleWords && commandsWithAName.contains(Substring(words[1])) ? titleWords + 1 : titleWords
             let bytes = Array(word.utf8)
             guard words.count < limit, bytes.first != UInt8(ascii: "-"), !bytes.contains(UInt8(ascii: "=")),
@@ -128,14 +134,25 @@ public enum ProcessArguments {
         return !title.isEmpty && validTitle(title) ? title : nil
     }
 
-    /// Code points that show as blank and are neither white space nor format characters: the
-    /// Hangul fillers and the empty Braille pattern.
-    private static let blanks: Set<UInt32> = [0x115F, 0x1160, 0x3164, 0xFFA0, 0x2800]
+    /// Code points that draw as a blank with a width and are not white space: the Hangul fillers,
+    /// the empty Braille pattern and the object replacement character.
+    private static let blanks: Set<UInt32> = [0x115F, 0x1160, 0x3164, 0xFFA0, 0x2800, 0xFFFC]
 
-    /// White space of any kind, a format character (a zero-width space, a joiner) or one of
-    /// `blanks`.
+    /// White space of any kind, or one of `blanks`.
     private static func endsWord(_ scalar: Unicode.Scalar) -> Bool {
-        scalar.properties.isWhitespace || scalar.properties.generalCategory == .format || blanks.contains(scalar.value)
+        scalar.properties.isWhitespace || blanks.contains(scalar.value)
+    }
+
+    /// A code point a terminal draws nothing for: a format character or one that is ignored when
+    /// there is no glyph for it (a joiner, a zero-width space, a soft hyphen, a direction mark or
+    /// override, a variation selector, a combining grapheme joiner).
+    private static func isNotDrawn(_ scalar: Unicode.Scalar) -> Bool {
+        scalar.properties.isDefaultIgnorableCodePoint || scalar.properties.generalCategory == .format
+    }
+
+    /// A combining mark, which is drawn on the letter before it.
+    private static func isMark(_ scalar: Unicode.Scalar) -> Bool {
+        [.nonspacingMark, .spacingMark, .enclosingMark].contains(scalar.properties.generalCategory)
     }
 
     /// The script in an interpreter's argv: the first argument that is not an option, after the

@@ -109,22 +109,39 @@ struct ProcessArgumentsTests {
             (["fetch https://me:secret@example.com/x.tgz", ""], "fetch"),
             (["--token sk-secret", ""], nil),
             (["TOKEN=secret", ""], nil),
-            // A no-break space or a zero-width one ends a word as a space does.
+            // A no-break space, or any other white space, ends a word as a space does.
             (["owner\u{A0}note:\u{A0}approve\u{A0}this\u{A0}host\u{A0}--token\u{A0}sk-secret", ""], "owner note:"),
-            (["npm\u{200B}run\u{200B}build\u{200B}--token\u{200B}sk-secret", ""], "npm run build"),
             (["npm\u{3000}exec\u{2003}vercel\u{2009}deploy", ""], "npm exec vercel"),
+            (["npm\trun\nbuild now", ""], "npm run build"),
             // A space right after a prepending letter (U+0D4E) is one character with it, and a
             // joiner is one with the letter before it: both end a word all the same, and an `=`
             // under a combining mark is still an assignment.
             (["npm x\u{0D4E} approve\u{0D4E} this\u{0D4E} host\u{0D4E} --token\u{0D4E} sk-secret", ""], "npm x\u{0D4E}"),
             (["npm x\u{0D4E} ", ""], "npm x\u{0D4E}"),
-            (["npm run\u{200D}--token\u{200D}sk-secret", ""], "npm run"),
-            (["owner\u{200D}note:\u{200D}approve\u{200D}this", ""], "owner note:"),
             (["worker TOKEN=\u{0338}secret", ""], "worker"),
-            // Blank fillers that are neither white space nor format characters.
+            // Code points that draw as a blank and are not white space: fillers, the empty Braille
+            // pattern, the object replacement character.
             (["owner\u{3164}note:\u{3164}approve\u{3164}this\u{3164}host", ""], "owner note:"),
             (["a\u{115F}b\u{1160}c\u{FFA0}d\u{2800}e", ""], "a b"),
-            (["npm\trun\nbuild now", ""], "npm run build"),
+            (["npm\u{FFFC}--token\u{FFFC}sk-secret", ""], "npm"),
+            // Code points that draw nothing are left out, so the words are the ones a terminal
+            // shows: none hides the `-` of an option or the `://` of a URL, a joiner glues as it
+            // draws, and a word is not broken where its script uses one.
+            (["\u{34F}--token sk-secret", ""], nil),
+            (["http:\u{34F}//x y", ""], nil),
+            (["npm \u{FE0F}-\u{200B}-token sk-secret", ""], "npm"),
+            (["\u{34F}", ""], nil),
+            (["owner\u{200D}note:\u{200D}approve\u{200D}this now", ""], "ownernote:approvethis now"),
+            (["npm \u{202E}nur dliub", ""], "npm nur"),
+            (["co\u{AD}operate now then", ""], "cooperate now"),
+            (["\u{645}\u{6CC}\u{200C}\u{62E}\u{648}\u{627}\u{647}\u{645} \u{633}\u{631}\u{648}\u{631}", ""],
+             "\u{645}\u{6CC}\u{62E}\u{648}\u{627}\u{647}\u{645} \u{633}\u{631}\u{648}\u{631}"),
+            // A mark with no letter before it is not a word, and does not start one.
+            (["node \u{301}", ""], "node"),
+            (["node \u{301}x", ""], "node x"),
+            // Accents, composed or not, and other scripts stay as they are.
+            (["caf\u{E9} cre\u{301}me", ""], "caf\u{E9} cre\u{301}me"),
+            (["\u{30B5}\u{30FC}\u{30D0}\u{30FC} \u{8D77}\u{52D5}", ""], "\u{30B5}\u{30FC}\u{30D0}\u{30FC} \u{8D77}\u{52D5}"),
             // A control character past the words shown does not take the title away.
             (["npm run build --flag\u{1B}[2J", ""], "npm run build"),
             // As it was started: argv[0] is no title.
