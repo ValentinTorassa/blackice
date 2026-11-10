@@ -169,7 +169,7 @@ public func validEventID(_ text: String) -> Bool {
 }
 
 /// An event's host as the extension writes it: a normalized host name, or for a connection with
-/// no name its address, exactly as `ip` (and so a link-local one only with its interface).
+/// no name its address, exactly as `ip` (and so with no interface, a link-local one too).
 /// `ip` must already be checked.
 public func validEventHost(_ host: String, ip: String) -> Bool {
     normalizeHost(host) == host || (host == ip && isNormalDestination(host))

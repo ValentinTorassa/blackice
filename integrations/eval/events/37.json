@@ -1,0 +1,12 @@
+{
+  "event": "connection",
+  "id": "ev-00000025",
+  "app": {
+    "signing_id": "com.example.helper",
+    "team_id": "ABCDE12345",
+    "path": "/Users/me/Downloads/helper"
+  },
+  "ip": "fe80::1c2b:3aff:fe4d:5e6f",
+  "port": 4444,
+  "host": "fe80::1c2b:3aff:fe4d:5e6f"
+}

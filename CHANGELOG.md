@@ -22,11 +22,13 @@ Fixed:
   there were dropped as `address_mismatch` in 10 of 239 runs, 9 of them among the 34 runs in which the resolver
   sent three queries, and each time the CLI got through on a later address. The filter now keeps the CNAMEs it
   reads, each for its TTL and at most a day, and follows them back from an address's name.
-- A connection to a link-local IPv6 address can be asked about. The filter read the address from text that names
-  no interface, and such an address could be any host on any link, so the connection was dropped as `no_host`
-  with no event: on 10 November identityservicesd's connections to a peer on a `utun` interface all were. From
-  macOS 15 the filter reads the interface from the flow's own endpoint.
-
+- A TCP connection to a link-local IPv6 address is asked about. It was dropped as `no_host` with no event, since
+  the address could be any host on any link without its interface: on 10 November identityservicesd's
+  connections to a peer on a `utun` interface all were. macOS gives the filter no interface for a connection's
+  destination: one to `fe80::dead:beef%en0` arrives as `fe80::dead:beef` (macOS 27.0.1). So the event names the
+  address alone, and an approval covers it on every interface, as an address entry of a rule does. `approve
+  --host` and `deny --host` take a link-local address with no interface; until now they took one only with an
+  interface, and that matched no connection.
 - npm's folder is no longer its script. node writes npm's title over its own command line (`npm run build` where
   `node`, npm's path and its arguments were), so the argument the script was in reads as empty, and the filter
   joined that to the process's folder: the event's `app.script` was the folder npm ran in, and each folder was
@@ -41,10 +43,6 @@ Fixed:
   `node x.js` with a title of 20 bytes read as `my-long-s` and then its first environment string, which 1.0.6
   would have shown as the script, value and all. None of the 182 events with a script in this Mac's log holds
   one. An argument with `=` before any `/` is now no script.
-
-Changed:
-- An approval for a link-local address is not saved to the approvals file: its host names the interface by its
-  number, which may be another interface's after a restart. It lasts until the filter's process ends, or its time.
 
 ## 1.0.6 (10 November 2026)
 

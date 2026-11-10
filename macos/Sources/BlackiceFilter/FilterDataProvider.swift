@@ -250,19 +250,6 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
         }
     }
 
-    /// A link-local remote address with its interface, from the flow's endpoint as Network gives
-    /// it (macOS 15 on). Read only when the host endpoint's text gives no address, or a link-local
-    /// one with no interface, which could be any host on any link: on 10 November 2026
-    /// identityservicesd's connections to a link-local peer were all dropped as `no_host`, with
-    /// nothing to ask about.
-    private static func linkLocal(_ socket: NEFilterSocketFlow?) -> BlackiceCore.IPAddress? {
-        guard #available(macOS 15.0, *), case .hostPort(.ipv6(let remote), _)? = socket?.remoteFlowEndpoint,
-              let interface = remote.interface,
-              let address = BlackiceCore.IPAddress(bytes: Array(remote.rawValue), scope: UInt32(interface.index)),
-              address.isLinkLocal, address.scope != 0 else { return nil }
-        return address
-    }
-
     override func handleNewFlow(_ flow: NEFilterFlow) -> NEFilterNewFlowVerdict {
         let snapshot = snapshots.read()
         let socket = flow as? NEFilterSocketFlow
@@ -272,11 +259,9 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
         let internet = socket?.socketFamily == AF_INET || socket?.socketFamily == AF_INET6
         let direction: FlowDirection = flow.direction == .outbound ? .outbound :
             (flow.direction == .inbound ? .inbound : .unknown)
-        var address = endpoint.flatMap { BlackiceCore.IPAddress($0.hostname) }
-        if address?.isCheckable != true, let scoped = Self.linkLocal(socket),
-           address == nil || address?.bytes == scoped.bytes {
-            address = scoped
-        }
+        // A link-local destination comes with no interface: neither this endpoint nor
+        // `remoteFlowEndpoint` has one (macOS 27.0.1), whatever interface the app named.
+        let address = endpoint.flatMap { BlackiceCore.IPAddress($0.hostname) }
         let identity = CodeIdentity.resolve(auditToken: flow.sourceAppAuditToken)
         // A cdhash rule reads the path of ad hoc code, to tell an interpreter by its name
         // (Interpreters); answers and approvals read any interpreter's script (ScriptScope).
@@ -529,7 +514,7 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
                 // and the title of the process that opened this flow, the first of the event's.
                 try HookEvent.connection(app: HookEvent.App(identity, path: CodeIdentity.path(auditToken: paused.flow.sourceAppAuditToken),
                                                             script: facts.scriptScope.script, title: facts.title),
-                                         host: host, ip: address.description, port: port,
+                                         host: host, ip: address.destination, port: port,
                                          deadline: Date().addingTimeInterval(seconds))
             }
             switch added {

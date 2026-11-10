@@ -115,7 +115,7 @@ struct ParseTests {
         let ssh = AppIdentity.signed(SigningIdentity(signingID: "com.apple.ssh", teamID: nil))
         let forms: [(String, String)] = [
             ("100.66.32.75", "100.66.32.75"), ("FD7A:115C:A1E0:0:0:0:0:1", "fd7a:115c:a1e0::1"),
-            ("::ffff:100.66.32.75", "100.66.32.75"), ("fe80::1%lo0", "fe80::1%\(if_nametoindex("lo0"))"),
+            ("::ffff:100.66.32.75", "100.66.32.75"), ("FE80::1", "fe80::1"),
         ]
         for (raw, host) in forms {
             #expect(try CLI.parse(["approve", "--app", "com.apple.ssh", "--host", raw, "--for", "1h"])
@@ -125,7 +125,8 @@ struct ParseTests {
         let ranges = "with no wildcards, ranges or leading zeros"
         let cases: [(String, String)] = [
             ("010.0.0.1", "leading zeros"), ("10.1", ranges), ("100.64.0.0/10", ranges), ("2001:db8::/32", ranges),
-            ("fe80::1", "link-local address's interface"), ("2001:db8::1%en0", ranges),
+            ("fe80::1%lo0", "link-local address with no interface"), ("fe80::1%7", "link-local address with no interface"),
+            ("2001:db8::1%en0", ranges),
         ]
         for (raw, fragment) in cases {
             let message = usageError(["approve", "--app", "com.apple.ssh", "--host", raw])

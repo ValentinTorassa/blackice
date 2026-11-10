@@ -130,9 +130,10 @@ struct AddressOnlyPolicyTests {
             (flow(probe, address: "240.0.0.1"), asked, "240.0.0.1"),
             (flow(probe, address: "FD7A:115C:A1E0:0:0:0:0:1"), asked, "fd7a:115c:a1e0::1"),
             (flow(probe, address: "::ffff:198.51.100.4"), asked, "198.51.100.4"),
-            // A link-local address is asked about on its interface only.
-            (flow(probe, address: "fe80::7%1"), asked, "fe80::7%1"),
-            (flow(probe, address: "fe80::7"), .drop(reason: "no_host"), nil),
+            // A link-local address is asked about with no interface: the flow gives none, and
+            // were one given, the event and its approval would still name the address alone.
+            (flow(probe, address: "fe80::7"), asked, "fe80::7"),
+            (flow(probe, address: "fe80::7%1"), asked, "fe80::7"),
             // Several names for the address name nothing: asked about by the address.
             (flow(probe, dnsNames: ["a.example.com", "b.example.com"]), asked, tailnet),
             // One name: asked about by that name, as before.
@@ -150,6 +151,11 @@ struct AddressOnlyPolicyTests {
         }
         // The whole timeout, off the TLS port.
         #expect(FilterPolicy.holdLimit(flow(probe), afterServerName: false) == nil)
+        // An approval of a link-local address names no interface: it covers the address on each.
+        let link = context(approved: [key(probe, "fe80::7")])
+        #expect(decide(flow(probe, address: "fe80::7"), ask, link) == .allow(reason: "approval;address"))
+        #expect(decide(flow(probe, address: "fe80::7%1"), ask, link) == .allow(reason: "approval;address"))
+        #expect(decide(flow(probe, address: "fe80::8"), ask, link) == asked)
     }
 
     @Test func udpAndMulticastWithNoNameRaiseNoEvent() throws {
@@ -247,7 +253,8 @@ struct AddressOnlyPolicyTests {
         #expect(hello(.deny("sni_missing"), flow(probe, "example.org", port: 443), ask) == .drop(reason: "sni_missing"))
         #expect(hello(.deny("sni_missing"), flow(probe, port: 443, dnsNames: ["example.org"]), ask)
                 == .drop(reason: "sni_missing"))
-        #expect(hello(.deny("sni_missing"), flow(probe, port: 443, address: "fe80::7"), ask) == .drop(reason: "sni_missing"))
+        #expect(hello(.deny("sni_missing"), flow(probe, port: 443, address: "fe80::7"), ask)
+                == .ask(reason: "no_rule;address;sni_missing", addressMatches: true))
         #expect(hello(.deny("sni_missing"), flow(.unresolved, port: 443), ask) == .drop(reason: "sni_missing"))
         // Block-all, and any other hello that cannot be read: dropped.
         #expect(hello(.deny("sni_missing"), bare, try snapshot(.blockAll)) == .drop(reason: "sni_missing"))
@@ -351,23 +358,27 @@ struct AddressTextTests {
     }
 
     @Test func destinationsAreHostNamesOrAddressesInOneSpelling() {
-        let loopback = if_nametoindex("lo0")
         let normal: [(String, String)] = [
             ("Example.COM.", "example.com"), (tailnet, tailnet),
             ("FD7A:115C:A1E0:0:0:0:0:1", "fd7a:115c:a1e0::1"), ("::ffff:100.66.32.75", tailnet),
-            ("2001:db8:0:0:1:0:0:1", "2001:db8::1:0:0:1"), ("fe80::1%lo0", "fe80::1%\(loopback)"),
+            ("2001:db8:0:0:1:0:0:1", "2001:db8::1:0:0:1"), ("FE80::1", "fe80::1"),
         ]
         for (raw, expected) in normal {
             #expect(normalizeDestination(raw) == expected, "\(raw)")
             #expect(isNormalDestination(expected), "\(expected)")
         }
-        for raw in ["fe80::1", "010.0.0.1", "10.1", "1.2.3.4/32", "*.example.com", "2001:db8::1%en0", "bad host", ""] {
+        // A link-local address with an interface is no destination: a flow's has none.
+        for raw in ["fe80::1%lo0", "fe80::1%7", "010.0.0.1", "10.1", "1.2.3.4/32", "*.example.com", "2001:db8::1%en0",
+                    "bad host", ""] {
             #expect(normalizeDestination(raw) == nil, "\(raw)")
         }
-        for text in ["Example.com", "FD7A:115C:A1E0::1", "fd7a:115c:a1e0:0:0:0:0:1", "010.0.0.1", "fe80::1",
+        for text in ["Example.com", "FD7A:115C:A1E0::1", "fd7a:115c:a1e0:0:0:0:0:1", "010.0.0.1", "fe80::1%7", "fe80::1%lo0",
                      "::ffff:100.66.32.75", "10.0.0.0/8", ""] {
             #expect(!isNormalDestination(text), "\(text)")
         }
+        // The name of a flow's destination: the address, whatever interface it was read with.
+        #expect(IPAddress("fe80::1%7")?.destination == "fe80::1" && IPAddress("fe80::1")?.destination == "fe80::1")
+        #expect(IPAddress("FD7A:115C:A1E0::1")?.destination == "fd7a:115c:a1e0::1")
     }
 
     @Test func rangesHoldTheirAddressesAndNoOthers() throws {
@@ -441,11 +452,12 @@ struct AddressMessageTests {
     @Test func anEventMayNameItsAddressAsItsHost() throws {
         try event(host: tailnet, ip: tailnet).validate(now: Date())
         try event(host: "fd7a:115c:a1e0::1", ip: "fd7a:115c:a1e0::1").validate(now: Date())
+        // A link-local address has no interface in an event.
+        try event(host: "fe80::1", ip: "fe80::1").validate(now: Date())
         let link = "fe80::1%\(if_nametoindex("lo0"))"
-        try event(host: link, ip: link).validate(now: Date())
         let bad = [
             event(host: tailnet, ip: "203.0.113.7"), event(host: "100.66.32.76", ip: tailnet),
-            event(host: "FD7A:115C:A1E0::1", ip: "fd7a:115c:a1e0::1"), event(host: "fe80::1", ip: "fe80::1"),
+            event(host: "FD7A:115C:A1E0::1", ip: "fd7a:115c:a1e0::1"), event(host: link, ip: link),
             event(host: "010.0.0.1", ip: "10.0.0.1"), event(host: "100.64.0.0/10", ip: tailnet),
         ]
         for candidate in bad {
@@ -459,7 +471,7 @@ struct AddressMessageTests {
     }
 
     /// The eval's events with an address as the host must stay in the format the daemon sends.
-    @Test(arguments: ["14", "21", "22", "23"])
+    @Test(arguments: ["14", "21", "22", "23", "36", "37"])
     func evalAddressEventsValidate(_ id: String) throws {
         let url = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
@@ -478,7 +490,8 @@ struct AddressMessageTests {
         let ssh = AppIdentity.signed(SigningIdentity(signingID: "com.apple.ssh", teamID: nil))
         try AnswerRequest(kind: .approve, app: ssh, host: tailnet, seconds: 60, token: nil).validate(now: Date())
         try AnswerRequest(kind: .deny, app: ssh, host: "fd7a:115c:a1e0::1", seconds: nil, token: nil).validate(now: Date())
-        for host in ["010.0.0.1", "100.64.0.0/10", "fe80::1", "FD7A::1", "::ffff:100.66.32.75"] {
+        try AnswerRequest(kind: .approve, app: ssh, host: "fe80::1", seconds: 60, token: nil).validate(now: Date())
+        for host in ["010.0.0.1", "100.64.0.0/10", "fe80::1%7", "FD7A::1", "::ffff:100.66.32.75"] {
             #expect(throws: MessageError.self, "\(host)") {
                 try AnswerRequest(kind: .deny, app: ssh, host: host, seconds: nil, token: nil).validate(now: Date())
             }

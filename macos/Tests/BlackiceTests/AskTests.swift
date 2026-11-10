@@ -106,18 +106,23 @@ struct ApprovalTableTests {
         #expect(revoked && table.revision == 4)
     }
 
-    // Its host names an interface by its number, which a restart may give to another interface.
-    @Test func anApprovalForALinkLocalAddressIsNotSaved() throws {
+    // A link-local address is approved with no interface, and saved like any other. One with an
+    // interface, as 1.0.6 saved it, matches no flow: it is left out and the rest come back.
+    @Test func anApprovalForALinkLocalAddressIsSavedWithNoInterface() throws {
         var table = ApprovalTable()
-        table.add(ApprovalKey(identity: tool, host: "fe80::1%7"), seconds: 3600, now: 0)
+        table.add(ApprovalKey(identity: tool, host: "fe80::1"), seconds: 3600, now: 0)
         table.add(ApprovalKey(identity: tool, host: "2001:db8::1"), seconds: 3600, now: 0)
         table.add(ApprovalKey(identity: tool, host: "192.0.2.7"), seconds: 3600, now: 0)
         table.add(ApprovalKey(identity: tool, host: "example.com"), seconds: 3600, now: 0)
-        #expect(table.covers(ApprovalKey(identity: tool, host: "fe80::1%7"), now: 1))
         var restored = ApprovalTable()
         let added = restored.restore(try #require(table.saved(now: 0, timeOfDay: 1_000_000)), now: 0, timeOfDay: 1_000_000)
-        #expect(added == 3 && !restored.covers(ApprovalKey(identity: tool, host: "fe80::1%7"), now: 1))
-        #expect(restored.summaries(now: 0).map(\.host).sorted() == ["192.0.2.7", "2001:db8::1", "example.com"])
+        #expect(added == 4 && restored.covers(ApprovalKey(identity: tool, host: "fe80::1"), now: 1))
+        var old = ApprovalTable()
+        old.add(ApprovalKey(identity: tool, host: "fe80::1%7"), seconds: 3600, now: 0)
+        old.add(ApprovalKey(identity: tool, host: "example.com"), seconds: 3600, now: 0)
+        var upgraded = ApprovalTable()
+        #expect(upgraded.restore(try #require(old.saved(now: 0, timeOfDay: 1_000_000)), now: 0, timeOfDay: 1_000_000) == 1)
+        #expect(upgraded.summaries(now: 0).map(\.host) == ["example.com"])
     }
 
     // An upgrade or a restart of the Mac: what was left when saved, less the time of day since.

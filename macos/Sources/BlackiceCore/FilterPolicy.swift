@@ -319,16 +319,17 @@ public enum FilterPolicy {
 
     /// Ask mode, a TCP flow with no name: no host name from the system, not exactly one name from
     /// DNS answers, and no server name to read. It is asked about by its address, which is its
-    /// destination, so no lookup applies and an approval for that address allows it. Dropped as
-    /// before, with no event: UDP (WebRTC, games, discovery and QUIC would flood the hooks with
-    /// events that get denied anyway; address rules and `*` allow it); a multicast or broadcast
-    /// destination; a link-local address whose interface is not known, which could be any host on
-    /// any link; and a flow with no port.
+    /// destination, so no lookup applies and an approval for that address allows it. A link-local
+    /// address is asked about with no interface, since the flow gives none (IPAddress.destination):
+    /// its approval covers the address on every interface. Dropped as before, with no event: UDP
+    /// (WebRTC, games, discovery and QUIC would flood the hooks with events that get denied
+    /// anyway; address rules and `*` allow it); a multicast or broadcast destination; and a flow
+    /// with no port.
     private static func byAddress(_ identity: AppIdentity, _ flow: FlowFacts, _ context: PolicyContext) -> FlowVerdict {
-        guard flow.tcp, let address = flow.remoteAddress, address.isCheckable, !address.isMulticastOrBroadcast,
+        guard flow.tcp, let address = flow.remoteAddress, !address.isMulticastOrBroadcast,
               flow.port != nil else { return .drop(reason: "no_host") }
-        if context.approved(identity, address.description) { return .allow(reason: "approval;address") }
-        if context.denied(identity, address.description) { return .drop(reason: rememberedDenial) }
+        if context.approved(identity, address.destination) { return .allow(reason: "approval;address") }
+        if context.denied(identity, address.destination) { return .drop(reason: rememberedDenial) }
         return .ask(reason: "no_rule;address", addressMatches: true)
     }
 
@@ -365,11 +366,10 @@ public enum FilterPolicy {
 
     /// The host an event names for a flow that ask mode pauses: the server name read from its
     /// hello, else the host name from the system, else the one name DNS answers gave its address,
-    /// else the address itself as `IPAddress.description` prints it. nil when none can name it.
+    /// else the address itself as `IPAddress.destination` prints it. nil when none can name it.
     public static func eventHost(_ flow: FlowFacts, serverName: String?) -> String? {
         if let name = serverName ?? flow.hostname ?? flow.dnsName { return normalizeHost(name) }
-        guard let address = flow.remoteAddress, address.isCheckable else { return nil }
-        return address.description
+        return flow.remoteAddress?.destination
     }
 
     /// Whether a rule names the code `rules` names (for any host), or the Apple services table

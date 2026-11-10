@@ -892,8 +892,9 @@ public enum CLI {
     private static func host(_ rawHost: String?, command: String) throws -> String {
         guard let rawHost else { throw UsageError("\(command) needs --host") }
         // An address covers connections to it that have no name, as `pending` shows them.
-        if let address = IPAddress.strict(rawHost), !address.isCheckable {
-            throw UsageError("\(command): --host needs a link-local address's interface, such as fe80::1%en0")
+        if rawHost.contains("%"), IPAddress.strict(rawHost)?.isLinkLocal == true {
+            throw UsageError("\(command): --host takes a link-local address with no interface, such as fe80::1: "
+                             + "macOS does not say which one a connection uses, so the answer covers the address on each")
         }
         guard let host = normalizeDestination(rawHost) else {
             throw UsageError("\(command): --host takes one host name or IP address, with no wildcards, ranges or leading zeros")

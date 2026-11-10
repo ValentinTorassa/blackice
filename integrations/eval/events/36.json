@@ -1,0 +1,11 @@
+{
+  "event": "connection",
+  "id": "ev-00000024",
+  "app": {
+    "signing_id": "com.apple.ssh",
+    "path": "/usr/bin/ssh"
+  },
+  "ip": "fe80::1c2b:3aff:fe4d:5e6f",
+  "port": 22,
+  "host": "fe80::1c2b:3aff:fe4d:5e6f"
+}

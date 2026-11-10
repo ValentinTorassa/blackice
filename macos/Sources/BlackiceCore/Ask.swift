@@ -173,27 +173,28 @@ public struct SavedApprovals: Codable, Equatable, Sendable {
 
 extension ApprovalTable {
     /// The file's contents: the approvals left at `now` (monotonic seconds), saved at `timeOfDay`
-    /// (seconds since 1970). One for a link-local address is left out: its host names an interface
-    /// by its number, which may be another interface's after a restart.
+    /// (seconds since 1970).
     public func saved(now: TimeInterval, timeOfDay: Double) -> Data? {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
-        let kept = summaries(now: now).filter { IPAddress.strict($0.host)?.isLinkLocal != true }
-        return try? encoder.encode(SavedApprovals(savedAt: timeOfDay, approvals: kept))
+        return try? encoder.encode(SavedApprovals(savedAt: timeOfDay, approvals: summaries(now: now)))
     }
 
     /// Adds the approvals in a file `saved` wrote, each for what it had left less the time of day
     /// gone by since. Returns how many were added; nil for a file this version did not write, or
-    /// one with an entry that is not valid, which adds nothing.
+    /// one with an entry that is not valid, which adds nothing. An approval of a link-local
+    /// address with an interface ("fe80::1%7"), which 1.0.6 took from `approve --host` and saved,
+    /// is left out: it matches no flow, and must not cost the file's other approvals.
     @discardableResult
     public mutating func restore(_ data: Data, now: TimeInterval, timeOfDay: Double) -> Int? {
         guard let file = try? JSONDecoder().decode(SavedApprovals.self, from: data),
               file.version == SavedApprovals.currentVersion, file.savedAt.isFinite,
-              file.approvals.count <= Self.maximumEntries,
-              file.approvals.allSatisfy({ $0.isValid && $0.secondsLeft <= Self.maximumSeconds }) else { return nil }
+              file.approvals.count <= Self.maximumEntries else { return nil }
+        let approvals = file.approvals.filter { !($0.host.contains("%") && IPAddress($0.host)?.isLinkLocal == true) }
+        guard approvals.allSatisfy({ $0.isValid && $0.secondsLeft <= Self.maximumSeconds }) else { return nil }
         let gone = max(0, timeOfDay - file.savedAt)
         var added = 0
-        for approval in file.approvals {
+        for approval in approvals {
             guard let identity = approval.app.identity else { continue }
             let left = Double(approval.secondsLeft) - gone
             guard left >= 1 else { continue }
