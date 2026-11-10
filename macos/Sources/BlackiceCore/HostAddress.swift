@@ -376,12 +376,21 @@ public final class HostAddressCache: @unchecked Sendable {
 }
 
 /// Flows that wait for one host's lookup, so a burst of connections to a host starts one lookup.
+/// One app takes at most a quarter of the places, as in the other tables of waiting connections:
+/// on 10 November 2026 a burst of one app's connections took all 1024 while lookups were slow, and
+/// another app's connection that a rule allowed was dropped.
 public struct LookupWaiters<Flow> {
     public let limit: Int
-    private var waiting: [String: [Flow]] = [:]
+    public let limitPerApp: Int
+    /// The app is nil for a flow whose code has no identity an approval could name.
+    private var waiting: [String: [(flow: Flow, app: AppIdentity?)]] = [:]
+    private var perApp: [AppIdentity?: Int] = [:]
     public private(set) var count = 0
 
-    public init(limit: Int = 1024) { self.limit = limit }
+    public init(limit: Int = 1024, limitPerApp: Int? = nil) {
+        self.limit = limit
+        self.limitPerApp = limitPerApp ?? limit / 4
+    }
 
     public enum Added: Equatable {
         /// The first flow for this host: the caller starts the lookup.
@@ -390,29 +399,41 @@ public struct LookupWaiters<Flow> {
         case waiting
         /// Too many flows are waiting; the caller drops this one.
         case full
+        /// The flow's app has its share of the places; the caller drops this one.
+        case appFull
     }
 
-    public mutating func add(_ flow: Flow, host: String) -> Added {
+    public mutating func add(_ flow: Flow, host: String, app: AppIdentity?) -> Added {
         guard count < limit else { return .full }
+        guard waitingFor(app) < limitPerApp else { return .appFull }
         count += 1
+        perApp[app, default: 0] += 1
         if waiting[host] != nil {
-            waiting[host]?.append(flow)
+            waiting[host]?.append((flow, app))
             return .waiting
         }
-        waiting[host] = [flow]
+        waiting[host] = [(flow, app)]
         return .startLookup
     }
 
+    /// How many of `app`'s flows wait.
+    public func waitingFor(_ app: AppIdentity?) -> Int { perApp[app] ?? 0 }
+
     /// The flows waiting for `host`, removed.
     public mutating func finish(_ host: String) -> [Flow] {
-        let flows = waiting.removeValue(forKey: host) ?? []
-        count -= flows.count
-        return flows
+        let entries = waiting.removeValue(forKey: host) ?? []
+        count -= entries.count
+        for entry in entries {
+            let left = (perApp[entry.app] ?? 1) - 1
+            perApp[entry.app] = left > 0 ? left : nil
+        }
+        return entries.map(\.flow)
     }
 
     public mutating func removeAll() -> [Flow] {
-        let flows = waiting.values.flatMap { $0 }
+        let flows = waiting.values.flatMap { $0.map(\.flow) }
         waiting.removeAll()
+        perApp.removeAll()
         count = 0
         return flows
     }

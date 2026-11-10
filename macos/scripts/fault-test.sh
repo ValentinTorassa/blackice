@@ -475,7 +475,9 @@ trap 'exit 129' HUP
 
 step "Check the Mac"
 [[ -x "$BIN" ]] || die "no blackice at $BIN; install it first (docs/install.md)"
-for tool in /usr/bin/nscurl /usr/bin/plutil /usr/bin/log /usr/bin/curl; do [[ -x "$tool" ]] || die "$tool is missing"; done
+for tool in /usr/bin/nscurl /usr/bin/plutil /usr/bin/log /usr/bin/curl /usr/bin/dscacheutil; do
+    [[ -x "$tool" ]] || die "$tool is missing"
+done
 help=$("$BIN" help 2>&1) || help=
 grep -qF 'agent install' <<<"$help" || die "$BIN has no 'agent install'; this test needs a build with it"
 listed_ext=$(systemextensionsctl list 2>/dev/null) || listed_ext=
@@ -486,6 +488,14 @@ dns=$(scutil --dns 2>/dev/null) || dns=
 if grep -qF 100.100.100.100 <<<"$dns"; then
     die "Tailscale's DNS is on, and names stop resolving in ask mode. Run: tailscale set --accept-dns=false"
 fi
+# A case waits on a connection to its own host, so a name that does not resolve fails the case with
+# no connection for the filter to see. On 10 November 2026 a router answered NXDOMAIN for
+# example.com and www.example.com, and six checks of cases 1 and 4 failed for that.
+for host in "$DOWN_HOST" "$HUNG_HOST" "$SAME_HOST" "${RESTART_HOSTS[@]}" "$CONTROL_HOST"; do
+    answers=$(/usr/bin/dscacheutil -q host -a name "$host" 2>/dev/null) || answers=
+    grep -q '_address: ' <<<"$answers" \
+        || die "$host does not resolve with this Mac's DNS server, and a case needs it; run the test on another network or DNS server"
+done
 "$BIN" validate "$OUT/fault.toml"
 state='not loaded'
 if agent_loaded; then agent_before=1 state=loaded; fi

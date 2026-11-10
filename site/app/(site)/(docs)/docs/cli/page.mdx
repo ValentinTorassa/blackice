@@ -9,7 +9,7 @@ The commands. `blackice help COMMAND`, or `blackice COMMAND --help`, shows a com
 | Command | What it does |
 | --- | --- |
 | `blackice start [--config PATH]` | Start filtering with `~/.config/blackice/blackice.toml`, or PATH, asking a few questions first when there is no file. Run it again after editing the file or upgrading. A mode or answerer switched since the last start stays while the file is unchanged. |
-| `blackice stop` | Stop filtering and remove the network extension. |
+| `blackice stop` | Stop filtering and remove the network extension. Approvals are kept for the time they have left; `blackice deny` takes one back. |
 | `blackice status` | The mode, who answers, what waits, the denials of the last 10 minutes, the rules, the approvals and the timeout. |
 | `blackice mode accept-all \| ask \| block-all [--agent NAME]` | Switch the mode. `--agent` picks who answers in ask mode: `fx`, `claude-code`, `codex`, `opencode` or `you`; its hook must be in `blackice.toml`. Connections that wait go on if the new mode lets them through, and are dropped otherwise. |
 | `blackice pending` | What waits, then the denials of the last 10 minutes, whose connections are dropped without asking, each with the `blackice approve` line that lets it through (one per app for the denials), then the approvals, with the time each has left. |

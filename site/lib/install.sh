@@ -20,11 +20,11 @@
 
 set -eu
 
-VERSION=1.0.5
+VERSION=1.0.6
 # The SHA-256 of Blackice-$VERSION.zip, the file package.sh wrote and the release holds. The zip
 # must match it and the release's .sha256 file, so this script and the GitHub release must agree.
 # Each release sets it with VERSION.
-SHA256=7b73e48ea44902e362e677e36561ffffb8e08c2a76b966e3d7aabb8c51ac1fee
+SHA256=43dbe4277707c0d6ebe8f58ebed9419a49cda5eb7b8cf991d28654441c976a94
 REPOSITORY=ValentinTorassa/blackice
 TEAM_ID=M294LK997M
 IDENTIFIER=com.valentorassa.blackice

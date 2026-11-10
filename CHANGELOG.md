@@ -1,5 +1,28 @@
 # Changelog
 
+## 1.0.6 (10 November 2026)
+
+Fixed:
+- An app that opens its next connection as soon as one is dropped no longer fills the log, and a loop of TCP
+  connections is slowed. Once an app has had 64 TCP connections dropped within 2 s, its next ones that would be
+  dropped wait 2 s first, at most 64 at a time, and after 30 s the app is counted afresh. UDP flows never wait:
+  past the same count they get 8 log lines per 2 s. Drops with no log line are counted (`drops_not_logged`). On
+  10 November, after a restart, identityservicesd tried a link-local peer about 430 times a second: the filter
+  used half a core, other connections were slow to start, and the system log dropped most of the filter's lines,
+  so `blackice report` counted 6,122 connections where there had been more than 200,000. 1.0.5 and earlier have
+  the fault. A loop of UDP flows, or of more than 64 TCP connections at once, still costs the filter its work
+  on each flow. Only connections dropped as they start are counted and delayed: one dropped once its TLS hello
+  was read, or after a lookup, is dropped at once as before.
+
+Changed:
+- Approvals outlast `blackice stop`, an upgrade and a restart of the Mac. The filter saves them to a file only root
+  can read or write, and each comes back with what it had left, less the time gone by. Until now they lived only in
+  the filter's memory, so each stop or upgrade cleared them and the agent was asked again about apps and hosts it
+  had approved. Remembered denials are still forgotten at a stop.
+- One app takes at most 256 of the 1,024 places for connections waiting for blackice's lookup of their host
+  (`lookup_capacity_app`). On 10 November one app's burst took them all while lookups were slow, and another app's
+  connection that a rule allowed was dropped as `lookup_capacity`.
+
 ## 1.0.5 (9 November 2026)
 
 Changed:
