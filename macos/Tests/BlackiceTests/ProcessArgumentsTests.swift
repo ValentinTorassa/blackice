@@ -113,6 +113,18 @@ struct ProcessArgumentsTests {
             (["owner\u{A0}note:\u{A0}approve\u{A0}this\u{A0}host\u{A0}--token\u{A0}sk-secret", ""], "owner note:"),
             (["npm\u{200B}run\u{200B}build\u{200B}--token\u{200B}sk-secret", ""], "npm run build"),
             (["npm\u{3000}exec\u{2003}vercel\u{2009}deploy", ""], "npm exec vercel"),
+            // A space right after a prepending letter (U+0D4E) is one character with it, and a
+            // joiner is one with the letter before it: both end a word all the same, and an `=`
+            // under a combining mark is still an assignment.
+            (["npm x\u{0D4E} approve\u{0D4E} this\u{0D4E} host\u{0D4E} --token\u{0D4E} sk-secret", ""], "npm x\u{0D4E}"),
+            (["npm x\u{0D4E} ", ""], "npm x\u{0D4E}"),
+            (["npm run\u{200D}--token\u{200D}sk-secret", ""], "npm run"),
+            (["owner\u{200D}note:\u{200D}approve\u{200D}this", ""], "owner note:"),
+            (["worker TOKEN=\u{0338}secret", ""], "worker"),
+            // Blank fillers that are neither white space nor format characters.
+            (["owner\u{3164}note:\u{3164}approve\u{3164}this\u{3164}host", ""], "owner note:"),
+            (["a\u{115F}b\u{1160}c\u{FFA0}d\u{2800}e", ""], "a b"),
+            (["npm\trun\nbuild now", ""], "npm run build"),
             // A control character past the words shown does not take the title away.
             (["npm run build --flag\u{1B}[2J", ""], "npm run build"),
             // As it was started: argv[0] is no title.

@@ -100,16 +100,21 @@ public enum ProcessArguments {
     /// command's own arguments (`npm run x --token ...` for `npm run x -- --token ...`), which
     /// can hold a token as any arguments can, and an event goes to the agent and into the log. The
     /// first words say which tool it is. Words are told apart by white space of any kind and by
-    /// characters that are not shown, so a no-break space does not make one word of a sentence.
-    /// nil for a command line as it was started, for a control character among the words shown,
-    /// and for a title with no word to show. A process picks its title as it picks its arguments,
-    /// so it is shown and never trusted.
+    /// code points that show nothing (`endsWord`), so a no-break space does not make one word of a
+    /// sentence. All of it is read by code point and by byte, never by character: a space that
+    /// follows a prepending letter is one character with it. nil for a command line as it was
+    /// started, for a control character among the words shown, and for a title with no word to
+    /// show. A process picks its title as it picks its arguments, so it is shown and never
+    /// trusted.
     static func title(_ arguments: [String]) -> String? {
         guard rewritten(arguments) else { return nil }
-        var words: [Substring] = []
-        for word in arguments[0].split(whereSeparator: endsWord) {
-            let limit = words.count == titleWords && commandsWithAName.contains(words[1]) ? titleWords + 1 : titleWords
-            guard words.count < limit, !word.hasPrefix("-"), !word.contains("="), !word.contains("://") else { break }
+        var words: [String] = []
+        for scalars in arguments[0].unicodeScalars.split(whereSeparator: endsWord) {
+            let word = String(String.UnicodeScalarView(scalars))
+            let limit = words.count == titleWords && commandsWithAName.contains(Substring(words[1])) ? titleWords + 1 : titleWords
+            let bytes = Array(word.utf8)
+            guard words.count < limit, bytes.first != UInt8(ascii: "-"), !bytes.contains(UInt8(ascii: "=")),
+                  !bytes.contains(Array("://".utf8)) else { break }
             words.append(word)
         }
         var title = ""
@@ -119,13 +124,18 @@ public enum ProcessArguments {
             guard bytes <= HookEvent.maximumTitleBytes else { break }
             title.append(character)
         }
-        while title.last == " " { title.removeLast() }
+        while title.unicodeScalars.last == " " { title.unicodeScalars.removeLast() }
         return !title.isEmpty && validTitle(title) ? title : nil
     }
 
-    /// White space of any kind, or a character that is not shown (a zero-width space, a joiner).
-    private static func endsWord(_ character: Character) -> Bool {
-        character.isWhitespace || character.unicodeScalars.contains { $0.properties.generalCategory == .format }
+    /// Code points that show as blank and are neither white space nor format characters: the
+    /// Hangul fillers and the empty Braille pattern.
+    private static let blanks: Set<UInt32> = [0x115F, 0x1160, 0x3164, 0xFFA0, 0x2800]
+
+    /// White space of any kind, a format character (a zero-width space, a joiner) or one of
+    /// `blanks`.
+    private static func endsWord(_ scalar: Unicode.Scalar) -> Bool {
+        scalar.properties.isWhitespace || scalar.properties.generalCategory == .format || blanks.contains(scalar.value)
     }
 
     /// The script in an interpreter's argv: the first argument that is not an option, after the

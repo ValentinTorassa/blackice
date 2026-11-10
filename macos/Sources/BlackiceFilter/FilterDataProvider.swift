@@ -877,10 +877,11 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
     /// check when the flow passed on a name that run supplied, which is no check.
     private func remember(_ facts: FlowFacts, _ verdict: FlowVerdict, _ snapshot: ProviderConfiguration?) {
         guard let (app, destination, checkedAt) = FilterPolicy.verified(facts, verdict, snapshot: snapshot) else { return }
+        let timeOfDay = Date().timeIntervalSince1970
         if let checkedAt {
-            verified.carry(app: app, destination, checkedAt: checkedAt)
+            verified.carry(app: app, destination, checkedAt: checkedAt, timeOfDay: timeOfDay)
         } else {
-            verified.record(app: app, destination, timeOfDay: Date().timeIntervalSince1970)
+            verified.record(app: app, destination, timeOfDay: timeOfDay)
         }
     }
 
@@ -905,7 +906,8 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
         var saving = verified
         let revision = verified.revision
         if let resumable {
-            // This run's onto the last run's, so the limits drop the oldest of the last run's first.
+            // This run's onto the last run's: with no room, the ones used longest ago go, and
+            // those are the last run's that no flow of this run has passed on.
             var merged = resumable
             merged.merge(saving)
             saving = merged

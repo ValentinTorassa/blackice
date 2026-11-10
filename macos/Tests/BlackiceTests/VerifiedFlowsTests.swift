@@ -112,7 +112,7 @@ struct VerifiedFlowsTests {
             let kept = try #require(FilterPolicy.verified(resumed, verdict, snapshot: ask))
             #expect(kept.checkedAt == 0)
             run = VerifiedFlows()
-            run.carry(app: kept.app, kept.destination, checkedAt: kept.checkedAt ?? -1)
+            run.carry(app: kept.app, kept.destination, checkedAt: kept.checkedAt ?? -1, timeOfDay: restart * day)
             #expect(run.checked(app: app(vpn), address: IPAddress(there)!, port: 443) == [endpoint: 0])
         }
         // 31 days after the check it is not read back, whatever restarts came between.
@@ -124,13 +124,56 @@ struct VerifiedFlowsTests {
         #expect(fresh.checkedAt == nil)
         var both = VerifiedFlows()
         both.record(app: fresh.app, fresh.destination, timeOfDay: 29 * day)
-        both.carry(app: fresh.app, fresh.destination, checkedAt: 0)
+        both.carry(app: fresh.app, fresh.destination, checkedAt: 0, timeOfDay: 29 * day)
         #expect(both.checked(app: app(vpn), address: IPAddress(there)!, port: 443) == [endpoint: 29 * day])
         // The other way round, the check replaces the carried date.
         var carried = VerifiedFlows()
-        carried.carry(app: fresh.app, fresh.destination, checkedAt: 0)
+        carried.carry(app: fresh.app, fresh.destination, checkedAt: 0, timeOfDay: 29 * day)
         carried.record(app: fresh.app, fresh.destination, timeOfDay: 29 * day)
         #expect(carried.checked(app: app(vpn), address: IPAddress(there)!, port: 443) == [endpoint: 29 * day])
+    }
+
+    // With no room, the destination used longest ago goes, not the one checked longest ago: the
+    // tunnel that is open now was checked first of all, and must be the last to go.
+    @Test func aDestinationInUseOutlastsOnesCheckedLaterAndNotUsed() throws {
+        let day = 86_400.0
+        func other(_ index: Int) -> VerifiedFlows.Destination { destination(endpoint, "203.0.113.\(index + 100)") }
+        // The last run: the tunnel, checked on day 0, and 15 more destinations on days 1 to 15.
+        var lastRun = VerifiedFlows()
+        lastRun.record(app: app(vpn), destination(endpoint, there), timeOfDay: 0)
+        for index in 1..<VerifiedFlows.limitPerApp { lastRun.record(app: app(vpn), other(index), timeOfDay: Double(index) * day) }
+        let file = try #require(lastRun.saved())
+        let restored = try #require(VerifiedFlows(saved: file, timeOfDay: 20 * day))
+        #expect(restored.count == VerifiedFlows.limitPerApp)
+        // This run, day 20: the tunnel's socket passes on its restored name, and one new flow is checked.
+        var thisRun = VerifiedFlows()
+        thisRun.carry(app: app(vpn), destination(endpoint, there), checkedAt: 0, timeOfDay: 20 * day)
+        thisRun.record(app: app(vpn), other(50), timeOfDay: 20 * day)
+        // What a save inside the window writes: the last run's with this run's on top.
+        var merged = restored
+        merged.merge(thisRun)
+        #expect(merged.count == VerifiedFlows.limitPerApp)
+        #expect(merged.checked(app: app(vpn), address: IPAddress(there)!, port: 443) == [endpoint: 0])
+        #expect(merged.names(app: app(vpn), address: other(50).address, port: 443) == [endpoint])
+        // The one that went is the last run's that was used longest ago and not since.
+        #expect(merged.names(app: app(vpn), address: other(1).address, port: 443).isEmpty)
+        #expect(merged.names(app: app(vpn), address: other(2).address, port: 443) == [endpoint])
+        // The next run reads the tunnel back, with the date of its check.
+        let saved = try #require(merged.saved())
+        let next = try #require(VerifiedFlows(saved: saved, timeOfDay: 21 * day))
+        #expect(next.checked(app: app(vpn), address: IPAddress(there)!, port: 443) == [endpoint: 0])
+        // Inside one run too: carried into a full table, the tunnel stays over later checks.
+        var full = VerifiedFlows()
+        for index in 0..<VerifiedFlows.limitPerApp { full.record(app: app(vpn), other(index), timeOfDay: 19 * day + Double(index)) }
+        full.carry(app: app(vpn), destination(endpoint, there), checkedAt: 0, timeOfDay: 20 * day)
+        full.record(app: app(vpn), other(60), timeOfDay: 20 * day + 1)
+        full.record(app: app(vpn), other(61), timeOfDay: 20 * day + 2)
+        #expect(full.count == VerifiedFlows.limitPerApp)
+        #expect(full.checked(app: app(vpn), address: IPAddress(there)!, port: 443) == [endpoint: 0])
+        // A use is saved, and one dated after now reads back as now.
+        let ahead = try #require(VerifiedFlows(saved: saved, timeOfDay: 16 * day))
+        #expect(ahead.checked(app: app(vpn), address: IPAddress(there)!, port: 443) == [endpoint: 0])
+        #expect(ahead.names(app: app(vpn), address: other(50).address, port: 443).isEmpty)
     }
 
     // A restored host must not take the name away from a flow that DNS answers of this run name:
@@ -291,7 +334,7 @@ struct VerifiedFlowsTests {
         func file(_ flows: String, version: Int = 1) -> Data {
             Data(#"{"flows":[\#(flows)],"version":\#(version)}"#.utf8)
         }
-        let good = #"{"app":{"signing_id":"com.example.vpn","team_id":"ABCDE12345"},"at":1000,"host":"edge.vpn.example.com","ip":"203.0.113.7","port":443}"#
+        let good = #"{"app":{"signing_id":"com.example.vpn","team_id":"ABCDE12345"},"at":1000,"host":"edge.vpn.example.com","ip":"203.0.113.7","port":443,"used":1500}"#
         #expect(VerifiedFlows(saved: file(good), timeOfDay: 2000)?.count == 1)
         #expect(VerifiedFlows(saved: file(""), timeOfDay: 2000)?.count == 0)
         #expect(VerifiedFlows(saved: file(good, version: 2), timeOfDay: 2000) == nil)
@@ -304,6 +347,7 @@ struct VerifiedFlowsTests {
                     good.replacingOccurrences(of: "203.0.113.7", with: "fe80::1%4"),
                     good.replacingOccurrences(of: "203.0.113.7", with: "fe80::1"),
                     good.replacingOccurrences(of: "\"port\":443", with: "\"port\":0"),
+                    good.replacingOccurrences(of: ",\"used\":1500", with: ""),
                     good.replacingOccurrences(of: "\"team_id\":\"ABCDE12345\"", with: "\"team_id\":\"ABCDE12345\",\"cdhash\":\"\(testCDHash)\""),
                     good.replacingOccurrences(of: "\"signing_id\":\"com.example.vpn\",", with: "")] {
             #expect(VerifiedFlows(saved: file(good + "," + bad), timeOfDay: 2000) == nil, "\(bad)")
