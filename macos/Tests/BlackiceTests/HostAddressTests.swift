@@ -249,4 +249,20 @@ struct LookupWaitersTests {
         #expect(Set(waiters.removeAll()) == [2, 5, 6, 8])
         #expect(waiters.waitingFor(app) == 0 && waiters.waitingFor(nil) == 0)
     }
+
+    // Several apps, each under its share, fill the table; a refused flow changes no count, and a
+    // lookup that ends after removeAll finds nothing.
+    @Test func theTotalBoundHoldsAcrossApps() {
+        var waiters = LookupWaiters<Int>(limit: 4, limitPerApp: 2)
+        #expect(waiters.add(1, host: "a.example.com", app: app) == .startLookup)
+        #expect(waiters.add(2, host: "a.example.com", app: app) == .waiting)
+        #expect(waiters.add(3, host: "b.example.com", app: other) == .startLookup)
+        #expect(waiters.add(4, host: "b.example.com", app: other) == .waiting)
+        #expect(waiters.add(5, host: "c.example.com", app: nil) == .full)
+        #expect(waiters.add(6, host: "c.example.com", app: app) == .full)
+        #expect(waiters.count == 4 && waiters.waitingFor(app) == 2 && waiters.waitingFor(nil) == 0)
+        #expect(waiters.removeAll().count == 4)
+        #expect(waiters.finish("a.example.com").isEmpty && waiters.count == 0 && waiters.waitingFor(app) == 0)
+        #expect(waiters.add(7, host: "a.example.com", app: app) == .startLookup)
+    }
 }

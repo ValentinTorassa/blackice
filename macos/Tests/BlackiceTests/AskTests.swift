@@ -139,6 +139,52 @@ struct ApprovalTableTests {
         #expect(restored.summaries(now: 0).map(\.secondsLeft) == [600])
     }
 
+    // What the table can hold comes back: an ad hoc build, an address as the host, and the longest approval.
+    @Test func everyKindOfApprovalRoundTrips() throws {
+        var table = ApprovalTable()
+        table.add(ApprovalKey(identity: build, host: "203.0.113.7"), seconds: 600, now: 0)
+        table.add(ApprovalKey(identity: tool, host: "example.com"), seconds: ApprovalTable.maximumSeconds, now: 0)
+        let data = try #require(table.saved(now: 0, timeOfDay: 1_000_000))
+        var restored = ApprovalTable()
+        let added = restored.restore(data, now: 50, timeOfDay: 1_000_000)
+        #expect(added == 2 && restored.revision == 2)
+        #expect(restored.covers(ApprovalKey(identity: build, host: "203.0.113.7"), now: 649))
+        #expect(restored.covers(ApprovalKey(identity: tool, host: "example.com"), now: 50 + 86_399))
+        #expect(!restored.covers(ApprovalKey(identity: tool, host: "example.com"), now: 50 + 86_400))
+    }
+
+    @Test func aRepeatedEntryKeepsTheLongerOneAndTooManyAddNothing() {
+        func entry(_ host: String, _ seconds: Int) -> String {
+            #"{"app":{"signing_id":"com.example.tool","team_id":"ABCDE12345"},"host":"\#(host)","seconds_left":\#(seconds)}"#
+        }
+        func file(_ entries: [String]) -> Data {
+            Data(#"{"version":1,"saved_at":1000000,"approvals":[\#(entries.joined(separator: ","))]}"#.utf8)
+        }
+        var table = ApprovalTable()
+        let added = table.restore(file([entry("example.com", 60), entry("example.com", 600), entry("example.com", 30)]),
+                                  now: 0, timeOfDay: 1_000_000)
+        #expect(added == 3 && table.count == 1)
+        #expect(table.summaries(now: 0).map(\.secondsLeft) == [600])
+
+        var full = ApprovalTable()
+        let many = (0...ApprovalTable.maximumEntries).map { entry("h\($0).example.com", 60) }
+        let tooMany = full.restore(file(many), now: 0, timeOfDay: 1_000_000)
+        #expect(tooMany == nil && full.count == 0)
+    }
+
+    // Less than a second left is gone, and a file saved in the future loses nothing.
+    @Test func whatIsLeftIsCountedInWholeSeconds() throws {
+        var table = ApprovalTable()
+        table.add(ApprovalKey(identity: tool, host: "example.com"), seconds: 60, now: 0)
+        let data = try #require(table.saved(now: 0, timeOfDay: 1_000_000))
+        var almostGone = ApprovalTable()
+        let none = almostGone.restore(data, now: 0, timeOfDay: 1_000_059.5)
+        #expect(none == 0 && almostGone.count == 0)
+        var oneLeft = ApprovalTable()
+        let one = oneLeft.restore(data, now: 0, timeOfDay: 1_000_058.5)
+        #expect(one == 1 && oneLeft.summaries(now: 0).map(\.secondsLeft) == [1])
+    }
+
     @Test func aFileWithAnInvalidEntryOrAnotherVersionAddsNothing() throws {
         func file(version: Int = 1, _ approvals: String) -> Data {
             Data(#"{"version":\#(version),"saved_at":1000000,"approvals":[\#(approvals)]}"#.utf8)
@@ -153,6 +199,8 @@ struct ApprovalTableTests {
             #"{"app":{"signing_id":"com.example.tool"},"host":"example.com","seconds_left":-1}"#,
             #"{"app":{"signing_id":"com.example.tool"},"host":"example.com","seconds_left":86401}"#,
             #"{"app":{"signing_id":"com.example.tool"},"host":"example.com","seconds_left":60,"script":"/opt/a\u0001.py"}"#,
+            #"{"app":{"signing_id":"com.example.tool"},"host":"example.com","seconds_left":60,"no_script":false}"#,
+            #"{"app":{"signing_id":"com.example.tool"},"host":"example.com","seconds_left":60,"script":"/opt/a.py","no_script":true}"#,
         ]
         for entry in bad {
             var fresh = ApprovalTable()

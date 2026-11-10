@@ -67,6 +67,8 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
     private var maintenanceTicks = 0
     private var savedIdentityChanges = -1
     private var savedApprovalsRevision = -1
+    /// After a save that failed, the next try waits until then.
+    private var approvalsSaveNotBefore: TimeInterval = 0
     private let heldLock = NSLock()
     private var held: [UUID: Held] = [:]
     private let flowLog = Logger(subsystem: BlackiceIdentifiers.logSubsystem, category: "flows")
@@ -77,6 +79,8 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
     private let askLock = NSLock()
     private var ask = AskState<Paused>()
     private var lookups = LookupWaiters<Paused>()
+    /// Under askLock. Connections of an app in a loop of drops, waiting for theirs.
+    private var repeated = RepeatedDrops<Paused>()
     private let addresses = HostAddressCache(resolver: SystemHostResolver())
     private let resolverQueue = DispatchQueue(label: "com.valentorassa.blackice.filter.resolver", attributes: .concurrent)
     private var server: FilterServer?
@@ -224,17 +228,15 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
 
     override func stopFilter(with reason: NEProviderStopReason, completionHandler: @escaping () -> Void) {
         lifecycle.async {
-            // Before the table is emptied below, so an upgrade's next run finds them.
-            self.saveApprovals()
             self.runID = nil
             self.observation = nil
             self.timer?.cancel(); self.timer = nil
             self.server?.stop(); self.server = nil
             self.dropHeld(reason: "provider_stopped") { _ in true }
             self.endPaused { _ in .drop(reason: "provider_stopped") }
-            self.askLock.lock()
-            self.ask.approvals.removeAll()
-            self.askLock.unlock()
+            // The approvals stay in memory: an answer still on its way after this changes them
+            // and saves them again, so a deny is never lost to the stop.
+            self.saveApprovals(force: true)
             self.addresses.removeAll()
             self.dnsLock.lock()
             let reading = self.dnsFlows.removeAll()
@@ -280,6 +282,21 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
         let would = snapshot.flatMap { FilterPolicy.dryRun(facts, snapshot: $0) }
         askLock.lock()
         let verdict = FilterPolicy.decide(facts, snapshot: snapshot, context: context(now: Self.now, scope: facts.scriptScope))
+        // An app that opens the next connection as soon as one is dropped has them wait for
+        // their drop (RepeatedDrops).
+        if case .drop = verdict {
+            switch repeated.add(paused, app: facts.identity.label, now: Self.now) {
+            case .dropNow:
+                break
+            case .delayed:
+                log(facts, verdict, snapshot, would: would)
+                askLock.unlock()
+                return .pause()
+            case .dropUnlogged:
+                askLock.unlock()
+                return .drop()
+            }
+        }
         let (step, after) = place(verdict, paused, snapshot, now: Self.now, would: would)
         askLock.unlock()
         perform(after)
@@ -625,8 +642,11 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
         askLock.lock()
         let entries = ask.endAll()
         let waiting = lookups.removeAll()
+        let delayed = repeated.removeAll()
         askLock.unlock()
         let snapshot = snapshots.read()
+        // Dropped by the configuration they came under, and logged then.
+        for paused in delayed { resume(paused, allow: false) }
         for paused in waiting + entries.flatMap({ $0.flows.map(\.flow) }) {
             let decided = verdict(paused)
             if case .allow = decided { resume(paused, allow: true, outright: true) } else { resume(paused, allow: false) }
@@ -672,8 +692,13 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
             self.endHeld(matching: { $0.deadline.passed(now: now) }) { .drop(reason: $0.deadline.reason) }
             self.askLock.lock()
             let (released, timedOut) = self.ask.expire(now: now)
+            let overdue = self.repeated.due(now: now)
+            let unlogged = self.repeated.takeUnlogged()
             self.askLock.unlock()
             self.release(released)
+            // Logged when they were delayed.
+            for paused in overdue { self.resume(paused, allow: false) }
+            if unlogged > 0 { self.control("drops_not_logged", "\(unlogged)") }
             for eventID in timedOut { self.server?.send(.verdict(.timedOut, eventID: eventID)) }
             // Idle DNS flows stop being read; their data passes from now on.
             self.dnsLock.lock()
@@ -682,7 +707,8 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
             for flow in idle { self.update(flow, using: .allow(), for: .any) }
             self.maintenanceTicks += 1
             if self.maintenanceTicks % 60 == 0 { self.saveIdentities() }
-            self.saveApprovals()
+            // Each minute even with no change, so the file's time of day stays close to now.
+            self.saveApprovals(refresh: self.maintenanceTicks % 60 == 0)
         }
         self.timer = timer
         timer.resume()
@@ -732,19 +758,31 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
         guard let url = Self.approvalsURL, let data = try? Data(contentsOf: url) else { return }
         let timeOfDay = Date().timeIntervalSince1970
         askLock.lock()
+        // A start after a stop in the same process: what is in memory is what the file holds, or
+        // newer, and the file could bring back an approval a deny has just removed.
+        guard ask.approvals.count == 0 else {
+            askLock.unlock()
+            control("approvals_kept", "in_memory")
+            return
+        }
         let added = ask.approvals.restore(data, now: Self.now, timeOfDay: timeOfDay)
         savedApprovalsRevision = ask.approvals.revision
         askLock.unlock()
         control("approvals_restored", added.map { "\($0)" } ?? "invalid_file")
     }
 
-    /// On the lifecycle queue, while the filter runs, when the approvals changed since the last save.
-    private func saveApprovals() {
-        guard runID != nil, let url = Self.approvalsURL else { return }
+    /// On the lifecycle queue. Writes the approvals when they changed since the last save; with
+    /// `refresh`, also when they did not and there are some. A save that fails is tried again a
+    /// minute later, or at once with `force`.
+    private func saveApprovals(refresh: Bool = false, force: Bool = false) {
+        guard let url = Self.approvalsURL else { return }
+        let now = Self.now
+        guard force || now >= approvalsSaveNotBefore else { return }
         askLock.lock()
         let revision = ask.approvals.revision
-        let data = revision == savedApprovalsRevision
-            ? nil : ask.approvals.saved(now: Self.now, timeOfDay: Date().timeIntervalSince1970)
+        let changed = revision != savedApprovalsRevision
+        let data = changed || ((refresh || force) && ask.approvals.count > 0)
+            ? ask.approvals.saved(now: now, timeOfDay: Date().timeIntervalSince1970) : nil
         askLock.unlock()
         guard let data else { return }
         do {
@@ -753,7 +791,9 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
             try data.write(to: url, options: [.atomic])
             _ = chmod(url.path, 0o600)
             savedApprovalsRevision = revision
+            approvalsSaveNotBefore = 0
         } catch {
+            approvalsSaveNotBefore = now + 60
             control("approvals_not_saved", "\(error)")
         }
     }
