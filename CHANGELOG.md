@@ -41,9 +41,9 @@ Fixed:
   at once, a new flow takes the place of the one quiet the longest, and the flows let go are counted apart, at
   most 4,096. A flow let go to make room with a query still unanswered is counted, each minute, in `control
   dns_flows_unread`.
-- A restart of the filter no longer cuts a VPN whose client a host rule covers. A filter that has just started is
-  given the next datagram of each open UDP socket as a new flow, and it has read no DNS answer yet, so it looked the
-  flow's host up itself with the flow paused. For a VPN client's own flow that lookup goes into the tunnel the
+- A restart of the filter no longer cuts a VPN whose client a host rule covers. A filter that has just started
+  can be given a UDP socket that was open before it as a new flow, and it has read no DNS answer yet, so it looked
+  the flow's host up itself with the flow paused. For a VPN client's own flow that lookup goes into the tunnel the
   paused flow carries, and neither can finish. On 10 November an upgrade did that to the AWS VPN Client, which a
   rule for `*.amazonaws.com` covers: the lookup of its server's name got no answer for 30 s, the flow was dropped
   as `address_mismatch`, and with the Mac's DNS server behind the dead tunnel no name resolved for most of the next

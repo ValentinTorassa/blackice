@@ -3,10 +3,10 @@ import Foundation
 // The UDP flows a run let through on a host's name, for the next run (docs/plan.md, "A restart with a
 // VPN up").
 //
-// A filter that has just started is given the next datagram of each open UDP socket as a new flow, so
-// what the last run let through is decided again by a run that has read no DNS answer yet. For a flow
-// that a host rule or an approval covers, that meant blackice's own lookup of the host, with the flow
-// paused meanwhile. When the flow is a VPN client's own, the lookup goes into the tunnel the paused
+// A filter that has just started can be given a UDP socket that was open before it as a new flow, so
+// what the last run let through is decided again by a run that has read no DNS answer yet (the plan
+// says which sockets were seen to be given, and which were not). For a flow that a host rule or an
+// approval covers, that meant blackice's own lookup of the host, with the flow paused meanwhile. When the flow is a VPN client's own, the lookup goes into the tunnel the paused
 // flow carries, and neither can finish. On 10 November 2026 an upgrade did that to the AWS VPN
 // Client, which a rule for `*.amazonaws.com` covers: the lookup of its server's name got no answer
 // for 30 s, the flow was dropped as `address_mismatch`, and with the tunnel dead and the Mac's DNS
@@ -26,8 +26,9 @@ import Foundation
 // last passed on the destination, checked or carried, and decides which one goes when there is no
 // room: the tunnel that is open now stays, whatever the age of its check.
 public struct VerifiedFlows: Equatable, Sendable {
-    /// How long after a start the last run's destinations name this run's flows. A socket that
-    /// sends nothing for longer is looked up as before.
+    /// How long after a start the last run's destinations name this run's flows. A flow that
+    /// starts later is decided as before: looked up when it has a host name, dropped as
+    /// `no_host` when it has none.
     public static let window: TimeInterval = 120
     public static let limitPerApp = 16
     public static let appLimit = 256
