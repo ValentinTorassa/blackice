@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.0.7 (10 November 2026)
 
 New:
 - `blackice deny --all` forgets every approval, with one Touch ID. What waits keeps waiting, remembered denials
