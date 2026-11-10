@@ -537,7 +537,11 @@ and each run on a Mac is recorded in [`evidence/`](../evidence/).
   once, and one whose `connect()` macOS fails by itself still cost that (a program started from a terminal got
   "No route to host" from `connect()` to a link-local address within 0.1 ms, with its flow paused or dropped). The
   identityservicesd loop stopped when build 39 replaced build 38 and has not come back, so the delay was not seen
-  on it. Drops for a full table are not counted towards the delay: in the fault tests' bursts `nscurl` had 1,105
+  on it. Only a connection dropped as it starts is counted and delayed. One dropped once its TLS hello was read,
+  which is where a connection to port 443 with no host name from the system is decided, or after a lookup, is
+  dropped at once: on 10 November 2026 (build 40) node had 7,586 connections dropped as `denied;remembered` in
+  55 minutes, after the agent denied it registry.npmjs.org, about 1,300 of them within one second three times,
+  each logged and none delayed. Drops for a full table are not counted towards the delay either: in the fault tests' bursts `nscurl` had 1,105
   connections dropped at once as `lookup_capacity_app` (build 38) and 496 as `ask_capacity` (build 40). The delay
   is counted per app, by its identity, so code signed ad hoc under many cdhashes is counted apart. Whether identityservicesd's link should pass in ask mode is not decided: it carries no host name, and
   while it is dropped whatever needs the iPhone does not work.

@@ -6,8 +6,10 @@ the time gone by. After that restart identityservicesd opened about 430 connecti
 drops, and the filter used half a core. The candidate delays an app's TCP connections once 64 were dropped within
 2 s: 12 loops from one program went from 5,452 tries in 10 s on build 39 to 184, and the extension from 51 % of a
 core to 3 %. A UDP loop, and a TCP loop of 100 connections at once, still cost about 43 %, with their log lines
-bounded. The fault tests on the candidate passed 23 of 29 checks, and the 6 that failed need example.com or
-www.example.com, for which that network's DNS server answers NXDOMAIN. Phase 5.
+bounded. The fault tests on the candidate passed 29 of 29 checks. On a second network, whose DNS server answers
+NXDOMAIN for example.com, they had passed 23. In 81 minutes of ask mode in normal use the delay never started:
+one app had 7,586 connections dropped, about 1,300 of them within one second three times, all after they had
+started, where the delay does not reach. Phase 5.
 
 **Platform.** MacBook Air (Mac16,12), macOS 27.0.1 (26A434), arm64, System Integrity Protection on, FileVault on.
 Wi-Fi, on two networks. For the fault tests Tailscale's DNS was off and the network's router was the DNS server.
@@ -54,8 +56,12 @@ A dropped connection failed at once, however many the app had just had dropped.
    threads. Ask mode drops both as `no_host`.
 6. `curl --resolve github.com:443:1.1.1.1 https://github.com/`, with github.com approved for curl, on builds 39
    and 40.
-7. `macos/scripts/fault-test.sh` on build 40 at 10:23, on the second network (`fault-test-40b.log`). At 09:49 it
-   did not start: for half an hour the terminal's programs could not read the repository's folder.
+7. `macos/scripts/fault-test.sh` on build 40 at 10:23, on the second network (`fault-test-40b.log`), and at
+   11:44, back on the first (`fault-test-40c.log`). At 09:49 it did not start: for half an hour the terminal's
+   programs could not read the repository's folder.
+8. Ask mode with the owner's file on build 40, the Mac in normal use, from 10:32:09 to 11:44:14 and from 12:03:21
+   to 12:12:43 (81 minutes), with `log stream` on the filter's subsystem. At 12:12:43 the owner switched to
+   accept-all.
 
 **Result.**
 
@@ -105,18 +111,29 @@ A dropped connection failed at once, however many the app had just had dropped.
    - Build 38, 28 of 29. In the burst 1,105 of `nscurl`'s connections were dropped as `lookup_capacity_app` and none
      of any app as `lookup_capacity`; `curl` reached pypi.org in 3 s. 34 of the 50 hosts raised an event, where
      the check wants 40. Case 4 passes with the change 30 s in.
-   - Build 40, 23 of 29, on another network. All of cases 2 and 3 pass: the hung hook is killed after 29,751 ms
-     and its connection dropped 30.7 s after the event; in the burst 50 of 50 hosts raise an event, at most 4
-     hooks run, 46 wait for a slot, none goes unrecorded (42 dropped while waiting), no connection is dropped as
-     `lookup_capacity` or `lookup_capacity_app`, and `curl` reaches pypi.org within a second. The 6 that fail are
-     3 of case 1 and 3 of case 4, and each needs a connection to example.com or www.example.com: `nscurl` failed
-     after 5 s with "A server with the specified hostname could not be found". That network's router answers
-     NXDOMAIN for both names, and 1.1.1.1 and 8.8.8.8 resolve them. Case 4's other host passes: its event was
-     cancelled by the change 8 s in, and 135 flows went on as `accept_all;configuration_changed`. During the run
-     Tailscale's network extension, which the test's file has no rule for, had 241 flows logged as dropped
-     `no_host`, three times 57 to 64 of them within one second, and 349 more were counted in
-     `control drops_not_logged` in the seconds after those.
-     The script now stops before the first Touch ID when a case's host does not resolve.
+   - Build 40 at 11:44, 29 of 29. The connection with no daemon waits in the pending list and is dropped at the
+     deadline, 30 s in; the hung hook is killed after 29,714 ms and its connection dropped 30.8 s after the
+     event; in the burst 50 of 50 hosts raise an event, at most 4 hooks run, 46 wait for a slot, none goes
+     unrecorded (42 dropped while waiting), no connection is dropped as `lookup_capacity` or
+     `lookup_capacity_app`, and `curl` reaches pypi.org within a second; the change of configuration 6 s in
+     cancels both waiting events, and 131 flows go on as `accept_all;configuration_changed`. During the run
+     Tailscale's network extension, which the test's file has no rule for, had 204 flows logged as dropped
+     `no_host`, 64 of them within one second, and 665 more were counted in `control drops_not_logged`.
+   - Build 40 at 10:23, on the second network, 23 of 29. The 6 that fail are 3 of case 1 and 3 of case 4, and
+     each needs a connection to example.com or www.example.com: `nscurl` failed after 5 s with "A server with the
+     specified hostname could not be found". That network's router answers NXDOMAIN for both names, and 1.1.1.1
+     and 8.8.8.8 resolve them. The other 23 pass as in the run above. The script now stops before the first
+     Touch ID when a case's host does not resolve.
+6. In the 81 minutes of ask mode, 38,561 flows: 28,216 allowed, 243 asked about and 10,102 dropped. The daemon ran
+   a hook for each of the 62 events and each answered (41 approved, 21 denied). There was no
+   `control drops_not_logged` line. node had 7,586 connections dropped as `denied;remembered`, after the agent
+   denied it registry.npmjs.org four times; 1,355, 1,275 and 1,263 of them came within one second each, every
+   one logged and none delayed. The delay counts a connection dropped as it starts, and past 64 of those within
+   2 s no more than 64 more are logged before the rest are counted, so these were dropped later: for a
+   connection to port 443 with no host name from the system, that is once its TLS hello has been read. 62
+   connections were dropped as `address_mismatch`, 24 of them of OpenVPN's network extension and 18 of Safari's
+   Safe Browsing. identityservicesd opened no connection. From 10:32 to 11:27 the extension used 93 s of
+   processor time, 2.8 % of a core, and it held 19 to 26 MB.
 
 Decided by: the extension and the daemon.
 
@@ -134,12 +151,13 @@ that failed was tried again every second. No crash report of blackice since 3 No
 - The filter spends about 0.9 ms of processor time on a flow whatever it decides. A UDP loop, and a TCP loop with
   more than 64 connections at once, still cost half a core; the delay bounds their log lines only.
 - An app past 64 dropped TCP connections within 2 s has each next drop wait 2 s, for up to 30 s at a time.
+- Only a connection dropped as it starts is counted and delayed. One dropped once its TLS hello was read, or after
+  a lookup, is dropped at once as before (result 6).
 - Connections dropped for a full table (`lookup_capacity_app`, `ask_capacity`) are not counted towards the delay:
   in the bursts `nscurl` had 1,105 dropped at once as `lookup_capacity_app` on build 38 and 496 as `ask_capacity`
   on build 40.
-- No fault-test run on the candidate passed cases 1 and 4 in full; they passed on build 38.
 - The approvals stay through a change of configuration: the test's file ran with the approvals given under the
-  owner's, 181 before the run and 171 after.
+  owner's, 181 before the 10:23 run and 171 after.
 - Nothing forgets every approval any more: `blackice stop` used to, and `blackice deny` revokes one pair at a time.
 - With FileVault on the filter starts at the login. Before that nothing is filtered.
 - `mailctl list outlook` over IMAP, an approved pair, still loses connections to `address_mismatch`: 6 of 155 on

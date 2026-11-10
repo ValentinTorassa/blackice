@@ -11,7 +11,8 @@ Fixed:
   used half a core, other connections were slow to start, and the system log dropped most of the filter's lines,
   so `blackice report` counted 6,122 connections where there had been more than 200,000. 1.0.5 and earlier have
   the fault. A loop of UDP flows, or of more than 64 TCP connections at once, still costs the filter its work
-  on each flow.
+  on each flow. Only connections dropped as they start are counted and delayed: one dropped once its TLS hello
+  was read, or after a lookup, is dropped at once as before.
 
 Changed:
 - Approvals outlast `blackice stop`, an upgrade and a restart of the Mac. The filter saves them to a file only root
