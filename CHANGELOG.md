@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.0.6 (10 November 2026)
 
 Changed:
 - Approvals outlast `blackice stop`, an upgrade and a restart of the Mac. The filter saves them to a file only root
