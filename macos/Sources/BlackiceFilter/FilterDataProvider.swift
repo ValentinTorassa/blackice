@@ -282,10 +282,10 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
         let would = snapshot.flatMap { FilterPolicy.dryRun(facts, snapshot: $0) }
         askLock.lock()
         let verdict = FilterPolicy.decide(facts, snapshot: snapshot, context: context(now: Self.now, scope: facts.scriptScope))
-        // An app that opens the next connection as soon as one is dropped has them wait for
-        // their drop (RepeatedDrops).
+        // An app that opens the next connection as soon as one is dropped has its TCP ones wait
+        // for their drop (RepeatedDrops).
         if case .drop = verdict {
-            switch repeated.add(paused, app: facts.identity.label, now: Self.now) {
+            switch repeated.add(paused, app: facts.identity.label, waits: facts.tcp, now: Self.now) {
             case .dropNow:
                 break
             case .delayed:

@@ -523,11 +523,23 @@ and each run on a Mac is recorded in [`evidence/`](../evidence/).
   at once. On 10 November 2026, after a restart of the Mac (build 38, ask mode), identityservicesd did so to a
   link-local address on the `utun` interface of its link to the owner's iPhone, about 430 times a second, each
   dropped as `no_host`; in the 36 hours before, with that link already up, it had not tried once. Since 1.0.6 an
-  app with 64 drops within 2 s has its next ones wait 2 s for theirs (`RepeatedDrops`), which slows a program that
-  tries again after each failure to one try per 2 s. A program that keeps more than 8 tries open at once still
-  gets the rest dropped at once, with no log line. The delay is counted per app, by its identity, so code signed
-  ad hoc under many cdhashes is counted apart. Whether identityservicesd's link should pass in ask mode is not
-  decided: it carries no host name, and while it is dropped whatever needs the iPhone does not work.
+  app with 64 TCP connections dropped within 2 s has its next ones wait 2 s for their drop (`RepeatedDrops`), at
+  most 64 at once per app and 256 in all, so a program that tries again after each failure tries once per 2 s for
+  each connection it keeps open. After 30 s the app is counted afresh: a loop that goes on gets 64 drops at once
+  every 30 s, and an app with one burst behind it does not go on waiting for each drop. Only TCP waits. A program
+  does not wait for the drop of a UDP flow, and macOS makes `close()` wait 1 s on a socket whose flow is paused:
+  build 39 delayed UDP too, and there `sendto()` returned at once and `close()` took 1.00 s. Past 64 drops within
+  2 s an app's UDP drops get 8 log lines per 2 s, and `drops_not_logged` counts the rest; `blackice report`
+  counts only the logged ones.
+  The delay bounds the log, not always the work. The filter spends about 0.9 ms of processor time on a flow
+  whatever it decides: on build 39, 12 programs each sending one datagram per new socket made 560 flows a second,
+  and the filter used half a core with 88 of 4,474 logged. A UDP loop, a TCP loop with more than 64 connections at
+  once, and one whose `connect()` macOS fails by itself still cost that (a program started from a terminal got
+  "No route to host" from `connect()` to a link-local address within 0.1 ms, with its flow paused or dropped). The
+  identityservicesd loop stopped when build 39 replaced build 38 and has not come back, so the delay was not seen
+  on it. The delay is counted per app, by its identity, so code signed ad hoc under many cdhashes is counted
+  apart. Whether identityservicesd's link should pass in ask mode is not decided: it carries no host name, and
+  while it is dropped whatever needs the iPhone does not work.
 - **Before the owner logs in.** With FileVault on, the filter starts when the owner logs in, not when the Mac
   starts: on 10 November 2026 the Mac started at 07:59 and the filter at 08:31, at the login. Until then nothing
   is filtered, and only what macOS itself runs at the login window connects.

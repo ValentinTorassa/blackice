@@ -3,12 +3,15 @@
 ## 1.0.6 (10 November 2026)
 
 Fixed:
-- An app that opens its next connection as soon as one is dropped no longer keeps the filter busy. Once an app has
-  had 64 connections dropped within 2 s, its next ones that would be dropped wait 2 s first, at most 8 at a time,
-  and the rest are dropped with no log line (`drops_not_logged` counts them). On 10 November, after a restart,
-  identityservicesd tried a link-local peer about 430 times a second: the filter used half a core, other
-  connections were slow to start, and the system log dropped most of the filter's lines, so `blackice report`
-  counted 6,122 connections where there had been more than 200,000. 1.0.5 and earlier have the fault.
+- An app that opens its next connection as soon as one is dropped no longer fills the log, and a loop of TCP
+  connections is slowed. Once an app has had 64 TCP connections dropped within 2 s, its next ones that would be
+  dropped wait 2 s first, at most 64 at a time, and after 30 s the app is counted afresh. UDP flows never wait:
+  past the same count they get 8 log lines per 2 s. Drops with no log line are counted (`drops_not_logged`). On
+  10 November, after a restart, identityservicesd tried a link-local peer about 430 times a second: the filter
+  used half a core, other connections were slow to start, and the system log dropped most of the filter's lines,
+  so `blackice report` counted 6,122 connections where there had been more than 200,000. 1.0.5 and earlier have
+  the fault. A loop of UDP flows, or of more than 64 TCP connections at once, still costs the filter its work
+  on each flow.
 
 Changed:
 - Approvals outlast `blackice stop`, an upgrade and a restart of the Mac. The filter saves them to a file only root
