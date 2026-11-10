@@ -72,13 +72,79 @@ struct ProcessArgumentsTests {
         try process.run()
         defer { if process.isRunning { process.terminate() } }
         let token = try #require(auditToken(of: process.processIdentifier))
-        let found = try #require(ProcessArguments.script(auditToken: token))
+        let named = ProcessArguments.named(auditToken: token)
+        let found = try #require(named.script)
+        #expect(named.title == nil)
         // The folder as the kernel has it: /private/var/... for /var/....
         #expect(found.hasSuffix("/blackice-args-\(getpid())/tool.sh") && found.hasPrefix("/"))
         #expect(!found.contains("s3cr3t"))
         input.fileHandleForWriting.closeFile()
         process.waitUntilExit()
-        #expect(ProcessArguments.script(auditToken: token) == nil)
+        #expect(ProcessArguments.named(auditToken: token) == ProcessArguments.Named())
+    }
+
+    /// A process that wrote a title over its arguments, as node does for npm: no script is left,
+    /// and before 1.0.7 the empty argument after the title read as the process's folder.
+    @Test func aRewrittenCommandLineHasATitleAndNoScript() {
+        let cases: [([String], String?)] = [
+            (["npm run wait", "", "", "", ""], "npm run wait"),
+            // perl pads with spaces, and the environment follows.
+            (["npm run wait", "      ", "HOME=/Users/me", "TOKEN=secret", ""], "npm run wait"),
+            (["next-server (v16.4.1)   ", ""], "next-server (v16.4.1)"),
+            (["", ""], nil),
+            (["evil\u{1B}[2Jname", ""], nil),
+            // As it was started: argv[0] is no title.
+            (["node", "/opt/homebrew/bin/npm", "run", "wait"], nil),
+            (["node"], nil),
+        ]
+        for (arguments, title) in cases {
+            #expect(ProcessArguments.title(arguments) == title, "\(arguments)")
+            if arguments.count > 1, arguments[1].allSatisfy({ $0 == " " }) {
+                #expect(ProcessArguments.script(arguments) == nil, "\(arguments)")
+            }
+        }
+        // Cut to 64 bytes, on a character.
+        #expect(ProcessArguments.title([String(repeating: "a", count: 100), ""]) == String(repeating: "a", count: 64))
+        #expect(ProcessArguments.title([String(repeating: "é", count: 40), ""]) == String(repeating: "é", count: 32))
+    }
+
+    /// A title as long as the arguments leaves no NUL after it, and argv[1] is then the first
+    /// environment string. It is never a script: its value can be a token.
+    @Test func anEnvironmentStringIsNeverAScript() {
+        let cases: [([String], String?)] = [
+            (["my-long-s", "ANTHROPIC_API_KEY=sk-secret"], nil),
+            (["my-long-s", "npm_config_user-agent=npm/11"], nil),
+            (["python3", "--", "TOKEN=secret"], nil),
+            (["python3", "-m", "TOKEN=secret"], nil),
+            // A `/` before the `=` is a path.
+            (["python3", "/Users/me/a=b.py"], "/Users/me/a=b.py"),
+            (["python3", "tools/a=b.py"], "tools/a=b.py"),
+        ]
+        for (arguments, script) in cases {
+            #expect(ProcessArguments.script(arguments) == script, "\(arguments)")
+            #expect(ProcessArguments.title(arguments) == nil, "\(arguments)")
+        }
+    }
+
+    /// A real process that rewrites its command line: Apple's perl, with `$0`.
+    @Test func readsARunningProcesssTitle() throws {
+        let perl = "/usr/bin/perl"
+        guard FileManager.default.isExecutableFile(atPath: perl) else { return }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: perl)
+        process.arguments = ["-e", "$0 = 'npm run wait'; $| = 1; print qq(ready\\n); <STDIN>", "run", "s3cr3t"]
+        process.environment = ["TOKEN": "s3cr3t-in-the-environment"]
+        let input = Pipe(), output = Pipe()
+        process.standardInput = input
+        process.standardOutput = output
+        try process.run()
+        defer { if process.isRunning { process.terminate() } }
+        // The title is written before "ready".
+        #expect(output.fileHandleForReading.availableData == Data("ready\n".utf8))
+        let token = try #require(auditToken(of: process.processIdentifier))
+        #expect(ProcessArguments.named(auditToken: token) == ProcessArguments.Named(script: nil, title: "npm run wait"))
+        input.fileHandleForWriting.closeFile()
+        process.waitUntilExit()
     }
 
     @Test func anEventCarriesAValidScriptOnly() throws {
@@ -95,6 +161,29 @@ struct ProcessArgumentsTests {
         let bare = try HookEvent.connection(app: HookEvent.App(identity, path: "/opt/tool"), host: "example.com",
                                             ip: "203.0.113.7", port: 443, deadline: Date().addingTimeInterval(30))
         #expect(!String(decoding: try bare.input.jsonData(), as: UTF8.self).contains("script"))
+    }
+
+    @Test func anEventCarriesAValidTitleOnly() throws {
+        let identity = AppIdentity.cdhash(String(repeating: "ab", count: 20))
+        #expect(HookEvent.App(identity, path: "/opt/node", title: "npm run wait").title == "npm run wait")
+        #expect(HookEvent.App(identity, path: "/opt/node", title: "evil\nname").title == nil)
+        #expect(HookEvent.App(identity, path: "/opt/node", title: String(repeating: "a", count: 65)).title == nil)
+        let event = try HookEvent.connection(app: HookEvent.App(identity, path: "/opt/node", title: "npm run wait"),
+                                             host: "registry.npmjs.org", ip: "203.0.113.7", port: 443,
+                                             deadline: Date().addingTimeInterval(30))
+        let json = try event.input.jsonData()
+        #expect(String(decoding: json, as: UTF8.self).contains(#""title":"npm run wait""#))
+        #expect(try HookEvent.Input.decode(json).app.title == "npm run wait")
+        try event.validate(now: Date())
+        // What the daemon refuses from the extension: a title past the limit.
+        let long = HookEvent(id: event.id, token: event.token,
+                             app: HookEvent.App(signingID: nil, teamID: nil, cdhash: String(repeating: "ab", count: 20),
+                                                path: "/opt/node", title: String(repeating: "a", count: 65)),
+                             host: "registry.npmjs.org", ip: "203.0.113.7", port: 443, deadline: event.deadline)
+        #expect(throws: MessageError.self) { try long.validate(now: Date()) }
+        // An event from before the title existed still decodes.
+        let old = Data(#"{"app":{"cdhash":"\#(String(repeating: "ab", count: 20))","path":"/opt/node"},"deadline":"2026-11-10T12:00:00Z","event":"connection","host":"example.com","id":"ev-0123abcd","ip":"203.0.113.7","port":443}"#.utf8)
+        #expect(try HookEvent.Input.decode(old).app.title == nil)
     }
 
     @Test func theNewInterpretersCount() {

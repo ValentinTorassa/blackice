@@ -39,7 +39,12 @@ tools: there is nothing to read, and every command is refused. The event looks l
   tells you which tool the interpreter runs, and which part of the owner's notes may be about it.
   Any program can start an interpreter with any script name, so it proves nothing on its own:
   weigh it with the path and the host. No `app.script` means the code came on the command line
-  (`python3 -c`) or blackice could not tell.
+  (`python3 -c`), the process wrote over its command line (`app.title`), or blackice could not
+  tell.
+- `app.title`, only for an interpreter with no `app.script`: the title its process wrote over its
+  command line, as node does for npm (`npm install`, `npm run build`). No script can be read
+  then, and the title says which tool it is. The process chose it, so like a script's name it
+  proves nothing on its own: weigh it with the path and the host.
 - `host`: the host name. `ip` and `port`: the destination.
 - When `host` is the same text as `ip`, the program connected to an address and nothing gave
   blackice a name for it: no host name from the system, none from DNS, no TLS server name. An
@@ -168,7 +173,8 @@ approve 10m
 
 A cdhash approval covers only this build; the next build asks again. An interpreter's approval
 covers only the script in `app.script`: the same interpreter running another script, or none, is
-asked about again. An approval of an address covers only that address.
+asked about again. With no `app.script` it covers the interpreter whenever no script can be read,
+whatever `app.title` says. An approval of an address covers only that address.
 
 For example, a reply ends like this:
 

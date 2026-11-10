@@ -29,7 +29,12 @@ like this:
   tells you which tool the interpreter runs, and which part of the owner's notes may be about it.
   Any program can start an interpreter with any script name, so it proves nothing on its own:
   weigh it with the path and the host. No `app.script` means the code came on the command line
-  (`python3 -c`) or blackice could not tell.
+  (`python3 -c`), the process wrote over its command line (`app.title`), or blackice could not
+  tell.
+- `app.title`, only for an interpreter with no `app.script`: the title its process wrote over its
+  command line, as node does for npm (`npm install`, `npm run build`). No script can be read
+  then, and the title says which tool it is. The process chose it, so like a script's name it
+  proves nothing on its own: weigh it with the path and the host.
 - `host`: the host name, when the system or the TLS handshake gave one. `ip` and `port`: the
   destination.
 - When `host` is the same text as `ip`, the program connected to an address and nothing gave
@@ -133,8 +138,9 @@ When you are unsure, deny.
 
 An approval covers exactly the event's app and host, for the time you give. For an interpreter,
 it covers only the script in `app.script`: the same interpreter running another script, or none,
-is asked about again. An approval of an address covers only that address. Pick the time by how
-plain the connection is:
+is asked about again. With no `app.script` it covers the interpreter whenever no script can be
+read, whatever `app.title` says. An approval of an address covers only that address. Pick the
+time by how plain the connection is:
 
 - `8h` to `24h` for clearly ordinary developer or vendor traffic: an app reaching its own
   vendor's API, update or sign-in server, or a package manager reaching its registry. The same

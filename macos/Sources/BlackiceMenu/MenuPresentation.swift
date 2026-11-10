@@ -299,6 +299,7 @@ public enum MenuPresentation {
                      MenuText.clean(event.destination, limit: MenuText.lineLimit, keepTail: true)]
         if let path = event.path { lines.append(MenuText.clean(path, limit: MenuText.lineLimit)) }
         if let script = event.script { lines.append(MenuText.clean("Running " + script, limit: MenuText.lineLimit, keepTail: true)) }
+        if let title = event.title { lines.append(MenuText.clean("Calls itself " + title, limit: MenuText.lineLimit)) }
         // An answer names only a full path (AnswerRequest.validate); with a relative one, the
         // menu's answer covers every script, as the CLI's does without --script.
         let bound = event.script.flatMap { ScriptScope.canName($0) ? $0 : nil }

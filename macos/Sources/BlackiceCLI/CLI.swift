@@ -677,6 +677,8 @@ public enum CLI {
                 if case .signed? = identity {} else if let path = event.path { lines.append("    " + Describe.terminalSafe(path)) }
                 // An interpreter's script, which its command line names: it tells tools apart, and proves nothing.
                 if let script = event.script { lines.append("    running " + Describe.terminalSafe(script)) }
+                // With no script to read, the title the process gave itself: `npm run build`.
+                if let title = event.title { lines.append("    calls itself " + Describe.terminalSafe(title)) }
                 if let identity {
                     lines.append("    " + Style.command(approveCommand(identity, hosts: [event.host], script: event.script)))
                 }

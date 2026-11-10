@@ -283,8 +283,11 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
         let kernelPath = flow.sourceAppAuditToken.flatMap { CodeIdentity.kernelPath(auditToken: $0) }
         var executablePath: String?
         if case .adHoc = identity { executablePath = kernelPath }
+        var title: String?
         let scriptScope = ScriptScope.of(executablePath: kernelPath) {
-            flow.sourceAppAuditToken.flatMap(ProcessArguments.script(auditToken:))
+            let named = flow.sourceAppAuditToken.map(ProcessArguments.named(auditToken:))
+            title = named?.title
+            return named?.script
         }
         let facts = FlowFacts(direction: direction, identity: identity,
                               internetSocket: internet && (tcp || udp), tcp: tcp,
@@ -293,7 +296,7 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
                               process: flow.sourceProcessAuditToken.map { CodeIdentity.resolve(auditToken: $0) },
                               dnsNames: dnsNames.names(for: address), dnsAliases: dnsNames.aliases(for: address),
                               executablePath: executablePath,
-                              scriptScope: scriptScope)
+                              scriptScope: scriptScope, title: title)
         let paused = Paused(flow: flow, facts: facts, serverName: nil, echPresent: false, stage: .newFlow,
                             generation: snapshot?.generation ?? 0)
         // Accept-all's dry run of ask mode, for the log line only: it changes nothing for the flow.
@@ -522,9 +525,10 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
             let added = ask.pending.add(paused, key: key, addressMatches: addressMatches, now: now,
                                         timeout: TimeInterval(snapshot.config.timeoutSeconds),
                                         holdFor: FilterPolicy.holdLimit(facts, afterServerName: paused.stage == .data)) { seconds in
-                // The script read when the flow began, the one the event's key and its answer cover.
+                // The script read when the flow began, the one the event's key and its answer cover,
+                // and the title of the process that opened this flow, the first of the event's.
                 try HookEvent.connection(app: HookEvent.App(identity, path: CodeIdentity.path(auditToken: paused.flow.sourceAppAuditToken),
-                                                            script: facts.scriptScope.script),
+                                                            script: facts.scriptScope.script, title: facts.title),
                                          host: host, ip: address.description, port: port,
                                          deadline: Date().addingTimeInterval(seconds))
             }

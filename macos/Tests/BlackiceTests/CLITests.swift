@@ -239,7 +239,10 @@ struct ParseTests {
             events: [PendingSummary(id: "ev-0000002d", app: python, path: path, host: "sts.amazonaws.com", ip: "203.0.113.7",
                                     port: 443, secondsLeft: 40, connections: 1, script: "/Users/me/My Tools/it's.py"),
                      PendingSummary(id: "ev-0000002e", app: python, path: path, host: "pypi.org", ip: "203.0.113.8",
-                                    port: 443, secondsLeft: 40, connections: 1, script: "tool.py")],
+                                    port: 443, secondsLeft: 40, connections: 1, script: "tool.py"),
+                     // node running npm: the title it wrote over its arguments, and no script.
+                     PendingSummary(id: "ev-0000002f", app: python, path: "/opt/homebrew/bin/node", host: "registry.npmjs.org",
+                                    ip: "203.0.113.9", port: 443, secondsLeft: 40, connections: 2, title: "npm run wait")],
             approvals: [ApprovalSummary(app: python, host: "sts.amazonaws.com", secondsLeft: 3599, scope: .script("/opt/homebrew/bin/aws"))],
             denials: [ApprovalSummary(app: python, host: "s3.amazonaws.com", secondsLeft: 540, scope: .script(nil)),
                       ApprovalSummary(app: python, host: "s3.amazonaws.com", secondsLeft: 300, scope: .script("-m boto"))])
@@ -255,6 +258,10 @@ struct ParseTests {
             "    \(path)",
             "    running tool.py",
             "    blackice approve --cdhash \(testCDHash) --host pypi.org",
+            "  \(adHoc) → registry.npmjs.org:443  2 connections, 40s left",
+            "    /opt/homebrew/bin/node",
+            "    calls itself npm run wait",
+            "    blackice approve --cdhash \(testCDHash) --host registry.npmjs.org",
             "",
             "Denied, dropped without asking",
             "  \(adHoc) → s3.amazonaws.com  9m  with no script",

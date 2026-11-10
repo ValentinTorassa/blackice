@@ -67,11 +67,15 @@ public struct FlowFacts: Equatable, Sendable {
     /// that script, and an approval counts for this flow only when it covers it (ScriptScope).
     /// `.any` for other code.
     public let scriptScope: ScriptScope
+    /// For an interpreter whose process wrote a title over its arguments, that title
+    /// (ProcessArguments.title). Its event shows it; no decision reads it, and an answer covers
+    /// the interpreter running no script it names, whatever its title.
+    public let title: String?
 
     public init(direction: FlowDirection, identity: IdentityResolution, internetSocket: Bool, tcp: Bool,
                 hostname: String?, port: UInt16?, remoteAddress: IPAddress?, process: IdentityResolution? = nil,
                 dnsNames: Set<String> = [], dnsAliases: Set<String> = [], executablePath: String? = nil,
-                scriptScope: ScriptScope = .any) {
+                scriptScope: ScriptScope = .any, title: String? = nil) {
         self.direction = direction
         self.identity = identity
         self.process = process
@@ -88,6 +92,7 @@ public struct FlowFacts: Equatable, Sendable {
         self.dnsAliases = dnsAliases
         self.executablePath = executablePath
         self.scriptScope = scriptScope
+        self.title = title
     }
 
     /// The one name the remote address was given for, when there is exactly one. Several

@@ -452,6 +452,23 @@ and each run on a Mac is recorded in [`evidence/`](../evidence/).
   binding only narrows what an answer covers, and a script that copies the AWS CLI's path gets its approval.
   On the Mac on 7 November, before the change, `aws` reached STS after an agent's approval and another script of
   the same python to S3 was denied, so the notes worked on the first question.
+  On 10 November 2026 the read showed two faults, both from a process that writes a title over its own command line.
+  node does it for npm (`process.title`, through libuv): KERN_PROCARGS2 gave `npm run wait` and four empty arguments,
+  the filter took the first empty one for the script and joined it to the process's folder, so the event's script was
+  the folder npm ran in and each folder was a scope of its own. Of node's 77 events with a script from 7 to 10
+  November, 15 named a folder that still exists, and on 10 November the agent denied node registry.npmjs.org nine
+  times, each for a script path under `/private/tmp`. The second: KERN_PROCARGS2 has nothing between the arguments and
+  the environment, and a title as long as the arguments leaves no NUL to count them by. `node x.js` with a title of 20
+  bytes read as `my-long-s` and then its first environment string, which the filter would have shown as the script;
+  none of the 182 events with a script in the log holds one. Since 1.0.7 a command line whose second argument is
+  empty, or only spaces (perl's `$0` pads with them), is a rewritten one: it has no script, and its event has
+  `app.title`, the first argument cut to 64 bytes, which the agent reads, `pending` and the menu show, `events.jsonl`
+  keeps as `app_title` and no decision reads. An argument with `=` before any `/` is never a script. An answer for an
+  event with a title covers the interpreter whenever no script can be read, whatever the title: after an approval of
+  `npm run build` to the registry, `node -e` reaches the registry too. What is not told apart: an interpreter started
+  with an empty second argument reads as rewritten, and a title that is padded with something else than NUL or spaces
+  is not seen as one. Two eval cases cover the title (34, npm to its registry, and 35, a title that claims the owner's
+  approval); on 10 November Claude Code with `haiku` decided the 35 cases as expected.
 - **Touch ID count.** `start`, `stop` and `mode` each ask for Touch ID, so a demo takes two. A short unlock
   window, like sudo's, is a candidate. A test that needs a person at the keyboard can also fail for that reason:
   the fault test's second Touch ID was cancelled, and the check that depends on it failed (P5-01).

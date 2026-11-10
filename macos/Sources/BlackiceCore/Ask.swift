@@ -412,7 +412,7 @@ public struct PendingTable<Flow> {
             PendingSummary(id: entry.event.id, app: AppReference(entry.key.identity), path: entry.event.app.path,
                            host: entry.key.host, ip: entry.event.ip, port: entry.key.port,
                            secondsLeft: max(0, Int((entry.deadline - now).rounded(.up))), connections: entry.flows.count,
-                           script: entry.event.app.script)
+                           script: entry.event.app.script, title: entry.event.app.title)
         }
     }
 }

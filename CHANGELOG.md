@@ -27,6 +27,21 @@ Fixed:
   with no event: on 10 November identityservicesd's connections to a peer on a `utun` interface all were. From
   macOS 15 the filter reads the interface from the flow's own endpoint.
 
+- npm's folder is no longer its script. node writes npm's title over its own command line (`npm run build` where
+  `node`, npm's path and its arguments were), so the argument the script was in reads as empty, and the filter
+  joined that to the process's folder: the event's `app.script` was the folder npm ran in, and each folder was
+  asked about and answered apart. From 7 to 10 November, 15 of node's 77 events with a script named a folder that
+  still exists, and on 10 November the agent denied node registry.npmjs.org nine times, each for a script path
+  under `/private/tmp`. A process that wrote over its command line now has no script, and its event has `app.title`,
+  the title it gave itself, cut to 64 bytes. The agent reads it, `blackice pending` and the menu show it (`calls
+  itself npm run build`), `events.jsonl` keeps it as `app_title`, and no decision reads it: the process chose it.
+  An answer for such an event covers the interpreter whenever no script can be read, whatever its title.
+- An environment string is never read as a script. macOS gives a process's arguments and then its environment
+  with nothing between them, and a title as long as the arguments leaves no NUL to count them by: on 10 November
+  `node x.js` with a title of 20 bytes read as `my-long-s` and then its first environment string, which 1.0.6
+  would have shown as the script, value and all. None of the 182 events with a script in this Mac's log holds
+  one. An argument with `=` before any `/` is now no script.
+
 Changed:
 - An approval for a link-local address is not saved to the approvals file: its host names the interface by its
   number, which may be another interface's after a restart. It lasts until the filter's process ends, or its time.

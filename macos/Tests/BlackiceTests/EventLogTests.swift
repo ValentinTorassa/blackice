@@ -113,6 +113,14 @@ struct EventLogTests {
         let record = try #require(try lines(url).first)
         #expect(record["app_script"] as? String == "/opt/homebrew/bin/aws")
         #expect(record["app_cdhash"] as? String == String(repeating: "ab", count: 20))
+        #expect(record["app_title"] == nil)
+        // With no script to read, the title the process gave itself.
+        let npm = HookEvent.App(AppIdentity.cdhash(String(repeating: "ab", count: 20)), path: "/opt/homebrew/bin/node",
+                                title: "npm run wait")
+        try log.append(.eventReceived(try HookEvent.connection(app: npm, host: "registry.npmjs.org", ip: "203.0.113.8",
+                                                               port: 443, deadline: Date().addingTimeInterval(30))))
+        let second = try #require(try lines(url).last)
+        #expect(second["app_title"] as? String == "npm run wait" && second["app_script"] == nil)
     }
 
     @Test func eachOutcomeHasItsRecordType() throws {
