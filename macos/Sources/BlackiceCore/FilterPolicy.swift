@@ -372,6 +372,27 @@ public enum FilterPolicy {
         return flow.remoteAddress?.destination
     }
 
+    /// What the next run may take as checked (VerifiedFlows): for a UDP flow that `verdict` lets
+    /// through because a rule, the Apple services table or an approval names its host, the app and
+    /// the destination. The host is the one whose address checked out: the host name from the
+    /// system, else the one name DNS answers gave the address. nil for any other flow or verdict:
+    /// TCP, accept-all, loopback, a link-local address, a flow asked about by its address, and a
+    /// flow that a `*` rule or an address rule covers whatever its name, since nothing checked
+    /// that name.
+    public static func verified(_ flow: FlowFacts, _ verdict: FlowVerdict,
+                                snapshot: ProviderConfiguration?) -> (app: AppIdentity, destination: VerifiedFlows.Destination)? {
+        guard case .allow(let reason) = verdict, let snapshot, snapshot.mode != .acceptAll,
+              flow.direction == .outbound, flow.internetSocket, !flow.tcp,
+              let app = flow.identity.appIdentity, let address = flow.remoteAddress, address.isCheckable,
+              let port = flow.port, port > 0,
+              let host = flow.hostname.flatMap(normalizeHost) ?? flow.dnsName else { return nil }
+        guard ["rule_line_", "apple_service", "approval", "approved"].contains(where: reason.hasPrefix),
+              !reason.contains(";address"),
+              snapshot.config.anyHostRule(for: app) == nil,
+              snapshot.config.addressRule(for: app, address: address) == nil else { return nil }
+        return (app, VerifiedFlows.Destination(host: host, address: address, port: port))
+    }
+
     /// Whether a rule names the code `rules` names (for any host), or the Apple services table
     /// covers this app.
     private static func hasRuleOrService(_ identity: AppIdentity, _ rules: AppIdentity?, _ config: BlackiceConfig) -> Bool {

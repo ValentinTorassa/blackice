@@ -36,6 +36,10 @@
 // Connections by address, also compiled only: a flow with no name is asked about by its address,
 // which is then the event's host (FilterPolicy.eventHost).
 //
+// A restart with a VPN up, also compiled only: the UDP destinations a run let through on a host's
+// name are saved, and for VerifiedFlows.window seconds after a start they name the same app's UDP
+// flows to the same address and port, so a flow that was open across the restart needs no lookup.
+//
 // Accept-all's dry run of ask mode, also compiled only: each new flow is still allowed at once,
 // and its log line adds what ask mode would have decided (FilterPolicy.dryRun), for `blackice
 // report`. Nothing is held, read, looked up or asked for it.
@@ -67,6 +71,7 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
     private var maintenanceTicks = 0
     private var savedIdentityChanges = -1
     private var savedApprovalsRevision = -1
+    private var savedVerifiedRevision = 0
     /// After a save that failed, the next try waits until then.
     private var approvalsSaveNotBefore: TimeInterval = 0
     private let heldLock = NSLock()
@@ -81,6 +86,12 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
     private var lookups = LookupWaiters<Paused>()
     /// Under askLock. Connections of an app in a loop of drops, waiting for theirs.
     private var repeated = RepeatedDrops<Paused>()
+    /// Under askLock. The UDP destinations this run let through on a name, saved for the next
+    /// run; and the last run's, which name this run's flows until `resumeUntil` (VerifiedFlows).
+    private var verified = VerifiedFlows()
+    private var resumable: VerifiedFlows?
+    private var resumeUntil: TimeInterval = 0
+    private var resumedFlows = 0
     private let addresses = HostAddressCache(resolver: SystemHostResolver())
     private let resolverQueue = DispatchQueue(label: "com.valentorassa.blackice.filter.resolver", attributes: .concurrent)
     private var server: FilterServer?
@@ -143,6 +154,7 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
             _ = try? snapshots.install(candidate)
             restoreIdentities()
             restoreApprovals()
+            restoreVerified()
         }
         apply(Self.makeSettings()) { [weak self] error in
             guard let lifecycle = self?.lifecycle else { completionHandler(error); return }
@@ -237,6 +249,7 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
             // The approvals stay in memory: an answer still on its way after this changes them
             // and saves them again, so a deny is never lost to the stop.
             self.saveApprovals(force: true)
+            self.saveVerified(force: true)
             self.addresses.removeAll()
             self.dnsLock.lock()
             let reading = self.dnsFlows.removeAll()
@@ -274,12 +287,23 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
             title = named?.title
             return named?.script
         }
+        let port = endpoint.flatMap { UInt16($0.port) }
+        var names = dnsNames.names(for: address)
+        // In a run's first minutes: the names the last run checked for this app's UDP flow to this
+        // address and port, as a DNS answer would have given them (VerifiedFlows).
+        if udp, internet, direction == .outbound, let address, let port, let app = identity.appIdentity {
+            askLock.lock()
+            let checked = resumedNames(app: app, address: address, port: port, now: Self.now).subtracting(names)
+            if !checked.isEmpty { resumedFlows += 1 }
+            askLock.unlock()
+            names.formUnion(checked)
+        }
         let facts = FlowFacts(direction: direction, identity: identity,
                               internetSocket: internet && (tcp || udp), tcp: tcp,
-                              hostname: socket?.remoteHostname, port: endpoint.flatMap { UInt16($0.port) },
+                              hostname: socket?.remoteHostname, port: port,
                               remoteAddress: address,
                               process: flow.sourceProcessAuditToken.map { CodeIdentity.resolve(auditToken: $0) },
-                              dnsNames: dnsNames.names(for: address), dnsAliases: dnsNames.aliases(for: address),
+                              dnsNames: names, dnsAliases: dnsNames.aliases(for: address),
                               executablePath: executablePath,
                               scriptScope: scriptScope, title: title)
         let paused = Paused(flow: flow, facts: facts, serverName: nil, echPresent: false, stage: .newFlow,
@@ -479,6 +503,7 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
         }
         switch verdict {
         case .allow:
+            remember(facts, verdict, snapshot)
             log(facts, verdict, snapshot, serverName: paused.serverName, would: would)
             return (.allow, .nothing)
         case .learnNames:
@@ -642,8 +667,13 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
         snapshots.withInstalled { snapshot in
             for release in FilterPolicy.current(releases, installed: snapshot, generation: \.generation) {
                 resume(release.flow, allow: release.allow)
-                log(release.flow.facts, release.allow ? .allow(reason: release.reason) : .drop(reason: release.reason),
-                    snapshot, serverName: release.flow.serverName)
+                let verdict: FlowVerdict = release.allow ? .allow(reason: release.reason) : .drop(reason: release.reason)
+                if release.allow {
+                    askLock.lock()
+                    remember(release.flow.facts, verdict, snapshot)
+                    askLock.unlock()
+                }
+                log(release.flow.facts, verdict, snapshot, serverName: release.flow.serverName)
             }
         }
     }
@@ -731,8 +761,17 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
             for flow in idle { self.update(flow, using: .allow(), for: .any) }
             // Each minute: the DNS flows let go with a query unanswered, because more came than are read at once.
             if unread > 0 { self.control("dns_flows_unread", "\(unread)") }
+            // The last run's destinations stop naming flows (VerifiedFlows.window).
+            self.askLock.lock()
+            let resumed = self.resumable != nil && now >= self.resumeUntil ? self.resumedFlows : nil
+            if resumed != nil { self.resumable = nil }
+            self.askLock.unlock()
+            if let resumed { self.control("flows_resumed", "\(resumed)") }
             self.maintenanceTicks += 1
-            if self.maintenanceTicks % 60 == 0 { self.saveIdentities() }
+            if self.maintenanceTicks % 60 == 0 {
+                self.saveIdentities()
+                self.saveVerified()
+            }
             // Each minute even with no change, so the file's time of day stays close to now.
             self.saveApprovals(refresh: self.maintenanceTicks % 60 == 0)
         }
@@ -821,6 +860,64 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
         } catch {
             approvalsSaveNotBefore = now + 60
             control("approvals_not_saved", "\(error)")
+        }
+    }
+
+    // MARK: - Verified destinations across runs
+
+    /// Where the UDP destinations a run let through wait for the next run (VerifiedFlows). Root's,
+    /// like the approvals.
+    private static let verifiedURL = identitiesURL?.deletingLastPathComponent().appendingPathComponent("verified-flows.json")
+
+    /// Under askLock. Keeps a UDP flow let through on its host's name for the next run.
+    private func remember(_ facts: FlowFacts, _ verdict: FlowVerdict, _ snapshot: ProviderConfiguration?) {
+        guard let (app, destination) = FilterPolicy.verified(facts, verdict, snapshot: snapshot) else { return }
+        verified.record(app: app, destination, timeOfDay: Date().timeIntervalSince1970)
+    }
+
+    /// Under askLock. The names the last run checked for this destination, in this run's first
+    /// `VerifiedFlows.window` seconds.
+    private func resumedNames(app: AppIdentity, address: BlackiceCore.IPAddress, port: UInt16, now: TimeInterval) -> Set<String> {
+        guard let resumable, now < resumeUntil else { return [] }
+        return resumable.names(app: app, address: address, port: port)
+    }
+
+    /// On the lifecycle queue, at start: what the last run saved names this run's first flows.
+    private func restoreVerified() {
+        let restored = Self.verifiedURL.flatMap { try? Data(contentsOf: $0) }
+            .flatMap { VerifiedFlows(saved: $0, timeOfDay: Date().timeIntervalSince1970) }
+        askLock.lock()
+        resumable = restored
+        resumeUntil = Self.now + VerifiedFlows.window
+        resumedFlows = 0
+        askLock.unlock()
+        control("flows_restored", "\(restored?.count ?? 0)")
+    }
+
+    /// On the lifecycle queue. Writes this run's destinations when there is something new, or
+    /// with `force`. While the last run's still name flows they are written too: a second stop
+    /// within `VerifiedFlows.window` must not lose a destination whose socket has sent nothing yet.
+    private func saveVerified(force: Bool = false) {
+        guard let url = Self.verifiedURL else { return }
+        askLock.lock()
+        var saving = verified
+        let revision = verified.revision
+        if let resumable {
+            // This run's onto the last run's, so the limits drop the oldest of the last run's first.
+            var merged = resumable
+            merged.merge(saving)
+            saving = merged
+        }
+        askLock.unlock()
+        guard force || revision != savedVerifiedRevision, let data = saving.saved() else { return }
+        do {
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true,
+                                                    attributes: [.posixPermissions: 0o700])
+            try data.write(to: url, options: [.atomic])
+            _ = chmod(url.path, 0o600)
+            savedVerifiedRevision = revision
+        } catch {
+            control("flows_not_saved", "\(error)")
         }
     }
 

@@ -41,6 +41,16 @@ Fixed:
   at once, a new flow takes the place of the one quiet the longest, and the flows let go are counted apart, at
   most 4,096. A flow let go to make room with a query still unanswered is counted, each minute, in `control
   dns_flows_unread`.
+- A restart of the filter no longer cuts a VPN whose client a host rule covers. A filter that has just started is
+  given the next datagram of each open UDP socket as a new flow, and it has read no DNS answer yet, so it looked the
+  flow's host up itself with the flow paused. For a VPN client's own flow that lookup goes into the tunnel the
+  paused flow carries, and neither can finish. On 10 November an upgrade did that to the AWS VPN Client, which a
+  rule for `*.amazonaws.com` covers: the lookup of its server's name got no answer for 30 s, the flow was dropped
+  as `address_mismatch`, and with the Mac's DNS server behind the dead tunnel no name resolved for most of the next
+  8 minutes. The filter now saves the app, host, address and port of each UDP flow it lets through on a host's
+  name, and for two minutes after a start a UDP flow of the same app to the same address and port needs no lookup.
+  Rules and approvals decide it as always. The first start of 1.0.7 has nothing saved: disconnect such a VPN before
+  upgrading from 1.0.6.
 - A TCP connection to a link-local IPv6 address is asked about. It was dropped as `no_host` with no event, since
   the address could be any host on any link without its interface: on 10 November identityservicesd's
   connections to a peer on a `utun` interface all were. macOS gives the filter no interface for a connection's
