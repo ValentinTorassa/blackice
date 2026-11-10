@@ -173,11 +173,13 @@ public struct SavedApprovals: Codable, Equatable, Sendable {
 
 extension ApprovalTable {
     /// The file's contents: the approvals left at `now` (monotonic seconds), saved at `timeOfDay`
-    /// (seconds since 1970).
+    /// (seconds since 1970). One for a link-local address is left out: its host names an interface
+    /// by its number, which may be another interface's after a restart.
     public func saved(now: TimeInterval, timeOfDay: Double) -> Data? {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
-        return try? encoder.encode(SavedApprovals(savedAt: timeOfDay, approvals: summaries(now: now)))
+        let kept = summaries(now: now).filter { IPAddress.strict($0.host)?.isLinkLocal != true }
+        return try? encoder.encode(SavedApprovals(savedAt: timeOfDay, approvals: kept))
     }
 
     /// Adds the approvals in a file `saved` wrote, each for what it had left less the time of day
@@ -539,6 +541,15 @@ public struct AskState<Flow> {
             Release(flow: $0.flow, allow: false, reason: "hold_expired", eventID: $0.eventID)
         }
         return (released, entries.map(\.event.id))
+    }
+
+    /// `blackice deny --all`: forgets every approval and returns how many still counted. What
+    /// waits keeps waiting, and the remembered denials stay.
+    public mutating func forgetApprovals(now: TimeInterval) -> Int {
+        approvals.expire(now: now)
+        let count = approvals.count
+        approvals.removeAll()
+        return count
     }
 
     /// A configuration change or a stop: removes and returns every pending event, and forgets

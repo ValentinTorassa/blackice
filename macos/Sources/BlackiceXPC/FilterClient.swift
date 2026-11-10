@@ -43,6 +43,12 @@ public final class FilterClient {
         }
     }
 
+    public func forget() throws -> AnswerReply {
+        try call(AnswerReply.self) { proxy, done in
+            proxy.forget(try Messages.encode(ForgetRequest()), reply: done)
+        }
+    }
+
     private func call<Reply: CheckedMessage>(_ type: Reply.Type,
                                              _ send: (FilterServiceXPC, @escaping (Data) -> Void) throws -> Void) throws -> Reply {
         let box = ReplyBox()

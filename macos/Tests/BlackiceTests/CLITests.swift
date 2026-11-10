@@ -56,6 +56,7 @@ private final class FakeSystem: SystemControlling {
         return answer
     }
 
+    func forgetApprovals(output: SystemOutput) -> Int32 { calls.append("forget approvals"); return answer }
     func runDaemon(output: SystemOutput) -> Int32 { calls.append("daemon"); return answer }
     func installAgent(output: SystemOutput) -> Int32 { calls.append("agent install"); return answer }
     func uninstallAgent(output: SystemOutput) -> Int32 { calls.append("agent uninstall"); return answer }
@@ -314,6 +315,12 @@ struct ParseTests {
             (["approve", "--app", "com.a", "--host", "example.com", "--yes"], "unknown option --yes"),
             (["approve", "com.a"], "unexpected argument"),
             (["deny", "--app", "com.a", "--host", "example.com", "--for", "1h"], "unknown option --for"),
+            (["deny", "--all", "--app", "com.a"], "--all takes nothing else"),
+            (["deny", "--app", "com.a", "--host", "example.com", "--all"], "--all takes nothing else"),
+            (["deny", "--all", "--all"], "--all takes nothing else"),
+            (["deny", "--all=yes"], "unknown option --all"),
+            (["deny"], "needs --app or --cdhash"),
+            (["approve", "--all"], "unknown option --all"),
         ]
         for (arguments, fragment) in cases {
             let message = usageError(arguments)
@@ -427,16 +434,19 @@ struct RunTests {
         #expect(status.stdout == "filter: enabled" && mode.stderr == "mode refused")
     }
 
-    @Test func askCommandsReachTheSystem() {
+    @Test func askCommandsReachTheSystem() throws {
         let system = FakeSystem(status: ExitCode.noPermission)
         #expect(run(["pending"], system: system).status == 77)
         #expect(run(["approve", "--app", "com.a", "--host", "Example.com", "--for", "5m"], system: system).status == 77)
         #expect(run(["deny", "--cdhash", testCDHash, "--host", "example.com"], system: system).status == 77)
+        #expect(try CLI.parse(["deny", "--all"]) == .forgetApprovals)
+        #expect(run(["deny", "--all"], system: system).status == 77)
         #expect(system.calls == ["pending", "approve apple/com.a example.com 300 touch_id",
-                                 "deny cdhash/\(testCDHash) example.com - touch_id"])
+                                 "deny cdhash/\(testCDHash) example.com - touch_id", "forget approvals"])
         // A usage error never reaches it.
         #expect(run(["approve", "--app", "com.a", "--host", "example.com", "--for", "2d"], system: system).status == 64)
-        #expect(system.calls.count == 3)
+        #expect(run(["deny", "--all", "--host", "example.com"], system: system).status == 64)
+        #expect(system.calls.count == 4)
     }
 
     @Test func severalHostsReachTheSystemAsOneAnswerEach() {
@@ -483,7 +493,7 @@ struct RunTests {
     @Test func askCommandsNeedTheSignedApp() {
         let commands: [[String]] = [["pending"], ["approve", "--app", "com.a", "--host", "example.com"],
                                     ["approve", "--app", "com.a", "--host", "a.example.com", "--host", "b.example.com"],
-                                    ["deny", "--cdhash", testCDHash, "--host", "example.com"]]
+                                    ["deny", "--cdhash", testCDHash, "--host", "example.com"], ["deny", "--all"]]
         for arguments in commands {
             let result = run(arguments)
             #expect(result.status == 69 && result.stdout.isEmpty)

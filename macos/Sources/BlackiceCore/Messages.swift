@@ -468,13 +468,21 @@ public struct AnswerRequest: CheckedMessage, Equatable {
     }
 }
 
+/// `blackice deny --all`: forget every approval. A person confirmed with Touch ID, as for an
+/// AnswerRequest with touch_id; the reply is an AnswerReply.
+public struct ForgetRequest: CheckedMessage, Equatable {
+    public let version: Int
+    public init() { version = Messages.version }
+    public func validate(now: Date) throws {}
+}
+
 public struct AnswerReply: CheckedMessage, Equatable {
     public enum Status: String, Codable, Sendable { case done, refused }
 
     public let version: Int
     public let status: Status
-    /// A short code: approved, denied, token_unknown, token_spent, token_expired, token_mismatch,
-    /// not_the_daemon.
+    /// A short code: approved, denied, forgotten, token_unknown, token_spent, token_expired,
+    /// token_mismatch, not_the_daemon.
     public let reason: String
     public let message: String
     /// Events this answer resolved.
@@ -489,6 +497,12 @@ public struct AnswerReply: CheckedMessage, Equatable {
         self.message = message
         self.events = events
         self.released = released
+    }
+
+    /// What `blackice deny --all` answers after it forgot `count` approvals.
+    public static func forgotten(_ count: Int) -> AnswerReply {
+        AnswerReply(status: .done, reason: "forgotten",
+                    message: count == 0 ? "There were no approvals to forget" : "Forgot \(Describe.count(count, "approval"))")
     }
 
     public func validate(now: Date) throws {

@@ -25,6 +25,7 @@ struct ControlTests {
             == "let cdhash/\(String(repeating: "0f", count: 20)) reach example.com for 10 min")
         #expect(ControlAction.deny(tool, host: "example.com").reason
             == "deny ABCDE12345/com.example.tool access to example.com and drop its waiting connections")
+        #expect(ControlAction.forgetApprovals.reason == "forget every approval")
         // An answer bound to one of an interpreter's scripts names it.
         #expect(ControlAction.approve(build, hosts: ["sts.amazonaws.com"], seconds: 3600, script: "/opt/homebrew/bin/aws").reason
             == "let cdhash/\(String(repeating: "0f", count: 20)), running /opt/homebrew/bin/aws, reach sts.amazonaws.com for 1 h")

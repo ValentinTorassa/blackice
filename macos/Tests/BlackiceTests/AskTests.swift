@@ -106,6 +106,20 @@ struct ApprovalTableTests {
         #expect(revoked && table.revision == 4)
     }
 
+    // Its host names an interface by its number, which a restart may give to another interface.
+    @Test func anApprovalForALinkLocalAddressIsNotSaved() throws {
+        var table = ApprovalTable()
+        table.add(ApprovalKey(identity: tool, host: "fe80::1%7"), seconds: 3600, now: 0)
+        table.add(ApprovalKey(identity: tool, host: "2001:db8::1"), seconds: 3600, now: 0)
+        table.add(ApprovalKey(identity: tool, host: "192.0.2.7"), seconds: 3600, now: 0)
+        table.add(ApprovalKey(identity: tool, host: "example.com"), seconds: 3600, now: 0)
+        #expect(table.covers(ApprovalKey(identity: tool, host: "fe80::1%7"), now: 1))
+        var restored = ApprovalTable()
+        let added = restored.restore(try #require(table.saved(now: 0, timeOfDay: 1_000_000)), now: 0, timeOfDay: 1_000_000)
+        #expect(added == 3 && !restored.covers(ApprovalKey(identity: tool, host: "fe80::1%7"), now: 1))
+        #expect(restored.summaries(now: 0).map(\.host).sorted() == ["192.0.2.7", "2001:db8::1", "example.com"])
+    }
+
     // An upgrade or a restart of the Mac: what was left when saved, less the time of day since.
     @Test func savedApprovalsComeBackWithWhatTheyHadLeft() throws {
         var table = ApprovalTable()
@@ -483,6 +497,37 @@ struct AskStateTests {
         #expect(ask.pending.eventCount == 0 && ask.denials.count == 0)
         // Approvals stay as they were.
         #expect(ask.approvals.covers(ApprovalKey(identity: other, host: "example.org"), now: 2))
+    }
+
+    @Test func forgettingTakesEveryApprovalAndNothingElse() throws {
+        var (ask, _, _) = state()
+        _ = ask.answer(request(.deny, host: "other.example.com"), now: 1)
+        _ = ask.answer(request(.approve, other, host: "example.org", seconds: 600), now: 1)
+        _ = ask.answer(AnswerRequest(kind: .approve, app: build, host: "pypi.org", seconds: 600, token: nil, script: "/opt/tool.py"),
+                       now: 1)
+        _ = ask.answer(request(.approve, other, host: "short.example.org", seconds: 5), now: 1)
+        let events = ask.pending.eventCount
+        let revision = ask.approvals.revision
+        // The one that ran out at 6 s is not counted.
+        #expect(ask.forgetApprovals(now: 10) == 2)
+        #expect(ask.approvals.count == 0 && ask.approvals.revision > revision)
+        #expect(!ask.approvals.covers(ApprovalKey(identity: other, host: "example.org"), now: 10))
+        // What waits and the remembered denial stay.
+        #expect(events > 0 && ask.pending.eventCount == events && ask.denials.count == 1)
+        // The file written next holds none, so a restart brings none back.
+        var restored = ApprovalTable()
+        let data = try #require(ask.approvals.saved(now: 10, timeOfDay: 1_000_000))
+        #expect(restored.restore(data, now: 0, timeOfDay: 1_000_000) == 0 && restored.count == 0)
+        // Again, with nothing left.
+        let again = ask.approvals.revision
+        #expect(ask.forgetApprovals(now: 11) == 0 && ask.approvals.revision == again)
+        #expect(AnswerReply.forgotten(2).message == "Forgot 2 approvals" && AnswerReply.forgotten(1).message == "Forgot 1 approval")
+        #expect(AnswerReply.forgotten(0).message == "There were no approvals to forget")
+        for count in [0, 1, 2] {
+            let reply = AnswerReply.forgotten(count)
+            #expect(reply.status == .done && reply.reason == "forgotten" && reply.events.isEmpty && reply.released == 0)
+            #expect(try Messages.decode(AnswerReply.self, from: Messages.encode(reply)) == reply)
+        }
     }
 
     @Test func aPersonMayApproveWithoutAnEvent() {

@@ -44,6 +44,7 @@ private final class LogOnly: SystemControlling {
     func setMode(_ mode: Mode, output: SystemOutput) -> Int32 { ExitCode.unavailable }
     func pending(output: SystemOutput) -> Int32 { ExitCode.unavailable }
     func answer(_ request: AnswerRequest, output: SystemOutput) -> Int32 { ExitCode.unavailable }
+    func forgetApprovals(output: SystemOutput) -> Int32 { ExitCode.unavailable }
     func runDaemon(output: SystemOutput) -> Int32 { ExitCode.unavailable }
     func installAgent(output: SystemOutput) -> Int32 { ExitCode.unavailable }
     func uninstallAgent(output: SystemOutput) -> Int32 { ExitCode.unavailable }

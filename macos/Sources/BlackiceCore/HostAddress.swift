@@ -56,6 +56,22 @@ public struct IPAddress: Hashable, Sendable, CustomStringConvertible {
         self.scope = Self.isLinkLocal(self.bytes) ? scope : 0
     }
 
+    /// The address in an IPv4 or IPv6 socket address, with the interface (`sin6_scope_id`) of a
+    /// link-local one. nil for any other family.
+    public init?(socketAddress: UnsafePointer<sockaddr>) {
+        switch Int32(socketAddress.pointee.sa_family) {
+        case AF_INET:
+            var v4 = socketAddress.withMemoryRebound(to: sockaddr_in.self, capacity: 1) { $0.pointee.sin_addr }
+            self.init(bytes: withUnsafeBytes(of: &v4) { Array($0) })
+        case AF_INET6:
+            let socket = socketAddress.withMemoryRebound(to: sockaddr_in6.self, capacity: 1) { $0.pointee }
+            var v6 = socket.sin6_addr
+            self.init(bytes: withUnsafeBytes(of: &v6) { Array($0) }, scope: socket.sin6_scope_id)
+        default:
+            return nil
+        }
+    }
+
     /// An address as a person writes it in a rule or after `--host`. Stricter than init(_:):
     /// IPv4, alone or at the end of an IPv6 address, is four decimal numbers from 0 to 255 with no
     /// leading zeros, since "010.0.0.1", "10.1" and "0x0a.0.0.1" mean other addresses to other
@@ -251,22 +267,8 @@ public struct SystemHostResolver: HostResolving {
         var addresses: [IPAddress] = []
         var cursor: UnsafeMutablePointer<addrinfo>? = first
         while let entry = cursor {
-            if let address = entry.pointee.ai_addr {
-                switch Int32(address.pointee.sa_family) {
-                case AF_INET:
-                    var v4 = address.withMemoryRebound(to: sockaddr_in.self, capacity: 1) { $0.pointee.sin_addr }
-                    if let ip = IPAddress(bytes: withUnsafeBytes(of: &v4) { Array($0) }) { addresses.append(ip) }
-                case AF_INET6:
-                    // The scope ID is the interface of a link-local answer (from mDNS, say).
-                    let socket = address.withMemoryRebound(to: sockaddr_in6.self, capacity: 1) { $0.pointee }
-                    var v6 = socket.sin6_addr
-                    if let ip = IPAddress(bytes: withUnsafeBytes(of: &v6) { Array($0) }, scope: socket.sin6_scope_id) {
-                        addresses.append(ip)
-                    }
-                default:
-                    break
-                }
-            }
+            // With the interface of a link-local answer (from mDNS, say).
+            if let address = entry.pointee.ai_addr, let ip = IPAddress(socketAddress: address) { addresses.append(ip) }
             cursor = entry.pointee.ai_next
         }
         return addresses

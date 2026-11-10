@@ -59,6 +59,7 @@ private final class Started: SystemControlling {
     func setMode(_ mode: Mode, output: SystemOutput) -> Int32 { 0 }
     func pending(output: SystemOutput) -> Int32 { 0 }
     func answer(_ request: AnswerRequest, output: SystemOutput) -> Int32 { 0 }
+    func forgetApprovals(output: SystemOutput) -> Int32 { 0 }
     func runDaemon(output: SystemOutput) -> Int32 { 0 }
     func installAgent(output: SystemOutput) -> Int32 { 0 }
     func uninstallAgent(output: SystemOutput) -> Int32 { 0 }

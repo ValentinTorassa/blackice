@@ -26,6 +26,8 @@ public enum Command: Equatable, Sendable {
     case mode(Mode, answerer: Answerer? = nil)
     case approve(Approval)
     case deny(Denial)
+    /// `blackice deny --all`: forget every approval.
+    case forgetApprovals
     case validate(path: String)
     case daemon
     case agent(AgentAction)
@@ -47,7 +49,7 @@ public enum Command: Equatable, Sendable {
         case .pending: return "pending"
         case .mode: return "mode"
         case .approve: return "approve"
-        case .deny: return "deny"
+        case .deny, .forgetApprovals: return "deny"
         case .validate: return "validate"
         case .daemon: return "daemon"
         case .agent, .connectAgent: return "agent"
@@ -186,10 +188,13 @@ public enum CLI {
                     "  --save         also add a lasting [[allow]] rule for it to blackice.toml",
                     "                 (or --config PATH); it counts from the next blackice start.",
                     "                 A rule for an interpreter (python, node…) never counts."],
-        "deny": ["Usage: blackice deny --app ID [--team TEAM] --host HOST [--script PATH]", "",
+        "deny": ["Usage: blackice deny --app ID [--team TEAM] --host HOST [--script PATH]",
+                 "       blackice deny --all", "",
                  "Refuses one app one host, and drops its waiting connections (Touch ID).",
                  "--cdhash HEX in place of --app names ad hoc signed code; --script PATH, for",
-                 "an interpreter, refuses only that script."],
+                 "an interpreter, refuses only that script.",
+                 "  --all   forgets every approval instead (Touch ID). What waits keeps waiting,",
+                 "          remembered denials stay, and connections already let through go on."],
         "report": ["Usage: blackice report [--last 1h]", "",
                    "What the filter dropped, by reason and app, and in accept-all what ask mode",
                    "would have done. --last takes minutes or hours, such as 30m or 2h, at most 168h."],
@@ -333,6 +338,10 @@ public enum CLI {
                                      script: script))
         case "deny":
             try noToken(rest, command: first)
+            if rest.contains("--all") {
+                guard rest == ["--all"] else { throw UsageError("\(first): --all takes nothing else; it forgets every approval") }
+                return .forgetApprovals
+            }
             let options = try parseOptions(rest, allowed: ["app", "team", "cdhash", "host", "script"], command: first)
             let target = try target(options, command: first)
             let script = try options["script"].map { try self.script($0, command: first) }
@@ -529,6 +538,8 @@ public enum CLI {
             return saveRule(approval, readFile: readFile, stdout: stdout, stderr: stderr)
         case .deny(let denial):
             return system.answer(denial.request, output: SystemOutput(stdout: stdout, stderr: stderr))
+        case .forgetApprovals:
+            return system.forgetApprovals(output: SystemOutput(stdout: stdout, stderr: stderr))
         case .report(let minutes):
             // Taken before `log show` runs, so every event counted has its ask line in what it reads.
             let now = Date()

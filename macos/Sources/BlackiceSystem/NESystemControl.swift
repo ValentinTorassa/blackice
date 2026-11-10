@@ -309,6 +309,24 @@ public final class NESystemControl: SystemControlling {
         }
     }
 
+    /// `blackice deny --all`: a person confirms with Touch ID, then the extension forgets every
+    /// approval. Trusted the way `answer` is.
+    public func forgetApprovals(output: SystemOutput) -> Int32 {
+        guard Self.isSignedHost(), let teamID = CodeIdentity.current()?.teamID else {
+            return UnsignedSystem().forgetApprovals(output: output)
+        }
+        guard confirm(.forgetApprovals, output) else { return ExitCode.noPermission }
+        do {
+            let reply = try FilterClient(teamID: teamID).forget()
+            if reply.status == .done { output.stdout(Style.done(reply.message)) } else { output.stderr("blackice deny: \(reply.message)") }
+            return CLI.answerStatus(reply)
+        } catch {
+            output.stderr(Self.unfinishedUpgrade().map { "blackice deny: cannot reach blackice's filter. " + $0.hint }
+                ?? "blackice deny: cannot reach blackice's filter (\(error)). Is it on? blackice status")
+            return ExitCode.unavailable
+        }
+    }
+
     /// `blackice approve` with several hosts: one Touch ID whose dialog names every host, then one
     /// answer per host on the same connection. The extension trusts each the way it trusts one,
     /// because the connection comes from this signed binary. A host the extension refuses does not

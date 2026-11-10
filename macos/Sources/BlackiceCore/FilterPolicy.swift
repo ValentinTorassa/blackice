@@ -55,6 +55,10 @@ public struct FlowFacts: Equatable, Sendable {
     /// for, as the extension saw them in its DNS responses (DNSNameTable). Each came with the
     /// address, so it passes the host and address check for this flow.
     public let dnsNames: Set<String>
+    /// The names that are aliases of one in `dnsNames`, through CNAME records the extension saw
+    /// in those responses (DNSNameTable.aliases). Each passes the host and address check for this
+    /// flow too; none of them names a flow that has no host name (`dnsName`).
+    public let dnsAliases: Set<String>
     /// For ad hoc code, the path of the executable as the kernel has it (CodeIdentity.kernelPath):
     /// a cdhash rule never counts for an interpreter, told by this file's name (`Interpreters`).
     /// nil for other code, and when the kernel does not say.
@@ -66,7 +70,8 @@ public struct FlowFacts: Equatable, Sendable {
 
     public init(direction: FlowDirection, identity: IdentityResolution, internetSocket: Bool, tcp: Bool,
                 hostname: String?, port: UInt16?, remoteAddress: IPAddress?, process: IdentityResolution? = nil,
-                dnsNames: Set<String> = [], executablePath: String? = nil, scriptScope: ScriptScope = .any) {
+                dnsNames: Set<String> = [], dnsAliases: Set<String> = [], executablePath: String? = nil,
+                scriptScope: ScriptScope = .any) {
         self.direction = direction
         self.identity = identity
         self.process = process
@@ -80,6 +85,7 @@ public struct FlowFacts: Equatable, Sendable {
         self.port = port
         self.remoteAddress = remoteAddress
         self.dnsNames = dnsNames
+        self.dnsAliases = dnsAliases
         self.executablePath = executablePath
         self.scriptScope = scriptScope
     }
@@ -478,8 +484,10 @@ public enum FilterPolicy {
             return .drop(reason: rememberedDenial)
         }
         guard flow.remoteAddress != nil else { return .drop(reason: "no_address") }
-        // An answer the resolver gave for this host and address counts like a lookup that found it.
-        switch flow.dnsNames.contains(host) ? AddressCheck.match : context.address(host, flow.remoteAddress) {
+        // An answer the resolver gave for this host and address counts like a lookup that found
+        // it, and so does one it gave for a name this host is an alias of.
+        let answered = flow.dnsNames.contains(host) || flow.dnsAliases.contains(host)
+        switch answered ? AddressCheck.match : context.address(host, flow.remoteAddress) {
         case .unknown:
             // Ask mode looks the host up even with no rule, so a paused flow knows whether an
             // approval may release it.

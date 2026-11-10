@@ -70,6 +70,32 @@ private func response(_ name: String, type: UInt16 = DNSRecordType.a, id: Int = 
     return wire.data
 }
 
+private func alias(_ name: String, _ target: String, _ ttl: UInt32) -> DNSAlias {
+    DNSAlias(name: name, target: target, ttl: ttl)
+}
+
+/// A response whose answers are a CNAME chain from the question's name, each with its TTL, and
+/// address records owned by the chain's last name. Names are written out, with no pointers.
+private func chainResponse(_ name: String, type: UInt16 = DNSRecordType.a, id: Int = 0x1234,
+                           chain: [(String, UInt32)], addresses: [(String, UInt32)] = []) -> Data {
+    var wire = Wire()
+    wire.header(id: id, answers: chain.count + addresses.count)
+    wire.question(name, type: type)
+    var owner = name
+    for (target, ttl) in chain {
+        wire.name(owner)
+        var data = Wire()
+        data.name(target)
+        wire.record(type: DNSRecordType.cname, ttl: ttl, data: data.bytes)
+        owner = target
+    }
+    for (address, ttl) in addresses {
+        wire.name(owner)
+        wire.record(type: ip(address).bytes.count == 4 ? DNSRecordType.a : DNSRecordType.aaaa, ttl: ttl, data: ip(address).bytes)
+    }
+    return wire.data
+}
+
 private func query(_ name: String, type: UInt16 = DNSRecordType.a, id: Int = 0x1234) -> Data {
     var wire = Wire()
     wire.header(id: id, flags: 0x0100, answers: 0)
@@ -139,6 +165,49 @@ struct DNSMessageTests {
         #expect(message.answers[1].value == .alias("e1.cdn.example.net"))
         // The smallest TTL along the chain and the address record.
         #expect(message.learned == [learned("www.example.com", "203.0.113.9", 20), learned("www.example.com", "203.0.113.10", 10)])
+        // Each CNAME on the chain, with its own TTL.
+        #expect(message.aliases == [alias("www.example.com", "edge.cdn.example.net", 300),
+                                    alias("edge.cdn.example.net", "e1.cdn.example.net", 20)])
+    }
+
+    @Test func theChainIsReadWithOrWithoutAddressesAndOnlyFromTheQuestionsName() throws {
+        // An AAAA question whose chain ends at a name with no AAAA record: the CNAMEs still hold.
+        let none = try #require(DNSMessage(chainResponse("mail.example.com", type: DNSRecordType.aaaa,
+                                                         chain: [("mail.cdn.example.net", 300), ("pool.cdn.example.net", 45)])))
+        #expect(none.learned.isEmpty)
+        #expect(none.aliases == [alias("mail.example.com", "mail.cdn.example.net", 300),
+                                 alias("mail.cdn.example.net", "pool.cdn.example.net", 45)])
+        // No CNAME: no alias.
+        let plain = try #require(DNSMessage(response("example.org", addresses: [("203.0.113.9", 60)])))
+        #expect(plain.aliases.isEmpty)
+        // A CNAME for a name off the chain, as a hostile server might add, teaches nothing.
+        var wire = Wire()
+        wire.header(answers: 2)
+        wire.question("evil.example.net")
+        wire.pointer(questionName)
+        wire.record(type: DNSRecordType.a, data: ip("203.0.113.66").bytes)
+        wire.name("pypi.org")
+        var target = Wire()
+        target.name("evil.example.net")
+        wire.record(type: DNSRecordType.cname, data: target.bytes)
+        let hostile = try #require(DNSMessage(wire.data))
+        #expect(hostile.learned == [learned("evil.example.net", "203.0.113.66", 300)] && hostile.aliases.isEmpty)
+        // A failed response, a loop and two CNAMEs for one name teach none either.
+        var failed = [UInt8](chainResponse("mail.example.com", chain: [("mail.cdn.example.net", 300)]))
+        failed[3] = 0x83
+        #expect(try #require(DNSMessage(Data(failed))).aliases.isEmpty)
+        let loop = try #require(DNSMessage(chainResponse("a.example.com", chain: [("b.example.com", 60), ("a.example.com", 60)])))
+        #expect(loop.aliases.isEmpty && loop.learned.isEmpty)
+        var twice = Wire()
+        twice.header(answers: 2)
+        twice.question("a.example.com")
+        for name in ["b.example.com", "c.example.com"] {
+            twice.pointer(questionName)
+            var data = Wire()
+            data.name(name)
+            twice.record(type: DNSRecordType.cname, data: data.bytes)
+        }
+        #expect(try #require(DNSMessage(twice.data)).aliases.isEmpty)
     }
 
     @Test func recordsOffTheChainTeachNothing() throws {
@@ -492,6 +561,13 @@ struct DNSFlowTableTests {
         #expect(table.data(1, query("example.org", id: 5), offset: 0, outbound: true, now: 1) == .pass([]))
         #expect(table.data(1, response("example.org", id: 5, addresses: [("203.0.113.9", 60)]), offset: 0, outbound: false, now: 2)
             == .pass([learned("example.org", "203.0.113.9", 60)]))
+        // A response with a CNAME chain gives the chain too. Each datagram starts where the last ended.
+        let sent = query("example.org", id: 5).count
+        let received = response("example.org", id: 5, addresses: [("203.0.113.9", 60)]).count
+        #expect(table.data(1, query("mail.example.com", id: 6), offset: sent, outbound: true, now: 2) == .pass([]))
+        #expect(table.data(1, chainResponse("mail.example.com", id: 6, chain: [("pool.cdn.example.net", 45)],
+                                            addresses: [("203.0.113.10", 15)]), offset: received, outbound: false, now: 2)
+            == .pass([learned("mail.example.com", "203.0.113.10", 15)], aliases: [alias("mail.example.com", "pool.cdn.example.net", 45)]))
 
         // Two has been idle for two minutes: let go, and its late data passes.
         #expect(table.expire(now: 119).isEmpty)
@@ -536,6 +612,65 @@ private final class Clock: @unchecked Sendable {
 }
 
 struct DNSNameTableTests {
+    // outlook.office365.com on 10 November 2026: three CNAMEs of 300, 300 and 45 s, and addresses
+    // of 15 s that the resolver asks for again under the chain's last name, or its middle one.
+    @Test func anAddressGivenForTheEndOfAChainCountsForItsAliases() {
+        let clock = Clock()
+        let table = DNSNameTable(clock: { clock.now })
+        let host = "outlook.office365.com", first = "outlook.cloud.microsoft"
+        let middle = "acdcatm.outlook.mira.tm.svc.cloud.microsoft", last = "atm.outlook.mira.tm.svc.cloud.microsoft"
+        // The whole chain, asked for by the host's name.
+        table.record([learned(host, "52.96.181.98", 15)],
+                     aliases: [alias(host, first, 300), alias(first, middle, 300), alias(middle, last, 45)])
+        #expect(table.names(for: ip("52.96.181.98")) == [host] && table.aliases(for: ip("52.96.181.98")).isEmpty)
+        // 20 s later the resolver asks for the last name only: other addresses, under that name.
+        clock.advance(20)
+        table.record([learned(last, "40.104.46.50", 15)])
+        #expect(table.names(for: ip("40.104.46.50")) == [last])
+        #expect(table.aliases(for: ip("40.104.46.50")) == [middle, first, host])
+        // 30 s on, the 45 s CNAME has gone and the resolver asks for the middle name: it comes back.
+        clock.advance(30)
+        #expect(table.aliases(for: ip("40.104.46.50")).isEmpty)
+        table.record([learned(middle, "52.96.88.2", 15)], aliases: [alias(middle, last, 45)])
+        #expect(table.names(for: ip("52.96.88.2")) == [middle] && table.aliases(for: ip("52.96.88.2")) == [first, host])
+        // An address nothing was said about has no alias, and the names themselves are as before.
+        #expect(table.aliases(for: ip("203.0.113.1")).isEmpty && table.aliases(for: nil).isEmpty)
+        // The 300 s CNAMEs go 300 s after they were read; the address's own name went before.
+        clock.advance(29.5)
+        #expect(table.aliases(for: ip("52.96.88.2")) == [first, host])
+        clock.advance(0.5)
+        #expect(table.names(for: ip("52.96.88.2")).isEmpty && table.aliases(for: ip("52.96.88.2")).isEmpty)
+        table.removeAll()
+        #expect(table.aliasTargetCount == 0)
+    }
+
+    @Test func aliasesLastForTheirTTLAndAreBounded() {
+        #expect(DNSNameTable.aliasLifetime(ttl: 0) == 30 && DNSNameTable.aliasLifetime(ttl: 3600) == 3600)
+        #expect(DNSNameTable.aliasLifetime(ttl: 172_800) == 86_400 && DNSNameTable.aliasLifetime(ttl: .max) == 86_400)
+        let clock = Clock()
+        let table = DNSNameTable(maximumAddresses: 2, maximumNamesPerAddress: 2, clock: { clock.now })
+        table.record([learned("end.example.net", "203.0.113.7", 300)],
+                     aliases: [alias("a.example.com", "end.example.net", 3600), alias("b.example.com", "end.example.net", 60)])
+        #expect(table.aliases(for: ip("203.0.113.7")) == ["a.example.com", "b.example.com"])
+        // A third alias of one name takes the place of the one closest to expiring.
+        table.record([], aliases: [alias("c.example.com", "end.example.net", 600)])
+        #expect(table.aliases(for: ip("203.0.113.7")) == ["a.example.com", "c.example.com"])
+        // A third name with aliases takes the place of the one whose aliases all expire soonest.
+        table.record([], aliases: [alias("x.example.com", "other.example.net", 30)])
+        table.record([], aliases: [alias("y.example.com", "third.example.net", 30)])
+        #expect(table.aliasTargetCount == 2 && table.aliases(for: ip("203.0.113.7")) == ["a.example.com", "c.example.com"])
+        // A loop of CNAMEs ends, and a name the address has itself is not listed as its alias.
+        let loop = DNSNameTable(clock: { clock.now })
+        loop.record([learned("a.example.com", "203.0.113.8", 300)],
+                    aliases: [alias("b.example.com", "a.example.com", 300), alias("a.example.com", "b.example.com", 300)])
+        #expect(loop.aliases(for: ip("203.0.113.8")) == ["b.example.com"])
+        // No more than maximumAliasesFollowed, however many there are.
+        let wide = DNSNameTable(maximumNamesPerAddress: 200, clock: { clock.now })
+        wide.record([learned("end.example.net", "203.0.113.9", 300)],
+                    aliases: (0..<200).map { alias("n\($0).example.com", "end.example.net", 300) })
+        #expect(wide.aliases(for: ip("203.0.113.9")).count == DNSNameTable.maximumAliasesFollowed)
+    }
+
     @Test func namesLastForTheirTTLBetweenTheBounds() {
         #expect(DNSNameTable.lifetime(ttl: 0) == 30 && DNSNameTable.lifetime(ttl: 60) == 60)
         #expect(DNSNameTable.lifetime(ttl: 86_400) == 300 && DNSNameTable.lifetime(ttl: .max) == 300)

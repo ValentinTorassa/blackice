@@ -250,6 +250,19 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
         }
     }
 
+    /// A link-local remote address with its interface, from the flow's endpoint as Network gives
+    /// it (macOS 15 on). Read only when the host endpoint's text gives no address, or a link-local
+    /// one with no interface, which could be any host on any link: on 10 November 2026
+    /// identityservicesd's connections to a link-local peer were all dropped as `no_host`, with
+    /// nothing to ask about.
+    private static func linkLocal(_ socket: NEFilterSocketFlow?) -> BlackiceCore.IPAddress? {
+        guard #available(macOS 15.0, *), case .hostPort(.ipv6(let remote), _)? = socket?.remoteFlowEndpoint,
+              let interface = remote.interface,
+              let address = BlackiceCore.IPAddress(bytes: Array(remote.rawValue), scope: UInt32(interface.index)),
+              address.isLinkLocal, address.scope != 0 else { return nil }
+        return address
+    }
+
     override func handleNewFlow(_ flow: NEFilterFlow) -> NEFilterNewFlowVerdict {
         let snapshot = snapshots.read()
         let socket = flow as? NEFilterSocketFlow
@@ -259,7 +272,11 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
         let internet = socket?.socketFamily == AF_INET || socket?.socketFamily == AF_INET6
         let direction: FlowDirection = flow.direction == .outbound ? .outbound :
             (flow.direction == .inbound ? .inbound : .unknown)
-        let address = endpoint.flatMap { BlackiceCore.IPAddress($0.hostname) }
+        var address = endpoint.flatMap { BlackiceCore.IPAddress($0.hostname) }
+        if address?.isCheckable != true, let scoped = Self.linkLocal(socket),
+           address == nil || address?.bytes == scoped.bytes {
+            address = scoped
+        }
         let identity = CodeIdentity.resolve(auditToken: flow.sourceAppAuditToken)
         // A cdhash rule reads the path of ad hoc code, to tell an interpreter by its name
         // (Interpreters); answers and approvals read any interpreter's script (ScriptScope).
@@ -274,7 +291,8 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
                               hostname: socket?.remoteHostname, port: endpoint.flatMap { UInt16($0.port) },
                               remoteAddress: address,
                               process: flow.sourceProcessAuditToken.map { CodeIdentity.resolve(auditToken: $0) },
-                              dnsNames: dnsNames.names(for: address), executablePath: executablePath,
+                              dnsNames: dnsNames.names(for: address), dnsAliases: dnsNames.aliases(for: address),
+                              executablePath: executablePath,
                               scriptScope: scriptScope)
         let paused = Paused(flow: flow, facts: facts, serverName: nil, echPresent: false, stage: .newFlow,
                             generation: snapshot?.generation ?? 0)
@@ -282,21 +300,6 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
         let would = snapshot.flatMap { FilterPolicy.dryRun(facts, snapshot: $0) }
         askLock.lock()
         let verdict = FilterPolicy.decide(facts, snapshot: snapshot, context: context(now: Self.now, scope: facts.scriptScope))
-        // An app that opens the next connection as soon as one is dropped has its TCP ones wait
-        // for their drop (RepeatedDrops).
-        if case .drop = verdict {
-            switch repeated.add(paused, app: facts.identity.label, waits: facts.tcp, now: Self.now) {
-            case .dropNow:
-                break
-            case .delayed:
-                log(facts, verdict, snapshot, would: would)
-                askLock.unlock()
-                return .pause()
-            case .dropUnlogged:
-                askLock.unlock()
-                return .drop()
-            }
-        }
         let (step, after) = place(verdict, paused, snapshot, now: Self.now, would: would)
         askLock.unlock()
         perform(after)
@@ -421,11 +424,11 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
         switch result {
         case .unknown:
             return nil
-        case .pass(let learned):
-            dnsNames.record(learned)
+        case .pass(let learned, let aliases):
+            dnsNames.record(learned, aliases: aliases)
             return NEFilterDataVerdict(passBytes: bytes.count, peekBytes: Self.dnsPeekBytes)
-        case .stop(let learned):
-            dnsNames.record(learned)
+        case .stop(let learned, let aliases):
+            dnsNames.record(learned, aliases: aliases)
             return .allow()
         }
     }
@@ -493,12 +496,10 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
             log(facts, verdict, snapshot, serverName: paused.serverName)
             return (.learnNames, .nothing)
         case .drop:
-            log(facts, verdict, snapshot, serverName: paused.serverName, would: would)
-            return (.drop, .nothing)
+            return drop(paused, verdict, snapshot, now: now, would: would)
         case .readServerName:
             guard paused.stage == .newFlow else {
-                log(facts, .drop(reason: "server_name_unusable"), snapshot, serverName: paused.serverName)
-                return (.drop, .nothing)
+                return drop(paused, .drop(reason: "server_name_unusable"), snapshot, now: now)
             }
             return (.hold, .nothing)
         case .resolveHost(let host):
@@ -506,19 +507,16 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
             case .startLookup: return (.pause, .lookUp(host))
             case .waiting: return (.pause, .nothing)
             case .full:
-                log(facts, .drop(reason: "lookup_capacity"), snapshot, serverName: paused.serverName)
-                return (.drop, .nothing)
+                return drop(paused, .drop(reason: "lookup_capacity"), snapshot, now: now)
             case .appFull:
-                log(facts, .drop(reason: "lookup_capacity_app"), snapshot, serverName: paused.serverName)
-                return (.drop, .nothing)
+                return drop(paused, .drop(reason: "lookup_capacity_app"), snapshot, now: now)
             }
         case .ask(_, let addressMatches):
             // A flow with no name is asked about by its address: the event's host is then its ip.
             guard let snapshot, let identity = facts.identity.appIdentity,
                   let host = FilterPolicy.eventHost(facts, serverName: paused.serverName),
                   let port = facts.port, let address = facts.remoteAddress else {
-                log(facts, .drop(reason: "ask_incomplete"), snapshot, serverName: paused.serverName)
-                return (.drop, .nothing)
+                return drop(paused, .drop(reason: "ask_incomplete"), snapshot, now: now)
             }
             let key = PendingKey(identity: identity, host: host, port: port, scope: facts.scriptScope)
             let added = ask.pending.add(paused, key: key, addressMatches: addressMatches, now: now,
@@ -538,12 +536,37 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
                 log(facts, verdict, snapshot, serverName: paused.serverName)
                 return (.pause, .nothing)
             case .full:
-                log(facts, .drop(reason: "ask_capacity"), snapshot, serverName: paused.serverName)
-                return (.drop, .nothing)
+                return drop(paused, .drop(reason: "ask_capacity"), snapshot, now: now)
             case .appFull:
-                log(facts, .drop(reason: "ask_capacity_app"), snapshot, serverName: paused.serverName)
-                return (.drop, .nothing)
+                return drop(paused, .drop(reason: "ask_capacity_app"), snapshot, now: now)
             }
+        }
+    }
+
+    /// Under askLock: a drop that `place` decided, at whatever stage of the flow. An app that opens
+    /// the next connection as soon as one is dropped has its TCP ones wait for their drop
+    /// (RepeatedDrops): such a flow is logged now and stays paused, or is paused here, until the
+    /// maintenance timer drops it.
+    private func drop(_ paused: Paused, _ verdict: FlowVerdict, _ snapshot: ProviderConfiguration?,
+                      now: TimeInterval, would: String? = nil) -> (Step, After) {
+        let facts = paused.facts
+        // A flow decided under a configuration that another has replaced, or that a stop has
+        // cleared, is dropped now and not counted: the change has already ended what was delayed,
+        // and this drop is the change's, not the app's. A flow that came with no configuration
+        // installed, and still has none, is dropped like every flow then, and those count.
+        if (snapshots.read()?.generation ?? 0) != paused.generation {
+            log(facts, verdict, snapshot, serverName: paused.serverName, would: would)
+            return (.drop, .nothing)
+        }
+        switch repeated.add(paused, app: facts.identity.label, waits: facts.tcp, now: now) {
+        case .dropNow:
+            log(facts, verdict, snapshot, serverName: paused.serverName, would: would)
+            return (.drop, .nothing)
+        case .delayed:
+            log(facts, verdict, snapshot, serverName: paused.serverName, would: would)
+            return (.pause, .nothing)
+        case .dropUnlogged:
+            return (.drop, .nothing)
         }
     }
 
@@ -679,6 +702,16 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
         for (eventID, verdict) in outcome.verdicts { server?.send(.verdict(verdict, eventID: eventID)) }
         control("answer", "\(request.kind.rawValue) \(request.authorization.rawValue) \(outcome.reply.reason)")
         return outcome.reply
+    }
+
+    func forgetApprovals() -> AnswerReply {
+        askLock.lock()
+        let count = ask.forgetApprovals(now: Self.now)
+        askLock.unlock()
+        // Right away, so the file does not bring them back after a crash.
+        lifecycle.async { [weak self] in self?.saveApprovals() }
+        control("answer", "forget touch_id forgotten \(count)")
+        return .forgotten(count)
     }
 
     // MARK: - Maintenance

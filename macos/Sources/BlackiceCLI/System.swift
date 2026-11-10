@@ -44,6 +44,8 @@ public protocol SystemControlling {
     func answer(_ request: AnswerRequest, output: SystemOutput) -> Int32
     /// `blackice approve` with several `--host`: the same app, duration and Touch ID for each host.
     func answer(all requests: [AnswerRequest], output: SystemOutput) -> Int32
+    /// `blackice deny --all`: forgets every approval. Confirms a person with Touch ID first.
+    func forgetApprovals(output: SystemOutput) -> Int32
     /// `blackice daemon`: registers with the extension, takes the configuration it holds, and runs
     /// that configuration's hooks for each event until the connection ends.
     func runDaemon(output: SystemOutput) -> Int32
@@ -112,6 +114,7 @@ public struct UnsignedSystem: SystemControlling {
     public func setMode(_ mode: Mode, output: SystemOutput) -> Int32 { refuse("mode", output) }
     public func pending(output: SystemOutput) -> Int32 { refuse("pending", output) }
     public func answer(_ request: AnswerRequest, output: SystemOutput) -> Int32 { refuse(request.kind.rawValue, output) }
+    public func forgetApprovals(output: SystemOutput) -> Int32 { refuse("deny", output) }
     public func runDaemon(output: SystemOutput) -> Int32 { refuse("daemon", output) }
     public func installAgent(output: SystemOutput) -> Int32 { refuse("agent", output) }
     public func uninstallAgent(output: SystemOutput) -> Int32 { refuse("agent", output) }

@@ -1,5 +1,36 @@
 # Changelog
 
+## Unreleased
+
+New:
+- `blackice deny --all` forgets every approval, with one Touch ID. What waits keeps waiting, remembered denials
+  stay, and connections already let through go on. Since 1.0.6 approvals outlast a stop, an upgrade and a restart
+  of the Mac, and `blackice deny` takes back one app and host at a time: nothing cleared them all.
+
+Fixed:
+- Every connection the filter drops is counted, and delayed once its app has had 64 dropped within 2 s, wherever
+  it is dropped. 1.0.6 counted only a connection dropped as it started: one dropped once its TLS hello was read,
+  after a lookup, or for a full table was dropped at once. On 10 November, on 1.0.6, node had 7,586 connections
+  dropped as `denied;remembered` in 55 minutes after the agent denied it registry.npmjs.org, about 1,300 of them
+  within one second three times, and none was delayed.
+- A host that is an alias of the name its address came under passes the address check. The filter reads the
+  system resolver's answers and keeps, for each address, the name the answer was for. The resolver keeps each
+  CNAME of a chain for its own TTL and, once the addresses at the end have expired, asks only for the name they
+  belong to, so that answer names the end of the chain and not the host the app asked for. The filter then looked
+  the host up itself and could get other addresses. On 10 November outlook.office365.com was three CNAMEs of 300,
+  300 and 45 s and eight addresses of 15 s, with eight others at each query: a mail CLI's approved connections
+  there were dropped as `address_mismatch` in 10 of 239 runs, 9 of them among the 34 runs in which the resolver
+  sent three queries, and each time the CLI got through on a later address. The filter now keeps the CNAMEs it
+  reads, each for its TTL and at most a day, and follows them back from an address's name.
+- A connection to a link-local IPv6 address can be asked about. The filter read the address from text that names
+  no interface, and such an address could be any host on any link, so the connection was dropped as `no_host`
+  with no event: on 10 November identityservicesd's connections to a peer on a `utun` interface all were. From
+  macOS 15 the filter reads the interface from the flow's own endpoint.
+
+Changed:
+- An approval for a link-local address is not saved to the approvals file: its host names the interface by its
+  number, which may be another interface's after a restart. It lasts until the filter's process ends, or its time.
+
 ## 1.0.6 (10 November 2026)
 
 Fixed:

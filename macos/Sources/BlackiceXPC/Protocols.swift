@@ -31,6 +31,8 @@ import Foundation
     /// AnswerRequest -> AnswerReply. One with a token is taken only from the registered daemon's
     /// connection: only the daemon sends them, for its hooks.
     func answer(_ request: Data, reply: @escaping (Data) -> Void)
+    /// ForgetRequest -> AnswerReply: `blackice deny --all`, which forgets every approval.
+    func forget(_ request: Data, reply: @escaping (Data) -> Void)
 }
 
 /// Exported by the daemon on its connection to the extension.
