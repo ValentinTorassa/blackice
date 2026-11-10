@@ -504,7 +504,8 @@ and each run on a Mac is recorded in [`evidence/`](../evidence/).
   is never displaced, so several apps that each keep 64 hellos started and unfinished, opening new ones every 10 s,
   can still fill the 256 places.
 - **Limits of the host check.** The system resolver may answer blackice's lookup differently than it answered
-  the app (round-robin, CDNs, split DNS), which shows as a mismatch: ask mode asks and block-all drops. And a match
+  the app (round-robin, CDNs, split DNS), which shows as a mismatch: the connection is dropped, and ask mode asks
+  only about a pair nothing names. And a match
   proves only that the name resolves to that address now, not who controls the name. The server name is read only
   from TCP on port 443, and from the clear part of an Encrypted Client Hello: a rule or an approval for an ECH front
   end, such as `cloudflare-ech.com`, covers every site behind it. On another port, over UDP (QUIC) or in the HTTP
@@ -514,6 +515,13 @@ and each run on a Mac is recorded in [`evidence/`](../evidence/).
   allows whatever server name the hello carries, so an entry for an address many sites share, such as a CDN's or a
   cloud provider's, covers every site behind it for that app. An approval of an address covers only connections
   to it with no name, and on port 443 only a hello with no server name.
+- **Lookups in a burst.** A connection whose host has no fresh answers waits for blackice's own lookup, and at most
+  1,024 connections wait at once, for every app together; the next ones are dropped as `lookup_capacity`. In ask
+  mode that includes connections nothing names. In the fault tests' burst after midnight on 10 November 2026
+  (P5-20) about 300 connections were dropped that way in each of two runs; in one of them 8 were `curl`'s, and the
+  test's `curl` to pypi.org, which a rule allows, failed. In the run at 23:02 the night before, and in two hours
+  of normal use, none was. A limit per app, as `ask_capacity_app` sets for events, would keep one app's burst from
+  taking every place.
 - **Hook limits.** The limit of 4 hooks at once, at most 256 hooks waiting for a slot, the 10 s a waiting hook needs
   left to start (or the whole timeout, when that is shorter), the 2 s grace period, the 4 KiB of stderr kept per
   hook and the 64 KiB of stdout read for its answer are first guesses, set in code rather than in `blackice.toml`.
