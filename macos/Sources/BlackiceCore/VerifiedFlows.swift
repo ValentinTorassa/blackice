@@ -15,18 +15,23 @@ import Foundation
 // So a run keeps the destinations of the UDP flows it let through because a rule, the Apple services
 // table or an approval named their host, once host and address had checked out, and saves them. The
 // next run reads them, and for its first `window` seconds a UDP flow of the same app to the same
-// address and port is given that name as a DNS answer would have given it (FlowFacts.dnsNames).
-// Rules and approvals decide the flow as always; only the lookup is spared, for a pair the last run
-// had checked. A destination is one app's: it names no other app's flow.
+// address and port is given that name as a DNS answer would have given it (`facts`). Rules and
+// approvals decide the flow as always. What changes: a flow with a host name is spared the lookup,
+// and a flow with none, which a run that has read no answer drops as `no_host`, is decided on that
+// name. A destination is one app's: it names no other app's flow.
+//
+// A destination is dated when a run checked it, and a flow that passes on a restored name is not a
+// check: the destination keeps its date (`carry`), so `maximumAge` counts from the last time a
+// lookup or a DNS answer gave the host that address, however many restarts came between.
 public struct VerifiedFlows: Equatable, Sendable {
     /// How long after a start the last run's destinations name this run's flows. A socket that
     /// sends nothing for longer is looked up as before.
     public static let window: TimeInterval = 120
     public static let limitPerApp = 16
     public static let appLimit = 256
-    /// A destination last let through longer ago than this is not read back.
+    /// A destination last checked longer ago than this is not read back.
     public static let maximumAge: Double = 30 * 86_400
-    /// A destination already kept is dated again only once it was let through this much later.
+    /// A destination already kept is dated again only by a check this far from the time it has.
     static let refreshAfter: Double = 3600
 
     public struct Destination: Hashable, Sendable {
@@ -41,7 +46,7 @@ public struct VerifiedFlows: Equatable, Sendable {
         }
     }
 
-    /// Each app's destinations, with the time of day (seconds since 1970) it was last let through.
+    /// Each app's destinations, with the time of day (seconds since 1970) of its last check.
     private var apps: [AppIdentity: [Destination: Double]] = [:]
     /// Goes up when there is something new to save.
     public private(set) var revision = 0
@@ -50,14 +55,25 @@ public struct VerifiedFlows: Equatable, Sendable {
 
     public var count: Int { apps.values.reduce(0) { $0 + $1.count } }
 
-    /// Keeps a destination. An app's 17th takes the place of the one let through longest ago, and
-    /// so does a 257th app, by its latest. One already kept gets the new time only once
-    /// `refreshAfter` has gone by since the time it has, so that a flow let through every few
-    /// seconds is something new to save once an hour, not each time.
+    /// Keeps a destination this run checked. An app's 17th takes the place of the one checked
+    /// longest ago, and so does a 257th app, by its latest. One already kept gets the new time
+    /// only when it is `refreshAfter` away from the time it has, so that a flow let through every
+    /// few seconds is something new to save once an hour, not each time. Away on either side: a
+    /// time written while the clock was ahead is replaced once the clock is right again.
     public mutating func record(app: AppIdentity, _ destination: Destination, timeOfDay: Double) {
+        keep(app: app, destination, timeOfDay: timeOfDay, replacing: true)
+    }
+
+    /// Keeps a destination that the last run checked at `checkedAt` and this run let through on
+    /// that: with the time of that check, and only when this run has not checked it itself.
+    public mutating func carry(app: AppIdentity, _ destination: Destination, checkedAt: Double) {
+        keep(app: app, destination, timeOfDay: checkedAt, replacing: false)
+    }
+
+    private mutating func keep(app: AppIdentity, _ destination: Destination, timeOfDay: Double, replacing: Bool) {
         var kept = apps[app] ?? [:]
         if let before = kept[destination] {
-            guard timeOfDay - before >= Self.refreshAfter else { return }
+            guard replacing, abs(timeOfDay - before) >= Self.refreshAfter else { return }
         } else {
             if apps[app] == nil, apps.count >= Self.appLimit,
                let oldest = apps.min(by: { ($0.value.values.max() ?? 0) < ($1.value.values.max() ?? 0) })?.key {
@@ -74,12 +90,35 @@ public struct VerifiedFlows: Equatable, Sendable {
 
     /// The hosts this app's flows to this address and port were let through for.
     public func names(app: AppIdentity, address: IPAddress, port: UInt16) -> Set<String> {
-        guard let kept = apps[app] else { return [] }
-        return Set(kept.keys.filter { $0.address == address && $0.port == port }.map(\.host))
+        Set(checked(app: app, address: address, port: port).keys)
+    }
+
+    /// `names`, each with the time of day it was last checked.
+    public func checked(app: AppIdentity, address: IPAddress, port: UInt16) -> [String: Double] {
+        guard let kept = apps[app] else { return [:] }
+        var hosts: [String: Double] = [:]
+        for (destination, at) in kept where destination.address == address && destination.port == port {
+            hosts[destination.host] = at
+        }
+        return hosts
+    }
+
+    /// A UDP flow's names with what the last run checked for its app, address and port. `names`
+    /// and `aliases` are what this run's DNS answers gave the address (DNSNameTable). The hosts
+    /// they do not hold are `restored`, each with the time of its check. When the answers gave the
+    /// address no name, those hosts name the flow as an answer would have. When they gave it one,
+    /// a flow with no host name of its own is still decided on that name (FlowFacts.dnsName takes
+    /// exactly one), so the hosts only pass the host and address check, as aliases do.
+    public func facts(app: AppIdentity, address: IPAddress, port: UInt16, names: Set<String>,
+                      aliases: Set<String>) -> (names: Set<String>, aliases: Set<String>, restored: [String: Double]) {
+        let restored = checked(app: app, address: address, port: port).filter { !names.contains($0.key) && !aliases.contains($0.key) }
+        guard !restored.isEmpty else { return (names, aliases, [:]) }
+        let hosts = Set(restored.keys)
+        return names.isEmpty ? (hosts, aliases, restored) : (names, aliases.union(hosts), restored)
     }
 
     /// Adds every destination of `other`, oldest first; one kept already keeps its time unless
-    /// the other's is `refreshAfter` later (`record`).
+    /// the other's is `refreshAfter` away from it (`record`).
     public mutating func merge(_ other: VerifiedFlows) {
         let entries = other.apps.flatMap { app, kept in kept.map { (app: app, destination: $0.key, at: $0.value) } }
         for entry in entries.sorted(by: { $0.at < $1.at }) {

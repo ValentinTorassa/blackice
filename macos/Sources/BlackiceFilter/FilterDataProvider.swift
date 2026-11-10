@@ -289,23 +289,26 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
         }
         let port = endpoint.flatMap { UInt16($0.port) }
         var names = dnsNames.names(for: address)
-        // In a run's first minutes: the names the last run checked for this app's UDP flow to this
-        // address and port, as a DNS answer would have given them (VerifiedFlows).
+        var aliases = dnsNames.aliases(for: address)
+        var restored: [String: Double] = [:]
+        // In a run's first minutes: the hosts the last run checked for this app's UDP flow to this
+        // address and port, as a DNS answer would have given them (VerifiedFlows.facts).
         if udp, internet, direction == .outbound, let address, let port, let app = identity.appIdentity {
             askLock.lock()
-            let checked = resumedNames(app: app, address: address, port: port, now: Self.now).subtracting(names)
-            if !checked.isEmpty { resumedFlows += 1 }
+            if let resumable, Self.now < resumeUntil {
+                (names, aliases, restored) = resumable.facts(app: app, address: address, port: port, names: names, aliases: aliases)
+                if !restored.isEmpty { resumedFlows += 1 }
+            }
             askLock.unlock()
-            names.formUnion(checked)
         }
         let facts = FlowFacts(direction: direction, identity: identity,
                               internetSocket: internet && (tcp || udp), tcp: tcp,
                               hostname: socket?.remoteHostname, port: port,
                               remoteAddress: address,
                               process: flow.sourceProcessAuditToken.map { CodeIdentity.resolve(auditToken: $0) },
-                              dnsNames: names, dnsAliases: dnsNames.aliases(for: address),
+                              dnsNames: names, dnsAliases: aliases,
                               executablePath: executablePath,
-                              scriptScope: scriptScope, title: title)
+                              scriptScope: scriptScope, title: title, restored: restored)
         let paused = Paused(flow: flow, facts: facts, serverName: nil, echPresent: false, stage: .newFlow,
                             generation: snapshot?.generation ?? 0)
         // Accept-all's dry run of ask mode, for the log line only: it changes nothing for the flow.
@@ -869,17 +872,16 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
     /// like the approvals.
     private static let verifiedURL = identitiesURL?.deletingLastPathComponent().appendingPathComponent("verified-flows.json")
 
-    /// Under askLock. Keeps a UDP flow let through on its host's name for the next run.
+    /// Under askLock. Keeps a UDP flow let through on its host's name for the next run: dated now
+    /// when this run checked the host against the address, and with the date of the last run's
+    /// check when the flow passed on a name that run supplied, which is no check.
     private func remember(_ facts: FlowFacts, _ verdict: FlowVerdict, _ snapshot: ProviderConfiguration?) {
-        guard let (app, destination) = FilterPolicy.verified(facts, verdict, snapshot: snapshot) else { return }
-        verified.record(app: app, destination, timeOfDay: Date().timeIntervalSince1970)
-    }
-
-    /// Under askLock. The names the last run checked for this destination, in this run's first
-    /// `VerifiedFlows.window` seconds.
-    private func resumedNames(app: AppIdentity, address: BlackiceCore.IPAddress, port: UInt16, now: TimeInterval) -> Set<String> {
-        guard let resumable, now < resumeUntil else { return [] }
-        return resumable.names(app: app, address: address, port: port)
+        guard let (app, destination, checkedAt) = FilterPolicy.verified(facts, verdict, snapshot: snapshot) else { return }
+        if let checkedAt {
+            verified.carry(app: app, destination, checkedAt: checkedAt)
+        } else {
+            verified.record(app: app, destination, timeOfDay: Date().timeIntervalSince1970)
+        }
     }
 
     /// On the lifecycle queue, at start: what the last run saved names this run's first flows.

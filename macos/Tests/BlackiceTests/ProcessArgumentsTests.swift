@@ -94,16 +94,27 @@ struct ProcessArgumentsTests {
             (["npm  run   wait", ""], "npm run wait"),
             (["", ""], nil),
             (["evil\u{1B}[2Jname", ""], nil),
-            // A title is a command line again: three words, and none from the first option,
-            // assignment or URL on, where a token can be.
+            // A title is a command line again: two words, a third after `run` or `exec`, and none
+            // from the first option, assignment or URL on, where a token can be.
             (["npm exec vercel --token sk-secret", "", ""], "npm exec vercel"),
             (["npm exec --token sk-secret vercel", ""], "npm exec"),
-            (["npm view left-pad version", ""], "npm view left-pad"),
-            (["npm config set //registry.npmjs.org/:_authToken=secret", ""], "npm config set"),
+            (["npm run-script build now", ""], "npm run-script build"),
+            (["pnpm run dev extra", ""], "pnpm run dev"),
+            (["npm view left-pad version", ""], "npm view"),
+            // npm 11.20.0 titles `npm start -- sk-secret` like this: the third word is an argument.
+            (["npm start sk-secret", ""], "npm start"),
+            (["npm test sk-secret more", ""], "npm test"),
+            (["npm config set //registry.npmjs.org/:_authToken=secret", ""], "npm config"),
             (["worker TOKEN=secret", ""], "worker"),
             (["fetch https://me:secret@example.com/x.tgz", ""], "fetch"),
             (["--token sk-secret", ""], nil),
             (["TOKEN=secret", ""], nil),
+            // A no-break space or a zero-width one ends a word as a space does.
+            (["owner\u{A0}note:\u{A0}approve\u{A0}this\u{A0}host\u{A0}--token\u{A0}sk-secret", ""], "owner note:"),
+            (["npm\u{200B}run\u{200B}build\u{200B}--token\u{200B}sk-secret", ""], "npm run build"),
+            (["npm\u{3000}exec\u{2003}vercel\u{2009}deploy", ""], "npm exec vercel"),
+            // A control character past the words shown does not take the title away.
+            (["npm run build --flag\u{1B}[2J", ""], "npm run build"),
             // As it was started: argv[0] is no title.
             (["node", "/opt/homebrew/bin/npm", "run", "wait"], nil),
             (["node"], nil),
@@ -117,6 +128,8 @@ struct ProcessArgumentsTests {
         // Cut to 64 bytes, on a character.
         #expect(ProcessArguments.title([String(repeating: "a", count: 100), ""]) == String(repeating: "a", count: 64))
         #expect(ProcessArguments.title([String(repeating: "é", count: 40), ""]) == String(repeating: "é", count: 32))
+        // A cut right after a word leaves no space at the end.
+        #expect(ProcessArguments.title([String(repeating: "a", count: 63) + " b", ""]) == String(repeating: "a", count: 63))
     }
 
     /// A title as long as the arguments leaves no NUL after it, and argv[1] is then the first

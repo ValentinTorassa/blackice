@@ -71,11 +71,15 @@ public struct FlowFacts: Equatable, Sendable {
     /// (ProcessArguments.title). Its event shows it; no decision reads it, and an answer covers
     /// the interpreter running no script it names, whatever its title.
     public let title: String?
+    /// The hosts in `dnsNames` or `dnsAliases` that no DNS answer of this run gave the address:
+    /// the last run checked them for this app, address and port, each at this time of day
+    /// (VerifiedFlows.facts). A flow let through on one was not checked by this run.
+    public let restored: [String: Double]
 
     public init(direction: FlowDirection, identity: IdentityResolution, internetSocket: Bool, tcp: Bool,
                 hostname: String?, port: UInt16?, remoteAddress: IPAddress?, process: IdentityResolution? = nil,
                 dnsNames: Set<String> = [], dnsAliases: Set<String> = [], executablePath: String? = nil,
-                scriptScope: ScriptScope = .any, title: String? = nil) {
+                scriptScope: ScriptScope = .any, title: String? = nil, restored: [String: Double] = [:]) {
         self.direction = direction
         self.identity = identity
         self.process = process
@@ -93,6 +97,7 @@ public struct FlowFacts: Equatable, Sendable {
         self.executablePath = executablePath
         self.scriptScope = scriptScope
         self.title = title
+        self.restored = restored
     }
 
     /// The one name the remote address was given for, when there is exactly one. Several
@@ -375,22 +380,24 @@ public enum FilterPolicy {
     /// What the next run may take as checked (VerifiedFlows): for a UDP flow that `verdict` lets
     /// through because a rule, the Apple services table or an approval names its host, the app and
     /// the destination. The host is the one whose address checked out: the host name from the
-    /// system, else the one name DNS answers gave the address. nil for any other flow or verdict:
-    /// TCP, accept-all, loopback, a link-local address, a flow asked about by its address, and a
-    /// flow that a `*` rule or an address rule covers whatever its name, since nothing checked
-    /// that name.
-    public static func verified(_ flow: FlowFacts, _ verdict: FlowVerdict,
-                                snapshot: ProviderConfiguration?) -> (app: AppIdentity, destination: VerifiedFlows.Destination)? {
+    /// system, else the one name DNS answers gave the address. `checkedAt` is nil when this run
+    /// checked the pair, and the time of the last run's check when the flow passed on a name that
+    /// run supplied (`FlowFacts.restored`). nil for any other flow or verdict: TCP, accept-all,
+    /// loopback, a link-local address with or without its interface (a saved one has none), a flow
+    /// asked about by its address, and a flow that a `*` rule or an address rule covers whatever
+    /// its name, since nothing checked that name.
+    public static func verified(_ flow: FlowFacts, _ verdict: FlowVerdict, snapshot: ProviderConfiguration?)
+        -> (app: AppIdentity, destination: VerifiedFlows.Destination, checkedAt: Double?)? {
         guard case .allow(let reason) = verdict, let snapshot, snapshot.mode != .acceptAll,
               flow.direction == .outbound, flow.internetSocket, !flow.tcp,
-              let app = flow.identity.appIdentity, let address = flow.remoteAddress, address.isCheckable,
+              let app = flow.identity.appIdentity, let address = flow.remoteAddress, !address.isLinkLocal,
               let port = flow.port, port > 0,
               let host = flow.hostname.flatMap(normalizeHost) ?? flow.dnsName else { return nil }
         guard ["rule_line_", "apple_service", "approval", "approved"].contains(where: reason.hasPrefix),
               !reason.contains(";address"),
               snapshot.config.anyHostRule(for: app) == nil,
               snapshot.config.addressRule(for: app, address: address) == nil else { return nil }
-        return (app, VerifiedFlows.Destination(host: host, address: address, port: port))
+        return (app, VerifiedFlows.Destination(host: host, address: address, port: port), flow.restored[host])
     }
 
     /// Whether a rule names the code `rules` names (for any host), or the Apple services table

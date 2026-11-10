@@ -86,22 +86,30 @@ public enum ProcessArguments {
 
     private static func blank(_ argument: String) -> Bool { argument.utf8.allSatisfy { $0 == 0x20 } }
 
-    /// The words of a title that an event shows.
-    static let maximumTitleWords = 3
+    /// The words of a title that an event shows: two, and a third after one of
+    /// `commandsWithAName`.
+    static let titleWords = 2
+    /// npm's commands (pnpm's and yarn's too) whose next word names a script of the package or a
+    /// package: `npm run build`, `npm exec vercel`. After any other, the next word is an argument
+    /// like the rest: npm 11.20.0 titles `npm start -- sk-secret` as `npm start sk-secret`.
+    static let commandsWithAName: Set<Substring> = ["run", "run-script", "exec"]
 
-    /// The title of a process that wrote one over its arguments: its first words, at most
-    /// `maximumTitleWords` and none from the first that is an option (`-`), an assignment (`=`) or
-    /// a URL (`://`) on, cut to `maximumTitleBytes`. A title is a command line again: npm's is its
-    /// command and that command's own arguments (`npm exec vercel --token ...` for `npx vercel
-    /// --token ...`), which can hold a token as any arguments can, and an event goes to the agent
-    /// and into the log. The first words say which tool it is. nil for a command line as it was
-    /// started, for a title with a control character, and for one with no word to show. A process
-    /// picks its title as it picks its arguments, so it is shown and never trusted.
+    /// The title of a process that wrote one over its arguments: its first words (`titleWords`),
+    /// none from the first that is an option (`-`), an assignment (`=`) or a URL (`://`) on, cut
+    /// to `maximumTitleBytes`. A title is a command line again: npm's is its command and that
+    /// command's own arguments (`npm run x --token ...` for `npm run x -- --token ...`), which
+    /// can hold a token as any arguments can, and an event goes to the agent and into the log. The
+    /// first words say which tool it is. Words are told apart by white space of any kind and by
+    /// characters that are not shown, so a no-break space does not make one word of a sentence.
+    /// nil for a command line as it was started, for a control character among the words shown,
+    /// and for a title with no word to show. A process picks its title as it picks its arguments,
+    /// so it is shown and never trusted.
     static func title(_ arguments: [String]) -> String? {
         guard rewritten(arguments) else { return nil }
         var words: [Substring] = []
-        for word in arguments[0].split(separator: " ") {
-            guard words.count < maximumTitleWords, !word.hasPrefix("-"), !word.contains("="), !word.contains("://") else { break }
+        for word in arguments[0].split(whereSeparator: endsWord) {
+            let limit = words.count == titleWords && commandsWithAName.contains(words[1]) ? titleWords + 1 : titleWords
+            guard words.count < limit, !word.hasPrefix("-"), !word.contains("="), !word.contains("://") else { break }
             words.append(word)
         }
         var title = ""
@@ -111,7 +119,13 @@ public enum ProcessArguments {
             guard bytes <= HookEvent.maximumTitleBytes else { break }
             title.append(character)
         }
+        while title.last == " " { title.removeLast() }
         return !title.isEmpty && validTitle(title) ? title : nil
+    }
+
+    /// White space of any kind, or a character that is not shown (a zero-width space, a joiner).
+    private static func endsWord(_ character: Character) -> Bool {
+        character.isWhitespace || character.unicodeScalars.contains { $0.properties.generalCategory == .format }
     }
 
     /// The script in an interpreter's argv: the first argument that is not an option, after the

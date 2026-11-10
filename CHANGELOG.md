@@ -48,9 +48,10 @@ Fixed:
   rule for `*.amazonaws.com` covers: the lookup of its server's name got no answer for 30 s, the flow was dropped
   as `address_mismatch`, and with the Mac's DNS server behind the dead tunnel no name resolved for most of the next
   8 minutes. The filter now saves the app, host, address and port of each UDP flow it lets through on a host's
-  name, and for two minutes after a start a UDP flow of the same app to the same address and port needs no lookup.
-  Rules and approvals decide it as always. The first start of 1.0.7 has nothing saved: disconnect such a VPN before
-  upgrading from 1.0.6.
+  name, and for two minutes after a start a UDP flow of the same app to the same address and port is decided on
+  that name with no lookup. Rules and approvals decide it as always. A pair is used for 30 days after the last
+  time a lookup or a DNS answer gave the host that address; a flow that passes on a saved pair does not renew it.
+  The first start of 1.0.7 has nothing saved: disconnect such a VPN before upgrading from 1.0.6.
 - A TCP connection to a link-local IPv6 address is asked about. It was dropped as `no_host` with no event, since
   the address could be any host on any link without its interface: on 10 November identityservicesd's
   connections to a peer on a `utun` interface all were. macOS gives the filter no interface for a connection's
@@ -64,10 +65,12 @@ Fixed:
   asked about and answered apart. From 7 to 10 November, 15 of node's 77 events with a script named a folder that
   still exists, and on 10 November the agent denied node registry.npmjs.org nine times, each for a script path
   under `/private/tmp`. A process that wrote over its command line now has no script, and its event has `app.title`:
-  the first three words of the title it gave itself, none from the first option, assignment or URL on, cut to 64
-  bytes. A title is a command line again, and can hold a token as arguments can: npm 11.20.0 titles `npm run x --
-  --token …` as `npm run x --token …`, and the event shows `npm run x`. The agent reads it, `blackice pending` and
-  the menu show it (`calls itself npm run build`), `events.jsonl` keeps it as `app_title`, and no decision reads it:
+  the first two words of the title it gave itself, and a third after `run` or `exec`, where it names a script or a
+  package; none from the first option, assignment or URL on, cut to 64 bytes. A title is a command line again, and
+  can hold a token as arguments can: npm 11.20.0 titles `npm run x -- --token …` as `npm run x --token …` and `npm
+  start -- sk-…` as `npm start sk-…`, and the events show `npm run x` and `npm start`. The agent reads it,
+  `blackice pending` and the menu show it (`calls itself npm run build`), `events.jsonl` keeps it as `app_title`,
+  and no decision reads it:
   the process chose it. The agent's answer for such an event covers the interpreter whenever no script can be read,
   whatever its title; a person's `approve` with no `--script` covers every script the interpreter runs, as before.
 - An environment string is never read as a script. macOS gives a process's arguments and then its environment

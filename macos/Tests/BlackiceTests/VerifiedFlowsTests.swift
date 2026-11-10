@@ -90,6 +90,84 @@ struct VerifiedFlowsTests {
         #expect(other == .ask(reason: "no_rule", addressMatches: true))
     }
 
+    // A flow that passes on a name the last run supplied was not checked by this run: its
+    // destination keeps the date of the check, so the 30 days are not renewed by each restart.
+    @Test func aRestoredNameKeepsTheDateOfItsCheck() throws {
+        let ask = try snapshot(.ask)
+        let day = 86_400.0
+        var run = VerifiedFlows()
+        run.record(app: app(vpn), destination(endpoint, there), timeOfDay: 0)
+        // Restarts on days 10, 20 and 29, the app sending within the window each time, and no
+        // lookup or DNS answer in between.
+        for restart in [10.0, 20.0, 29.0] {
+            let file = try #require(run.saved())
+            let restored = try #require(VerifiedFlows(saved: file, timeOfDay: restart * day))
+            let facts = restored.facts(app: app(vpn), address: IPAddress(there)!, port: 443, names: [], aliases: [])
+            #expect(facts.names == [endpoint] && facts.restored == [endpoint: 0])
+            let resumed = FlowFacts(direction: .outbound, identity: vpn, internetSocket: true, tcp: false, hostname: endpoint,
+                                    port: 443, remoteAddress: IPAddress(there), dnsNames: facts.names, dnsAliases: facts.aliases,
+                                    restored: facts.restored)
+            let verdict = FilterPolicy.decide(resumed, snapshot: ask, context: unresolved)
+            #expect(verdict == .allow(reason: "rule_line_3"))
+            let kept = try #require(FilterPolicy.verified(resumed, verdict, snapshot: ask))
+            #expect(kept.checkedAt == 0)
+            run = VerifiedFlows()
+            run.carry(app: kept.app, kept.destination, checkedAt: kept.checkedAt ?? -1)
+            #expect(run.checked(app: app(vpn), address: IPAddress(there)!, port: 443) == [endpoint: 0])
+        }
+        // 31 days after the check it is not read back, whatever restarts came between.
+        let lastFile = try #require(run.saved())
+        let late = try #require(VerifiedFlows(saved: lastFile, timeOfDay: 31 * day))
+        #expect(late.count == 0)
+        // A flow this run checked itself is dated now, and a carried date never replaces that.
+        let fresh = try #require(FilterPolicy.verified(flow(vpn), .allow(reason: "rule_line_3"), snapshot: ask))
+        #expect(fresh.checkedAt == nil)
+        var both = VerifiedFlows()
+        both.record(app: fresh.app, fresh.destination, timeOfDay: 29 * day)
+        both.carry(app: fresh.app, fresh.destination, checkedAt: 0)
+        #expect(both.checked(app: app(vpn), address: IPAddress(there)!, port: 443) == [endpoint: 29 * day])
+        // The other way round, the check replaces the carried date.
+        var carried = VerifiedFlows()
+        carried.carry(app: fresh.app, fresh.destination, checkedAt: 0)
+        carried.record(app: fresh.app, fresh.destination, timeOfDay: 29 * day)
+        #expect(carried.checked(app: app(vpn), address: IPAddress(there)!, port: 443) == [endpoint: 29 * day])
+    }
+
+    // A restored host must not take the name away from a flow that DNS answers of this run name:
+    // a flow with no host name is decided on exactly one name.
+    @Test func aRestoredHostDoesNotUnnameAFlowThatDNSNames() throws {
+        let ask = try snapshot(.ask)
+        var lastRun = VerifiedFlows()
+        lastRun.record(app: app(vpn), destination(endpoint, there), timeOfDay: 1000)
+        let other = "cdn.vpn.example.com"
+        func facts(names: Set<String>, aliases: Set<String> = [], host: String?) -> FlowFacts {
+            let added = lastRun.facts(app: app(vpn), address: IPAddress(there)!, port: 443, names: names, aliases: aliases)
+            return FlowFacts(direction: .outbound, identity: vpn, internetSocket: true, tcp: false, hostname: host, port: 443,
+                             remoteAddress: IPAddress(there), dnsNames: added.names, dnsAliases: added.aliases, restored: added.restored)
+        }
+        // DNS gave the address another name in this run: a flow with no host name is decided on
+        // that one, as before, and the restored host only passes the check for a flow that names it.
+        let nameless = facts(names: [other], host: nil)
+        #expect(nameless.dnsNames == [other] && nameless.dnsAliases == [endpoint] && nameless.restored == [endpoint: 1000])
+        #expect(FilterPolicy.decide(nameless, snapshot: ask, context: unresolved) == .allow(reason: "rule_line_3;dns_name"))
+        #expect(FilterPolicy.verified(nameless, .allow(reason: "rule_line_3;dns_name"), snapshot: ask)?.checkedAt == nil)
+        let named = facts(names: [other], host: endpoint)
+        #expect(FilterPolicy.decide(named, snapshot: ask, context: unresolved) == .allow(reason: "rule_line_3"))
+        #expect(FilterPolicy.verified(named, .allow(reason: "rule_line_3"), snapshot: ask)?.checkedAt == 1000)
+        // DNS gave it no name: the restored host names the flow.
+        let alone = facts(names: [], host: nil)
+        #expect(alone.dnsNames == [endpoint] && alone.dnsAliases.isEmpty)
+        #expect(FilterPolicy.decide(alone, snapshot: ask, context: unresolved) == .allow(reason: "rule_line_3;dns_name"))
+        // DNS gave the same host, as a name or as an alias: nothing is restored, and the flow
+        // counts as checked by this run.
+        #expect(facts(names: [endpoint], host: endpoint).restored.isEmpty)
+        let aliased = facts(names: [other], aliases: [endpoint], host: endpoint)
+        #expect(aliased.restored.isEmpty && aliased.dnsAliases == [endpoint])
+        // Another app, address or port gets nothing.
+        let none = lastRun.facts(app: app(probe), address: IPAddress(there)!, port: 443, names: [other], aliases: [])
+        #expect(none.names == [other] && none.aliases.isEmpty && none.restored.isEmpty)
+    }
+
     @Test func onlyAUDPFlowLetThroughOnACheckedNameIsKept() throws {
         let ask = try snapshot(.ask), block = try snapshot(.blockAll), all = try snapshot(.acceptAll)
         let kept = FilterPolicy.verified(flow(vpn), .allow(reason: "rule_line_3"), snapshot: ask)
@@ -115,8 +193,10 @@ struct VerifiedFlowsTests {
         #expect(FilterPolicy.verified(flow(vpn, host: nil, names: ["a.example.com", "b.example.com"]),
                                       .allow(reason: "approved"), snapshot: ask) == nil)
         #expect(FilterPolicy.verified(flow(vpn, address: "127.0.0.1"), .allow(reason: "loopback"), snapshot: ask) == nil)
-        // Not kept: a link-local address, which no name is checked against.
+        // Not kept: a link-local address, with or without its interface. A saved one has none,
+        // and a file with such an entry is refused whole.
         #expect(FilterPolicy.verified(flow(vpn, address: "fe80::1"), .allow(reason: "rule_line_3"), snapshot: ask) == nil)
+        #expect(FilterPolicy.verified(flow(vpn, address: "fe80::1%1"), .allow(reason: "rule_line_3"), snapshot: ask) == nil)
         // Not kept: a flow that a `*` rule or an address rule covers, whose name nothing checked.
         #expect(FilterPolicy.verified(flow(tunnel), .allow(reason: "rule_line_12"), snapshot: ask) == nil)
         #expect(FilterPolicy.verified(flow(ssh, host: "host.ts.net", address: "100.66.32.75", port: 22),
@@ -149,9 +229,13 @@ struct VerifiedFlowsTests {
         #expect(flows.revision == revision && flows.count == VerifiedFlows.limitPerApp)
         flows.record(app: app(vpn), destination(endpoint, "203.0.113.200"), timeOfDay: 100 + 3600)
         #expect(flows.revision == revision + 1)
-        // A clock set back changes nothing.
-        flows.record(app: app(vpn), destination(endpoint, "203.0.113.200"), timeOfDay: 50)
+        // A clock set back by less than that changes nothing. Set back by more, the destination
+        // takes the new time: one written while the clock was ahead does not stay ahead.
+        flows.record(app: app(vpn), destination(endpoint, "203.0.113.200"), timeOfDay: 3700 - 3599)
         #expect(flows.revision == revision + 1)
+        flows.record(app: app(vpn), destination(endpoint, "203.0.113.200"), timeOfDay: 50)
+        #expect(flows.revision == revision + 2)
+        #expect(flows.checked(app: app(vpn), address: IPAddress("203.0.113.200")!, port: 443) == [endpoint: 50])
         // Two hosts at one address and port are both that destination's names; another app has none.
         flows.record(app: app(vpn), destination("b.vpn.example.com", "203.0.113.200"), timeOfDay: 4000)
         #expect(flows.names(app: app(vpn), address: IPAddress("203.0.113.200")!, port: 443) == [endpoint, "b.vpn.example.com"])
