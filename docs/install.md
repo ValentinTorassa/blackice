@@ -183,11 +183,13 @@ $ blackice start
 `start` waits for the new extension and loads your configuration into it (Touch ID). If it exits with status 75, restart
 the Mac and run it again. An open menu bar app reopens by itself.
 
-On macOS 27.0.1 the kernel can take seconds to disconnect the old build's filter (4 to 59 s in five of six upgrades),
-and a filter started meanwhile lets no new connection through. So `start` turns the old filter off, waits for the
-kernel, 30 s at most, and then starts the new one. Connections are not checked in those seconds, and `start` says so
-when the wait lasts, with the app whose socket macOS waits on. If macOS is still at it after 30 s, `start` goes on, and
-it and `blackice status` (a `network` line) say that no new connection gets through until it is done.
+On macOS 27.0.1 the kernel can stay at one socket while it disconnects the old build's filter (4 to 116 s in seven
+upgrades), and a filter started meanwhile lets no new connection through. So `start` turns the old filter off, waits for
+the kernel, and then starts the new one. While it waits it sends an ICMP echo request to 127.0.0.1, which ends the wait
+at once when the socket is an ICMP one bound to no address; at a UDP socket it waits 90 s at most. Connections are not
+checked in those seconds, and `start` says so when the wait lasts over a second, with the app whose socket macOS waits
+on. If macOS is still at it after 90 s, `start` goes on, and it and `blackice status` (a `network` line) say that no new
+connection gets through until it is done. A `start` after a `stop` waits the same way.
 
 ## Uninstall
 

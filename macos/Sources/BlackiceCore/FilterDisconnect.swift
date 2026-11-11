@@ -21,7 +21,7 @@ import Foundation
 //
 // At an ICMP socket bound to no address blackice can end it. Three upgrades on 11 November 2026
 // were held at one of symptomsd's, for 58.9, 47.3 and 116.0 s: each time the kernel let go 17 to
-// 29 s after the new filter had stopped every new connection, and in the two recordings read the
+// 29 s after the new filter had stopped every new connection, and in the second and the third the
 // socket's record in the kernel's list began again with its first 180 bytes within 0.3 s of that.
 // In a `blackice stop` held 8.0 s at that socket, one `ping` of 127.0.0.1 ended it within 0.01 s:
 // the reply to an echo request goes to every ICMP socket bound to no address. So while it waits

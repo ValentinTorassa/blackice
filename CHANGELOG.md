@@ -1,33 +1,39 @@
 # Changelog
 
-## 1.0.7 (10 November 2026)
+## 1.0.7 (11 November 2026)
 
 New:
 - `blackice deny --all` forgets every approval, with one Touch ID. What waits keeps waiting, remembered denials
   stay, and connections already let through go on. Since 1.0.6 approvals outlast a stop, an upgrade and a restart
   of the Mac, and `blackice deny` takes back one app and host at a time: nothing cleared them all. It works while
   blackice is on; off, it says so before asking for Touch ID, and the saved approvals wait for the next start.
-- An upgrade no longer stops the network for the first 30 s that macOS takes to disconnect the old build's filter.
-  On macOS 27.0.1 the kernel detaches a stopped filter's sockets one by one and does not get past a UDP socket
-  whose flow table had two flows and has one left: it takes that socket again and again, and until the socket
-  closes or gets another flow the filter stays registered. A filter started meanwhile was held with it: every new
-  socket was attached to both, the one going gave no verdict, and no new connection got through, lookups included.
-  On 10 and 11 November four of five upgrades were held that way, for 16.3, 12.6, 4.1 and 25.8 s, the last on a
-  socket of Tailscale's network extension. A filter going with none in its place holds nothing up: in a `blackice
-  stop` held 10 s a lookup a second went on in 0.21 s or less. So when macOS runs an older build, `start` turns
-  the filter off, waits until the kernel has let the old one go, for 30 s at most, and only then replaces the
-  extension and turns the filter on. Connections are not checked meanwhile, and `start` says so once the wait has
-  lasted a second, with the process whose socket macOS waits on: `It waits on a UDP socket of mDNSResponder (pid
-  474): it is done when that socket closes or sends to another address.` On 11 November an upgrade with a test
-  socket kept open 10 s went that way: the old filter was held 10.2 s, the new one started 0.3 s after the kernel
-  let the old one go, and a lookup a second took 0.13 s or less throughout; a test socket of the same kind had
-  held the upgrade before it for 10.3 s, with lookups waiting up to 9.8 s. An upgrade later that day was held
-  58.9 s by an ICMP socket of macOS's own symptomsd: lookups took 0.12 s or less for the 30 s `start` waited, and
-  no new connection got through for the 28.5 s after it. After 30 s `start` goes on anyway, and then, as whenever
-  a filter is still being disconnected beside the one that replaced it, `start` and `blackice status` (a `network`
-  line) say that no new connection gets through. blackice reads the kernel's lists of filters and of the sockets
-  attached to them, which any process may read; where they are not laid out as on macOS 27.0.1, `start` upgrades
-  as before and says nothing.
+- An upgrade no longer starts the new filter beside the old one. On macOS 27.0.1 the kernel detaches a stopped
+  filter's sockets one by one and can stay at one of them: at a UDP socket whose flow table had two flows and has
+  one left, which it takes again and again until the socket closes or gets another flow, and at an ICMP socket
+  bound to no address, until a packet reaches it. While it does, the filter stays registered. A filter started
+  meanwhile was held with it: every new socket was attached to both, the one going gave no verdict, and no new
+  connection got through, lookups included. On 10 and 11 November four of five upgrades were held that way, for
+  16.3, 12.6, 4.1 and 25.8 s, the last on a socket of Tailscale's network extension. A filter going with none in
+  its place holds nothing up: in a `blackice stop` held 10 s a lookup a second went on in 0.21 s or less. So when
+  macOS runs an older build, `start` turns the filter off, waits until the kernel has let the old one go, and only
+  then replaces the extension and turns the filter on. Connections are not checked meanwhile, and `start` says so
+  once the wait has lasted a second, with the process whose socket macOS waits on: `It waits on a UDP socket of
+  mDNSResponder (pid 474): it is done when that socket closes or sends to another address.` On 11 November an
+  upgrade with a test socket kept open 10 s went that way: the old filter was held 10.2 s, the new one started 0.3
+  s after the kernel let the old one go, and a lookup a second took 0.13 s or less throughout; a test socket of the
+  same kind had held the upgrade before it for 10.3 s, with lookups waiting up to 9.8 s. While it waits, `start`
+  sends an ICMP echo request to 127.0.0.1, 0.3 s in and every 2 s after. Three upgrades that day were held at an
+  ICMP socket of macOS's own symptomsd, for 58.9, 47.3 and 116.0 s, longer than `start` then waited (30 s twice, 90
+  s once): the kernel let go only 28.5, 17.0 and 25.8 s after the new filter had started and stopped every new
+  connection. An echo reply goes to every ICMP socket bound to no address: in a `blackice stop` held 8 s at that
+  socket one `ping` of 127.0.0.1 ended it within 0.01 s, and in the next upgrade, at that socket again, the kernel
+  let go 0.4 s after the filter was turned off, the new filter started half a second later, `start` said nothing of
+  it, and a lookup a second took 0.13 s or less. The request does not leave the Mac. `stop` sends it too, for 3 s
+  at most, so that the kernel is not left at it: in a `stop` at that socket it let go in 0.4 s. A `start` after a
+  `stop` waits as an upgrade does. A UDP socket is not ended this way: there `start` waits 90 s at most, then goes
+  on anyway, and it and `blackice status` (a `network` line) say that no new connection gets through until macOS is
+  done. blackice reads the kernel's lists of filters and of the sockets attached to them, which any process may
+  read; where they are not laid out as on macOS 27.0.1, `start` upgrades as before and says nothing.
 
 Fixed:
 - `blackice stop` says that macOS asks next. After Touch ID, macOS has an administrator confirm removing the
@@ -57,7 +63,12 @@ Fixed:
   and nothing else, the mail CLI's listing every 10 s still failed on `address_mismatch` in 2 of 180 runs. In
   the first the resolver followed a CNAME 322 s old whose TTL was 295 s, and gave the CLI the addresses under
   one name and the filter's lookup, 65 ms later, those under another. Names and CNAMEs now last that long and
-  5 s more, for a TTL counted as 30 s at least, and at most 5 minutes for a name and a day for a CNAME.
+  5 s more, for a TTL counted as 30 s at least, and at most 5 minutes for a name and a day for a CNAME. With
+  both, the listing ran 180 times on 10 November with no connection dropped. On 11 November, with Tailscale's
+  resolver, it ran 180 times and none failed, and in one run six connections to login.microsoftonline.com were
+  dropped as `address_mismatch` within 6 ms, 5 ms after the resolver had that host's addresses anew; the run's
+  next connection passed. Why the answer the filter read then did not cover the host is not known. An alias is
+  dropped this way less often, not never.
 - A burst of DNS lookups no longer leaves the answers after it unread. The filter read at most 256 of the
   resolver's DNS flows at once, counted each for two more minutes once it had let it go, and did not read a new
   flow when the table was full. On 10 November a network came back after an outage with 267 resolver flows in
