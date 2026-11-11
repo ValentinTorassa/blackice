@@ -24,6 +24,8 @@ public final class NESystemControl: SystemControlling {
     /// waits for the person to approve it in System Settings.
     static let extensionRequestTimeout: TimeInterval = 600
     static let preferencesTimeout: TimeInterval = 60
+    /// How long an upgrade waits, with the filter off, for macOS to let the old build's filter go.
+    static let turnedOffLimit: TimeInterval = 30
 
     public init() {}
 
@@ -43,14 +45,38 @@ public final class NESystemControl: SystemControlling {
         if output.setup { output.stdout(""); output.stdout(Style.heading("2 · Confirm with Touch ID")) }
         guard confirm(.start(candidate), output) else { return ExitCode.noPermission }
 
+        // An upgrade with the filter on. A filter that starts while macOS is still disconnecting
+        // the one it replaces is held with it, and no new connection gets through until macOS is
+        // done: 4 to 26 s in four of five upgrades on 10 and 11 November 2026 (FilterDisconnect).
+        // With no filter in its place nothing waits on the one going. So the old build's filter
+        // is turned off first, and the new build's is started once the kernel has let the old one
+        // go: connections are not checked meanwhile, for turnedOffLimit at most (decided on 11
+        // November 2026). Only where the kernel's list of filters can be read.
+        var turnedOff = false
+        if saved.enabled, saved.providerBundleID != nil, KernelFilters.count() != nil, Self.unfinishedUpgrade() != nil {
+            guard let (manager, current) = loadSaved(output) else { return ExitCode.software }
+            if let owner = current.foreignOwner { return refuseForeign(owner, output) }
+            guard current.configuration == saved.configuration else { return changedMeanwhile(output) }
+            guard turnOff(manager, output) else { return ExitCode.software }
+            turnedOff = true
+        }
+
         let (activation, replaced, neededApproval, _) = runExtensionRequest(
             OSSystemExtensionRequest.activationRequest(forExtensionWithIdentifier: BlackiceIdentifiers.filter, queue: .main),
             output)
-        guard activation == ExitCode.success else { return activation }
+        guard activation == ExitCode.success else {
+            // The new build is not in place: the build macOS runs goes on filtering.
+            if turnedOff, let (manager, _) = loadSaved(output) {
+                manager.isEnabled = true
+                _ = save(manager, output)
+            }
+            return activation
+        }
         // After a replacement macOS starts the new build with the configuration saved before, and a
         // save made while it starts can miss it: on 5 November 2026 build 19 came up with generation
-        // 17 and never saw the 18 saved a moment later. Wait until the new build answers first.
-        if replaced { _ = Self.answers() }
+        // 17 and never saw the 18 saved a moment later. Wait until the new build answers first. A
+        // filter that was turned off starts with the configuration saved below.
+        if replaced, !turnedOff { _ = Self.answers() }
 
         guard let (manager, current) = loadSaved(output) else { return ExitCode.software }
         if let owner = current.foreignOwner { return refuseForeign(owner, output) }
@@ -82,8 +108,7 @@ public final class NESystemControl: SystemControlling {
         // off and on, so that it starts again with the one just saved.
         if replaced, case .other(let active) = inForce, (active?.generation ?? 0) < candidate.generation {
             output.stdout("Restarting the filter, which kept the configuration from before the upgrade…")
-            manager.isEnabled = false
-            guard save(manager, output) else { return ExitCode.software }
+            guard turnOff(manager, output) else { return ExitCode.software }
             manager.isEnabled = true
             guard save(manager, output) else { return ExitCode.software }
             inForce = Self.activation(of: candidate)
@@ -112,6 +137,22 @@ public final class NESystemControl: SystemControlling {
         }
         held.map(CLI.heldLines)?.forEach(output.stderr)
         return ExitCode.success
+    }
+
+    /// Turns the filter off and waits until the kernel has let it go, so that the filter started
+    /// next is not held with it (KernelFilters.gone), saying so when that lasts. false when the
+    /// settings could not be saved.
+    private func turnOff(_ manager: NEFilterManager, _ output: SystemOutput) -> Bool {
+        let filters = KernelFilters.count()
+        manager.isEnabled = false
+        guard save(manager, output) else { return false }
+        guard let filters else { return true }
+        let limit = Int(Self.turnedOffLimit)
+        if !KernelFilters.gone(after: filters, limit: Self.turnedOffLimit,
+                               held: { CLI.turnedOffLines($0, limit: limit).forEach(output.stdout) }) {
+            output.stdout(CLI.turnedOffTooLong(limit: limit))
+        }
+        return true
     }
 
     /// Asks the extension which configuration it decides with until it names `candidate`, for up

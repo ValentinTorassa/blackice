@@ -65,6 +65,24 @@ public struct FilterDisconnect: Equatable, Sendable {
         return goingRecord([UInt8](filters)) != nil
     }
 
+    /// What `net.cfil.filter_list` says of a filter that was turned off when the list had a
+    /// number of filters.
+    public enum Progress: Equatable, Sendable {
+        /// As many filters as before and none being disconnected: the kernel has not been told yet.
+        case pending
+        /// The kernel is disconnecting a filter.
+        case going
+        /// Fewer filters than before and none being disconnected.
+        case gone
+    }
+
+    /// nil when the list is not laid out as above.
+    public static func progress(filters: Data, before: Int) -> Progress? {
+        guard let now = count(filters: filters) else { return nil }
+        if goingRecord([UInt8](filters)) != nil { return .going }
+        return now < before ? .gone : .pending
+    }
+
     private static func goingRecord(_ list: [UInt8]) -> Int? {
         stride(from: 0, to: list.count, by: filterRecord).first { word(list, $0 + filterFlags) & detaching != 0 }
     }
@@ -72,14 +90,14 @@ public struct FilterDisconnect: Equatable, Sendable {
     /// From `net.cfil.filter_list` and `net.cfil.sock_list`. nil when the kernel is disconnecting
     /// no filter, when no other filter runs with a control unit of the one going, so that no new
     /// socket waits on it, and when the list of filters is not laid out as above: then nothing is
-    /// said.
-    public init?(filters: Data, sockets: Data) {
+    /// said. With `replacedOnly` false, a filter going with none in its place is read too.
+    public init?(filters: Data, sockets: Data, replacedOnly: Bool = true) {
         guard Self.count(filters: filters) != nil else { return nil }
         let list = [UInt8](filters)
         guard let filter = Self.goingRecord(list) else { return nil }
         let going = Self.word(list, filter + 4)
         let units = Self.word(list, filter + Self.filterUnits)
-        guard going != 0, stride(from: 0, to: list.count, by: Self.filterRecord).contains(where: {
+        guard going != 0, !replacedOnly || stride(from: 0, to: list.count, by: Self.filterRecord).contains(where: {
             Self.word(list, $0 + Self.filterFlags) & Self.detaching == 0 && Self.word(list, $0 + Self.filterUnits) & units != 0
         }) else { return nil }
 

@@ -107,6 +107,22 @@ extension CLI {
         return lines
     }
 
+    /// What `start` says while it waits, with the filter off, for macOS to finish disconnecting
+    /// the filter it turned off, so that the one it starts next is not held with it.
+    public static func turnedOffLines(_ held: HeldDisconnect, limit: Int) -> [String] {
+        var lines = ["macOS is still disconnecting the filter that was running. Until it is done blackice stays off " +
+            "and connections are not checked, for \(limit) s at most."]
+        if let socket = held.socket {
+            lines.append("It waits on \(socket): it is done when that socket closes or sends to another address.")
+        }
+        return lines
+    }
+
+    /// What `start` says when macOS is still at it after `limit` seconds.
+    public static func turnedOffTooLong(limit: Int) -> String {
+        "macOS is not done after \(limit) s. Starting the filter anyway."
+    }
+
     public static func statusLines(_ report: StatusReport) -> [String] {
         var lines = filterLines(report)
         if let held = report.held {

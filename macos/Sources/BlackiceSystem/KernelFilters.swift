@@ -17,6 +17,48 @@ enum KernelFilters {
         return Data(bytes[0..<size])
     }
 
+    /// How many content filters the kernel lists; nil when the list cannot be read or is laid out
+    /// another way than FilterDisconnect knows.
+    static func count() -> Int? {
+        read("net.cfil.filter_list").flatMap(FilterDisconnect.count(filters:))
+    }
+
+    /// After a filter was turned off, the kernel's list having had `before` filters until then:
+    /// waits until the kernel has finished disconnecting it, so that the filter started next is
+    /// not held with it (FilterDisconnect). false when the kernel is still at it after `limit`
+    /// seconds. `held` is told once, with the socket the kernel is at, when it has lasted
+    /// `lasting` seconds.
+    ///
+    /// The stop reaches the kernel a moment after the settings are saved: a list that still has
+    /// `before` filters and none going is waited on for `appear` seconds. Nothing is waited for
+    /// when the list cannot be read.
+    static func gone(after before: Int, appear: TimeInterval = 2, lasting: TimeInterval = 1, limit: TimeInterval = 30,
+                     interval: TimeInterval = 0.05, held: (HeldDisconnect) -> Void) -> Bool {
+        let start = Date()
+        var told = false
+        while true {
+            let waited = Date().timeIntervalSince(start)
+            guard let filters = read("net.cfil.filter_list"),
+                  let progress = FilterDisconnect.progress(filters: filters, before: before) else { return true }
+            switch progress {
+            case .gone:
+                return true
+            case .pending:
+                if waited >= appear { return true }
+            case .going:
+                if waited >= limit { return false }
+                if !told, waited >= lasting {
+                    told = true
+                    if let disconnect = FilterDisconnect(filters: filters, sockets: read("net.cfil.sock_list") ?? Data(),
+                                                         replacedOnly: false) {
+                        held(HeldDisconnect(disconnect, process: disconnect.pid.flatMap(name)))
+                    }
+                }
+            }
+            Thread.sleep(forTimeInterval: interval)
+        }
+    }
+
     /// The filter the kernel is disconnecting now while another runs in its place, if any. The
     /// sockets are read only then.
     static func disconnect() -> FilterDisconnect? {

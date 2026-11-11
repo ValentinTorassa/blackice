@@ -97,6 +97,38 @@ private let recorded: [(Int, String)] = [
         #expect(FilterDisconnect(filters: Data(other), sockets: sockets) == FilterDisconnect(pid: 34464, udp: true))
     }
 
+    // What an upgrade waits on with the filter off: the filter going is read with none in its place.
+    @Test func readsAFilterGoingWithNoneInItsPlaceWhenAsked() {
+        let sockets = socket(pid: 86450, filters: [0]) + socket(pid: 34464, filters: [1])
+        #expect(FilterDisconnect(filters: stopping, sockets: sockets, replacedOnly: false) == FilterDisconnect(pid: 34464, udp: true))
+        #expect(FilterDisconnect(filters: running, sockets: sockets, replacedOnly: false) == nil)
+        #expect(FilterDisconnect(filters: replacing, sockets: sockets, replacedOnly: false) == FilterDisconnect(pid: 34464, udp: true))
+    }
+
+    @Test func saysHowFarTheKernelIsWithAFilterTurnedOff() {
+        // The three lists of the stop of 11 November: before the kernel was told, while it was
+        // held, and after.
+        #expect(FilterDisconnect.progress(filters: running, before: 1) == .pending)
+        #expect(FilterDisconnect.progress(filters: stopping, before: 1) == .going)
+        #expect(FilterDisconnect.progress(filters: Data(), before: 1) == .gone)
+        // With another product's filter beside it.
+        #expect(FilterDisconnect.progress(filters: replacing, before: 2) == .going)
+        #expect(FilterDisconnect.progress(filters: running, before: 2) == .gone)
+        // A filter that was not in the list has none to wait for.
+        #expect(FilterDisconnect.progress(filters: Data(), before: 0) == .pending)
+        #expect(FilterDisconnect.progress(filters: stopping.prefix(19), before: 1) == nil)
+    }
+
+    @Test func startSaysWhatItWaitsForWithTheFilterOff() {
+        let tailscale = HeldDisconnect(FilterDisconnect(pid: 86450, udp: true), process: "io.tailscale.ipn.macsys.network-extension")
+        #expect(CLI.turnedOffLines(tailscale, limit: 30) == [
+            "macOS is still disconnecting the filter that was running. Until it is done blackice stays off and connections are not checked, for 30 s at most.",
+            "It waits on a UDP socket of io.tailscale.ipn.macsys.network-extension (pid 86450): it is done when that socket closes or sends to another address.",
+        ])
+        #expect(CLI.turnedOffLines(HeldDisconnect(FilterDisconnect(pid: nil, udp: false), process: nil), limit: 30).count == 1)
+        #expect(CLI.turnedOffTooLong(limit: 30) == "macOS is not done after 30 s. Starting the filter anyway.")
+    }
+
     @Test func theFilterGoingCanBeTheSecondListed() {
         #expect(FilterDisconnect.going(filters: replacingSecond))
         let sockets = socket(pid: 474, filters: [1]) + socket(pid: 86450, filters: [1, 2]) + socket(pid: 16441, filters: [0, 2])
