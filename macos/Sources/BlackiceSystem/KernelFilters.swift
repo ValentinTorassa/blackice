@@ -30,8 +30,8 @@ enum KernelFilters {
     /// `lasting` seconds.
     ///
     /// The stop reaches the kernel a moment after the settings are saved: a list that still has
-    /// `before` filters and none going is waited on for `appear` seconds. Nothing is waited for
-    /// when the list cannot be read.
+    /// `before` filters and none going is waited on for `appear` seconds (FilterDisconnect.wait).
+    /// Nothing is waited for when the list cannot be read.
     static func gone(after before: Int, appear: TimeInterval = 2, lasting: TimeInterval = 1, limit: TimeInterval = 30,
                      interval: TimeInterval = 0.05, held: (HeldDisconnect) -> Void) -> Bool {
         let start = Date()
@@ -40,19 +40,16 @@ enum KernelFilters {
             let waited = Date().timeIntervalSince(start)
             guard let filters = read("net.cfil.filter_list"),
                   let progress = FilterDisconnect.progress(filters: filters, before: before) else { return true }
-            switch progress {
-            case .gone:
-                return true
-            case .pending:
-                if waited >= appear { return true }
-            case .going:
-                if waited >= limit { return false }
-                if !told, waited >= lasting {
-                    told = true
-                    if let disconnect = FilterDisconnect(filters: filters, sockets: read("net.cfil.sock_list") ?? Data(),
-                                                         replacedOnly: false) {
-                        held(HeldDisconnect(disconnect, process: disconnect.pid.flatMap(name)))
-                    }
+            switch FilterDisconnect.wait(progress, waited: waited, appear: appear, limit: limit) {
+            case .done: return true
+            case .tooLong: return false
+            case .again: break
+            }
+            if progress == .going, !told, waited >= lasting {
+                told = true
+                if let disconnect = FilterDisconnect(filters: filters, sockets: read("net.cfil.sock_list") ?? Data(),
+                                                     replacedOnly: false) {
+                    held(HeldDisconnect(disconnect, process: disconnect.pid.flatMap(name)))
                 }
             }
             Thread.sleep(forTimeInterval: interval)

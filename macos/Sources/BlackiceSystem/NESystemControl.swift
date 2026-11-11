@@ -78,6 +78,13 @@ public final class NESystemControl: SystemControlling {
         // filter that was turned off starts with the configuration saved below.
         if replaced, !turnedOff { _ = Self.answers() }
 
+        // A filter that was off when start began can still be going too: macOS can take as long
+        // over the one a `blackice stop` turned off (10.1 s on 11 November 2026), and the filter
+        // saved below would be held with it. Wait the same way; blackice is off meanwhile as it was.
+        if !saved.enabled || saved.providerBundleID == nil, let filters = KernelFilters.count() {
+            letGo(after: filters, appear: 0, output)
+        }
+
         guard let (manager, current) = loadSaved(output) else { return ExitCode.software }
         if let owner = current.foreignOwner { return refuseForeign(owner, output) }
         guard current.configuration == saved.configuration else { return changedMeanwhile(output) }
@@ -146,13 +153,19 @@ public final class NESystemControl: SystemControlling {
         let filters = KernelFilters.count()
         manager.isEnabled = false
         guard save(manager, output) else { return false }
-        guard let filters else { return true }
+        if let filters { letGo(after: filters, appear: 2, output) }
+        return true
+    }
+
+    /// Waits until the kernel has let go of a filter that was turned off, its list having had
+    /// `filters` until then, for turnedOffLimit at most, and says so when that lasts. `appear` as in
+    /// KernelFilters.gone: 0 when the filter was turned off before this command.
+    private func letGo(after filters: Int, appear: TimeInterval, _ output: SystemOutput) {
         let limit = Int(Self.turnedOffLimit)
-        if !KernelFilters.gone(after: filters, limit: Self.turnedOffLimit,
+        if !KernelFilters.gone(after: filters, appear: appear, limit: Self.turnedOffLimit,
                                held: { CLI.turnedOffLines($0, limit: limit).forEach(output.stdout) }) {
             output.stdout(CLI.turnedOffTooLong(limit: limit))
         }
-        return true
     }
 
     /// Asks the extension which configuration it decides with until it names `candidate`, for up

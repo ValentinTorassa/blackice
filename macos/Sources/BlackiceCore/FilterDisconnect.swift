@@ -7,7 +7,8 @@ import Foundation
 // one. On macOS 27.0.1 it does not get past a UDP socket whose flow table had two flows and has
 // one left: it looks the flow up, is told there is none, leaves the socket on the filter's list
 // and takes the list's first socket again, which is the same one. Until that socket closes or
-// gets another flow the filter stays registered.
+// gets another flow the filter stays registered. Once it stayed at another kind: an ICMP datagram
+// socket of macOS's symptomsd with one flow, for 58.9 s on 11 November 2026.
 //
 // What that does depends on whether a filter runs in its place. The kernel attaches a new socket
 // to every filter registered for a control unit the socket's policy names, one that is going
@@ -26,7 +27,7 @@ public struct FilterDisconnect: Equatable, Sendable {
     /// The process that has the first socket still attached to the filter that is going, which is
     /// the one the kernel is at. nil when the list of sockets names none or is laid out another way.
     public let pid: Int32?
-    /// Whether that socket is a UDP one, the kind seen to hold a disconnect.
+    /// Whether that socket is a UDP one, the kind seen to hold a disconnect every time but one.
     public let udp: Bool
 
     public init(pid: Int32?, udp: Bool) {
@@ -82,6 +83,28 @@ public struct FilterDisconnect: Equatable, Sendable {
         guard let now = count(filters: filters) else { return nil }
         if goingRecord([UInt8](filters)) != nil { return .going }
         return now < before ? .gone : .pending
+    }
+
+    /// What waiting for a filter that was turned off does next.
+    public enum Wait: Equatable, Sendable {
+        /// Nothing is left to wait for.
+        case done
+        /// Read the list again.
+        case again
+        /// The kernel is still disconnecting the filter after the limit.
+        case tooLong
+    }
+
+    /// `waited` seconds after the filter was turned off. A list that still has as many filters as
+    /// before and none going is waited on for `appear` seconds, since the stop reaches the kernel a
+    /// moment after it is asked for; a filter going, for `limit` seconds. With `appear` 0 only a
+    /// filter already going is waited for: the one a `blackice stop` a moment ago left.
+    public static func wait(_ progress: Progress, waited: TimeInterval, appear: TimeInterval, limit: TimeInterval) -> Wait {
+        switch progress {
+        case .gone: return .done
+        case .pending: return waited >= appear ? .done : .again
+        case .going: return waited >= limit ? .tooLong : .again
+        }
     }
 
     private static func goingRecord(_ list: [UInt8]) -> Int? {
