@@ -11,7 +11,7 @@ a hold at a UDP socket, that it does not spare one at that ICMP socket whether `
 table of DNS flows cost no lookup, a link-local address was asked about, a title's token stayed out of the event,
 and three kinds of loop were delayed or bounded; a mail CLI's listing ran 180 times with none failed and six
 connections dropped as `address_mismatch` in one run. The fault tests passed 29 of 29 twice on build 55 and once on
-the candidate. Phase 5.
+the candidate, and `blackice deny --all` forgot its 43 approvals. Phase 5.
 
 **Platform.** MacBook Air (Mac16,12), macOS 27.0.1 (26A434), kernel xnu-13432.1.9~1, arm64, System Integrity
 Protection on, FileVault on. Wi-Fi, with Tailscale's resolver (100.100.100.100); for the fault tests Tailscale's DNS
@@ -82,6 +82,7 @@ name each second.
 10. Builds 57 to 58 at 14:25.
 11. `macos/scripts/fault-test.sh` on build 58 at 14:35.
 12. `blackice stop` and `blackice start` on build 58 at 14:48.
+13. `blackice deny --all` on build 58 at 14:57, with `blackice status` and `blackice pending` before and after.
 
 **Result.**
 
@@ -172,6 +173,9 @@ name each second.
     printed its line about macOS's dialog at 14:48:29.22 and `✓ blackice is off` at 14:48:31.32, with no filter in
     the kernel's list. The `start` that followed asked for the extension to be allowed in System Settings, loaded
     the owner's file and had its filter in the list at 14:49:25.16: ask mode, 24 rules, the 43 approvals of before.
+12. `blackice deny --all` asked for Touch ID and printed `✓ Forgot 43 approvals`; the filter logged `control answer
+    forget touch_id forgotten 43` at 14:57:28.009. `blackice status` had 44 approvals four minutes before and no
+    `approvals` row after, and `blackice pending` said `Nothing waiting, and no approvals.`
 
 Decided by: the kernel, the CLI's `start` and `stop`, the extension and the daemon.
 
@@ -197,7 +201,8 @@ with no test of the going flag (`cfil_info_attach_unit`).
   lives, like any socket open before a start.
 - The wait of a `start` after a `stop` was not seen: in both runs the echo request had ended the hold before
   `start` saved its filter.
-- `blackice deny --all` was not run on this Mac; the unit tests cover it.
+- After `blackice deny --all` no stop or restart followed, so that the saved file brings no approval back was not
+  seen; nothing waited when it ran, so that what waits keeps waiting was not seen either. The unit tests cover both.
 - The saved UDP destinations, for a VPN across a restart of the filter, were run on build 46 on 10 November and not
   again on the candidate; this entry does not record those runs.
 - Six `address_mismatch` drops of an approved host in one run of 180 have no known cause. On 10 November, on build
