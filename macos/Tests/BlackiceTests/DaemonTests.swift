@@ -209,11 +209,19 @@ struct DaemonTests {
         let logURL = dir.appendingPathComponent("events.jsonl")
         let daemon = Daemon(log: try EventLog(url: logURL), runner: try testRunner(dir, grace: 0.2))
         let answers = Answers()
-        // Room for a slow CI runner to start the hook before the deadline.
-        await daemon.handle(testEvent(id: "ev-6", deadlineIn: 2.5), with: try hooks("echo approve 1h; sleep 30"), send: answers.send)
+        // Room for a slow CI runner to start the hook before the deadline. On 10 November 2026 2.5 s
+        // was not enough: the deadline had passed when the runner took the hook, which was dropped
+        // and never started. Such a run shows nothing of a kill, so it is done once more with 4.5 s,
+        // still under the 5 s timeout of `hooks`, which would kill the hook first.
+        var id = ""
+        for (event, room) in [("ev-6", 2.5), ("ev-6-again", 4.5)] {
+            id = event
+            await daemon.handle(testEvent(id: id, deadlineIn: room), with: try hooks("echo approve 1h; sleep 30"), send: answers.send)
+            if types(try records(logURL), event: id).last != "hook_dropped" { break }
+        }
         #expect(answers.sent.items.isEmpty)
         let log = try records(logURL)
-        #expect(types(log, event: "ev-6").suffix(2) == ["hook_killed", "hook_no_answer"])
+        #expect(types(log, event: id).suffix(2) == ["hook_killed", "hook_no_answer"])
         #expect(log.last?["reason"] as? String == "deadline")
     }
 

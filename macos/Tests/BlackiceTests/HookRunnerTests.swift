@@ -282,11 +282,19 @@ struct HookRunnerTests {
         async let busy = runner.run([hook("sleep 2")], for: testEvent(id: "ev-1"), timeoutSeconds: 10)
         #expect(await eventually { runner.runningCount == 1 })
         let started = Date()
-        let late = await runner.run([hook("true")], for: testEvent(id: "ev-2", deadlineIn: 1.2), timeoutSeconds: 10)
+        let queued = Recorder<Int>()
+        let late = await runner.run([hook("true")], for: testEvent(id: "ev-2", deadlineIn: 1.2), timeoutSeconds: 10) { update in
+            if case .queued(_, let waiting) = update { queued.append(waiting) }
+        }
         let elapsed = Date().timeIntervalSince(started)
         #expect(late.map(\.outcome) == [.dropped(.deadlineNear)])
-        // Given up 0.4 s before its deadline, not when the slot came free.
-        #expect((0.5...1.5).contains(late[0].waited) && elapsed < 1.8, "waited \(late[0].waited), took \(elapsed)")
+        // Given up 0.4 s before its deadline, 0.8 s in, not when the slot came free, 2 s in. The time
+        // it waited counts from when the runner took the hook, which a busy machine does late: 0.46 s
+        // late on CI's runner on 11 November 2026 (waited 0.38 s, given up 0.85 s in). So the moment
+        // is checked against the deadline, and `waited` for being there when the hook queued.
+        #expect((0.7...1.8).contains(elapsed), "waited \(late[0].waited), took \(elapsed)")
+        #expect(late[0].waited <= elapsed && (late[0].waited > 0) == (queued.items == [1]),
+                "waited \(late[0].waited), took \(elapsed), queued \(queued.items)")
         #expect(runner.waitingCount == 0)
         // With less than the minimum left on arrival it does not wait at all.
         let tooLate = await runner.run([hook("true")], for: testEvent(id: "ev-3", deadlineIn: 0.2), timeoutSeconds: 10)
