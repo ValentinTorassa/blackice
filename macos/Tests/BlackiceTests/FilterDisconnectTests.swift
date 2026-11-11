@@ -136,6 +136,35 @@ private let recorded: [(Int, String)] = [
         #expect(FilterDisconnect.progress(filters: Data(), before: 0) == .pending)
     }
 
+    @Test func anEchoRequestGoesOutWhileAFilterIsGoing() {
+        // Not in the first 0.3 s, which a disconnect that goes well does not reach.
+        #expect(!FilterDisconnect.echoDue(going: 0, last: nil))
+        #expect(!FilterDisconnect.echoDue(going: 0.25, last: nil))
+        #expect(FilterDisconnect.echoDue(going: 0.3, last: nil))
+        // Then one every 2 s.
+        #expect(!FilterDisconnect.echoDue(going: 1.5, last: 1.2))
+        #expect(FilterDisconnect.echoDue(going: 2.3, last: 2))
+        #expect(FilterDisconnect.echoDue(going: 60, last: 2.05))
+    }
+
+    @Test func theEchoRequestIsOneAnICMPSocketSends() {
+        let packet = FilterDisconnect.echoRequest(id: 0x1234, sequence: 1)
+        #expect(packet.count == 8)
+        #expect(Array(packet[0...1]) == [8, 0])
+        #expect(Array(packet[4...7]) == [0x12, 0x34, 0, 1])
+        // 0x0800 + 0x1234 + 0x0001 = 0x1a35, and its complement is the checksum.
+        #expect(Array(packet[2...3]) == [0xe5, 0xca])
+        // The words of a packet with its checksum add up to 0xffff.
+        func sum(_ bytes: [UInt8]) -> UInt32 {
+            var total: UInt32 = 0
+            for index in stride(from: 0, to: bytes.count, by: 2) { total += UInt32(bytes[index]) << 8 | UInt32(bytes[index + 1]) }
+            while total >> 16 != 0 { total = (total & 0xffff) + (total >> 16) }
+            return total
+        }
+        #expect(sum(packet) == 0xffff)
+        #expect(sum(FilterDisconnect.echoRequest(id: 0xffff, sequence: 0xffff)) == 0xffff)
+    }
+
     @Test func startSaysWhatItWaitsForWithTheFilterOff() {
         let tailscale = HeldDisconnect(FilterDisconnect(pid: 86450, udp: true), process: "io.tailscale.ipn.macsys.network-extension")
         #expect(CLI.turnedOffLines(tailscale, limit: 90) == [

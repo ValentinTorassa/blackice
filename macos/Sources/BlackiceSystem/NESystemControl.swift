@@ -209,9 +209,15 @@ public final class NESystemControl: SystemControlling {
         guard let (manager, current) = loadSaved(output) else { return ExitCode.software }
         if let owner = current.foreignOwner { return refuseForeign(owner, output) }
         if current.providerBundleID != nil {
+            let filters = KernelFilters.count()
             manager.isEnabled = false
             guard save(manager, output) else { return ExitCode.software }
             guard remove(manager, output) else { return ExitCode.software }
+            // macOS can stay at one socket while it disconnects the filter, for minutes at an ICMP
+            // one, with the stopped extension's process busy all the while; an echo request ends
+            // that one (KernelFilters.gone). Nothing waits on a filter going with none in its
+            // place, so stop says nothing of it and goes on after 3 s.
+            if let filters { _ = KernelFilters.gone(after: filters, lasting: .infinity, limit: 3, held: { _ in }) }
         }
         // macOS has an administrator confirm the removal in a dialog of its own, and the request's
         // delegate is not told: on 11 November 2026 (macOS 27.0.1) stop waited 78 s on that dialog

@@ -19,8 +19,18 @@ import Foundation
 // `blackice stop` held 10.1 s the same way, with no filter in its place, the one going kept its
 // 15 sockets and got no new one, and a lookup a second went on in 0.21 s or less.
 //
-// blackice cannot end it. It can keep a new filter out of it, by starting that filter once the
-// old one is gone (NESystemControl.start), and say that it is happening and whose socket it is:
+// At an ICMP socket bound to no address blackice can end it. Three upgrades on 11 November 2026
+// were held at one of symptomsd's, for 58.9, 47.3 and 116.0 s: each time the kernel let go 17 to
+// 29 s after the new filter had stopped every new connection, and in the two recordings read the
+// socket's record in the kernel's list began again with its first 180 bytes within 0.3 s of that.
+// In a `blackice stop` held 8.0 s at that socket, one `ping` of 127.0.0.1 ended it within 0.01 s:
+// the reply to an echo request goes to every ICMP socket bound to no address. So while it waits
+// for a filter that is going, the CLI sends an echo request to this Mac's own loopback address
+// (echoRequest, echoDue; KernelFilters.gone).
+//
+// At a UDP socket blackice cannot end it. It can keep a new filter out of it, by starting that
+// filter once the old one is gone (NESystemControl.start), and say that it is happening and whose
+// socket it is:
 // the kernel publishes its filters (`net.cfil.filter_list`) and the sockets attached to them
 // (`net.cfil.sock_list`), in the order the filter's own list has, to any process.
 public struct FilterDisconnect: Equatable, Sendable {
@@ -105,6 +115,28 @@ public struct FilterDisconnect: Equatable, Sendable {
         case .pending: return waited >= appear ? .done : .again
         case .going: return waited >= limit ? .tooLong : .again
         }
+    }
+
+    /// Whether to send an echo request now: `going` seconds after a filter was first seen going,
+    /// `last` seconds after the echo request before, if any. The first 0.3 s in, since a disconnect
+    /// that goes well is over in milliseconds, then one every 2 s while it lasts.
+    public static func echoDue(going: TimeInterval, last: TimeInterval?) -> Bool {
+        last.map { $0 >= 2 } ?? (going >= 0.3)
+    }
+
+    /// An ICMP echo request with no data, as a datagram ICMP socket sends it: type 8, code 0, the
+    /// Internet checksum, then `id` and `sequence`.
+    public static func echoRequest(id: UInt16, sequence: UInt16) -> [UInt8] {
+        var packet: [UInt8] = [8, 0, 0, 0, UInt8(id >> 8), UInt8(id & 0xff), UInt8(sequence >> 8), UInt8(sequence & 0xff)]
+        var sum: UInt32 = 0
+        for index in stride(from: 0, to: packet.count, by: 2) {
+            sum += UInt32(packet[index]) << 8 | UInt32(packet[index + 1])
+        }
+        while sum >> 16 != 0 { sum = (sum & 0xffff) + (sum >> 16) }
+        let checksum = ~UInt16(truncatingIfNeeded: sum)
+        packet[2] = UInt8(checksum >> 8)
+        packet[3] = UInt8(checksum & 0xff)
+        return packet
     }
 
     private static func goingRecord(_ list: [UInt8]) -> Int? {

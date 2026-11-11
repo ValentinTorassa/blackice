@@ -32,10 +32,15 @@ enum KernelFilters {
     /// The stop reaches the kernel a moment after the settings are saved: a list that still has
     /// `before` filters and none going is waited on for `appear` seconds (FilterDisconnect.wait).
     /// Nothing is waited for when the list cannot be read.
+    ///
+    /// While a filter is going, an echo request is sent to this Mac's loopback address 0.3 s in and
+    /// every 2 s after: it ends a disconnect that stays at an ICMP socket (FilterDisconnect).
     static func gone(after before: Int, appear: TimeInterval = 2, lasting: TimeInterval = 1, limit: TimeInterval = 30,
                      interval: TimeInterval = 0.05, held: (HeldDisconnect) -> Void) -> Bool {
         let start = Date()
         var told = false
+        var going: TimeInterval?
+        var echoed: TimeInterval?
         while true {
             let waited = Date().timeIntervalSince(start)
             guard let filters = read("net.cfil.filter_list"),
@@ -44,6 +49,15 @@ enum KernelFilters {
             case .done: return true
             case .tooLong: return false
             case .again: break
+            }
+            if progress == .going {
+                let since = going ?? waited
+                going = since
+                if FilterDisconnect.echoDue(going: waited - since, last: echoed.map { waited - $0 }) {
+                    echoed = waited
+                    echoLoopback()
+                    continue
+                }
             }
             if progress == .going, !told, waited >= lasting {
                 told = true
@@ -54,6 +68,30 @@ enum KernelFilters {
             }
             Thread.sleep(forTimeInterval: interval)
         }
+    }
+
+    /// Sends one ICMP echo request to 127.0.0.1 from a datagram ICMP socket, which needs no
+    /// privilege, and waits up to 0.2 s for the reply. Nothing leaves this Mac. Failing changes
+    /// nothing: the wait goes on.
+    static func echoLoopback() {
+        let descriptor = socket(AF_INET, SOCK_DGRAM, IPPROTO_ICMP)
+        guard descriptor >= 0 else { return }
+        defer { close(descriptor) }
+        var timeout = timeval(tv_sec: 0, tv_usec: 200_000)
+        setsockopt(descriptor, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
+        var address = sockaddr_in()
+        address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        address.sin_family = sa_family_t(AF_INET)
+        address.sin_addr.s_addr = UInt32(0x7f00_0001).bigEndian
+        let packet = FilterDisconnect.echoRequest(id: UInt16(truncatingIfNeeded: getpid()), sequence: 1)
+        let sent = withUnsafePointer(to: &address) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                sendto(descriptor, packet, packet.count, 0, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+            }
+        }
+        guard sent == packet.count else { return }
+        var reply = [UInt8](repeating: 0, count: 128)
+        _ = recv(descriptor, &reply, reply.count, 0)
     }
 
     /// The filter the kernel is disconnecting now while another runs in its place, if any. The
