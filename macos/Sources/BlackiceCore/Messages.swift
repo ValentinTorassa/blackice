@@ -243,9 +243,11 @@ public struct PendingSummary: Codable, Equatable, Sendable {
     public let connections: Int
     /// For an interpreter, the script it runs, as its command line says (HookEvent.App.script).
     public let script: String?
+    /// For an interpreter that wrote a title over its arguments, that title (HookEvent.App.title).
+    public let title: String?
 
     public init(id: String, app: AppReference, path: String?, host: String, ip: String, port: UInt16,
-                secondsLeft: Int, connections: Int, script: String? = nil) {
+                secondsLeft: Int, connections: Int, script: String? = nil, title: String? = nil) {
         self.id = id
         self.app = app
         self.path = path
@@ -255,10 +257,11 @@ public struct PendingSummary: Codable, Equatable, Sendable {
         self.secondsLeft = secondsLeft
         self.connections = connections
         self.script = script
+        self.title = title
     }
 
     enum CodingKeys: String, CodingKey {
-        case id, app, path, host, ip, port, connections, script
+        case id, app, path, host, ip, port, connections, script, title
         case secondsLeft = "seconds_left"
     }
 
@@ -348,11 +351,12 @@ public struct ActiveConfiguration: Codable, Equatable, Sendable {
 public struct PendingReply: CheckedMessage, Equatable {
     public static let maximumEntries = 1024
     /// The largest reply `validate` accepts, encoded: each event at most 1 KiB plus its escaped
-    /// path and script, each approval and each denial at most 1 KiB plus its escaped script, and
-    /// 1 KiB for the rest. A signing identifier takes at most 255 bytes, a host name 253 and an
+    /// path, script and title, each approval and each denial at most 1 KiB plus its escaped script,
+    /// and 1 KiB for the rest. A signing identifier takes at most 255 bytes, a host name 253 and an
     /// address 45, and none of them needs escaping.
     public static let maximumBytes = 1024
-        + AskLimits.events * (1024 + 2 * Messages.jsonStringBytes(HookEvent.maximumPathBytes))
+        + AskLimits.events * (1024 + 2 * Messages.jsonStringBytes(HookEvent.maximumPathBytes)
+                              + Messages.jsonStringBytes(HookEvent.maximumTitleBytes))
         + 2 * ApprovalTable.maximumEntries * (1024 + Messages.jsonStringBytes(HookEvent.maximumPathBytes))
 
     public let version: Int
@@ -388,7 +392,8 @@ public struct PendingReply: CheckedMessage, Equatable {
         for event in events {
             guard validEventID(event.id), event.app.identity != nil, IPAddress(event.ip)?.description == event.ip,
                   validEventHost(event.host, ip: event.ip), event.secondsLeft >= 0, event.connections >= 0,
-                  event.path.map(validPath) ?? true, event.script.map(validPath) ?? true else {
+                  event.path.map(validPath) ?? true, event.script.map(validPath) ?? true,
+                  event.title.map(validTitle) ?? true else {
                 throw MessageError("events", "has an invalid entry")
             }
         }
@@ -468,13 +473,21 @@ public struct AnswerRequest: CheckedMessage, Equatable {
     }
 }
 
+/// `blackice deny --all`: forget every approval. A person confirmed with Touch ID, as for an
+/// AnswerRequest with touch_id; the reply is an AnswerReply.
+public struct ForgetRequest: CheckedMessage, Equatable {
+    public let version: Int
+    public init() { version = Messages.version }
+    public func validate(now: Date) throws {}
+}
+
 public struct AnswerReply: CheckedMessage, Equatable {
     public enum Status: String, Codable, Sendable { case done, refused }
 
     public let version: Int
     public let status: Status
-    /// A short code: approved, denied, token_unknown, token_spent, token_expired, token_mismatch,
-    /// not_the_daemon.
+    /// A short code: approved, denied, forgotten, token_unknown, token_spent, token_expired,
+    /// token_mismatch, not_the_daemon.
     public let reason: String
     public let message: String
     /// Events this answer resolved.
@@ -489,6 +502,12 @@ public struct AnswerReply: CheckedMessage, Equatable {
         self.message = message
         self.events = events
         self.released = released
+    }
+
+    /// What `blackice deny --all` answers after it forgot `count` approvals.
+    public static func forgotten(_ count: Int) -> AnswerReply {
+        AnswerReply(status: .done, reason: "forgotten",
+                    message: count == 0 ? "There were no approvals to forget" : "Forgot \(Describe.count(count, "approval"))")
     }
 
     public func validate(now: Date) throws {

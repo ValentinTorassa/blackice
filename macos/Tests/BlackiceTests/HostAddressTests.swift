@@ -53,6 +53,40 @@ struct IPAddressTests {
         #expect(IPAddress("2001:db8::1%7")?.scope == 0 && IPAddress("203.0.113.7%7")?.scope == 0)
     }
 
+    @Test func aSocketAddressGivesTheAddressAndALinkLocalInterface() throws {
+        var v6 = sockaddr_in6()
+        v6.sin6_len = UInt8(MemoryLayout<sockaddr_in6>.size)
+        v6.sin6_family = sa_family_t(AF_INET6)
+        v6.sin6_scope_id = 7
+        #expect(inet_pton(AF_INET6, "fe80::dead:beef", &v6.sin6_addr) == 1)
+        func read(_ address: inout sockaddr_in6) -> IPAddress? {
+            withUnsafePointer(to: &address) { $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { IPAddress(socketAddress: $0) } }
+        }
+        let linkLocal = try #require(read(&v6))
+        #expect(linkLocal.scope == 7 && linkLocal.isCheckable && linkLocal.description == "fe80::dead:beef%7")
+        #expect(linkLocal == IPAddress("fe80::dead:beef%7"))
+        // With no interface it is not checkable, as from text.
+        v6.sin6_scope_id = 0
+        #expect(read(&v6) == IPAddress("fe80::dead:beef") && read(&v6)?.isCheckable == false)
+        // Only a link-local address keeps an interface, and an IPv4-mapped one is IPv4.
+        v6.sin6_scope_id = 7
+        #expect(inet_pton(AF_INET6, "2001:db8::1", &v6.sin6_addr) == 1)
+        #expect(read(&v6) == IPAddress("2001:db8::1") && read(&v6)?.scope == 0)
+        #expect(inet_pton(AF_INET6, "::ffff:192.0.2.7", &v6.sin6_addr) == 1)
+        #expect(read(&v6) == IPAddress("192.0.2.7"))
+        var v4 = sockaddr_in()
+        v4.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        v4.sin_family = sa_family_t(AF_INET)
+        #expect(inet_pton(AF_INET, "192.0.2.7", &v4.sin_addr) == 1)
+        let fromV4 = withUnsafePointer(to: &v4) { $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { IPAddress(socketAddress: $0) } }
+        #expect(fromV4 == IPAddress("192.0.2.7"))
+        // Another family is not an address.
+        var local = sockaddr()
+        local.sa_len = UInt8(MemoryLayout<sockaddr>.size)
+        local.sa_family = sa_family_t(AF_UNIX)
+        #expect(IPAddress(socketAddress: &local) == nil)
+    }
+
     @Test func linkLocalAddressesKeepTheirInterface() throws {
         // The same link-local address on two links can be two hosts.
         let loopback = if_nametoindex("lo0")

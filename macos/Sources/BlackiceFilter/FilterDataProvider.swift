@@ -36,6 +36,10 @@
 // Connections by address, also compiled only: a flow with no name is asked about by its address,
 // which is then the event's host (FilterPolicy.eventHost).
 //
+// A restart with a VPN up, also compiled only: the UDP destinations a run let through on a host's
+// name are saved, and for VerifiedFlows.window seconds after a start they name the same app's UDP
+// flows to the same address and port, so a flow that was open across the restart needs no lookup.
+//
 // Accept-all's dry run of ask mode, also compiled only: each new flow is still allowed at once,
 // and its log line adds what ask mode would have decided (FilterPolicy.dryRun), for `blackice
 // report`. Nothing is held, read, looked up or asked for it.
@@ -67,6 +71,7 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
     private var maintenanceTicks = 0
     private var savedIdentityChanges = -1
     private var savedApprovalsRevision = -1
+    private var savedVerifiedRevision = 0
     /// After a save that failed, the next try waits until then.
     private var approvalsSaveNotBefore: TimeInterval = 0
     private let heldLock = NSLock()
@@ -81,6 +86,12 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
     private var lookups = LookupWaiters<Paused>()
     /// Under askLock. Connections of an app in a loop of drops, waiting for theirs.
     private var repeated = RepeatedDrops<Paused>()
+    /// Under askLock. The UDP destinations this run let through on a name, saved for the next
+    /// run; and the last run's, which name this run's flows until `resumeUntil` (VerifiedFlows).
+    private var verified = VerifiedFlows()
+    private var resumable: VerifiedFlows?
+    private var resumeUntil: TimeInterval = 0
+    private var resumedFlows = 0
     private let addresses = HostAddressCache(resolver: SystemHostResolver())
     private let resolverQueue = DispatchQueue(label: "com.valentorassa.blackice.filter.resolver", attributes: .concurrent)
     private var server: FilterServer?
@@ -143,6 +154,7 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
             _ = try? snapshots.install(candidate)
             restoreIdentities()
             restoreApprovals()
+            restoreVerified()
         }
         apply(Self.makeSettings()) { [weak self] error in
             guard let lifecycle = self?.lifecycle else { completionHandler(error); return }
@@ -237,6 +249,7 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
             // The approvals stay in memory: an answer still on its way after this changes them
             // and saves them again, so a deny is never lost to the stop.
             self.saveApprovals(force: true)
+            self.saveVerified(force: true)
             self.addresses.removeAll()
             self.dnsLock.lock()
             let reading = self.dnsFlows.removeAll()
@@ -259,6 +272,8 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
         let internet = socket?.socketFamily == AF_INET || socket?.socketFamily == AF_INET6
         let direction: FlowDirection = flow.direction == .outbound ? .outbound :
             (flow.direction == .inbound ? .inbound : .unknown)
+        // A link-local destination comes with no interface: neither this endpoint nor
+        // `remoteFlowEndpoint` has one (macOS 27.0.1), whatever interface the app named.
         let address = endpoint.flatMap { BlackiceCore.IPAddress($0.hostname) }
         let identity = CodeIdentity.resolve(auditToken: flow.sourceAppAuditToken)
         // A cdhash rule reads the path of ad hoc code, to tell an interpreter by its name
@@ -266,37 +281,40 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
         let kernelPath = flow.sourceAppAuditToken.flatMap { CodeIdentity.kernelPath(auditToken: $0) }
         var executablePath: String?
         if case .adHoc = identity { executablePath = kernelPath }
+        var title: String?
         let scriptScope = ScriptScope.of(executablePath: kernelPath) {
-            flow.sourceAppAuditToken.flatMap(ProcessArguments.script(auditToken:))
+            let named = flow.sourceAppAuditToken.map(ProcessArguments.named(auditToken:))
+            title = named?.title
+            return named?.script
+        }
+        let port = endpoint.flatMap { UInt16($0.port) }
+        var names = dnsNames.names(for: address)
+        var aliases = dnsNames.aliases(for: address)
+        var restored: [String: Double] = [:]
+        // In a run's first minutes: the hosts the last run checked for this app's UDP flow to this
+        // address and port, as a DNS answer would have given them (VerifiedFlows.facts).
+        if udp, internet, direction == .outbound, let address, let port, let app = identity.appIdentity {
+            askLock.lock()
+            if let resumable, Self.now < resumeUntil {
+                (names, aliases, restored) = resumable.facts(app: app, address: address, port: port, names: names, aliases: aliases)
+                if !restored.isEmpty { resumedFlows += 1 }
+            }
+            askLock.unlock()
         }
         let facts = FlowFacts(direction: direction, identity: identity,
                               internetSocket: internet && (tcp || udp), tcp: tcp,
-                              hostname: socket?.remoteHostname, port: endpoint.flatMap { UInt16($0.port) },
+                              hostname: socket?.remoteHostname, port: port,
                               remoteAddress: address,
                               process: flow.sourceProcessAuditToken.map { CodeIdentity.resolve(auditToken: $0) },
-                              dnsNames: dnsNames.names(for: address), executablePath: executablePath,
-                              scriptScope: scriptScope)
+                              dnsNames: names, dnsAliases: aliases,
+                              executablePath: executablePath,
+                              scriptScope: scriptScope, title: title, restored: restored)
         let paused = Paused(flow: flow, facts: facts, serverName: nil, echPresent: false, stage: .newFlow,
                             generation: snapshot?.generation ?? 0)
         // Accept-all's dry run of ask mode, for the log line only: it changes nothing for the flow.
         let would = snapshot.flatMap { FilterPolicy.dryRun(facts, snapshot: $0) }
         askLock.lock()
         let verdict = FilterPolicy.decide(facts, snapshot: snapshot, context: context(now: Self.now, scope: facts.scriptScope))
-        // An app that opens the next connection as soon as one is dropped has its TCP ones wait
-        // for their drop (RepeatedDrops).
-        if case .drop = verdict {
-            switch repeated.add(paused, app: facts.identity.label, waits: facts.tcp, now: Self.now) {
-            case .dropNow:
-                break
-            case .delayed:
-                log(facts, verdict, snapshot, would: would)
-                askLock.unlock()
-                return .pause()
-            case .dropUnlogged:
-                askLock.unlock()
-                return .drop()
-            }
-        }
         let (step, after) = place(verdict, paused, snapshot, now: Self.now, would: would)
         askLock.unlock()
         perform(after)
@@ -308,10 +326,11 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
         case .learnNames:
             guard let socket else { return .allow() }
             dnsLock.lock()
-            let reading = dnsFlows.add(flow.identifier, flow: socket, stream: tcp, now: Self.now)
+            let evicted = dnsFlows.add(flow.identifier, flow: socket, stream: tcp, now: Self.now)
             dnsLock.unlock()
-            // A full table only means this flow's answers go unread; it passes either way.
-            guard reading else { return .allow() }
+            // A full table let its quietest flow go to read this one. Its data passes from now on;
+            // update() is not allowed inside a flow callback, so it is told from the lifecycle queue.
+            if let evicted { lifecycle.async { [weak self] in self?.update(evicted, using: .allow(), for: .any) } }
             return .filterDataVerdict(withFilterInbound: true, peekInboundBytes: Self.dnsPeekBytes,
                                       filterOutbound: true, peekOutboundBytes: Self.dnsPeekBytes)
         }
@@ -421,11 +440,11 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
         switch result {
         case .unknown:
             return nil
-        case .pass(let learned):
-            dnsNames.record(learned)
+        case .pass(let learned, let aliases):
+            dnsNames.record(learned, aliases: aliases)
             return NEFilterDataVerdict(passBytes: bytes.count, peekBytes: Self.dnsPeekBytes)
-        case .stop(let learned):
-            dnsNames.record(learned)
+        case .stop(let learned, let aliases):
+            dnsNames.record(learned, aliases: aliases)
             return .allow()
         }
     }
@@ -487,18 +506,17 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
         }
         switch verdict {
         case .allow:
+            remember(facts, verdict, snapshot)
             log(facts, verdict, snapshot, serverName: paused.serverName, would: would)
             return (.allow, .nothing)
         case .learnNames:
             log(facts, verdict, snapshot, serverName: paused.serverName)
             return (.learnNames, .nothing)
         case .drop:
-            log(facts, verdict, snapshot, serverName: paused.serverName, would: would)
-            return (.drop, .nothing)
+            return drop(paused, verdict, snapshot, now: now, would: would)
         case .readServerName:
             guard paused.stage == .newFlow else {
-                log(facts, .drop(reason: "server_name_unusable"), snapshot, serverName: paused.serverName)
-                return (.drop, .nothing)
+                return drop(paused, .drop(reason: "server_name_unusable"), snapshot, now: now)
             }
             return (.hold, .nothing)
         case .resolveHost(let host):
@@ -506,28 +524,26 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
             case .startLookup: return (.pause, .lookUp(host))
             case .waiting: return (.pause, .nothing)
             case .full:
-                log(facts, .drop(reason: "lookup_capacity"), snapshot, serverName: paused.serverName)
-                return (.drop, .nothing)
+                return drop(paused, .drop(reason: "lookup_capacity"), snapshot, now: now)
             case .appFull:
-                log(facts, .drop(reason: "lookup_capacity_app"), snapshot, serverName: paused.serverName)
-                return (.drop, .nothing)
+                return drop(paused, .drop(reason: "lookup_capacity_app"), snapshot, now: now)
             }
         case .ask(_, let addressMatches):
             // A flow with no name is asked about by its address: the event's host is then its ip.
             guard let snapshot, let identity = facts.identity.appIdentity,
                   let host = FilterPolicy.eventHost(facts, serverName: paused.serverName),
                   let port = facts.port, let address = facts.remoteAddress else {
-                log(facts, .drop(reason: "ask_incomplete"), snapshot, serverName: paused.serverName)
-                return (.drop, .nothing)
+                return drop(paused, .drop(reason: "ask_incomplete"), snapshot, now: now)
             }
             let key = PendingKey(identity: identity, host: host, port: port, scope: facts.scriptScope)
             let added = ask.pending.add(paused, key: key, addressMatches: addressMatches, now: now,
                                         timeout: TimeInterval(snapshot.config.timeoutSeconds),
                                         holdFor: FilterPolicy.holdLimit(facts, afterServerName: paused.stage == .data)) { seconds in
-                // The script read when the flow began, the one the event's key and its answer cover.
+                // The script read when the flow began, the one the event's key and its answer cover,
+                // and the title of the process that opened this flow, the first of the event's.
                 try HookEvent.connection(app: HookEvent.App(identity, path: CodeIdentity.path(auditToken: paused.flow.sourceAppAuditToken),
-                                                            script: facts.scriptScope.script),
-                                         host: host, ip: address.description, port: port,
+                                                            script: facts.scriptScope.script, title: facts.title),
+                                         host: host, ip: address.destination, port: port,
                                          deadline: Date().addingTimeInterval(seconds))
             }
             switch added {
@@ -538,12 +554,37 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
                 log(facts, verdict, snapshot, serverName: paused.serverName)
                 return (.pause, .nothing)
             case .full:
-                log(facts, .drop(reason: "ask_capacity"), snapshot, serverName: paused.serverName)
-                return (.drop, .nothing)
+                return drop(paused, .drop(reason: "ask_capacity"), snapshot, now: now)
             case .appFull:
-                log(facts, .drop(reason: "ask_capacity_app"), snapshot, serverName: paused.serverName)
-                return (.drop, .nothing)
+                return drop(paused, .drop(reason: "ask_capacity_app"), snapshot, now: now)
             }
+        }
+    }
+
+    /// Under askLock: a drop that `place` decided, at whatever stage of the flow. An app that opens
+    /// the next connection as soon as one is dropped has its TCP ones wait for their drop
+    /// (RepeatedDrops): such a flow is logged now and stays paused, or is paused here, until the
+    /// maintenance timer drops it.
+    private func drop(_ paused: Paused, _ verdict: FlowVerdict, _ snapshot: ProviderConfiguration?,
+                      now: TimeInterval, would: String? = nil) -> (Step, After) {
+        let facts = paused.facts
+        // A flow decided under a configuration that another has replaced, or that a stop has
+        // cleared, is dropped now and not counted: the change has already ended what was delayed,
+        // and this drop is the change's, not the app's. A flow that came with no configuration
+        // installed, and still has none, is dropped like every flow then, and those count.
+        if (snapshots.read()?.generation ?? 0) != paused.generation {
+            log(facts, verdict, snapshot, serverName: paused.serverName, would: would)
+            return (.drop, .nothing)
+        }
+        switch repeated.add(paused, app: facts.identity.label, waits: facts.tcp, now: now) {
+        case .dropNow:
+            log(facts, verdict, snapshot, serverName: paused.serverName, would: would)
+            return (.drop, .nothing)
+        case .delayed:
+            log(facts, verdict, snapshot, serverName: paused.serverName, would: would)
+            return (.pause, .nothing)
+        case .dropUnlogged:
+            return (.drop, .nothing)
         }
     }
 
@@ -629,8 +670,13 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
         snapshots.withInstalled { snapshot in
             for release in FilterPolicy.current(releases, installed: snapshot, generation: \.generation) {
                 resume(release.flow, allow: release.allow)
-                log(release.flow.facts, release.allow ? .allow(reason: release.reason) : .drop(reason: release.reason),
-                    snapshot, serverName: release.flow.serverName)
+                let verdict: FlowVerdict = release.allow ? .allow(reason: release.reason) : .drop(reason: release.reason)
+                if release.allow {
+                    askLock.lock()
+                    remember(release.flow.facts, verdict, snapshot)
+                    askLock.unlock()
+                }
+                log(release.flow.facts, verdict, snapshot, serverName: release.flow.serverName)
             }
         }
     }
@@ -681,6 +727,16 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
         return outcome.reply
     }
 
+    func forgetApprovals() -> AnswerReply {
+        askLock.lock()
+        let count = ask.forgetApprovals(now: Self.now)
+        askLock.unlock()
+        // Right away, so the file does not bring them back after a crash.
+        lifecycle.async { [weak self] in self?.saveApprovals() }
+        control("answer", "forget touch_id forgotten \(count)")
+        return .forgotten(count)
+    }
+
     // MARK: - Maintenance
 
     private func startMaintenance() {
@@ -703,10 +759,22 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
             // Idle DNS flows stop being read; their data passes from now on.
             self.dnsLock.lock()
             let idle = self.dnsFlows.expire(now: now)
+            let unread = (self.maintenanceTicks + 1) % 60 == 0 ? self.dnsFlows.takeUnread() : 0
             self.dnsLock.unlock()
             for flow in idle { self.update(flow, using: .allow(), for: .any) }
+            // Each minute: the DNS flows let go with a query unanswered, because more came than are read at once.
+            if unread > 0 { self.control("dns_flows_unread", "\(unread)") }
+            // The last run's destinations stop naming flows (VerifiedFlows.window).
+            self.askLock.lock()
+            let resumed = self.resumable != nil && now >= self.resumeUntil ? self.resumedFlows : nil
+            if resumed != nil { self.resumable = nil }
+            self.askLock.unlock()
+            if let resumed { self.control("flows_resumed", "\(resumed)") }
             self.maintenanceTicks += 1
-            if self.maintenanceTicks % 60 == 0 { self.saveIdentities() }
+            if self.maintenanceTicks % 60 == 0 {
+                self.saveIdentities()
+                self.saveVerified()
+            }
             // Each minute even with no change, so the file's time of day stays close to now.
             self.saveApprovals(refresh: self.maintenanceTicks % 60 == 0)
         }
@@ -795,6 +863,65 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
         } catch {
             approvalsSaveNotBefore = now + 60
             control("approvals_not_saved", "\(error)")
+        }
+    }
+
+    // MARK: - Verified destinations across runs
+
+    /// Where the UDP destinations a run let through wait for the next run (VerifiedFlows). Root's,
+    /// like the approvals.
+    private static let verifiedURL = identitiesURL?.deletingLastPathComponent().appendingPathComponent("verified-flows.json")
+
+    /// Under askLock. Keeps a UDP flow let through on its host's name for the next run: dated now
+    /// when this run checked the host against the address, and with the date of the last run's
+    /// check when the flow passed on a name that run supplied, which is no check.
+    private func remember(_ facts: FlowFacts, _ verdict: FlowVerdict, _ snapshot: ProviderConfiguration?) {
+        guard let (app, destination, checkedAt) = FilterPolicy.verified(facts, verdict, snapshot: snapshot) else { return }
+        let timeOfDay = Date().timeIntervalSince1970
+        if let checkedAt {
+            verified.carry(app: app, destination, checkedAt: checkedAt, timeOfDay: timeOfDay)
+        } else {
+            verified.record(app: app, destination, timeOfDay: timeOfDay)
+        }
+    }
+
+    /// On the lifecycle queue, at start: what the last run saved names this run's first flows.
+    private func restoreVerified() {
+        let restored = Self.verifiedURL.flatMap { try? Data(contentsOf: $0) }
+            .flatMap { VerifiedFlows(saved: $0, timeOfDay: Date().timeIntervalSince1970) }
+        askLock.lock()
+        resumable = restored
+        resumeUntil = Self.now + VerifiedFlows.window
+        resumedFlows = 0
+        askLock.unlock()
+        control("flows_restored", "\(restored?.count ?? 0)")
+    }
+
+    /// On the lifecycle queue. Writes this run's destinations when there is something new, or
+    /// with `force`. While the last run's still name flows they are written too: a second stop
+    /// within `VerifiedFlows.window` must not lose a destination whose socket has sent nothing yet.
+    private func saveVerified(force: Bool = false) {
+        guard let url = Self.verifiedURL else { return }
+        askLock.lock()
+        var saving = verified
+        let revision = verified.revision
+        if let resumable {
+            // This run's onto the last run's: with no room, the ones used longest ago go, and
+            // those are the last run's that no flow of this run has passed on.
+            var merged = resumable
+            merged.merge(saving)
+            saving = merged
+        }
+        askLock.unlock()
+        guard force || revision != savedVerifiedRevision, let data = saving.saved() else { return }
+        do {
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true,
+                                                    attributes: [.posixPermissions: 0o700])
+            try data.write(to: url, options: [.atomic])
+            _ = chmod(url.path, 0o600)
+            savedVerifiedRevision = revision
+        } catch {
+            control("flows_not_saved", "\(error)")
         }
     }
 

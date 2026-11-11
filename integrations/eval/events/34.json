@@ -1,0 +1,12 @@
+{
+  "event": "connection",
+  "id": "ev-00000022",
+  "app": {
+    "cdhash": "5b1e9c07d2a84f36e8c1b0a9d4f72e63c5a8b1d0",
+    "path": "/opt/homebrew/Cellar/node/26.13.0_2/bin/node",
+    "title": "npm run build"
+  },
+  "ip": "104.16.3.35",
+  "port": 443,
+  "host": "registry.npmjs.org"
+}

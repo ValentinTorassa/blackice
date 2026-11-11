@@ -20,22 +20,29 @@ public struct HookEvent: Codable, Equatable, Sendable {
         /// For an interpreter (Interpreters), the script its command line names (ProcessArguments).
         /// Any program can start an interpreter with any script, so it only helps tell tools apart.
         public let script: String?
+        /// For an interpreter whose process wrote a title over its arguments, as node does for npm
+        /// ("npm run build"): that title, since no script can be read then (ProcessArguments.title).
+        /// The process chose it, so it proves as little as the script.
+        public let title: String?
 
-        public init(signingID: String?, teamID: String?, cdhash: String? = nil, path: String?, script: String? = nil) {
+        public init(signingID: String?, teamID: String?, cdhash: String? = nil, path: String?, script: String? = nil,
+                    title: String? = nil) {
             self.signingID = signingID
             self.teamID = teamID
             self.cdhash = cdhash
             self.path = path
             self.script = script
+            self.title = title
         }
 
         /// A path `validPath` refuses, such as a file name with a line break, is left out: one such
         /// event in the pending table made the whole pending reply invalid, so `blackice pending`
         /// and the menu could read nothing until it expired.
-        public init(_ identity: AppIdentity, path: String?, script: String? = nil) {
+        public init(_ identity: AppIdentity, path: String?, script: String? = nil, title: String? = nil) {
             let reference = AppReference(identity)
             self.init(signingID: reference.signingID, teamID: reference.teamID, cdhash: reference.cdhash,
-                      path: path.flatMap { validPath($0) ? $0 : nil }, script: script.flatMap { validPath($0) ? $0 : nil })
+                      path: path.flatMap { validPath($0) ? $0 : nil }, script: script.flatMap { validPath($0) ? $0 : nil },
+                      title: title.flatMap { validTitle($0) ? $0 : nil })
         }
 
         /// nil unless exactly one form is present and valid.
@@ -49,6 +56,7 @@ public struct HookEvent: Codable, Equatable, Sendable {
             case cdhash
             case path
             case script
+            case title
         }
     }
 
@@ -111,6 +119,8 @@ public struct HookEvent: Codable, Equatable, Sendable {
     public static func decode(_ data: Data) throws -> HookEvent { try decodeJSON(HookEvent.self, data) }
 
     public static let maximumPathBytes = 1024
+    /// `npm run build` and its like fit; a longer title is cut (ProcessArguments.title).
+    public static let maximumTitleBytes = 64
 
     /// Checks every field the way the extension builds them. The daemon calls this on each event
     /// it receives, before logging it or running a hook.
@@ -124,6 +134,9 @@ public struct HookEvent: Codable, Equatable, Sendable {
         if let path = app.path, !validPath(path) { throw MessageError("app.path", "is too long or has control characters") }
         if let script = app.script, !validPath(script) {
             throw MessageError("app.script", "is too long or has control characters")
+        }
+        if let title = app.title, !validTitle(title) {
+            throw MessageError("app.title", "is too long or has control characters")
         }
         guard let address = IPAddress(ip), address.description == ip else { throw MessageError("ip", "must be an IP address") }
         guard let host, validEventHost(host, ip: ip) else {
@@ -156,7 +169,7 @@ public func validEventID(_ text: String) -> Bool {
 }
 
 /// An event's host as the extension writes it: a normalized host name, or for a connection with
-/// no name its address, exactly as `ip` (and so a link-local one only with its interface).
+/// no name its address, exactly as `ip` (and so with no interface, a link-local one too).
 /// `ip` must already be checked.
 public func validEventHost(_ host: String, ip: String) -> Bool {
     normalizeHost(host) == host || (host == ip && isNormalDestination(host))
@@ -173,6 +186,11 @@ public func validEventToken(_ text: String) -> Bool {
 func validPath(_ text: String) -> Bool {
     !text.isEmpty && text.utf8.count <= HookEvent.maximumPathBytes
         && !text.unicodeScalars.contains { $0.value < 0x20 || $0.value == 0x7F }
+}
+
+/// At most `HookEvent.maximumTitleBytes`, no control characters.
+func validTitle(_ text: String) -> Bool {
+    validPath(text) && text.utf8.count <= HookEvent.maximumTitleBytes
 }
 
 public enum EventToken {

@@ -17,6 +17,8 @@ public enum ControlAction: Equatable, Sendable {
     case approve(AppIdentity, hosts: [String], seconds: Int, script: String? = nil)
     /// `blackice deny`: a person confirms.
     case deny(AppIdentity, host: String, script: String? = nil)
+    /// `blackice deny --all`: a person confirms.
+    case forgetApprovals
 
     /// What the Touch ID dialog says, completing macOS's "Blackice is trying to …". The terminal
     /// prints it too. Every change to filtering asks.
@@ -35,6 +37,8 @@ public enum ControlAction: Equatable, Sendable {
             return "let \(identity.label)\(Self.running(script)) reach \(Self.list(hosts)) for \(Self.duration(seconds))"
         case .deny(let identity, let host, let script):
             return "deny \(identity.label)\(Self.running(script)) access to \(host) and drop its waiting connections"
+        case .forgetApprovals:
+            return "forget every approval"
         }
     }
 

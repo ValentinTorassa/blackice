@@ -55,6 +55,10 @@ public struct FlowFacts: Equatable, Sendable {
     /// for, as the extension saw them in its DNS responses (DNSNameTable). Each came with the
     /// address, so it passes the host and address check for this flow.
     public let dnsNames: Set<String>
+    /// The names that are aliases of one in `dnsNames`, through CNAME records the extension saw
+    /// in those responses (DNSNameTable.aliases). Each passes the host and address check for this
+    /// flow too; none of them names a flow that has no host name (`dnsName`).
+    public let dnsAliases: Set<String>
     /// For ad hoc code, the path of the executable as the kernel has it (CodeIdentity.kernelPath):
     /// a cdhash rule never counts for an interpreter, told by this file's name (`Interpreters`).
     /// nil for other code, and when the kernel does not say.
@@ -63,10 +67,19 @@ public struct FlowFacts: Equatable, Sendable {
     /// that script, and an approval counts for this flow only when it covers it (ScriptScope).
     /// `.any` for other code.
     public let scriptScope: ScriptScope
+    /// For an interpreter whose process wrote a title over its arguments, that title
+    /// (ProcessArguments.title). Its event shows it; no decision reads it, and an answer covers
+    /// the interpreter running no script it names, whatever its title.
+    public let title: String?
+    /// The hosts in `dnsNames` or `dnsAliases` that no DNS answer of this run gave the address:
+    /// the last run checked them for this app, address and port, each at this time of day
+    /// (VerifiedFlows.facts). A flow let through on one was not checked by this run.
+    public let restored: [String: Double]
 
     public init(direction: FlowDirection, identity: IdentityResolution, internetSocket: Bool, tcp: Bool,
                 hostname: String?, port: UInt16?, remoteAddress: IPAddress?, process: IdentityResolution? = nil,
-                dnsNames: Set<String> = [], executablePath: String? = nil, scriptScope: ScriptScope = .any) {
+                dnsNames: Set<String> = [], dnsAliases: Set<String> = [], executablePath: String? = nil,
+                scriptScope: ScriptScope = .any, title: String? = nil, restored: [String: Double] = [:]) {
         self.direction = direction
         self.identity = identity
         self.process = process
@@ -80,8 +93,11 @@ public struct FlowFacts: Equatable, Sendable {
         self.port = port
         self.remoteAddress = remoteAddress
         self.dnsNames = dnsNames
+        self.dnsAliases = dnsAliases
         self.executablePath = executablePath
         self.scriptScope = scriptScope
+        self.title = title
+        self.restored = restored
     }
 
     /// The one name the remote address was given for, when there is exactly one. Several
@@ -308,16 +324,17 @@ public enum FilterPolicy {
 
     /// Ask mode, a TCP flow with no name: no host name from the system, not exactly one name from
     /// DNS answers, and no server name to read. It is asked about by its address, which is its
-    /// destination, so no lookup applies and an approval for that address allows it. Dropped as
-    /// before, with no event: UDP (WebRTC, games, discovery and QUIC would flood the hooks with
-    /// events that get denied anyway; address rules and `*` allow it); a multicast or broadcast
-    /// destination; a link-local address whose interface is not known, which could be any host on
-    /// any link; and a flow with no port.
+    /// destination, so no lookup applies and an approval for that address allows it. A link-local
+    /// address is asked about with no interface, since the flow gives none (IPAddress.destination):
+    /// its approval covers the address on every interface. Dropped as before, with no event: UDP
+    /// (WebRTC, games, discovery and QUIC would flood the hooks with events that get denied
+    /// anyway; address rules and `*` allow it); a multicast or broadcast destination; and a flow
+    /// with no port.
     private static func byAddress(_ identity: AppIdentity, _ flow: FlowFacts, _ context: PolicyContext) -> FlowVerdict {
-        guard flow.tcp, let address = flow.remoteAddress, address.isCheckable, !address.isMulticastOrBroadcast,
+        guard flow.tcp, let address = flow.remoteAddress, !address.isMulticastOrBroadcast,
               flow.port != nil else { return .drop(reason: "no_host") }
-        if context.approved(identity, address.description) { return .allow(reason: "approval;address") }
-        if context.denied(identity, address.description) { return .drop(reason: rememberedDenial) }
+        if context.approved(identity, address.destination) { return .allow(reason: "approval;address") }
+        if context.denied(identity, address.destination) { return .drop(reason: rememberedDenial) }
         return .ask(reason: "no_rule;address", addressMatches: true)
     }
 
@@ -354,11 +371,33 @@ public enum FilterPolicy {
 
     /// The host an event names for a flow that ask mode pauses: the server name read from its
     /// hello, else the host name from the system, else the one name DNS answers gave its address,
-    /// else the address itself as `IPAddress.description` prints it. nil when none can name it.
+    /// else the address itself as `IPAddress.destination` prints it. nil when none can name it.
     public static func eventHost(_ flow: FlowFacts, serverName: String?) -> String? {
         if let name = serverName ?? flow.hostname ?? flow.dnsName { return normalizeHost(name) }
-        guard let address = flow.remoteAddress, address.isCheckable else { return nil }
-        return address.description
+        return flow.remoteAddress?.destination
+    }
+
+    /// What the next run may take as checked (VerifiedFlows): for a UDP flow that `verdict` lets
+    /// through because a rule, the Apple services table or an approval names its host, the app and
+    /// the destination. The host is the one whose address checked out: the host name from the
+    /// system, else the one name DNS answers gave the address. `checkedAt` is nil when this run
+    /// checked the pair, and the time of the last run's check when the flow passed on a name that
+    /// run supplied (`FlowFacts.restored`). nil for any other flow or verdict: TCP, accept-all,
+    /// loopback, a link-local address with or without its interface (a saved one has none), a flow
+    /// asked about by its address, and a flow that a `*` rule or an address rule covers whatever
+    /// its name, since nothing checked that name.
+    public static func verified(_ flow: FlowFacts, _ verdict: FlowVerdict, snapshot: ProviderConfiguration?)
+        -> (app: AppIdentity, destination: VerifiedFlows.Destination, checkedAt: Double?)? {
+        guard case .allow(let reason) = verdict, let snapshot, snapshot.mode != .acceptAll,
+              flow.direction == .outbound, flow.internetSocket, !flow.tcp,
+              let app = flow.identity.appIdentity, let address = flow.remoteAddress, !address.isLinkLocal,
+              let port = flow.port, port > 0,
+              let host = flow.hostname.flatMap(normalizeHost) ?? flow.dnsName else { return nil }
+        guard ["rule_line_", "apple_service", "approval", "approved"].contains(where: reason.hasPrefix),
+              !reason.contains(";address"),
+              snapshot.config.anyHostRule(for: app) == nil,
+              snapshot.config.addressRule(for: app, address: address) == nil else { return nil }
+        return (app, VerifiedFlows.Destination(host: host, address: address, port: port), flow.restored[host])
     }
 
     /// Whether a rule names the code `rules` names (for any host), or the Apple services table
@@ -478,8 +517,10 @@ public enum FilterPolicy {
             return .drop(reason: rememberedDenial)
         }
         guard flow.remoteAddress != nil else { return .drop(reason: "no_address") }
-        // An answer the resolver gave for this host and address counts like a lookup that found it.
-        switch flow.dnsNames.contains(host) ? AddressCheck.match : context.address(host, flow.remoteAddress) {
+        // An answer the resolver gave for this host and address counts like a lookup that found
+        // it, and so does one it gave for a name this host is an alias of.
+        let answered = flow.dnsNames.contains(host) || flow.dnsAliases.contains(host)
+        switch answered ? AddressCheck.match : context.address(host, flow.remoteAddress) {
         case .unknown:
             // Ask mode looks the host up even with no rule, so a paused flow knows whether an
             // approval may release it.

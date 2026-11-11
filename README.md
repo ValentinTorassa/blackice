@@ -12,7 +12,7 @@ A menu bar icon shows the mode and what waits. Starting, stopping, switching mod
 
 Docs: [blackice-macos.vercel.app](https://blackice-macos.vercel.app)
 
-1.0.6 has run on one Mac, a MacBook Air with macOS 27.0.1; macOS 14 and 15 are not tested yet. A `blackice.toml`
+1.0.7 has run on one Mac, a MacBook Air with macOS 27.0.1; macOS 14 and 15 are not tested yet. A `blackice.toml`
 that works in 1.0 keeps working in every 1.x. Each run is recorded in [`evidence/`](evidence/),
 each release in [CHANGELOG.md](CHANGELOG.md), and the open problems in [`docs/plan.md`](docs/plan.md).
 
@@ -46,7 +46,7 @@ sample connection, a rule that lets it reach its model, and its hook. Its tools 
 - `codex`: [Codex](https://developers.openai.com/codex/cli), with a ChatGPT plan ([`integrations/codex/`](integrations/codex/))
 - `opencode`: [opencode](https://opencode.ai/docs), with a provider you pick ([`integrations/opencode/`](integrations/opencode/))
 
-[`integrations/eval/run.sh`](integrations/eval/run.sh) runs any of them over the same 33 cases.
+[`integrations/eval/run.sh`](integrations/eval/run.sh) runs any of them over the same 37 cases.
 
 ## Development
 

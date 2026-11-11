@@ -24,6 +24,11 @@ public final class NESystemControl: SystemControlling {
     /// waits for the person to approve it in System Settings.
     static let extensionRequestTimeout: TimeInterval = 600
     static let preferencesTimeout: TimeInterval = 60
+    /// How long start waits, with the filter off, for macOS to let go of the filter that was
+    /// turned off. It was 30 s for three upgrades on 11 November 2026, and macOS took 58.9 and
+    /// 47.3 s in two of them, the longest it was seen to take: no new connection got through for
+    /// the 28.5 and 17.0 s past the wait.
+    static let turnedOffLimit: TimeInterval = 90
 
     public init() {}
 
@@ -43,14 +48,45 @@ public final class NESystemControl: SystemControlling {
         if output.setup { output.stdout(""); output.stdout(Style.heading("2 · Confirm with Touch ID")) }
         guard confirm(.start(candidate), output) else { return ExitCode.noPermission }
 
+        // An upgrade with the filter on. A filter that starts while macOS is still disconnecting
+        // the one it replaces is held with it, and no new connection gets through until macOS is
+        // done: 4 to 59 s in six upgrades on 10 and 11 November 2026 (FilterDisconnect).
+        // With no filter in its place nothing waits on the one going. So the old build's filter
+        // is turned off first, and the new build's is started once the kernel has let the old one
+        // go: connections are not checked meanwhile, for turnedOffLimit at most (decided on 11
+        // November 2026). Only where the kernel's list of filters can be read.
+        var turnedOff = false
+        if saved.enabled, saved.providerBundleID != nil, KernelFilters.count() != nil, Self.unfinishedUpgrade() != nil {
+            guard let (manager, current) = loadSaved(output) else { return ExitCode.software }
+            if let owner = current.foreignOwner { return refuseForeign(owner, output) }
+            guard current.configuration == saved.configuration else { return changedMeanwhile(output) }
+            guard turnOff(manager, output) else { return ExitCode.software }
+            turnedOff = true
+        }
+
         let (activation, replaced, neededApproval, _) = runExtensionRequest(
             OSSystemExtensionRequest.activationRequest(forExtensionWithIdentifier: BlackiceIdentifiers.filter, queue: .main),
             output)
-        guard activation == ExitCode.success else { return activation }
+        guard activation == ExitCode.success else {
+            // The new build is not in place: the build macOS runs goes on filtering.
+            if turnedOff, let (manager, _) = loadSaved(output) {
+                manager.isEnabled = true
+                _ = save(manager, output)
+            }
+            return activation
+        }
         // After a replacement macOS starts the new build with the configuration saved before, and a
         // save made while it starts can miss it: on 5 November 2026 build 19 came up with generation
-        // 17 and never saw the 18 saved a moment later. Wait until the new build answers first.
-        if replaced { _ = Self.answers() }
+        // 17 and never saw the 18 saved a moment later. Wait until the new build answers first. A
+        // filter that was turned off starts with the configuration saved below.
+        if replaced, !turnedOff { _ = Self.answers() }
+
+        // A filter that was off when start began can still be going too: macOS can take as long
+        // over the one a `blackice stop` turned off (10.1 s on 11 November 2026), and the filter
+        // saved below would be held with it. Wait the same way; blackice is off meanwhile as it was.
+        if !saved.enabled || saved.providerBundleID == nil, let filters = KernelFilters.count() {
+            letGo(after: filters, appear: 0, output)
+        }
 
         guard let (manager, current) = loadSaved(output) else { return ExitCode.software }
         if let owner = current.foreignOwner { return refuseForeign(owner, output) }
@@ -82,8 +118,7 @@ public final class NESystemControl: SystemControlling {
         // off and on, so that it starts again with the one just saved.
         if replaced, case .other(let active) = inForce, (active?.generation ?? 0) < candidate.generation {
             output.stdout("Restarting the filter, which kept the configuration from before the upgrade…")
-            manager.isEnabled = false
-            guard save(manager, output) else { return ExitCode.software }
+            guard turnOff(manager, output) else { return ExitCode.software }
             manager.isEnabled = true
             guard save(manager, output) else { return ExitCode.software }
             inForce = Self.activation(of: candidate)
@@ -97,14 +132,43 @@ public final class NESystemControl: SystemControlling {
             CLI.notActiveLines(candidate, inForce).forEach(output.stderr)
             return CLI.activationStatus(inForce)
         }
+        // macOS can take seconds to disconnect the filter this one replaced, or the one turned off
+        // and on above, and no new connection gets through meanwhile (FilterDisconnect).
+        let held = KernelFilters.held(appear: 2)
         // More setup follows: the caller says what happened.
-        guard output.next else { return ExitCode.success }
+        guard output.next else {
+            held.map(CLI.heldLines)?.forEach(output.stderr)
+            return ExitCode.success
+        }
         if neededApproval || output.setup { output.stdout("") }
         CLI.onLines(candidate).forEach(output.stdout)
         if neededApproval || output.setup {
             CLI.firstStartLines(candidate, daemonRunning: Self.daemonRunning()).forEach(output.stdout)
         }
+        held.map(CLI.heldLines)?.forEach(output.stderr)
         return ExitCode.success
+    }
+
+    /// Turns the filter off and waits until the kernel has let it go, so that the filter started
+    /// next is not held with it (KernelFilters.gone), saying so when that lasts. false when the
+    /// settings could not be saved.
+    private func turnOff(_ manager: NEFilterManager, _ output: SystemOutput) -> Bool {
+        let filters = KernelFilters.count()
+        manager.isEnabled = false
+        guard save(manager, output) else { return false }
+        if let filters { letGo(after: filters, appear: 2, output) }
+        return true
+    }
+
+    /// Waits until the kernel has let go of a filter that was turned off, its list having had
+    /// `filters` until then, for turnedOffLimit at most, and says so when that lasts. `appear` as in
+    /// KernelFilters.gone: 0 when the filter was turned off before this command.
+    private func letGo(after filters: Int, appear: TimeInterval, _ output: SystemOutput) {
+        let limit = Int(Self.turnedOffLimit)
+        if !KernelFilters.gone(after: filters, appear: appear, limit: Self.turnedOffLimit,
+                               held: { CLI.turnedOffLines($0, limit: limit).forEach(output.stdout) }) {
+            output.stdout(CLI.turnedOffTooLong(limit: limit))
+        }
     }
 
     /// Asks the extension which configuration it decides with until it names `candidate`, for up
@@ -145,9 +209,21 @@ public final class NESystemControl: SystemControlling {
         guard let (manager, current) = loadSaved(output) else { return ExitCode.software }
         if let owner = current.foreignOwner { return refuseForeign(owner, output) }
         if current.providerBundleID != nil {
+            let filters = KernelFilters.count()
             manager.isEnabled = false
             guard save(manager, output) else { return ExitCode.software }
             guard remove(manager, output) else { return ExitCode.software }
+            // macOS can stay at one socket while it disconnects the filter, for minutes at an ICMP
+            // one, with the stopped extension's process busy all the while; an echo request ends
+            // that one (KernelFilters.gone). Nothing waits on a filter going with none in its
+            // place, so stop says nothing of it and goes on after 3 s.
+            if let filters { _ = KernelFilters.gone(after: filters, lasting: .infinity, limit: 3, held: { _ in }) }
+        }
+        // macOS has an administrator confirm the removal in a dialog of its own, and the request's
+        // delegate is not told: on 11 November 2026 (macOS 27.0.1) stop waited 78 s on that dialog
+        // having said nothing. Said unless macOS answers that it has no extension of ours enabled.
+        if Self.runningBuilds()?.isEmpty != true {
+            output.stdout("macOS now asks you to confirm removing the network extension: follow its dialog.")
         }
         let request = runExtensionRequest(
             OSSystemExtensionRequest.deactivationRequest(forExtensionWithIdentifier: BlackiceIdentifiers.filter, queue: .main),
@@ -182,7 +258,8 @@ public final class NESystemControl: SystemControlling {
             pending = try? FilterClient(teamID: teamID).pending()
             if pending == nil { upgrade = Self.unfinishedUpgrade() }
         }
-        CLI.statusLines(StatusReport(filter: filter, daemonRunning: Self.daemonRunning(), pending: pending, upgrade: upgrade))
+        CLI.statusLines(StatusReport(filter: filter, daemonRunning: Self.daemonRunning(), pending: pending, upgrade: upgrade,
+                                     held: KernelFilters.held(lasting: 0.3)))
             .forEach(output.stdout)
         return ExitCode.success
     }
@@ -202,6 +279,13 @@ public final class NESystemControl: SystemControlling {
     /// one inside this app, because the app was replaced and `blackice start` has not run since.
     /// One properties request to macOS; nil when it fails or the builds match.
     public static func unfinishedUpgrade() -> UnfinishedUpgrade? {
+        guard let running = runningBuilds() else { return nil }
+        return UnfinishedUpgrade(app: Peers.extensionBuild(app: Bundle.main.bundleURL), running: running)
+    }
+
+    /// The builds of the extension macOS has enabled and is not uninstalling, from one properties
+    /// request; nil when macOS does not say within 5 s.
+    static func runningBuilds() -> [String]? {
         let result = Completion()
         let delegate = ExtensionPropertiesDelegate(result: result)
         let request = OSSystemExtensionRequest.propertiesRequest(forExtensionWithIdentifier: BlackiceIdentifiers.filter,
@@ -209,8 +293,7 @@ public final class NESystemControl: SystemControlling {
         request.delegate = delegate
         OSSystemExtensionManager.shared.submitRequest(request)
         let status = withExtendedLifetime(delegate) { MainLoop.wait(for: result, timeout: 5) }
-        guard status == ExitCode.success else { return nil }
-        return UnfinishedUpgrade(app: Peers.extensionBuild(app: Bundle.main.bundleURL), running: delegate.running)
+        return status == ExitCode.success ? delegate.running : nil
     }
 
     public func setMode(_ mode: Mode, output: SystemOutput) -> Int32 {
@@ -305,6 +388,33 @@ public final class NESystemControl: SystemControlling {
         } catch {
             output.stderr(Self.unfinishedUpgrade().map { "\(command): cannot reach blackice's filter. " + $0.hint }
                 ?? "\(command): cannot reach blackice's filter (\(error)). Is it on? blackice status")
+            return ExitCode.unavailable
+        }
+    }
+
+    /// `blackice deny --all`: a person confirms with Touch ID, then the extension forgets every
+    /// approval. Trusted the way `answer` is.
+    static let forgetWhileOff = "blackice deny: blackice is off, and --all works only while it is on. "
+        + "The approvals of its last run come back when it starts: run blackice start, then blackice deny --all."
+
+    public func forgetApprovals(output: SystemOutput) -> Int32 {
+        guard Self.isSignedHost(), let teamID = CodeIdentity.current()?.teamID else {
+            return UnsignedSystem().forgetApprovals(output: output)
+        }
+        // Off: the filter that holds the approvals is not there to tell, and the ones it saved come
+        // back when it starts. Said before Touch ID is asked for, since nothing would be forgotten.
+        if let (_, saved) = loadSaved(SystemOutput(stdout: { _ in }, stderr: { _ in })), !saved.enabled {
+            output.stderr(Self.forgetWhileOff)
+            return ExitCode.unavailable
+        }
+        guard confirm(.forgetApprovals, output) else { return ExitCode.noPermission }
+        do {
+            let reply = try FilterClient(teamID: teamID).forget()
+            if reply.status == .done { output.stdout(Style.done(reply.message)) } else { output.stderr("blackice deny: \(reply.message)") }
+            return CLI.answerStatus(reply)
+        } catch {
+            output.stderr(Self.unfinishedUpgrade().map { "blackice deny: cannot reach blackice's filter. " + $0.hint }
+                ?? "blackice deny: cannot reach blackice's filter (\(error)). Is it on? blackice status")
             return ExitCode.unavailable
         }
     }
@@ -544,10 +654,8 @@ final class ExtensionRequestDelegate: NSObject, OSSystemExtensionRequestDelegate
 
     func requestNeedsUserApproval(_ request: OSSystemExtensionRequest) {
         neededApproval = true
-        if deactivating {
-            output.stdout("macOS asks you to confirm removing the network extension: follow its dialog. Waiting up to 10 minutes…")
-            return
-        }
+        // stop said so before the request.
+        if deactivating { return }
         ExtensionApproval.lines(macOS: SystemSettings.majorVersion, opened: SystemSettings.openExtensions(), setup: output.setup)
             .forEach(output.stdout)
     }

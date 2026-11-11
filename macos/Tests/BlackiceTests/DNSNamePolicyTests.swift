@@ -18,9 +18,9 @@ private let here = "203.0.113.7"
 
 /// A flow the app opened with BSD sockets: an address and no host name, by default on 443.
 private func bare(_ identity: IdentityResolution, _ names: Set<String>, port: UInt16 = 443, tcp: Bool = true,
-                  host: String? = nil, address: String? = here) -> FlowFacts {
+                  host: String? = nil, address: String? = here, aliases: Set<String> = []) -> FlowFacts {
     FlowFacts(direction: .outbound, identity: identity, internetSocket: true, tcp: tcp, hostname: host, port: port,
-              remoteAddress: address.flatMap(IPAddress.init), dnsNames: names)
+              remoteAddress: address.flatMap(IPAddress.init), dnsNames: names, dnsAliases: aliases)
 }
 
 /// Approvals, and resolver answers by host; a host without answers is not looked up yet.
@@ -75,6 +75,35 @@ struct DNSNamePolicyTests {
         // Another app, or ad hoc code, is not what the rule names.
         #expect(try decide(bare(probe, ["pypi.org"], port: 22), .blockAll) == .drop(reason: "no_rule"))
         #expect(try decide(bare(adHoc, ["pypi.org"], port: 22), .blockAll) == .drop(reason: "adhoc_code"))
+    }
+
+    // The resolver asked for the end of the host's CNAME chain, so the address came under that
+    // name: the host is its alias, and passes the address check with no lookup of blackice's own.
+    @Test func aHostThatIsAnAliasOfTheDNSNamePassesTheAddressCheck() throws {
+        let end = "atm.outlook.mira.tm.svc.cloud.microsoft", host = "outlook.office365.com"
+        let approved = context(approved: [key(adHoc, host), key(curl, host)], answers: [host: ["203.0.113.99"]])
+        // An approved host, by the system's host name (IMAP on 993) and by the server name (443).
+        let mail = bare(adHoc, [end], port: 993, host: host, aliases: [host, "outlook.cloud.microsoft"])
+        #expect(try decide(mail, .ask, approved) == .allow(reason: "approval"))
+        let web = bare(curl, [end], host: host, aliases: [host])
+        #expect(try decide(web, .ask, approved) == .readServerName)
+        #expect(try decide(web, serverName: host, .ask, approved) == .allow(reason: "approval;server_name"))
+        // Without the alias blackice's own lookup decides, and its answers miss this address.
+        #expect(try decide(bare(adHoc, [end], port: 993, host: host), .ask, approved) == .drop(reason: "address_mismatch"))
+        // A rule, in both modes.
+        let pypi = bare(curl, ["pypi.map.fastly.net"], port: 80, host: "pypi.org", aliases: ["pypi.org"])
+        #expect(try decide(pypi, .blockAll) == .allow(reason: "rule_line_8"))
+        #expect(try decide(pypi, .ask) == .allow(reason: "rule_line_8"))
+        // Only the host that is an alias: another host on the flow is looked up as ever.
+        let other = bare(curl, ["pypi.map.fastly.net"], port: 80, host: "pypi.org", aliases: ["files.example.com"])
+        #expect(try decide(other, .blockAll) == .resolveHost("pypi.org"))
+        // An alias passes the address check and nothing else: with nothing covering it, it is asked about.
+        #expect(try decide(bare(probe, [end], port: 993, host: host, aliases: [host]), .ask)
+            == .ask(reason: "no_rule", addressMatches: true))
+        // A flow with no host name is still named by the one name its address came under.
+        let unnamed = bare(probe, [end], port: 993, aliases: [host])
+        #expect(unnamed.dnsName == end)
+        #expect(FilterPolicy.eventHost(unnamed, serverName: nil) == end)
     }
 
     @Test func blockAllWithNothingCoveringTheNameFallsBackToTheServerName() throws {

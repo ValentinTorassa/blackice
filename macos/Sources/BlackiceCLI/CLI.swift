@@ -26,6 +26,8 @@ public enum Command: Equatable, Sendable {
     case mode(Mode, answerer: Answerer? = nil)
     case approve(Approval)
     case deny(Denial)
+    /// `blackice deny --all`: forget every approval.
+    case forgetApprovals
     case validate(path: String)
     case daemon
     case agent(AgentAction)
@@ -47,7 +49,7 @@ public enum Command: Equatable, Sendable {
         case .pending: return "pending"
         case .mode: return "mode"
         case .approve: return "approve"
-        case .deny: return "deny"
+        case .deny, .forgetApprovals: return "deny"
         case .validate: return "validate"
         case .daemon: return "daemon"
         case .agent, .connectAgent: return "agent"
@@ -186,10 +188,14 @@ public enum CLI {
                     "  --save         also add a lasting [[allow]] rule for it to blackice.toml",
                     "                 (or --config PATH); it counts from the next blackice start.",
                     "                 A rule for an interpreter (python, node…) never counts."],
-        "deny": ["Usage: blackice deny --app ID [--team TEAM] --host HOST [--script PATH]", "",
+        "deny": ["Usage: blackice deny --app ID [--team TEAM] --host HOST [--script PATH]",
+                 "       blackice deny --all", "",
                  "Refuses one app one host, and drops its waiting connections (Touch ID).",
                  "--cdhash HEX in place of --app names ad hoc signed code; --script PATH, for",
-                 "an interpreter, refuses only that script."],
+                 "an interpreter, refuses only that script.",
+                 "  --all   forgets every approval instead (Touch ID). What waits keeps waiting,",
+                 "          remembered denials stay, and connections already let through go on.",
+                 "          Only while blackice is on: off, the saved ones wait for its start."],
         "report": ["Usage: blackice report [--last 1h]", "",
                    "What the filter dropped, by reason and app, and in accept-all what ask mode",
                    "would have done. --last takes minutes or hours, such as 30m or 2h, at most 168h."],
@@ -333,6 +339,10 @@ public enum CLI {
                                      script: script))
         case "deny":
             try noToken(rest, command: first)
+            if rest.contains("--all") {
+                guard rest == ["--all"] else { throw UsageError("\(first): --all takes nothing else; it forgets every approval") }
+                return .forgetApprovals
+            }
             let options = try parseOptions(rest, allowed: ["app", "team", "cdhash", "host", "script"], command: first)
             let target = try target(options, command: first)
             let script = try options["script"].map { try self.script($0, command: first) }
@@ -529,6 +539,8 @@ public enum CLI {
             return saveRule(approval, readFile: readFile, stdout: stdout, stderr: stderr)
         case .deny(let denial):
             return system.answer(denial.request, output: SystemOutput(stdout: stdout, stderr: stderr))
+        case .forgetApprovals:
+            return system.forgetApprovals(output: SystemOutput(stdout: stdout, stderr: stderr))
         case .report(let minutes):
             // Taken before `log show` runs, so every event counted has its ask line in what it reads.
             let now = Date()
@@ -666,6 +678,8 @@ public enum CLI {
                 if case .signed? = identity {} else if let path = event.path { lines.append("    " + Describe.terminalSafe(path)) }
                 // An interpreter's script, which its command line names: it tells tools apart, and proves nothing.
                 if let script = event.script { lines.append("    running " + Describe.terminalSafe(script)) }
+                // With no script to read, the title the process gave itself: `npm run build`.
+                if let title = event.title { lines.append("    calls itself " + Describe.terminalSafe(title)) }
                 if let identity {
                     lines.append("    " + Style.command(approveCommand(identity, hosts: [event.host], script: event.script)))
                 }
@@ -879,8 +893,9 @@ public enum CLI {
     private static func host(_ rawHost: String?, command: String) throws -> String {
         guard let rawHost else { throw UsageError("\(command) needs --host") }
         // An address covers connections to it that have no name, as `pending` shows them.
-        if let address = IPAddress.strict(rawHost), !address.isCheckable {
-            throw UsageError("\(command): --host needs a link-local address's interface, such as fe80::1%en0")
+        if rawHost.contains("%"), IPAddress.strict(rawHost)?.isLinkLocal == true {
+            throw UsageError("\(command): --host takes a link-local address with no interface, such as fe80::1: "
+                             + "macOS does not say which one a connection uses, so the answer covers the address on each")
         }
         guard let host = normalizeDestination(rawHost) else {
             throw UsageError("\(command): --host takes one host name or IP address, with no wildcards, ranges or leading zeros")

@@ -283,7 +283,7 @@ struct MessagesTests {
         let events = (0..<AskLimits.events).map { index in
             PendingSummary(id: String(format: "ev-%08x", index), app: app, path: path, host: host,
                            ip: "ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff", port: .max, secondsLeft: .max, connections: .max,
-                           script: path)
+                           script: path, title: String(repeating: "\"\\", count: HookEvent.maximumTitleBytes / 2))
         }
         let approvals = (0..<ApprovalTable.maximumEntries).map { _ in
             ApprovalSummary(app: app, host: host, secondsLeft: .max, scope: .script(path))
@@ -296,6 +296,14 @@ struct MessagesTests {
         try largest.validate(now: Date())
         #expect(largest.events[0].host.utf8.count == 253 && largest.events[0].path?.utf8.count == HookEvent.maximumPathBytes)
         #expect(largest.events[0].script?.utf8.count == HookEvent.maximumPathBytes && largest.approvals[0].script != nil)
+        #expect(largest.events[0].title?.utf8.count == HookEvent.maximumTitleBytes)
+        // A title past its limit, or with a control character, is no reply of the extension's.
+        for title in [String(repeating: "a", count: HookEvent.maximumTitleBytes + 1), "npm\u{7}"] {
+            let event = largest.events[0]
+            let bad = PendingSummary(id: event.id, app: event.app, path: nil, host: event.host, ip: event.ip, port: event.port,
+                                     secondsLeft: 1, connections: 1, title: title)
+            #expect(refused { try PendingReply(events: [bad], approvals: []).validate(now: Date()) })
+        }
         let data = try Messages.encode(largest)
         #expect(data.count <= PendingReply.maximumBytes)
         #expect(data.count > Messages.maximumBytes, "the old limit refused this reply")

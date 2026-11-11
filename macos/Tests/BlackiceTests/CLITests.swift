@@ -56,6 +56,7 @@ private final class FakeSystem: SystemControlling {
         return answer
     }
 
+    func forgetApprovals(output: SystemOutput) -> Int32 { calls.append("forget approvals"); return answer }
     func runDaemon(output: SystemOutput) -> Int32 { calls.append("daemon"); return answer }
     func installAgent(output: SystemOutput) -> Int32 { calls.append("agent install"); return answer }
     func uninstallAgent(output: SystemOutput) -> Int32 { calls.append("agent uninstall"); return answer }
@@ -114,7 +115,7 @@ struct ParseTests {
         let ssh = AppIdentity.signed(SigningIdentity(signingID: "com.apple.ssh", teamID: nil))
         let forms: [(String, String)] = [
             ("100.66.32.75", "100.66.32.75"), ("FD7A:115C:A1E0:0:0:0:0:1", "fd7a:115c:a1e0::1"),
-            ("::ffff:100.66.32.75", "100.66.32.75"), ("fe80::1%lo0", "fe80::1%\(if_nametoindex("lo0"))"),
+            ("::ffff:100.66.32.75", "100.66.32.75"), ("FE80::1", "fe80::1"),
         ]
         for (raw, host) in forms {
             #expect(try CLI.parse(["approve", "--app", "com.apple.ssh", "--host", raw, "--for", "1h"])
@@ -124,7 +125,8 @@ struct ParseTests {
         let ranges = "with no wildcards, ranges or leading zeros"
         let cases: [(String, String)] = [
             ("010.0.0.1", "leading zeros"), ("10.1", ranges), ("100.64.0.0/10", ranges), ("2001:db8::/32", ranges),
-            ("fe80::1", "link-local address's interface"), ("2001:db8::1%en0", ranges),
+            ("fe80::1%lo0", "link-local address with no interface"), ("fe80::1%7", "link-local address with no interface"),
+            ("2001:db8::1%en0", ranges),
         ]
         for (raw, fragment) in cases {
             let message = usageError(["approve", "--app", "com.apple.ssh", "--host", raw])
@@ -238,7 +240,10 @@ struct ParseTests {
             events: [PendingSummary(id: "ev-0000002d", app: python, path: path, host: "sts.amazonaws.com", ip: "203.0.113.7",
                                     port: 443, secondsLeft: 40, connections: 1, script: "/Users/me/My Tools/it's.py"),
                      PendingSummary(id: "ev-0000002e", app: python, path: path, host: "pypi.org", ip: "203.0.113.8",
-                                    port: 443, secondsLeft: 40, connections: 1, script: "tool.py")],
+                                    port: 443, secondsLeft: 40, connections: 1, script: "tool.py"),
+                     // node running npm: the title it wrote over its arguments, and no script.
+                     PendingSummary(id: "ev-0000002f", app: python, path: "/opt/homebrew/bin/node", host: "registry.npmjs.org",
+                                    ip: "203.0.113.9", port: 443, secondsLeft: 40, connections: 2, title: "npm run wait")],
             approvals: [ApprovalSummary(app: python, host: "sts.amazonaws.com", secondsLeft: 3599, scope: .script("/opt/homebrew/bin/aws"))],
             denials: [ApprovalSummary(app: python, host: "s3.amazonaws.com", secondsLeft: 540, scope: .script(nil)),
                       ApprovalSummary(app: python, host: "s3.amazonaws.com", secondsLeft: 300, scope: .script("-m boto"))])
@@ -254,6 +259,10 @@ struct ParseTests {
             "    \(path)",
             "    running tool.py",
             "    blackice approve --cdhash \(testCDHash) --host pypi.org",
+            "  \(adHoc) → registry.npmjs.org:443  2 connections, 40s left",
+            "    /opt/homebrew/bin/node",
+            "    calls itself npm run wait",
+            "    blackice approve --cdhash \(testCDHash) --host registry.npmjs.org",
             "",
             "Denied, dropped without asking",
             "  \(adHoc) → s3.amazonaws.com  9m  with no script",
@@ -314,6 +323,12 @@ struct ParseTests {
             (["approve", "--app", "com.a", "--host", "example.com", "--yes"], "unknown option --yes"),
             (["approve", "com.a"], "unexpected argument"),
             (["deny", "--app", "com.a", "--host", "example.com", "--for", "1h"], "unknown option --for"),
+            (["deny", "--all", "--app", "com.a"], "--all takes nothing else"),
+            (["deny", "--app", "com.a", "--host", "example.com", "--all"], "--all takes nothing else"),
+            (["deny", "--all", "--all"], "--all takes nothing else"),
+            (["deny", "--all=yes"], "unknown option --all"),
+            (["deny"], "needs --app or --cdhash"),
+            (["approve", "--all"], "unknown option --all"),
         ]
         for (arguments, fragment) in cases {
             let message = usageError(arguments)
@@ -427,16 +442,19 @@ struct RunTests {
         #expect(status.stdout == "filter: enabled" && mode.stderr == "mode refused")
     }
 
-    @Test func askCommandsReachTheSystem() {
+    @Test func askCommandsReachTheSystem() throws {
         let system = FakeSystem(status: ExitCode.noPermission)
         #expect(run(["pending"], system: system).status == 77)
         #expect(run(["approve", "--app", "com.a", "--host", "Example.com", "--for", "5m"], system: system).status == 77)
         #expect(run(["deny", "--cdhash", testCDHash, "--host", "example.com"], system: system).status == 77)
+        #expect(try CLI.parse(["deny", "--all"]) == .forgetApprovals)
+        #expect(run(["deny", "--all"], system: system).status == 77)
         #expect(system.calls == ["pending", "approve apple/com.a example.com 300 touch_id",
-                                 "deny cdhash/\(testCDHash) example.com - touch_id"])
+                                 "deny cdhash/\(testCDHash) example.com - touch_id", "forget approvals"])
         // A usage error never reaches it.
         #expect(run(["approve", "--app", "com.a", "--host", "example.com", "--for", "2d"], system: system).status == 64)
-        #expect(system.calls.count == 3)
+        #expect(run(["deny", "--all", "--host", "example.com"], system: system).status == 64)
+        #expect(system.calls.count == 4)
     }
 
     @Test func severalHostsReachTheSystemAsOneAnswerEach() {
@@ -483,7 +501,7 @@ struct RunTests {
     @Test func askCommandsNeedTheSignedApp() {
         let commands: [[String]] = [["pending"], ["approve", "--app", "com.a", "--host", "example.com"],
                                     ["approve", "--app", "com.a", "--host", "a.example.com", "--host", "b.example.com"],
-                                    ["deny", "--cdhash", testCDHash, "--host", "example.com"]]
+                                    ["deny", "--cdhash", testCDHash, "--host", "example.com"], ["deny", "--all"]]
         for arguments in commands {
             let result = run(arguments)
             #expect(result.status == 69 && result.stdout.isEmpty)

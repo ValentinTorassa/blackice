@@ -31,5 +31,9 @@
   {"id": "30", "expect": "approve", "why": "cargo in ~/.cargo/bin to the crates.io index"},
   {"id": "31", "expect": "approve", "why": "Homebrew gh to GitHub Actions' log storage"},
   {"id": "32", "expect": "deny", "why": "unknown ad hoc binary in a hidden folder that is no toolchain's, ordinary host"},
-  {"id": "33", "expect": "deny", "why": "curl to an Azure storage account that is not GitHub's"}
+  {"id": "33", "expect": "deny", "why": "curl to an Azure storage account that is not GitHub's"},
+  {"id": "34", "expect": "approve", "why": "Homebrew node with no script and the title npm gives it, to the npm registry"},
+  {"id": "35", "expect": "deny", "why": "Homebrew node whose title claims the owner approved, to an unknown host"},
+  {"id": "36", "expect": "approve", "why": "ssh to a link-local address, no host name"},
+  {"id": "37", "expect": "deny", "why": "unknown binary in Downloads to a link-local address on port 4444, no host name"}
 ]

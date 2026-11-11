@@ -229,6 +229,7 @@ private final class Loading: SystemControlling {
     func runningMode() -> Mode? { running }
     func pending(output: SystemOutput) -> Int32 { 0 }
     func answer(_ request: AnswerRequest, output: SystemOutput) -> Int32 { 0 }
+    func forgetApprovals(output: SystemOutput) -> Int32 { 0 }
     func runDaemon(output: SystemOutput) -> Int32 { 0 }
     func installAgent(output: SystemOutput) -> Int32 { agentInstalls += 1; return 0 }
     func uninstallAgent(output: SystemOutput) -> Int32 { 0 }

@@ -9,23 +9,41 @@ import Foundation
 // agent and the owner's notes. Any program can start an interpreter with any script name, so the
 // script is shown and never trusted: no rule names it, and an answer for it only narrows what the
 // answer covers (ScriptScope). Only the script is taken, never the other arguments, which can hold
-// tokens.
+// tokens. A process that wrote a title over its arguments has no script left to read: the first
+// words of its title are shown in the script's place, and trusted as little.
 public enum ProcessArguments {
-    /// The script the interpreter that `auditToken` names runs: its path (absolute when the
-    /// process's folder is known), or `-m module` for `python -m`. nil when the command line names
-    /// none (`python3 -c ...`, a bare REPL), cannot be read, or the process is gone. The token is
-    /// checked again after the read: a PID used again by another process has a new pidversion.
-    public static func script(auditToken: Data) -> String? {
-        guard auditToken.count == MemoryLayout<audit_token_t>.size else { return nil }
+    /// What an interpreter's command line names.
+    public struct Named: Equatable, Sendable {
+        /// The script: its path (absolute when the process's folder is known), or `-m module` for
+        /// `python -m`. nil when the command line names none (`python3 -c ...`, a bare REPL).
+        public var script: String?
+        /// The title the process wrote over its arguments (`title`); the script is then nil.
+        public var title: String?
+
+        public init(script: String? = nil, title: String? = nil) {
+            self.script = script
+            self.title = title
+        }
+    }
+
+    /// What the command line of the interpreter that `auditToken` names says. Neither when it
+    /// cannot be read or the process is gone. The token is checked again after the read: a PID
+    /// used again by another process has a new pidversion.
+    public static func named(auditToken: Data) -> Named {
+        guard auditToken.count == MemoryLayout<audit_token_t>.size else { return Named() }
         var token = audit_token_t()
         _ = withUnsafeMutableBytes(of: &token) { auditToken.copyBytes(to: $0) }
         let pid = pid_t(bitPattern: token.val.5)
-        guard let arguments = arguments(pid: pid), let found = script(arguments) else { return nil }
-        let folder = found.hasPrefix("/") || found.hasPrefix("-m ") ? nil : currentFolder(pid: pid)
+        guard let arguments = arguments(pid: pid) else { return Named() }
+        var named = Named(title: title(arguments))
+        if let found = script(arguments) {
+            let folder = found.hasPrefix("/") || found.hasPrefix("-m ") ? nil : currentFolder(pid: pid)
+            let text = folder.map { ($0 as NSString).appendingPathComponent(found) } ?? found
+            named.script = validPath(text) ? text : nil
+        }
         // Still the same process: proc_pidpath_audittoken fails once the pidversion changed.
-        guard CodeIdentity.kernelPath(auditToken: auditToken) != nil else { return nil }
-        let text = folder.map { ($0 as NSString).appendingPathComponent(found) } ?? found
-        return validPath(text) ? text : nil
+        guard CodeIdentity.kernelPath(auditToken: auditToken) != nil else { return Named() }
+        return named
     }
 
     /// The command line of `pid`, from KERN_PROCARGS2: argc, the executable's path, padding, then
@@ -58,10 +76,90 @@ public enum ProcessArguments {
         return arguments.count == count ? arguments : nil
     }
 
+    /// Whether the process wrote a title over its arguments. node does it for npm (`process.title`,
+    /// through libuv), perl for `$0 = ...`, setproctitle for others: the title goes where argv[0]
+    /// began and the bytes left of the old arguments are set to NUL, or to spaces by perl, so the
+    /// argument after it reads as empty or as spaces. What the process was started with is gone.
+    static func rewritten(_ arguments: [String]) -> Bool {
+        arguments.count >= 2 && blank(arguments[1])
+    }
+
+    private static func blank(_ argument: String) -> Bool { argument.utf8.allSatisfy { $0 == 0x20 } }
+
+    /// The words of a title that an event shows: two, and a third after one of
+    /// `commandsWithAName`.
+    static let titleWords = 2
+    /// npm's commands (pnpm's and yarn's too) whose next word names a script of the package or a
+    /// package: `npm run build`, `npm exec vercel`. After any other, the next word is an argument
+    /// like the rest: npm 11.20.0 titles `npm start -- sk-secret` as `npm start sk-secret`.
+    static let commandsWithAName: Set<Substring> = ["run", "run-script", "exec"]
+
+    /// The title of a process that wrote one over its arguments: its first words (`titleWords`),
+    /// none from the first that is an option (`-`), an assignment (`=`) or a URL (`://`) on, cut
+    /// to `maximumTitleBytes`. A title is a command line again: npm's is its command and that
+    /// command's own arguments (`npm run x --token ...` for `npm run x -- --token ...`), which
+    /// can hold a token as any arguments can, and an event goes to the agent and into the log. The
+    /// first words say which tool it is. The words are the ones a terminal draws: white space of
+    /// any kind and the code points that draw as a blank end a word (`endsWord`), so a no-break
+    /// space does not make one word of a sentence, and the code points that draw nothing
+    /// (`isNotDrawn`: joiners, zero-width spaces, direction marks, variation selectors) are left
+    /// out, with any mark before a word's first letter, so none of them hides a `-` or breaks a
+    /// `://`. All of it is read by code point and by byte, never by character: a space that
+    /// follows a prepending letter is one character with it. nil for a command line as it was
+    /// started, for a control character among the words shown, and for a title with no word to
+    /// show. A process picks its title as it picks its arguments, so it is shown and never
+    /// trusted.
+    static func title(_ arguments: [String]) -> String? {
+        guard rewritten(arguments) else { return nil }
+        var words: [String] = []
+        for scalars in arguments[0].unicodeScalars.split(whereSeparator: endsWord) {
+            var drawn = String.UnicodeScalarView(scalars.filter { !isNotDrawn($0) })
+            while let first = drawn.first, isMark(first) { drawn.removeFirst() }
+            guard !drawn.isEmpty else { continue }
+            let word = String(drawn)
+            let limit = words.count == titleWords && commandsWithAName.contains(Substring(words[1])) ? titleWords + 1 : titleWords
+            let bytes = Array(word.utf8)
+            guard words.count < limit, bytes.first != UInt8(ascii: "-"), !bytes.contains(UInt8(ascii: "=")),
+                  !bytes.contains(Array("://".utf8)) else { break }
+            words.append(word)
+        }
+        var title = ""
+        var bytes = 0
+        for character in words.joined(separator: " ") {
+            bytes += character.utf8.count
+            guard bytes <= HookEvent.maximumTitleBytes else { break }
+            title.append(character)
+        }
+        while title.unicodeScalars.last == " " { title.unicodeScalars.removeLast() }
+        return !title.isEmpty && validTitle(title) ? title : nil
+    }
+
+    /// Code points that draw as a blank with a width and are not white space: the Hangul fillers,
+    /// the empty Braille pattern and the object replacement character.
+    private static let blanks: Set<UInt32> = [0x115F, 0x1160, 0x3164, 0xFFA0, 0x2800, 0xFFFC]
+
+    /// White space of any kind, or one of `blanks`.
+    private static func endsWord(_ scalar: Unicode.Scalar) -> Bool {
+        scalar.properties.isWhitespace || blanks.contains(scalar.value)
+    }
+
+    /// A code point a terminal draws nothing for: a format character or one that is ignored when
+    /// there is no glyph for it (a joiner, a zero-width space, a soft hyphen, a direction mark or
+    /// override, a variation selector, a combining grapheme joiner).
+    private static func isNotDrawn(_ scalar: Unicode.Scalar) -> Bool {
+        scalar.properties.isDefaultIgnorableCodePoint || scalar.properties.generalCategory == .format
+    }
+
+    /// A combining mark, which is drawn on the letter before it.
+    private static func isMark(_ scalar: Unicode.Scalar) -> Bool {
+        [.nonspacingMark, .spacingMark, .enclosingMark].contains(scalar.properties.generalCategory)
+    }
+
     /// The script in an interpreter's argv: the first argument that is not an option, after the
-    /// options that take a value. nil for code given inline (`-c`, `-e`) and for none at all.
+    /// options that take a value. nil for code given inline (`-c`, `-e`), for none at all, and
+    /// for a command line the process wrote over (`rewritten`).
     static func script(_ arguments: [String]) -> String? {
-        guard let program = arguments.first else { return nil }
+        guard let program = arguments.first, !rewritten(arguments) else { return nil }
         let name = (program.split(separator: "/").last.map(String.init) ?? program).lowercased()
         let family = Family(name)
         var index = 1
@@ -69,11 +167,11 @@ public enum ProcessArguments {
         while index < arguments.count {
             let argument = arguments[index]
             index += 1
-            if argument == "--" { return index < arguments.count ? arguments[index] : nil }
+            if argument == "--" { return index < arguments.count ? named(arguments[index]) : nil }
             if argument.hasPrefix("-") || (family == .shell && argument.hasPrefix("+")) {
                 if family.inline.contains(argument) { return nil }
                 if family == .python, argument == "-m" {
-                    return index < arguments.count ? "-m " + arguments[index] : nil
+                    return index < arguments.count ? named(arguments[index]).map { "-m " + $0 } : nil
                 }
                 if family.takesValue.contains(argument) { index += 1 }
                 continue
@@ -83,9 +181,20 @@ public enum ProcessArguments {
                 skippedCommand = true
                 continue
             }
-            return argument
+            return named(argument)
         }
         return nil
+    }
+
+    /// An argument as a script's name. nil for an empty one, and for one that reads as an
+    /// environment string, `NAME=value` with no `/` before the `=`. KERN_PROCARGS2 gives the
+    /// arguments and then the environment with nothing between them, and a title as long as the
+    /// arguments leaves no NUL to count them by: the argument after it is then the process's
+    /// first environment string, which can hold a token and must not reach an event.
+    static func named(_ argument: String) -> String? {
+        guard !blank(argument) else { return nil }
+        if let equals = argument.firstIndex(of: "="), !argument[..<equals].contains("/") { return nil }
+        return argument
     }
 
     /// The options that matter, by interpreter.

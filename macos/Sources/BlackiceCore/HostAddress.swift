@@ -56,6 +56,22 @@ public struct IPAddress: Hashable, Sendable, CustomStringConvertible {
         self.scope = Self.isLinkLocal(self.bytes) ? scope : 0
     }
 
+    /// The address in an IPv4 or IPv6 socket address, with the interface (`sin6_scope_id`) of a
+    /// link-local one. nil for any other family.
+    public init?(socketAddress: UnsafePointer<sockaddr>) {
+        switch Int32(socketAddress.pointee.sa_family) {
+        case AF_INET:
+            var v4 = socketAddress.withMemoryRebound(to: sockaddr_in.self, capacity: 1) { $0.pointee.sin_addr }
+            self.init(bytes: withUnsafeBytes(of: &v4) { Array($0) })
+        case AF_INET6:
+            let socket = socketAddress.withMemoryRebound(to: sockaddr_in6.self, capacity: 1) { $0.pointee }
+            var v6 = socket.sin6_addr
+            self.init(bytes: withUnsafeBytes(of: &v6) { Array($0) }, scope: socket.sin6_scope_id)
+        default:
+            return nil
+        }
+    }
+
     /// An address as a person writes it in a rule or after `--host`. Stricter than init(_:):
     /// IPv4, alone or at the end of an IPv6 address, is four decimal numbers from 0 to 255 with no
     /// leading zeros, since "010.0.0.1", "10.1" and "0x0a.0.0.1" mean other addresses to other
@@ -106,6 +122,15 @@ public struct IPAddress: Hashable, Sendable, CustomStringConvertible {
     /// link, so it never shows that a flow reaches a given host.
     public var isCheckable: Bool { !isLinkLocal || scope != 0 }
 
+    /// How an event, an approval and `--host` name the address a flow connects to: with no
+    /// interface. macOS gives a flow's link-local destination none (on macOS 27.0.1 the flow of a
+    /// connection to fe80::dead:beef%en0 says fe80::dead:beef), so a link-local destination is
+    /// named by its address alone and an answer covers it on every interface, as an address entry
+    /// of a rule does (AddressRange).
+    public var destination: String {
+        scope == 0 ? description : (IPAddress(bytes: bytes)?.description ?? description)
+    }
+
     /// A link-local address ends in "%" and its interface index, which init(_:) reads back.
     public var description: String {
         let family = bytes.count == 4 ? AF_INET : AF_INET6
@@ -130,21 +155,21 @@ public struct IPAddress: Hashable, Sendable, CustomStringConvertible {
 }
 
 /// How events, pending entries and approvals name a destination: a host name as normalizeHost
-/// returns it, or an IP address as `IPAddress.description` prints it (lower case and compressed
-/// as in RFC 5952 for IPv6; a link-local address with its interface index after "%"). The address
-/// is read with `IPAddress.strict`. nil for anything else, and for a link-local address whose
-/// interface is not known, which could be any host on any link.
+/// returns it, or an IP address as `IPAddress.destination` prints it (lower case and compressed
+/// as in RFC 5952 for IPv6, with no interface). The address is read with `IPAddress.strict`. nil
+/// for anything else, and for an address written with an interface ("fe80::1%en0"): a flow's
+/// destination has none, so such a name would match no flow.
 public func normalizeDestination(_ raw: String) -> String? {
     if let host = normalizeHost(raw) { return host }
-    guard let address = IPAddress.strict(raw), address.isCheckable else { return nil }
-    return address.description
+    guard !raw.contains("%"), let address = IPAddress.strict(raw) else { return nil }
+    return address.destination
 }
 
 /// Whether `text` is a destination already in the form `normalizeDestination` returns.
 public func isNormalDestination(_ text: String) -> Bool {
     if normalizeHost(text) == text { return true }
-    guard let address = IPAddress(text) else { return false }
-    return address.isCheckable && address.description == text
+    guard !text.contains("%"), let address = IPAddress(text) else { return false }
+    return address.destination == text
 }
 
 /// An address entry in a rule's `hosts`: one IPv4 or IPv6 address, or a CIDR range of them.
@@ -251,22 +276,8 @@ public struct SystemHostResolver: HostResolving {
         var addresses: [IPAddress] = []
         var cursor: UnsafeMutablePointer<addrinfo>? = first
         while let entry = cursor {
-            if let address = entry.pointee.ai_addr {
-                switch Int32(address.pointee.sa_family) {
-                case AF_INET:
-                    var v4 = address.withMemoryRebound(to: sockaddr_in.self, capacity: 1) { $0.pointee.sin_addr }
-                    if let ip = IPAddress(bytes: withUnsafeBytes(of: &v4) { Array($0) }) { addresses.append(ip) }
-                case AF_INET6:
-                    // The scope ID is the interface of a link-local answer (from mDNS, say).
-                    let socket = address.withMemoryRebound(to: sockaddr_in6.self, capacity: 1) { $0.pointee }
-                    var v6 = socket.sin6_addr
-                    if let ip = IPAddress(bytes: withUnsafeBytes(of: &v6) { Array($0) }, scope: socket.sin6_scope_id) {
-                        addresses.append(ip)
-                    }
-                default:
-                    break
-                }
-            }
+            // With the interface of a link-local answer (from mDNS, say).
+            if let address = entry.pointee.ai_addr, let ip = IPAddress(socketAddress: address) { addresses.append(ip) }
             cursor = entry.pointee.ai_next
         }
         return addresses

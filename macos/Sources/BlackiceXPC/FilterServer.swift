@@ -6,6 +6,8 @@ import BlackiceCore
 public protocol FilterServiceHandler: AnyObject {
     func pendingReply() -> PendingReply
     func answer(_ request: AnswerRequest) -> AnswerReply
+    /// `blackice deny --all`.
+    func forgetApprovals() -> AnswerReply
     /// The configuration the extension decides with now, which `blackice start` and `mode` saved.
     /// The daemon gets it with each registration and runs its hooks; nil refuses the registration.
     func currentConfiguration() -> ProviderConfiguration?
@@ -123,6 +125,10 @@ public final class FilterServer: NSObject, NSXPCListenerDelegate {
         handler?.answer(request) ?? AnswerReply(status: .refused, reason: "unavailable", message: "the filter is stopping")
     }
 
+    fileprivate func forgetApprovals() -> AnswerReply {
+        handler?.forgetApprovals() ?? AnswerReply(status: .refused, reason: "unavailable", message: "the filter is stopping")
+    }
+
     fileprivate func refused(_ what: String, _ error: Error) {
         report("refused_\(what) \(error)")
     }
@@ -174,6 +180,19 @@ private final class ClientEndpoint: NSObject, FilterServiceXPC {
             }
         } catch {
             server?.refused("answer", error)
+            answer = AnswerReply(status: .refused, reason: "invalid_request", message: "the request was refused: \(error)")
+        }
+        reply(Self.encoded(answer))
+    }
+
+    func forget(_ request: Data, reply: @escaping (Data) -> Void) {
+        let answer: AnswerReply
+        do {
+            _ = try Messages.decode(ForgetRequest.self, from: request)
+            answer = server?.forgetApprovals()
+                ?? AnswerReply(status: .refused, reason: "unavailable", message: "the filter is stopping")
+        } catch {
+            server?.refused("forget", error)
             answer = AnswerReply(status: .refused, reason: "invalid_request", message: "the request was refused: \(error)")
         }
         reply(Self.encoded(answer))

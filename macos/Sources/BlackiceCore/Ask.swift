@@ -182,16 +182,19 @@ extension ApprovalTable {
 
     /// Adds the approvals in a file `saved` wrote, each for what it had left less the time of day
     /// gone by since. Returns how many were added; nil for a file this version did not write, or
-    /// one with an entry that is not valid, which adds nothing.
+    /// one with an entry that is not valid, which adds nothing. An approval of a link-local
+    /// address with an interface ("fe80::1%7"), which 1.0.6 took from `approve --host` and saved,
+    /// is left out: it matches no flow, and must not cost the file's other approvals.
     @discardableResult
     public mutating func restore(_ data: Data, now: TimeInterval, timeOfDay: Double) -> Int? {
         guard let file = try? JSONDecoder().decode(SavedApprovals.self, from: data),
               file.version == SavedApprovals.currentVersion, file.savedAt.isFinite,
-              file.approvals.count <= Self.maximumEntries,
-              file.approvals.allSatisfy({ $0.isValid && $0.secondsLeft <= Self.maximumSeconds }) else { return nil }
+              file.approvals.count <= Self.maximumEntries else { return nil }
+        let approvals = file.approvals.filter { !($0.host.contains("%") && IPAddress($0.host)?.isLinkLocal == true) }
+        guard approvals.allSatisfy({ $0.isValid && $0.secondsLeft <= Self.maximumSeconds }) else { return nil }
         let gone = max(0, timeOfDay - file.savedAt)
         var added = 0
-        for approval in file.approvals {
+        for approval in approvals {
             guard let identity = approval.app.identity else { continue }
             let left = Double(approval.secondsLeft) - gone
             guard left >= 1 else { continue }
@@ -410,7 +413,7 @@ public struct PendingTable<Flow> {
             PendingSummary(id: entry.event.id, app: AppReference(entry.key.identity), path: entry.event.app.path,
                            host: entry.key.host, ip: entry.event.ip, port: entry.key.port,
                            secondsLeft: max(0, Int((entry.deadline - now).rounded(.up))), connections: entry.flows.count,
-                           script: entry.event.app.script)
+                           script: entry.event.app.script, title: entry.event.app.title)
         }
     }
 }
@@ -539,6 +542,15 @@ public struct AskState<Flow> {
             Release(flow: $0.flow, allow: false, reason: "hold_expired", eventID: $0.eventID)
         }
         return (released, entries.map(\.event.id))
+    }
+
+    /// `blackice deny --all`: forgets every approval and returns how many still counted. What
+    /// waits keeps waiting, and the remembered denials stay.
+    public mutating func forgetApprovals(now: TimeInterval) -> Int {
+        approvals.expire(now: now)
+        let count = approvals.count
+        approvals.removeAll()
+        return count
     }
 
     /// A configuration change or a stop: removes and returns every pending event, and forgets

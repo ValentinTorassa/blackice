@@ -230,15 +230,20 @@ struct MenuPresentationTests {
         let events = [PendingSummary(id: "ev-0a1b2c3d", app: python, path: path, host: "sts.amazonaws.com", ip: "203.0.113.7",
                                      port: 443, secondsLeft: 40, connections: 1, script: "/opt/homebrew/bin/aws"),
                       PendingSummary(id: "ev-0a1b2c3e", app: python, path: path, host: "pypi.org", ip: "203.0.113.8",
-                                     port: 443, secondsLeft: 40, connections: 1, script: "tool.py")]
+                                     port: 443, secondsLeft: 40, connections: 1, script: "tool.py"),
+                      PendingSummary(id: "ev-0a1b2c3f", app: python, path: "/opt/homebrew/bin/node", host: "registry.npmjs.org",
+                                     ip: "203.0.113.9", port: 443, secondsLeft: 40, connections: 1, title: "npm run wait")]
         let entries = MenuPresentation.menu(MenuSnapshot(filter: .on(saved: ask, hooks: 0), pending: answering(ask, events)), context)
         let waiting = entries.filter { $0.key.hasPrefix("waiting.ev-") }
-        guard waiting.count == 2, case .waiting(let bound) = waiting[0].kind, case .waiting(let loose) = waiting[1].kind else {
+        guard waiting.count == 3, case .waiting(let bound) = waiting[0].kind, case .waiting(let loose) = waiting[1].kind,
+              case .waiting(let titled) = waiting[2].kind else {
             Issue.record("not waiting entries")
             return
         }
         #expect(bound.lines.last == "Running /opt/homebrew/bin/aws" && bound.script == "/opt/homebrew/bin/aws")
         #expect(loose.lines.last == "Running tool.py" && loose.script == nil)
+        // A process that wrote a title over its arguments: the title shows, and the answer names no script.
+        #expect(titled.lines.last == "Calls itself npm run wait" && titled.script == nil)
         for answer in MenuAnswer.all {
             let request = answer.request(for: bound)
             #expect(request.scope == .script("/opt/homebrew/bin/aws"))
@@ -559,6 +564,7 @@ private final class StartOnly: SystemControlling {
     func setMode(_ mode: Mode, output: SystemOutput) -> Int32 { 0 }
     func pending(output: SystemOutput) -> Int32 { 0 }
     func answer(_ request: AnswerRequest, output: SystemOutput) -> Int32 { 0 }
+    func forgetApprovals(output: SystemOutput) -> Int32 { 0 }
     func runDaemon(output: SystemOutput) -> Int32 { 0 }
     func installAgent(output: SystemOutput) -> Int32 { 0 }
     func uninstallAgent(output: SystemOutput) -> Int32 { 0 }
@@ -642,6 +648,7 @@ private final class FailingStart: SystemControlling {
     func setMode(_ mode: Mode, output: SystemOutput) -> Int32 { 0 }
     func pending(output: SystemOutput) -> Int32 { 0 }
     func answer(_ request: AnswerRequest, output: SystemOutput) -> Int32 { 0 }
+    func forgetApprovals(output: SystemOutput) -> Int32 { 0 }
     func runDaemon(output: SystemOutput) -> Int32 { 0 }
     func installAgent(output: SystemOutput) -> Int32 { 0 }
     func uninstallAgent(output: SystemOutput) -> Int32 { 0 }

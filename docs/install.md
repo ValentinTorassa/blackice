@@ -2,7 +2,7 @@
 
 Install blackice, start it, answer what waits, let an agent answer, upgrade and uninstall.
 
-blackice 1.0.6 has run on one Mac, with macOS 27.0.1; macOS 14 and 15 are not tested yet. A `blackice.toml` that
+blackice 1.0.7 has run on one Mac, with macOS 27.0.1; macOS 14 and 15 are not tested yet. A `blackice.toml` that
 works in 1.0 keeps working in every 1.x.
 
 You need a Mac with Apple silicon, macOS 14.4 or later, and an admin account.
@@ -33,7 +33,7 @@ The site serves the copy on the repository's `main` branch, so this prints nothi
 To skip the site, run the copy at the release's tag on GitHub instead:
 
 ```console
-$ curl -fsSL https://raw.githubusercontent.com/ValentinTorassa/blackice/v1.0.6/site/lib/install.sh | sh
+$ curl -fsSL https://raw.githubusercontent.com/ValentinTorassa/blackice/v1.0.7/site/lib/install.sh | sh
 ```
 
 That one trusts GitHub and whoever can push the tag. The steps [by hand](#by-hand) trust neither the site nor the
@@ -51,13 +51,13 @@ that, run the `codesign` and `spctl` lines below on `/Applications/Blackice.app`
 
 ## By hand
 
-Download `Blackice-1.0.6.zip` and `Blackice-1.0.6.zip.sha256` from the
-[GitHub release](https://github.com/ValentinTorassa/blackice/releases/tag/v1.0.6). In that folder:
+Download `Blackice-1.0.7.zip` and `Blackice-1.0.7.zip.sha256` from the
+[GitHub release](https://github.com/ValentinTorassa/blackice/releases/tag/v1.0.7). In that folder:
 
 ```console
-$ shasum -a 256 -c Blackice-1.0.6.zip.sha256
-Blackice-1.0.6.zip: OK
-$ ditto -x -k Blackice-1.0.6.zip .
+$ shasum -a 256 -c Blackice-1.0.7.zip.sha256
+Blackice-1.0.7.zip: OK
+$ ditto -x -k Blackice-1.0.7.zip .
 $ codesign --verify --strict --deep --verbose=2 Blackice.app
 $ codesign -dvv Blackice.app 2>&1 | grep -E '^(Identifier|TeamIdentifier)='
 Identifier=com.valentorassa.blackice
@@ -80,7 +80,7 @@ export PATH="/Applications/Blackice.app/Contents/MacOS:$PATH"
 
 The `.sha256` file comes from the same release as the zip, so on its own it only catches a broken download. The
 signature, the Team ID and the notarization show that the app is blackice's. The SHA-256 should also be the one on the
-`SHA256=` line of the [install script](https://github.com/ValentinTorassa/blackice/blob/v1.0.6/site/lib/install.sh)
+`SHA256=` line of the [install script](https://github.com/ValentinTorassa/blackice/blob/v1.0.7/site/lib/install.sh)
 at the release's tag (releases before 1.0.0 have no such line).
 
 ## Start
@@ -183,6 +183,14 @@ $ blackice start
 `start` waits for the new extension and loads your configuration into it (Touch ID). If it exits with status 75, restart
 the Mac and run it again. An open menu bar app reopens by itself.
 
+On macOS 27.0.1 the kernel can stay at one socket while it disconnects the old build's filter (4 to 116 s in seven
+upgrades), and a filter started meanwhile lets no new connection through. So `start` turns the old filter off, waits for
+the kernel, and then starts the new one. While it waits it sends an ICMP echo request to 127.0.0.1, which ends the wait
+at once when the socket is an ICMP one bound to no address; at a UDP socket it waits 90 s at most. Connections are not
+checked in those seconds, and `start` says so when the wait lasts over a second, with the app whose socket macOS waits
+on. If macOS is still at it after 90 s, `start` goes on, and it and `blackice status` (a `network` line) say that no new
+connection gets through until it is done. A `start` after a `stop` waits the same way.
+
 ## Uninstall
 
 ```console
@@ -192,11 +200,12 @@ $ blackice stop
 $ rm -rf /Applications/Blackice.app ~/.local/bin/blackice
 ```
 
-Quit the menu first if it is open. `stop` asks for Touch ID and removes the filter and its extension; it needs no
-network. With Homebrew, run `brew uninstall --cask blackice` in place of `rm`, after `blackice stop`: Homebrew cannot
-remove the extension. Removing the app needs App Management for Terminal (System Settings → Privacy & Security → App
-Management). `systemextensionsctl list` may show the extension waiting to uninstall until the next restart. Your
-settings and logs stay; to remove them too: `rm -rf ~/.config/blackice ~/Library/Logs/blackice`.
+Quit the menu first if it is open. `stop` asks for Touch ID and removes the filter and its extension; macOS then asks
+you to confirm removing the extension in a dialog of its own. It needs no network. With Homebrew, run
+`brew uninstall --cask blackice` in place of `rm`, after `blackice stop`: Homebrew cannot remove the extension. Removing
+the app needs App Management for Terminal (System Settings → Privacy & Security → App Management).
+`systemextensionsctl list` may show the extension waiting to uninstall until the next restart. Your settings and logs
+stay; to remove them too: `rm -rf ~/.config/blackice ~/Library/Logs/blackice`.
 
 ## Rollback
 

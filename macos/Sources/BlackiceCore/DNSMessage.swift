@@ -62,6 +62,19 @@ public struct DNSLearned: Hashable, Sendable {
     }
 }
 
+/// A CNAME on the chain from a question's name: `name` is an alias of `target` for `ttl` seconds.
+public struct DNSAlias: Hashable, Sendable {
+    public let name: String
+    public let target: String
+    public let ttl: UInt32
+
+    public init(name: String, target: String, ttl: UInt32) {
+        self.name = name
+        self.target = target
+        self.ttl = ttl
+    }
+}
+
 public struct DNSMessage: Equatable, Sendable {
     /// The largest message a 2-byte length (TCP) or a UDP datagram can carry.
     public static let maximumBytes = 65_535
@@ -141,29 +154,44 @@ public struct DNSMessage: Equatable, Sendable {
     /// not on the chain from the question's name teach nothing, and a CNAME target is never
     /// recorded as a name of its own. Empty when there is nothing to learn.
     public var learned: [DNSLearned] {
-        guard isResponse, opcode == 0, !truncated, responseCode == 0, question.recordClass == dnsClassIN,
-              question.type == DNSRecordType.a || question.type == DNSRecordType.aaaa else { return [] }
-        var aliases: [String: (target: String, ttl: UInt32)] = [:]
-        for record in answers {
-            guard case .alias(let target) = record.value, let owner = record.name else { continue }
-            // Two CNAMEs for one name are not valid DNS; nothing is learned from such an answer.
-            guard aliases[owner] == nil else { return [] }
-            aliases[owner] = (target, record.ttl)
-        }
-        var current = question.name
-        var ttl = UInt32.max
-        var seen: Set<String> = [current]
-        while let alias = aliases[current] {
-            guard seen.insert(alias.target).inserted, seen.count <= Self.maximumAliases + 1 else { return [] }
-            ttl = min(ttl, alias.ttl)
-            current = alias.target
-        }
+        guard let chain else { return [] }
+        let ttl = chain.links.map(\.ttl).min() ?? UInt32.max
         var learned: [DNSLearned] = []
-        for record in answers where record.name == current && record.type == question.type {
+        for record in answers where record.name == chain.end && record.type == question.type {
             guard case .address(let address) = record.value else { continue }
             learned.append(DNSLearned(name: question.name, address: address, ttl: min(ttl, record.ttl)))
         }
         return learned
+    }
+
+    /// The CNAME records on the chain from the question's name, in order, from a response
+    /// `learned` reads, with or without addresses at the end. The resolver keeps each for its own
+    /// TTL and then asks only for the rest of the chain, so an answer to that later question names
+    /// the chain's end and not the name an app asked for (DNSNameTable follows these back).
+    public var aliases: [DNSAlias] { chain?.links ?? [] }
+
+    /// The CNAME chain from the question's name and the name it ends at, from a successful,
+    /// untruncated response to an A or AAAA question of class IN. nil when there is nothing to
+    /// learn: another kind of message, two CNAMEs for one name, a loop, or too long a chain.
+    private var chain: (links: [DNSAlias], end: String)? {
+        guard isResponse, opcode == 0, !truncated, responseCode == 0, question.recordClass == dnsClassIN,
+              question.type == DNSRecordType.a || question.type == DNSRecordType.aaaa else { return nil }
+        var aliases: [String: (target: String, ttl: UInt32)] = [:]
+        for record in answers {
+            guard case .alias(let target) = record.value, let owner = record.name else { continue }
+            // Two CNAMEs for one name are not valid DNS; nothing is learned from such an answer.
+            guard aliases[owner] == nil else { return nil }
+            aliases[owner] = (target, record.ttl)
+        }
+        var current = question.name
+        var links: [DNSAlias] = []
+        var seen: Set<String> = [current]
+        while let alias = aliases[current] {
+            guard seen.insert(alias.target).inserted, seen.count <= Self.maximumAliases + 1 else { return nil }
+            links.append(DNSAlias(name: current, target: alias.target, ttl: alias.ttl))
+            current = alias.target
+        }
+        return (links, current)
     }
 
     /// Reads the name at `start`: the name, normalized, or nil when it is well formed but not a
@@ -246,6 +274,9 @@ public struct DNSFlowReader: Sendable {
         self.stream = stream
     }
 
+    /// Whether a query it remembers has had no response yet.
+    public var waiting: Bool { !queries.isEmpty }
+
     /// Bytes the resolver sent: queries are remembered, at most `maximumQueries`, oldest out.
     public mutating func outbound(_ data: Data, offset: Int) {
         for message in messages(data, offset: offset, outbound: true) where !message.isResponse && message.opcode == 0 {
@@ -259,13 +290,20 @@ public struct DNSFlowReader: Sendable {
     /// Bytes the resolver received: what the responses to remembered queries teach. Each query
     /// is answered once.
     public mutating func inbound(_ data: Data, offset: Int) -> [DNSLearned] {
+        lessons(data, offset: offset).learned
+    }
+
+    /// `inbound`, with the CNAME chains of the same responses.
+    public mutating func lessons(_ data: Data, offset: Int) -> (learned: [DNSLearned], aliases: [DNSAlias]) {
         var learned: [DNSLearned] = []
+        var aliases: [DNSAlias] = []
         for message in messages(data, offset: offset, outbound: false) where message.isResponse {
             guard let index = queries.firstIndex(of: QueryKey(id: message.id, question: message.question)) else { continue }
             queries.remove(at: index)
             learned += message.learned
+            aliases += message.aliases
         }
-        return learned
+        return (learned, aliases)
     }
 
     private mutating func messages(_ data: Data, offset: Int, outbound: Bool) -> [DNSMessage] {
@@ -315,22 +353,39 @@ public struct DNSFlowReader: Sendable {
 }
 
 /// The system resolver's DNS flows the extension reads, by flow ID, each with its reader.
-/// Bounded: when full, a new flow is not read and passes all the same. A flow is let go when its
-/// reader stops, when the caller says so (`letGo`), or after `idleSeconds` without data, when
-/// `expire` hands it back so the caller can tell NetworkExtension to stop filtering it. A flow
-/// let go is remembered for another `idleSeconds`, so data still on its way to a callback is
-/// known and passes (`stop`) instead of reaching the caller as a flow it never saw. `Flow` is
-/// the extension's flow object, and a test's stand-in.
+///
+/// Bounded: at most `limit` flows are read at once. A new flow that comes to a full table takes the
+/// place of the one quiet the longest, which is let go, so the newest answers are the ones read:
+/// a burst of lookups, or the queries nothing answered while the network was away, never keeps
+/// the answers after it from being read. On 10 November 2026 the table took 256 flows, counted
+/// each for two more minutes once it was let go, and left a new flow unread when full. The 267
+/// resolver flows of the two minutes around a network coming back (156 of them in one second)
+/// left the answers of the next two minutes unread, and so did a test's 611 flows in half a
+/// minute; blackice then looked the host up itself, and for outlook.office365.com that lookup
+/// got other addresses than the app had (`address_mismatch`).
+///
+/// A flow is let go when its reader stops, when the caller says so (`letGo`), when it makes room,
+/// or after `idleSeconds` without data, when `expire` hands it back so the caller can tell
+/// NetworkExtension to stop filtering it. A flow let go is remembered for another `idleSeconds`,
+/// at most `rememberedLimit` of them (when full, the one let go first is forgotten), so data still
+/// on its way to a callback is known and passes (`stop`) instead of reaching the caller as a flow
+/// it never saw. `Flow` is the extension's flow object, and a test's stand-in.
 public struct DNSFlowTable<ID: Hashable, Flow> {
     public static var idleSeconds: TimeInterval { 120 }
 
+    /// Flows read at once, at least 1.
     public let limit: Int
-    private var entries: [ID: Entry] = [:]
+    /// Flows let go that are still remembered, at least 1.
+    public let rememberedLimit: Int
+    private var reading: [ID: Entry] = [:]
+    /// The flows let go, each with when.
+    private var released: [ID: TimeInterval] = [:]
+    /// Flows let go to make room while a query of theirs had no answer yet, since `takeUnread`.
+    private var unread = 0
 
     private struct Entry {
         let flow: Flow
-        /// nil once let go.
-        var reader: DNSFlowReader?
+        var reader: DNSFlowReader
         var lastSeen: TimeInterval
     }
 
@@ -338,83 +393,134 @@ public struct DNSFlowTable<ID: Hashable, Flow> {
         /// Not a DNS flow being read.
         case unknown
         /// Pass the bytes and keep reading.
-        case pass([DNSLearned])
+        case pass([DNSLearned], aliases: [DNSAlias] = [])
         /// Pass the bytes and stop filtering the flow.
-        case stop([DNSLearned])
+        case stop([DNSLearned], aliases: [DNSAlias] = [])
     }
 
-    public init(limit: Int = 256) { self.limit = limit }
+    public init(limit: Int = 512, rememberedLimit: Int = 4096) {
+        self.limit = max(limit, 1)
+        self.rememberedLimit = max(rememberedLimit, 1)
+    }
 
-    public var count: Int { entries.count }
+    /// The flows being read.
+    public var count: Int { reading.count }
+    /// The flows let go and not yet forgotten.
+    public var rememberedCount: Int { released.count }
 
-    /// False when the table is full: let the flow pass unread.
-    public mutating func add(_ id: ID, flow: Flow, stream: Bool, now: TimeInterval) -> Bool {
-        guard entries[id] != nil || entries.count < limit else { return false }
-        entries[id] = Entry(flow: flow, reader: DNSFlowReader(stream: stream), lastSeen: now)
-        return true
+    /// Starts reading a flow. When `limit` flows are being read, the one quiet the longest is let
+    /// go to make room and returned, so the caller can tell NetworkExtension to stop filtering it.
+    public mutating func add(_ id: ID, flow: Flow, stream: Bool, now: TimeInterval) -> Flow? {
+        released.removeValue(forKey: id)
+        var evicted: Flow?
+        if reading[id] == nil, reading.count >= limit,
+           let quiet = reading.min(by: { $0.value.lastSeen < $1.value.lastSeen }) {
+            if quiet.value.reader.waiting { unread += 1 }
+            evicted = quiet.value.flow
+            release(quiet.key, now: now)
+        }
+        reading[id] = Entry(flow: flow, reader: DNSFlowReader(stream: stream), lastSeen: now)
+        return evicted
     }
 
     public mutating func data(_ id: ID, _ bytes: Data, offset: Int, outbound: Bool, now: TimeInterval) -> DataResult {
-        guard var entry = entries[id] else { return .unknown }
-        guard var reader = entry.reader else { return .stop([]) }
-        var learned: [DNSLearned] = []
-        if outbound { reader.outbound(bytes, offset: offset) } else { learned = reader.inbound(bytes, offset: offset) }
-        entry.reader = reader.stopped ? nil : reader
+        guard var entry = reading[id] else { return released[id] != nil ? .stop([]) : .unknown }
+        var lessons: (learned: [DNSLearned], aliases: [DNSAlias]) = ([], [])
+        if outbound { entry.reader.outbound(bytes, offset: offset) } else { lessons = entry.reader.lessons(bytes, offset: offset) }
+        guard !entry.reader.stopped else {
+            release(id, now: now)
+            return .stop(lessons.learned, aliases: lessons.aliases)
+        }
         entry.lastSeen = now
-        entries[id] = entry
-        return reader.stopped ? .stop(learned) : .pass(learned)
+        reading[id] = entry
+        return .pass(lessons.learned, aliases: lessons.aliases)
     }
 
     /// Stops reading a flow; its later data passes. True when it is one of these.
     @discardableResult
     public mutating func letGo(_ id: ID, now: TimeInterval) -> Bool {
-        guard let entry = entries[id] else { return false }
-        if entry.reader != nil { entries[id] = Entry(flow: entry.flow, reader: nil, lastSeen: now) }
+        guard reading[id] != nil else { return released[id] != nil }
+        release(id, now: now)
         return true
     }
 
     /// The flows idle for `idleSeconds`, now let go; forgets the ones let go that long ago.
     public mutating func expire(now: TimeInterval) -> [Flow] {
-        var released: [Flow] = []
-        for (id, entry) in entries where entry.lastSeen + Self.idleSeconds <= now {
-            if entry.reader == nil {
-                entries.removeValue(forKey: id)
-            } else {
-                entries[id] = Entry(flow: entry.flow, reader: nil, lastSeen: now)
-                released.append(entry.flow)
-            }
+        released = released.filter { $0.value + Self.idleSeconds > now }
+        var idle: [Flow] = []
+        for (id, entry) in reading where entry.lastSeen + Self.idleSeconds <= now {
+            idle.append(entry.flow)
+            release(id, now: now)
         }
-        return released
+        return idle
+    }
+
+    /// How many flows were let go to make room with a query of theirs unanswered, since the last
+    /// call. Then 0. A flow, not an answer: one flow can wait for several answers, and for one
+    /// that never comes.
+    public mutating func takeUnread() -> Int {
+        defer { unread = 0 }
+        return unread
     }
 
     /// Every flow still being read, all forgotten.
     public mutating func removeAll() -> [Flow] {
-        let reading = entries.values.filter { $0.reader != nil }.map(\.flow)
-        entries.removeAll()
-        return reading
+        let flows = reading.values.map(\.flow)
+        reading.removeAll()
+        released.removeAll()
+        return flows
+    }
+
+    /// From read to let go, remembered from `now`.
+    private mutating func release(_ id: ID, now: TimeInterval) {
+        reading.removeValue(forKey: id)
+        if released[id] == nil, released.count >= rememberedLimit,
+           let first = released.min(by: { $0.value < $1.value })?.key {
+            released.removeValue(forKey: first)
+        }
+        released[id] = now
     }
 }
 
 /// The names the system resolver's answers gave for each address, as the extension saw them on
-/// its DNS flows. Each name lasts for its record's TTL, held between `minimumTTL` and
-/// `maximumTTL`. Thread-safe.
+/// its DNS flows. Each name lasts as long as the resolver answers from its record (`kept`), for a
+/// TTL held between `minimumTTL` and `maximumTTL`. Thread-safe.
+///
+/// It also keeps the CNAME records of those answers, each as long as the resolver does, for a TTL
+/// held between `minimumTTL` and `maximumAliasTTL`, and follows them back from an address's names
+/// (`aliases(for:)`). The resolver keeps each record of a chain for its own time and, once the
+/// addresses at its end have gone, asks only for the name they belong to. On 10 November 2026
+/// outlook.office365.com was three CNAMEs of 300, 300 and 45 s and eight addresses of 15 s under
+/// the last name, replaced by eight others at each query: an answer that brought new addresses
+/// then named the chain's end or its middle, not the host the app asked for, and blackice's own
+/// lookup a moment later got other addresses. A CNAME goes when its time is up, when the table is
+/// full or with `removeAll`: not when the network changes, and not when a later answer gives its
+/// name another target, since two resolvers of one Mac can each hold their own (docs/plan.md,
+/// "Limits of the host check").
 ///
 /// Bounded: at most `maximumNamesPerAddress` names per address (when full, the name closest to
 /// expiring goes) and `maximumAddresses` addresses (when full, expired entries go, then the
-/// address whose names all expire soonest). A name that was never seen, or went, makes no
-/// difference to safety: a name listed here is one the address was given for, which is what
-/// the host and address check asks.
+/// address whose names all expire soonest); the same numbers bound the aliases of one name and
+/// the names with aliases. A name that was never seen, or went, makes no difference to safety:
+/// a name listed here is one the address was given for, which is what the host and address check
+/// asks, and an alias of it is a name the resolver's own records say resolves to that address.
 public final class DNSNameTable: @unchecked Sendable {
     public static let minimumTTL: TimeInterval = 30
     public static let maximumTTL: TimeInterval = 300
+    /// A CNAME is kept as long as the resolver keeps it, for a TTL of at most a day.
+    public static let maximumAliasTTL: TimeInterval = 86_400
     public static let defaultMaximumAddresses = 4096
     public static let defaultMaximumNamesPerAddress = 16
+    /// Aliases followed back from one address's names.
+    public static let maximumAliasesFollowed = 64
 
     public let maximumAddresses: Int
     public let maximumNamesPerAddress: Int
     private let clock: @Sendable () -> TimeInterval
     private let lock = NSLock()
     private var entries: [IPAddress: [String: TimeInterval]] = [:]
+    /// A CNAME's target against the names that are aliases of it, each with when it expires.
+    private var aliases: [String: [String: TimeInterval]] = [:]
 
     /// `clock` returns seconds on a monotonic scale; the default counts sleep (continuousSeconds).
     public init(maximumAddresses: Int = defaultMaximumAddresses,
@@ -425,14 +531,52 @@ public final class DNSNameTable: @unchecked Sendable {
         self.clock = clock
     }
 
-    public static func lifetime(ttl: UInt32) -> TimeInterval {
-        min(max(TimeInterval(ttl), minimumTTL), maximumTTL)
+    /// Added to the time the resolver keeps a record: the extension reads an answer before the
+    /// resolver does, and the two do not count from the same instant.
+    public static let slack: TimeInterval = 5
+
+    /// How long the system resolver answers from a record of `ttl` seconds, and `slack`. It
+    /// keeps a record for its TTL, a quarter more and 2 s, and for at least 15 s (RRAdjustTTL and
+    /// GetEffectiveTTL in mDNSResponder-2881.120.11's DNSCommon), so a name that lasted only its
+    /// TTL here went while the resolver still handed its addresses to apps. Asked for one name
+    /// twice a second on 10 November 2026 (macOS 27.0.1), it asked the network again 77.0 and
+    /// 77.4 s after a CNAME of 60 s, 39.2 s after one of 30 s, 24.2 s after 18 s, 20.1 s after
+    /// 15 s, and 15.0 to 15.5 s after addresses of 3 to 9 s. In the half hour before, 10 of the 30
+    /// lookups blackice made itself for outlook.office365.com came while the resolver followed a
+    /// CNAME of 272 to 298 s that was past its TTL, and so had gone here.
+    public static func kept(ttl: TimeInterval) -> TimeInterval {
+        max(ttl + (ttl / 4).rounded(.down) + 2, 15) + slack
     }
 
-    public func record(_ learned: [DNSLearned]) {
-        guard !learned.isEmpty else { return }
+    public static func lifetime(ttl: UInt32) -> TimeInterval {
+        kept(ttl: min(max(TimeInterval(ttl), minimumTTL), maximumTTL))
+    }
+
+    public static func aliasLifetime(ttl: UInt32) -> TimeInterval {
+        kept(ttl: min(max(TimeInterval(ttl), minimumTTL), maximumAliasTTL))
+    }
+
+    public func record(_ learned: [DNSLearned], aliases links: [DNSAlias] = []) {
+        guard !learned.isEmpty || !links.isEmpty else { return }
         lock.lock(); defer { lock.unlock() }
         let now = clock()
+        for link in links {
+            let expires = now + Self.aliasLifetime(ttl: link.ttl)
+            var names = (aliases[link.target] ?? [:]).filter { $0.value > now }
+            if names.isEmpty, aliases[link.target] == nil, aliases.count >= maximumAddresses {
+                aliases = aliases.filter { $0.value.values.contains { $0 > now } }
+                if aliases.count >= maximumAddresses,
+                   let soonest = aliases.min(by: { ($0.value.values.max() ?? 0) < ($1.value.values.max() ?? 0) })?.key {
+                    aliases.removeValue(forKey: soonest)
+                }
+            }
+            if names[link.name] == nil, names.count >= maximumNamesPerAddress,
+               let soonest = names.min(by: { $0.value < $1.value })?.key {
+                names.removeValue(forKey: soonest)
+            }
+            names[link.name] = max(names[link.name] ?? 0, expires)
+            aliases[link.target] = names
+        }
         // A link-local answer names no interface, so it says nothing about a flow's address.
         for item in learned where item.address.isCheckable {
             let expires = now + Self.lifetime(ttl: item.ttl)
@@ -458,14 +602,40 @@ public final class DNSNameTable: @unchecked Sendable {
         return Set(names.filter { $0.value > now }.keys)
     }
 
+    /// The names that are aliases, through CNAME records that have not expired, of a name in
+    /// `names(for:)`: the resolver's records say each resolves to this address too. At most
+    /// `maximumAliasesFollowed`. Never blocks for long.
+    public func aliases(for address: IPAddress?) -> Set<String> {
+        guard let address, address.isCheckable else { return [] }
+        lock.lock(); defer { lock.unlock() }
+        guard let names = entries[address] else { return [] }
+        let now = clock()
+        let direct = Set(names.filter { $0.value > now }.keys)
+        var found: Set<String> = []
+        var pending = Array(direct)
+        while let name = pending.popLast(), found.count < Self.maximumAliasesFollowed {
+            for (alias, expires) in aliases[name] ?? [:] where expires > now && !direct.contains(alias) {
+                guard found.count < Self.maximumAliasesFollowed else { break }
+                if found.insert(alias).inserted { pending.append(alias) }
+            }
+        }
+        return found
+    }
+
     public var addressCount: Int {
         lock.lock(); defer { lock.unlock() }
         return entries.count
     }
 
+    public var aliasTargetCount: Int {
+        lock.lock(); defer { lock.unlock() }
+        return aliases.count
+    }
+
     public func removeAll() {
         lock.lock(); defer { lock.unlock() }
         entries.removeAll()
+        aliases.removeAll()
     }
 
     /// Under the lock.
