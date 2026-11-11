@@ -24,8 +24,11 @@ public final class NESystemControl: SystemControlling {
     /// waits for the person to approve it in System Settings.
     static let extensionRequestTimeout: TimeInterval = 600
     static let preferencesTimeout: TimeInterval = 60
-    /// How long an upgrade waits, with the filter off, for macOS to let the old build's filter go.
-    static let turnedOffLimit: TimeInterval = 30
+    /// How long start waits, with the filter off, for macOS to let go of the filter that was
+    /// turned off. It was 30 s for three upgrades on 11 November 2026, and macOS took 58.9 and
+    /// 47.3 s in two of them, the longest it was seen to take: no new connection got through for
+    /// the 28.5 and 17.0 s past the wait.
+    static let turnedOffLimit: TimeInterval = 90
 
     public init() {}
 
@@ -47,7 +50,7 @@ public final class NESystemControl: SystemControlling {
 
         // An upgrade with the filter on. A filter that starts while macOS is still disconnecting
         // the one it replaces is held with it, and no new connection gets through until macOS is
-        // done: 4 to 26 s in four of five upgrades on 10 and 11 November 2026 (FilterDisconnect).
+        // done: 4 to 59 s in six upgrades on 10 and 11 November 2026 (FilterDisconnect).
         // With no filter in its place nothing waits on the one going. So the old build's filter
         // is turned off first, and the new build's is started once the kernel has let the old one
         // go: connections are not checked meanwhile, for turnedOffLimit at most (decided on 11

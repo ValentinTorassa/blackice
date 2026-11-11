@@ -121,15 +121,15 @@ private let recorded: [(Int, String)] = [
 
     @Test func waitsForAFilterGoingUpToTheLimit() {
         // An upgrade turns the filter off itself: the kernel is told a moment later.
-        #expect(FilterDisconnect.wait(.pending, waited: 0.1, appear: 2, limit: 30) == .again)
-        #expect(FilterDisconnect.wait(.pending, waited: 2, appear: 2, limit: 30) == .done)
-        #expect(FilterDisconnect.wait(.going, waited: 29.9, appear: 2, limit: 30) == .again)
-        #expect(FilterDisconnect.wait(.going, waited: 30, appear: 2, limit: 30) == .tooLong)
-        #expect(FilterDisconnect.wait(.gone, waited: 0, appear: 2, limit: 30) == .done)
+        #expect(FilterDisconnect.wait(.pending, waited: 0.1, appear: 2, limit: 90) == .again)
+        #expect(FilterDisconnect.wait(.pending, waited: 2, appear: 2, limit: 90) == .done)
+        #expect(FilterDisconnect.wait(.going, waited: 89.9, appear: 2, limit: 90) == .again)
+        #expect(FilterDisconnect.wait(.going, waited: 90, appear: 2, limit: 90) == .tooLong)
+        #expect(FilterDisconnect.wait(.gone, waited: 0, appear: 2, limit: 90) == .done)
         // A start after a stop: only a filter already going is waited for.
-        #expect(FilterDisconnect.wait(.pending, waited: 0, appear: 0, limit: 30) == .done)
-        #expect(FilterDisconnect.wait(.going, waited: 0, appear: 0, limit: 30) == .again)
-        #expect(FilterDisconnect.wait(.going, waited: 30, appear: 0, limit: 30) == .tooLong)
+        #expect(FilterDisconnect.wait(.pending, waited: 0, appear: 0, limit: 90) == .done)
+        #expect(FilterDisconnect.wait(.going, waited: 0, appear: 0, limit: 90) == .again)
+        #expect(FilterDisconnect.wait(.going, waited: 90, appear: 0, limit: 90) == .tooLong)
         // The list as that stop left it, read as start does, with the filters it has then.
         #expect(FilterDisconnect.progress(filters: stopping, before: FilterDisconnect.count(filters: stopping)!) == .going)
         #expect(FilterDisconnect.progress(filters: Data(), before: FilterDisconnect.count(filters: stopping)!) == .gone)
@@ -138,12 +138,12 @@ private let recorded: [(Int, String)] = [
 
     @Test func startSaysWhatItWaitsForWithTheFilterOff() {
         let tailscale = HeldDisconnect(FilterDisconnect(pid: 86450, udp: true), process: "io.tailscale.ipn.macsys.network-extension")
-        #expect(CLI.turnedOffLines(tailscale, limit: 30) == [
-            "macOS is still disconnecting the filter that was running. Until it is done blackice stays off and connections are not checked, for 30 s at most.",
+        #expect(CLI.turnedOffLines(tailscale, limit: 90) == [
+            "macOS is still disconnecting the filter that was running. Until it is done blackice stays off and connections are not checked, for 90 s at most.",
             "It waits on a UDP socket of io.tailscale.ipn.macsys.network-extension (pid 86450): it is done when that socket closes or sends to another address.",
         ])
-        #expect(CLI.turnedOffLines(HeldDisconnect(FilterDisconnect(pid: nil, udp: false), process: nil), limit: 30).count == 1)
-        #expect(CLI.turnedOffTooLong(limit: 30) == "macOS is not done after 30 s. Starting the filter anyway.")
+        #expect(CLI.turnedOffLines(HeldDisconnect(FilterDisconnect(pid: nil, udp: false), process: nil), limit: 90).count == 1)
+        #expect(CLI.turnedOffTooLong(limit: 90) == "macOS is not done after 90 s. Starting the filter anyway.")
     }
 
     @Test func theFilterGoingCanBeTheSecondListed() {
