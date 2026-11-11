@@ -1,6 +1,6 @@
 // Reads the kernel's lists of content filters and of the sockets attached to them, to tell when
-// macOS has not finished disconnecting a filter that stopped (FilterDisconnect). Any process may
-// read them; nothing here changes anything.
+// macOS has not finished disconnecting a filter that another replaced (FilterDisconnect). Any
+// process may read them; nothing here changes anything.
 import Foundation
 import BlackiceCLI
 import BlackiceCore
@@ -17,34 +17,26 @@ enum KernelFilters {
         return Data(bytes[0..<size])
     }
 
-    /// How many content filters the kernel has; nil when their list cannot be read.
-    static func count() -> Int? {
-        read("net.cfil.filter_list").flatMap(FilterDisconnect.count(filters:))
-    }
-
-    /// The filter the kernel is disconnecting now, if any. The sockets are read only then.
+    /// The filter the kernel is disconnecting now while another runs in its place, if any. The
+    /// sockets are read only then.
     static func disconnect() -> FilterDisconnect? {
         guard let filters = read("net.cfil.filter_list"),
               FilterDisconnect(filters: filters, sockets: Data()) != nil else { return nil }
         return FilterDisconnect(filters: filters, sockets: read("net.cfil.sock_list") ?? Data())
     }
 
-    /// A disconnect that lasts: nil unless the kernel is disconnecting a filter and still is
-    /// `lasting` seconds later. One that goes well takes milliseconds.
+    /// A disconnect that lasts: nil unless the kernel is at one and still is `lasting` seconds
+    /// later. One that goes well takes milliseconds.
     ///
-    /// `before` is how many filters the kernel had before one was told to stop. With it this
-    /// first waits, for at most `appear` seconds, until the kernel has fewer filters or is
-    /// disconnecting one: the stop reaches the kernel some time after the preferences are saved.
-    static func held(after before: Int? = nil, appear: TimeInterval = 2, lasting: TimeInterval = 1,
-                     interval: TimeInterval = 0.05) -> HeldDisconnect? {
-        if let before {
-            let limit = Date().addingTimeInterval(appear)
-            while disconnect() == nil {
-                guard let now = count(), now >= before, Date() < limit else { return nil }
-                Thread.sleep(forTimeInterval: interval)
-            }
+    /// `appear` is how long to wait for the filter that takes the place of one that is going: the
+    /// kernel lists a filter a moment after the filter has started (within 0.11 s in the two
+    /// replacements recorded on 11 November 2026). Nothing is waited for when no filter is going.
+    static func held(appear: TimeInterval = 0, lasting: TimeInterval = 1, interval: TimeInterval = 0.05) -> HeldDisconnect? {
+        let registered = Date().addingTimeInterval(appear)
+        while disconnect() == nil {
+            guard Date() < registered, read("net.cfil.filter_list").map(FilterDisconnect.going(filters:)) == true else { return nil }
+            Thread.sleep(forTimeInterval: interval)
         }
-        guard disconnect() != nil else { return nil }
         let limit = Date().addingTimeInterval(lasting)
         while Date() < limit {
             Thread.sleep(forTimeInterval: interval)

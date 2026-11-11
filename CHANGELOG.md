@@ -7,19 +7,27 @@ New:
   stay, and connections already let through go on. Since 1.0.6 approvals outlast a stop, an upgrade and a restart
   of the Mac, and `blackice deny` takes back one app and host at a time: nothing cleared them all. It works while
   blackice is on; off, it says so before asking for Touch ID, and the saved approvals wait for the next start.
-- `start`, `stop` and `status` say when macOS has not finished disconnecting the filter that stopped, and whose
+- `start` and `status` say when macOS has not finished disconnecting the filter a new one replaced, and whose
   socket it waits on. On macOS 27.0.1 the kernel detaches a stopped filter's sockets one by one and does not get
   past a UDP socket whose flow table had two flows and has one left: it takes that socket again and again, and
-  until the socket closes or gets another flow the filter stays registered, every new socket is attached to it and
-  none gets a verdict, lookups included. On 10 and 11 November three of four upgrades were held that way, for 16.3,
-  12.6 and 4.1 s, and one held on purpose lasted as long as a test socket was kept open, 10 s. blackice cannot end
+  until the socket closes or gets another flow the filter stays registered. With a new filter in its place, as
+  after an upgrade, every new socket is attached to both, the one going gives no verdict, and no new connection
+  gets through, lookups included. On 10 and 11 November four of five upgrades were held that way, for 16.3, 12.6,
+  4.1 and 25.8 s, the last on a socket of Tailscale's network extension, and one held on purpose lasted as long as
+  a test socket was kept open, 10 s. A `blackice stop` held the same way for 10 s, with no filter in its place,
+  held nothing up: a lookup a second went on in 0.21 s or less, so `stop` says nothing of it. blackice cannot end
   it. It reads the kernel's lists of filters and of the sockets attached to them, which any process may read, and
-  when a filter is still being disconnected a second later it says that no new connection gets through and which
-  process has the socket the kernel is at: `It waits on a UDP socket of mDNSResponder (pid 474): it is done when
-  that socket closes or sends to another address.` `blackice status` has a `network` line while it lasts. When
-  the lists are not laid out as on macOS 27.0.1, it says nothing.
+  when a filter is still being disconnected a second later beside the one that replaced it, it says that no new
+  connection gets through and which process has the socket the kernel is at: `It waits on a UDP socket of
+  mDNSResponder (pid 474): it is done when that socket closes or sends to another address.` `blackice status` has
+  a `network` line while it lasts. When the lists are not laid out as on macOS 27.0.1, it says nothing.
 
 Fixed:
+- `blackice stop` says that macOS asks next. After Touch ID, macOS has an administrator confirm removing the
+  network extension in a dialog of its own and does not tell the app that asked, so `stop` waited on that dialog
+  having said nothing: 78 s on 11 November. It now says `macOS now asks you to confirm removing the network
+  extension: follow its dialog.` before it asks macOS, unless macOS answers that it has no extension of blackice's
+  enabled.
 - Every connection the filter drops is counted, and delayed once its app has had 64 dropped within 2 s, wherever
   it is dropped. 1.0.6 counted only a connection dropped as it started: one dropped once its TLS hello was read,
   after a lookup, or for a full table was dropped at once. On 10 November, on 1.0.6, node had 7,586 connections

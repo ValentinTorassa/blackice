@@ -184,7 +184,7 @@ $ blackice start
 the Mac and run it again. An open menu bar app reopens by itself.
 
 Right after an upgrade macOS can take seconds to disconnect the old build's filter, and no new connection gets through
-until it is done (4 to 16 s in three of four upgrades on macOS 27.0.1). `start` says so when it happens, with the app
+until it is done (4 to 26 s in four of five upgrades on macOS 27.0.1). `start` says so when it happens, with the app
 whose socket macOS waits on, and `blackice status` shows a `network` line while it lasts.
 
 ## Uninstall
@@ -196,11 +196,12 @@ $ blackice stop
 $ rm -rf /Applications/Blackice.app ~/.local/bin/blackice
 ```
 
-Quit the menu first if it is open. `stop` asks for Touch ID and removes the filter and its extension; it needs no
-network. With Homebrew, run `brew uninstall --cask blackice` in place of `rm`, after `blackice stop`: Homebrew cannot
-remove the extension. Removing the app needs App Management for Terminal (System Settings → Privacy & Security → App
-Management). `systemextensionsctl list` may show the extension waiting to uninstall until the next restart. Your
-settings and logs stay; to remove them too: `rm -rf ~/.config/blackice ~/Library/Logs/blackice`.
+Quit the menu first if it is open. `stop` asks for Touch ID and removes the filter and its extension; macOS then asks
+you to confirm removing the extension in a dialog of its own. It needs no network. With Homebrew, run
+`brew uninstall --cask blackice` in place of `rm`, after `blackice stop`: Homebrew cannot remove the extension. Removing
+the app needs App Management for Terminal (System Settings → Privacy & Security → App Management).
+`systemextensionsctl list` may show the extension waiting to uninstall until the next restart. Your settings and logs
+stay; to remove them too: `rm -rf ~/.config/blackice ~/Library/Logs/blackice`.
 
 ## Rollback
 

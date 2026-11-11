@@ -3,7 +3,8 @@ import Testing
 @testable import BlackiceCLI
 @testable import BlackiceCore
 
-// A content filter the kernel is still disconnecting, read from its lists (FilterDisconnect).
+// A content filter the kernel is still disconnecting while another has its place, read from its
+// lists (FilterDisconnect).
 // The filter lists are the bytes `net.cfil.filter_list` gave on 11 November 2026 (macOS 27.0.1);
 // the socket records are built field by field at the offsets `net.cfil.sock_list` had that day.
 
@@ -12,6 +13,12 @@ private let running = hex("1400000001000000000000001300000001000000")
 /// 09:44:45, while the kernel was held: filter 1 being disconnected (flags 2) with 22 sockets, and
 /// filter 2, the new build's, with 15.
 private let replacing = hex("14000000010000000200000016000000010000001400000002000000000000000f00000001000000")
+/// 10:10:00, held on a socket of Tailscale's network extension: filter 1 is the new build's, with
+/// 35 sockets, and filter 2 the one being disconnected, with 47.
+private let replacingSecond = hex("14000000010000000000000023000000010000001400000002000000020000002f00000001000000")
+/// 10:26:48, ten seconds into a `blackice stop` held the same way: filter 1 being disconnected
+/// with 15 sockets, and no other filter.
+private let stopping = hex("1400000001000000020000000f00000001000000")
 
 private func hex(_ text: String) -> Data {
     var data = Data()
@@ -67,13 +74,38 @@ private let recorded: [(Int, String)] = [
 
     @Test func aRunningFilterIsNotOne() {
         #expect(FilterDisconnect.count(filters: running) == 1)
+        #expect(!FilterDisconnect.going(filters: running))
         #expect(FilterDisconnect(filters: running, sockets: socket(pid: 474, filters: [1])) == nil)
         #expect(FilterDisconnect.count(filters: Data()) == 0)
+        #expect(!FilterDisconnect.going(filters: Data()))
         #expect(FilterDisconnect(filters: Data(), sockets: Data()) == nil)
+    }
+
+    // No new socket is attached to a filter that is going when none runs in its place: in the stop
+    // these bytes are from, lookups went on as before.
+    @Test func aFilterGoingWithNoneInItsPlaceIsNotOne() {
+        let sockets = socket(pid: 34464, filters: [1])
+        #expect(FilterDisconnect.going(filters: stopping))
+        #expect(FilterDisconnect(filters: stopping, sockets: sockets) == nil)
+        // Nor when the filter that runs is another product's, registered for another control unit.
+        var other = [UInt8](replacing)
+        other[36] = 0x02
+        #expect(FilterDisconnect.going(filters: Data(other)))
+        #expect(FilterDisconnect(filters: Data(other), sockets: sockets) == nil)
+        // One registered for that unit among others is in its place.
+        other[36] = 0x03
+        #expect(FilterDisconnect(filters: Data(other), sockets: sockets) == FilterDisconnect(pid: 34464, udp: true))
+    }
+
+    @Test func theFilterGoingCanBeTheSecondListed() {
+        #expect(FilterDisconnect.going(filters: replacingSecond))
+        let sockets = socket(pid: 474, filters: [1]) + socket(pid: 86450, filters: [1, 2]) + socket(pid: 16441, filters: [0, 2])
+        #expect(FilterDisconnect(filters: replacingSecond, sockets: sockets) == FilterDisconnect(pid: 86450, udp: true))
     }
 
     @Test func namesTheFirstSocketStillOnTheFilterThatIsGoing() {
         #expect(FilterDisconnect.count(filters: replacing) == 2)
+        #expect(FilterDisconnect.going(filters: replacing))
         // Sockets the kernel already took off filter 1, one on the new filter only, then the one it
         // is at, then newer ones on both.
         let sockets = socket(pid: 76648, filters: []) + socket(pid: 86450, protocol: IPPROTO_TCP, filters: [0, 2])
@@ -115,10 +147,11 @@ private let recorded: [(Int, String)] = [
         var other = [UInt8](replacing)
         other[0] = 0x18
         #expect(FilterDisconnect.count(filters: Data(other)) == nil)
+        #expect(!FilterDisconnect.going(filters: Data(other)))
         #expect(FilterDisconnect(filters: Data(other), sockets: sockets) == nil)
     }
 
-    @Test func startAndStopSayWhatHoldsTheNetwork() {
+    @Test func startSaysWhatHoldsTheNetwork() {
         let python = HeldDisconnect(FilterDisconnect(pid: 16441, udp: true), process: "Python")
         #expect(CLI.heldLines(python) == [
             "macOS is still disconnecting the filter that stopped, and until it is done no new connection gets through.",

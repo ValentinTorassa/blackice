@@ -99,7 +99,7 @@ public final class NESystemControl: SystemControlling {
         }
         // macOS can take seconds to disconnect the filter this one replaced, or the one turned off
         // and on above, and no new connection gets through meanwhile (FilterDisconnect).
-        let held = KernelFilters.held()
+        let held = KernelFilters.held(appear: 2)
         // More setup follows: the caller says what happened.
         guard output.next else {
             held.map(CLI.heldLines)?.forEach(output.stderr)
@@ -152,14 +152,15 @@ public final class NESystemControl: SystemControlling {
         guard let (manager, current) = loadSaved(output) else { return ExitCode.software }
         if let owner = current.foreignOwner { return refuseForeign(owner, output) }
         if current.providerBundleID != nil {
-            // A filter that is saved but turned off has nothing to disconnect.
-            let filters = current.enabled ? KernelFilters.count() : nil
             manager.isEnabled = false
             guard save(manager, output) else { return ExitCode.software }
             guard remove(manager, output) else { return ExitCode.software }
-            // Said here, before the extension is asked to go: on 11 November 2026 launchd could not
-            // end the old extension's process until the disconnect was over (FilterDisconnect).
-            if let filters, let held = KernelFilters.held(after: filters) { CLI.heldLines(held).forEach(output.stderr) }
+        }
+        // macOS has an administrator confirm the removal in a dialog of its own, and the request's
+        // delegate is not told: on 11 November 2026 (macOS 27.0.1) stop waited 78 s on that dialog
+        // having said nothing. Said unless macOS answers that it has no extension of ours enabled.
+        if Self.runningBuilds()?.isEmpty != true {
+            output.stdout("macOS now asks you to confirm removing the network extension: follow its dialog.")
         }
         let request = runExtensionRequest(
             OSSystemExtensionRequest.deactivationRequest(forExtensionWithIdentifier: BlackiceIdentifiers.filter, queue: .main),
@@ -215,6 +216,13 @@ public final class NESystemControl: SystemControlling {
     /// one inside this app, because the app was replaced and `blackice start` has not run since.
     /// One properties request to macOS; nil when it fails or the builds match.
     public static func unfinishedUpgrade() -> UnfinishedUpgrade? {
+        guard let running = runningBuilds() else { return nil }
+        return UnfinishedUpgrade(app: Peers.extensionBuild(app: Bundle.main.bundleURL), running: running)
+    }
+
+    /// The builds of the extension macOS has enabled and is not uninstalling, from one properties
+    /// request; nil when macOS does not say within 5 s.
+    static func runningBuilds() -> [String]? {
         let result = Completion()
         let delegate = ExtensionPropertiesDelegate(result: result)
         let request = OSSystemExtensionRequest.propertiesRequest(forExtensionWithIdentifier: BlackiceIdentifiers.filter,
@@ -222,8 +230,7 @@ public final class NESystemControl: SystemControlling {
         request.delegate = delegate
         OSSystemExtensionManager.shared.submitRequest(request)
         let status = withExtendedLifetime(delegate) { MainLoop.wait(for: result, timeout: 5) }
-        guard status == ExitCode.success else { return nil }
-        return UnfinishedUpgrade(app: Peers.extensionBuild(app: Bundle.main.bundleURL), running: delegate.running)
+        return status == ExitCode.success ? delegate.running : nil
     }
 
     public func setMode(_ mode: Mode, output: SystemOutput) -> Int32 {
@@ -584,10 +591,8 @@ final class ExtensionRequestDelegate: NSObject, OSSystemExtensionRequestDelegate
 
     func requestNeedsUserApproval(_ request: OSSystemExtensionRequest) {
         neededApproval = true
-        if deactivating {
-            output.stdout("macOS asks you to confirm removing the network extension: follow its dialog. Waiting up to 10 minutes…")
-            return
-        }
+        // stop said so before the request.
+        if deactivating { return }
         ExtensionApproval.lines(macOS: SystemSettings.majorVersion, opened: SystemSettings.openExtensions(), setup: output.setup)
             .forEach(output.stdout)
     }

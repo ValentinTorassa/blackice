@@ -1,15 +1,22 @@
 import Foundation
 
-// A content filter the kernel is still disconnecting, read from the kernel's own lists
-// (docs/plan.md, "A replacement that stops the network").
+// A content filter the kernel is still disconnecting while another has its place, read from the
+// kernel's own lists (docs/plan.md, "A replacement that holds the network").
 //
 // When a filter's provider stops, the kernel detaches the sockets attached to that filter one by
 // one. On macOS 27.0.1 it does not get past a UDP socket whose flow table had two flows and has
 // one left: it looks the flow up, is told there is none, leaves the socket on the filter's list
 // and takes the list's first socket again, which is the same one. Until that socket closes or
-// gets another flow the filter stays registered, every new socket is attached to it, and none
-// gets a verdict: no new connection gets through. On 11 November 2026 a replacement held that way
-// for 4.1 s, and for 10.2 s with a test socket kept open that long.
+// gets another flow the filter stays registered.
+//
+// What that does depends on whether a filter runs in its place. The kernel attaches a new socket
+// to every filter registered for a control unit the socket's policy names, one that is going
+// included (xnu's `cfil_info_attach_unit`). On 11 November 2026, in a replacement (the new build's
+// filter running, with the control unit of the one going), each new socket joined both, the one
+// going gave no verdict, and no new connection got through: for 4.1 s, for 25.8 s on a socket of
+// Tailscale's network extension, and for 10.2 s with a test socket kept open that long. In a
+// `blackice stop` held 10.1 s the same way, with no filter in its place, the one going kept its
+// 15 sockets and got no new one, and a lookup a second went on in 0.21 s or less.
 //
 // blackice cannot end it. It can say that it is happening and whose socket it is: the kernel
 // publishes its filters (`net.cfil.filter_list`) and the sockets attached to them
@@ -31,6 +38,8 @@ public struct FilterDisconnect: Equatable, Sendable {
     // struct cfil_entry_stat of 160 bytes for each filter it can be on.
     static let filterRecord = 20
     static let filterFlags = 8
+    /// cfs_necp_control_unit: the control units a filter is registered for, one bit each.
+    static let filterUnits = 16
     /// CFF_DETACHING.
     static let detaching: UInt32 = 0x2
     static let socketHeader = 136
@@ -49,18 +58,30 @@ public struct FilterDisconnect: Equatable, Sendable {
         return bytes.count / filterRecord
     }
 
+    /// Whether `net.cfil.filter_list` has a filter the kernel is disconnecting, with or without
+    /// another in its place.
+    public static func going(filters: Data) -> Bool {
+        guard count(filters: filters) != nil else { return false }
+        return goingRecord([UInt8](filters)) != nil
+    }
+
+    private static func goingRecord(_ list: [UInt8]) -> Int? {
+        stride(from: 0, to: list.count, by: filterRecord).first { word(list, $0 + filterFlags) & detaching != 0 }
+    }
+
     /// From `net.cfil.filter_list` and `net.cfil.sock_list`. nil when the kernel is disconnecting
-    /// no filter, and when the list of filters is not laid out as above: then nothing is said.
+    /// no filter, when no other filter runs with a control unit of the one going, so that no new
+    /// socket waits on it, and when the list of filters is not laid out as above: then nothing is
+    /// said.
     public init?(filters: Data, sockets: Data) {
         guard Self.count(filters: filters) != nil else { return nil }
         let list = [UInt8](filters)
-        var going: UInt32?
-        for record in stride(from: 0, to: list.count, by: Self.filterRecord)
-        where Self.word(list, record + Self.filterFlags) & Self.detaching != 0 {
-            going = Self.word(list, record + 4)
-            break
-        }
-        guard let going, going != 0 else { return nil }
+        guard let filter = Self.goingRecord(list) else { return nil }
+        let going = Self.word(list, filter + 4)
+        let units = Self.word(list, filter + Self.filterUnits)
+        guard going != 0, stride(from: 0, to: list.count, by: Self.filterRecord).contains(where: {
+            Self.word(list, $0 + Self.filterFlags) & Self.detaching == 0 && Self.word(list, $0 + Self.filterUnits) & units != 0
+        }) else { return nil }
 
         let bytes = [UInt8](sockets)
         var record = 0

@@ -21,7 +21,7 @@ public struct StatusReport {
     public let pending: PendingReply?
     /// Set when the extension did not answer because macOS runs another build of it than this app's.
     public let upgrade: UnfinishedUpgrade?
-    /// Set while macOS has not finished disconnecting a filter that stopped.
+    /// Set while macOS has not finished disconnecting a filter that another replaced.
     public let held: HeldDisconnect?
 
     public init(filter: Filter, daemonRunning: Bool, pending: PendingReply?, upgrade: UnfinishedUpgrade? = nil,
@@ -34,9 +34,9 @@ public struct StatusReport {
     }
 }
 
-/// macOS has not finished disconnecting a filter that stopped, and until it has no new connection
-/// gets through (FilterDisconnect). `process` is the name of the process whose socket the kernel
-/// waits on, when it could be read.
+/// macOS has not finished disconnecting a filter that another replaced, and until it has no new
+/// connection gets through (FilterDisconnect). `process` is the name of the process whose socket
+/// the kernel waits on, when it could be read.
 public struct HeldDisconnect: Equatable, Sendable {
     public let disconnect: FilterDisconnect
     public let process: String?
@@ -97,7 +97,7 @@ public enum Activation: Equatable, Sendable {
 }
 
 extension CLI {
-    /// What `start` and `stop` say when macOS is still disconnecting the filter that stopped.
+    /// What `start` says when macOS is still disconnecting the filter the new one replaced.
     public static func heldLines(_ held: HeldDisconnect) -> [String] {
         var lines = ["macOS is still disconnecting the filter that stopped, and until it is done no new connection gets through."]
         if let socket = held.socket {
