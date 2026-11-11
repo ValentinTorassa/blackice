@@ -183,7 +183,7 @@ $ blackice start
 `start` waits for the new extension and loads your configuration into it (Touch ID). If it exits with status 75, restart
 the Mac and run it again. An open menu bar app reopens by itself.
 
-On macOS 27.0.1 the kernel can take seconds to disconnect the old build's filter (4 to 26 s in four of five upgrades),
+On macOS 27.0.1 the kernel can take seconds to disconnect the old build's filter (4 to 59 s in five of six upgrades),
 and a filter started meanwhile lets no new connection through. So `start` turns the old filter off, waits for the
 kernel, 30 s at most, and then starts the new one. Connections are not checked in those seconds, and `start` says so
 when the wait lasts, with the app whose socket macOS waits on. If macOS is still at it after 30 s, `start` goes on, and

@@ -7,21 +7,23 @@ New:
   stay, and connections already let through go on. Since 1.0.6 approvals outlast a stop, an upgrade and a restart
   of the Mac, and `blackice deny` takes back one app and host at a time: nothing cleared them all. It works while
   blackice is on; off, it says so before asking for Touch ID, and the saved approvals wait for the next start.
-- An upgrade no longer stops the network while macOS disconnects the old build's filter. On macOS 27.0.1 the
-  kernel detaches a stopped filter's sockets one by one and does not get past a UDP socket whose flow table had
-  two flows and has one left: it takes that socket again and again, and until the socket closes or gets another
-  flow the filter stays registered. A filter started meanwhile was held with it: every new socket was attached to
-  both, the one going gave no verdict, and no new connection got through, lookups included. On 10 and 11 November
-  four of five upgrades were held that way, for 16.3, 12.6, 4.1 and 25.8 s, the last on a socket of Tailscale's
-  network extension. A filter going with none in its place holds nothing up: in a `blackice stop` held 10 s a
-  lookup a second went on in 0.21 s or less. So when macOS runs an older build, `start` turns the filter off,
-  waits until the kernel has let the old one go, for 30 s at most, and only then replaces the extension and turns
-  the filter on. Connections are not checked meanwhile, and `start` says so once the wait has lasted a second,
-  with the process whose socket macOS waits on: `It waits on a UDP socket of mDNSResponder (pid 474): it is done
-  when that socket closes or sends to another address.` On 11 November an upgrade with a test socket kept open
-  10 s went that way: the old filter was held 10.2 s, the new one started 0.3 s after the kernel let the old one
-  go, and a lookup a second took 0.13 s or less throughout; a test socket of the same kind had held the upgrade
-  before it for 10.3 s, with lookups waiting up to 9.8 s. After 30 s `start` goes on anyway, and then, as whenever
+- An upgrade no longer stops the network for the first 30 s that macOS takes to disconnect the old build's filter.
+  On macOS 27.0.1 the kernel detaches a stopped filter's sockets one by one and does not get past a UDP socket
+  whose flow table had two flows and has one left: it takes that socket again and again, and until the socket
+  closes or gets another flow the filter stays registered. A filter started meanwhile was held with it: every new
+  socket was attached to both, the one going gave no verdict, and no new connection got through, lookups included.
+  On 10 and 11 November four of five upgrades were held that way, for 16.3, 12.6, 4.1 and 25.8 s, the last on a
+  socket of Tailscale's network extension. A filter going with none in its place holds nothing up: in a `blackice
+  stop` held 10 s a lookup a second went on in 0.21 s or less. So when macOS runs an older build, `start` turns
+  the filter off, waits until the kernel has let the old one go, for 30 s at most, and only then replaces the
+  extension and turns the filter on. Connections are not checked meanwhile, and `start` says so once the wait has
+  lasted a second, with the process whose socket macOS waits on: `It waits on a UDP socket of mDNSResponder (pid
+  474): it is done when that socket closes or sends to another address.` On 11 November an upgrade with a test
+  socket kept open 10 s went that way: the old filter was held 10.2 s, the new one started 0.3 s after the kernel
+  let the old one go, and a lookup a second took 0.13 s or less throughout; a test socket of the same kind had
+  held the upgrade before it for 10.3 s, with lookups waiting up to 9.8 s. An upgrade later that day was held
+  58.9 s by an ICMP socket of macOS's own symptomsd: lookups took 0.12 s or less for the 30 s `start` waited, and
+  no new connection got through for the 28.5 s after it. After 30 s `start` goes on anyway, and then, as whenever
   a filter is still being disconnected beside the one that replaced it, `start` and `blackice status` (a `network`
   line) say that no new connection gets through. blackice reads the kernel's lists of filters and of the sockets
   attached to them, which any process may read; where they are not laid out as on macOS 27.0.1, `start` upgrades
