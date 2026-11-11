@@ -18,8 +18,9 @@ import Foundation
 // `blackice stop` held 10.1 s the same way, with no filter in its place, the one going kept its
 // 15 sockets and got no new one, and a lookup a second went on in 0.21 s or less.
 //
-// blackice cannot end it. It can say that it is happening and whose socket it is: the kernel
-// publishes its filters (`net.cfil.filter_list`) and the sockets attached to them
+// blackice cannot end it. It can keep a new filter out of it, by starting that filter once the
+// old one is gone (NESystemControl.start), and say that it is happening and whose socket it is:
+// the kernel publishes its filters (`net.cfil.filter_list`) and the sockets attached to them
 // (`net.cfil.sock_list`), in the order the filter's own list has, to any process.
 public struct FilterDisconnect: Equatable, Sendable {
     /// The process that has the first socket still attached to the filter that is going, which is
