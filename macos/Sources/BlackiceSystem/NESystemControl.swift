@@ -97,13 +97,20 @@ public final class NESystemControl: SystemControlling {
             CLI.notActiveLines(candidate, inForce).forEach(output.stderr)
             return CLI.activationStatus(inForce)
         }
+        // macOS can take seconds to disconnect the filter this one replaced, or the one turned off
+        // and on above, and no new connection gets through meanwhile (FilterDisconnect).
+        let held = KernelFilters.held()
         // More setup follows: the caller says what happened.
-        guard output.next else { return ExitCode.success }
+        guard output.next else {
+            held.map(CLI.heldLines)?.forEach(output.stderr)
+            return ExitCode.success
+        }
         if neededApproval || output.setup { output.stdout("") }
         CLI.onLines(candidate).forEach(output.stdout)
         if neededApproval || output.setup {
             CLI.firstStartLines(candidate, daemonRunning: Self.daemonRunning()).forEach(output.stdout)
         }
+        held.map(CLI.heldLines)?.forEach(output.stderr)
         return ExitCode.success
     }
 
@@ -145,9 +152,14 @@ public final class NESystemControl: SystemControlling {
         guard let (manager, current) = loadSaved(output) else { return ExitCode.software }
         if let owner = current.foreignOwner { return refuseForeign(owner, output) }
         if current.providerBundleID != nil {
+            // A filter that is saved but turned off has nothing to disconnect.
+            let filters = current.enabled ? KernelFilters.count() : nil
             manager.isEnabled = false
             guard save(manager, output) else { return ExitCode.software }
             guard remove(manager, output) else { return ExitCode.software }
+            // Said here, before the extension is asked to go: on 11 November 2026 launchd could not
+            // end the old extension's process until the disconnect was over (FilterDisconnect).
+            if let filters, let held = KernelFilters.held(after: filters) { CLI.heldLines(held).forEach(output.stderr) }
         }
         let request = runExtensionRequest(
             OSSystemExtensionRequest.deactivationRequest(forExtensionWithIdentifier: BlackiceIdentifiers.filter, queue: .main),
@@ -182,7 +194,8 @@ public final class NESystemControl: SystemControlling {
             pending = try? FilterClient(teamID: teamID).pending()
             if pending == nil { upgrade = Self.unfinishedUpgrade() }
         }
-        CLI.statusLines(StatusReport(filter: filter, daemonRunning: Self.daemonRunning(), pending: pending, upgrade: upgrade))
+        CLI.statusLines(StatusReport(filter: filter, daemonRunning: Self.daemonRunning(), pending: pending, upgrade: upgrade,
+                                     held: KernelFilters.held(lasting: 0.3)))
             .forEach(output.stdout)
         return ExitCode.success
     }

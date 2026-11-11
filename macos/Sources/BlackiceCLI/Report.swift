@@ -21,12 +21,36 @@ public struct StatusReport {
     public let pending: PendingReply?
     /// Set when the extension did not answer because macOS runs another build of it than this app's.
     public let upgrade: UnfinishedUpgrade?
+    /// Set while macOS has not finished disconnecting a filter that stopped.
+    public let held: HeldDisconnect?
 
-    public init(filter: Filter, daemonRunning: Bool, pending: PendingReply?, upgrade: UnfinishedUpgrade? = nil) {
+    public init(filter: Filter, daemonRunning: Bool, pending: PendingReply?, upgrade: UnfinishedUpgrade? = nil,
+                held: HeldDisconnect? = nil) {
         self.filter = filter
         self.daemonRunning = daemonRunning
         self.pending = pending
         self.upgrade = upgrade
+        self.held = held
+    }
+}
+
+/// macOS has not finished disconnecting a filter that stopped, and until it has no new connection
+/// gets through (FilterDisconnect). `process` is the name of the process whose socket the kernel
+/// waits on, when it could be read.
+public struct HeldDisconnect: Equatable, Sendable {
+    public let disconnect: FilterDisconnect
+    public let process: String?
+
+    public init(_ disconnect: FilterDisconnect, process: String?) {
+        self.disconnect = disconnect
+        self.process = process
+    }
+
+    /// "a UDP socket of Python (pid 16441)"; nil when the kernel's list named no process.
+    var socket: String? {
+        guard let pid = disconnect.pid else { return nil }
+        let kind = disconnect.udp ? "a UDP socket" : "a socket"
+        return "\(kind) of \(process.map(Describe.terminalSafe) ?? "a process") (pid \(pid))"
     }
 }
 
@@ -73,7 +97,27 @@ public enum Activation: Equatable, Sendable {
 }
 
 extension CLI {
+    /// What `start` and `stop` say when macOS is still disconnecting the filter that stopped.
+    public static func heldLines(_ held: HeldDisconnect) -> [String] {
+        var lines = ["macOS is still disconnecting the filter that stopped, and until it is done no new connection gets through."]
+        if let socket = held.socket {
+            lines.append("It waits on \(socket): it is done when that socket closes or sends to another address.")
+        }
+        lines.append("blackice status says so while it lasts.")
+        return lines
+    }
+
     public static func statusLines(_ report: StatusReport) -> [String] {
+        var lines = filterLines(report)
+        if let held = report.held {
+            lines.append("  " + "network".padding(toLength: 11, withPad: " ", startingAt: 0) +
+                "no new connection gets through: macOS is still disconnecting the filter that stopped" +
+                (held.socket.map { ", and waits on \($0)" } ?? ""))
+        }
+        return lines
+    }
+
+    private static func filterLines(_ report: StatusReport) -> [String] {
         let configuration: ProviderConfiguration
         switch report.filter {
         case .foreign(let owner):

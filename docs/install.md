@@ -183,6 +183,10 @@ $ blackice start
 `start` waits for the new extension and loads your configuration into it (Touch ID). If it exits with status 75, restart
 the Mac and run it again. An open menu bar app reopens by itself.
 
+Right after an upgrade macOS can take seconds to disconnect the old build's filter, and no new connection gets through
+until it is done (4 to 16 s in three of four upgrades on macOS 27.0.1). `start` says so when it happens, with the app
+whose socket macOS waits on, and `blackice status` shows a `network` line while it lasts.
+
 ## Uninstall
 
 ```console
