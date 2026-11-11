@@ -4,14 +4,15 @@
 was at the ICMP socket of symptomsd that had held the three upgrades before it for 58.9, 47.3 and 116.0 s; `start`
 sent an echo request to 127.0.0.1, and the kernel let go 0.42 s after the filter was turned off. The Mac never had
 two filters, `start` said nothing of a wait, and a lookup a second took 0.13 s or less. Its `stop` did the same at
-that socket, in 0.42 s. Nine replacements and two stops before it showed what holds a new filter (a filter the kernel is still disconnecting, registered for the same
-control unit), that a filter going with none in its place holds nothing up, that waiting with the filter off spares
-a hold at a UDP socket, that it does not spare one at that ICMP socket whether `start` waits 30 s or 90, and that a
-`ping` of loopback ends that one within 0.01 s. The candidate's filter and daemon are build 47's: on build 55 a full
-table of DNS flows cost no lookup, a link-local address was asked about, a title's token stayed out of the event,
-and three kinds of loop were delayed or bounded; a mail CLI's listing ran 180 times with none failed and six
-connections dropped as `address_mismatch` in one run. The fault tests passed 29 of 29 twice on build 55 and once on
-the candidate, and `blackice deny --all` forgot its 43 approvals. Phase 5.
+that socket, in 0.42 s. Nine replacements and two stops before it showed what holds a new filter (a filter the
+kernel is still disconnecting, registered for the same control unit), that a filter going with none in its place
+holds nothing up, that waiting with the filter off spares a hold at a UDP socket, that it does not spare one at that
+ICMP socket whether `start` waits 30 s or 90, and that a `ping` of loopback ends that one within 0.01 s. The
+candidate's filter and daemon are build 47's: on build 55 a full table of DNS flows cost no lookup, a link-local
+address was asked about, a title's token stayed out of the event, and three kinds of loop were delayed or bounded; a
+mail CLI's listing ran 180 times with none failed and six connections dropped as `address_mismatch` in one run. The
+fault tests passed 29 of 29 twice on build 55 and once on the candidate, and `blackice deny --all` forgot its 43
+approvals. Phase 5.
 
 **Platform.** MacBook Air (Mac16,12), macOS 27.0.1 (26A434), kernel xnu-13432.1.9~1, arm64, System Integrity
 Protection on, FileVault on. Wi-Fi, with Tailscale's resolver (100.100.100.100); for the fault tests Tailscale's DNS
