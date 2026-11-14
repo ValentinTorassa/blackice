@@ -41,7 +41,8 @@ struct FailingHooksTests {
         try failed(log, "ev-00000004", at: start.addingTimeInterval(30), stderr: apiError + "\n")
         #expect(FailingHooks.read(url: url) == nil)
         try failed(log, "ev-00000005", at: start.addingTimeInterval(40), stderr: "Retrying…\n" + apiError + "\n\n")
-        #expect(FailingHooks.read(url: url) == FailingHooks(count: 3, since: start.addingTimeInterval(20), reason: apiError))
+        #expect(FailingHooks.read(url: url) == FailingHooks(count: 3, since: start.addingTimeInterval(20),
+                                                            last: start.addingTimeInterval(40), reason: apiError))
 
         // A deadline, a file in the agent's home, the daemon stopping: neither a failure nor an answer.
         try log.append(.hookNoAnswer(eventID: "ev-00000006", hookLine: 12, .deadline), at: start.addingTimeInterval(50))
@@ -54,11 +55,16 @@ struct FailingHooksTests {
         // With no stderr, why it gave no answer.
         try log.append(.hookNoAnswer(eventID: "ev-00000009", hookLine: 12, .signaled(9)), at: start.addingTimeInterval(70))
         #expect(FailingHooks.read(url: url) == FailingHooks(count: 4, since: start.addingTimeInterval(20),
-                                                            reason: "it was ended by signal 9"))
+                                                            last: start.addingTimeInterval(70), reason: "it was ended by signal 9"))
+        // The daemon takes up a run of any length.
+        #expect(FailingHooks.read(url: url, minimum: 1)?.count == 4)
 
         // An answer ends it.
         try answered(log, "ev-0000000a", at: start.addingTimeInterval(80))
         #expect(FailingHooks.read(url: url) == nil)
+        try failed(log, "ev-0000000b", at: start.addingTimeInterval(90), stderr: apiError)
+        #expect(FailingHooks.read(url: url, minimum: 1) == FailingHooks(count: 1, since: start.addingTimeInterval(90),
+                                                                         last: start.addingTimeInterval(90), reason: apiError))
         #expect(FailingHooks.read(url: directory.appendingPathComponent("none.jsonl")) == nil)
     }
 
@@ -80,7 +86,8 @@ struct FailingHooksTests {
         #expect(found.since == start.addingTimeInterval(Double(count - found.count + 1)) && found.reason == apiError)
 
         let whole = try #require(FailingHooks.parse(try Data(contentsOf: url), partialFirstLine: false))
-        #expect(whole == FailingHooks(count: count, since: start.addingTimeInterval(1), reason: apiError))
+        #expect(whole == FailingHooks(count: count, since: start.addingTimeInterval(1), last: start.addingTimeInterval(Double(count)),
+                                      reason: apiError))
     }
 
     /// The daemon of 1.0.8 counts the run itself, from its start, and says when it ends; hooks with
@@ -88,12 +95,13 @@ struct FailingHooksTests {
     @Test func theDaemonsCountIsTaken() {
         let failing = #"{"type":"hooks_failing","count":297,"reason":"exit_status","stderr_line":"\#(apiError)","since":"2027-01-15T14:02:00.250Z","ts":"2027-01-15T16:40:00.000Z"}"#
         let noAnswer = #"{"type":"hook_no_answer","event":"ev-00000001","hook_line":12,"reason":"exit_status","status":1,"ts":"2027-01-15T16:41:00.000Z"}"#
-        let since = try? Date("2027-01-15T14:02:00.250Z", strategy: Date.ISO8601FormatStyle(includingFractionalSeconds: true))
+        let since = FailingHooks.date("2027-01-15T14:02:00.250Z")
         // Read from inside the file: the record still gives the whole count, and when it began.
         #expect(FailingHooks.parse(lines(["piece of a record\"}", failing]), partialFirstLine: true)
-            == FailingHooks(count: 297, since: since, reason: apiError))
+            == FailingHooks(count: 297, since: since, last: FailingHooks.date("2027-01-15T16:40:00.000Z"), reason: apiError))
         #expect(FailingHooks.parse(lines(["x", failing, noAnswer, noAnswer]), partialFirstLine: true)
-            == FailingHooks(count: 299, since: since, reason: "it exited with status 1"))
+            == FailingHooks(count: 299, since: since, last: FailingHooks.date("2027-01-15T16:41:00.000Z"),
+                            reason: "it exited with status 1"))
         // With no stderr line, its reason in words.
         let bare = #"{"type":"hooks_failing","count":5,"reason":"no_line"}"#
         #expect(FailingHooks.parse(lines([bare]), partialFirstLine: false) == FailingHooks(count: 5, reason: "it printed no answer"))
@@ -103,6 +111,47 @@ struct FailingHooksTests {
                                    partialFirstLine: true) == nil)
         #expect(FailingHooks.parse(lines([#"{"type":"hooks_failing","count":"many"}"#, "not json", "[1]"]),
                                    partialFirstLine: false) == nil)
+    }
+
+    /// A daemon that started again in the middle of a run counted it from 1, and the log shows
+    /// only its end: neither makes the run shorter or later. A record's count with the hooks with
+    /// no answer after it, or the hooks the log shows, whichever is more, since the earliest time
+    /// either knows.
+    @Test func aDaemonThatStartedAgainDoesNotShortenTheRun() {
+        func noAnswer(_ index: Int, at time: String) -> String {
+            #"{"type":"hook_no_answer","event":"ev-0000000\#(index)","hook_line":12,"reason":"exit_status","status":1,"ts":"2027-01-15T\#(time).000Z"}"#
+        }
+        func failing(_ count: Int, since: String, at time: String) -> String {
+            #"{"type":"hooks_failing","count":\#(count),"reason":"exit_status","stderr_line":"\#(apiError)","since":"2027-01-15T\#(since).000Z","ts":"2027-01-15T\#(time).000Z"}"#
+        }
+        // 297 counted since 05:02, one more, then the daemon starts again and counts 3 from 07:50.
+        let restarted = [failing(297, since: "05:02:00", at: "07:30:00"), noAnswer(1, at: "07:31:00"), noAnswer(2, at: "07:50:00"),
+                         noAnswer(3, at: "07:51:00"), noAnswer(4, at: "07:52:00"), failing(3, since: "07:50:00", at: "07:52:00")]
+        let expected = FailingHooks(count: 301, since: FailingHooks.date("2027-01-15T05:02:00.000Z"),
+                                    last: FailingHooks.date("2027-01-15T07:52:00.000Z"), reason: apiError)
+        #expect(FailingHooks.parse(lines(["piece of a record\"}"] + restarted), partialFirstLine: true) == expected)
+        #expect(FailingHooks.parse(lines(restarted), partialFirstLine: false) == expected)
+        // The log shows more than the daemon that started again counted: the log's count, from its first.
+        let shown = [noAnswer(1, at: "07:00:00"), noAnswer(2, at: "07:10:00"), noAnswer(3, at: "07:50:00"), noAnswer(4, at: "07:51:00"),
+                     noAnswer(5, at: "07:52:00"), failing(3, since: "07:50:00", at: "07:52:00")]
+        #expect(FailingHooks.parse(lines(shown), partialFirstLine: false)
+            == FailingHooks(count: 5, since: FailingHooks.date("2027-01-15T07:00:00.000Z"),
+                            last: FailingHooks.date("2027-01-15T07:52:00.000Z"), reason: apiError))
+        // From inside the file, with no record that counted more than it shows: at least that many.
+        #expect(FailingHooks.parse(lines(["x"] + shown), partialFirstLine: true)?.atLeast == true)
+        // An answer ends the run, the records before it included.
+        #expect(FailingHooks.parse(lines(restarted + [#"{"type":"hooks_recovered","after":3}"#, noAnswer(5, at: "08:00:00")]),
+                                   partialFirstLine: false, minimum: 1)?.count == 1)
+    }
+
+    /// `status` and the menu say so for an hour after the latest failure, not for ever: the
+    /// answerer may have been switched or mended, with nothing asked since.
+    @Test func aRunIsShownForAnHourAfterTheLatestFailure() {
+        let run = FailingHooks(count: 297, since: start, last: start.addingTimeInterval(7200))
+        #expect(run.isRecent(at: start.addingTimeInterval(7200)))
+        #expect(run.isRecent(at: start.addingTimeInterval(7200 + FailingHooks.shownFor - 1)))
+        #expect(!run.isRecent(at: start.addingTimeInterval(7200 + FailingHooks.shownFor)))
+        #expect(!FailingHooks(count: 297, since: start).isRecent(at: start))
     }
 
     /// What a hook writes to stderr is shown once made safe, and its escape sequences go first:

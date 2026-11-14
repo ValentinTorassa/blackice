@@ -80,7 +80,6 @@ public final class RecentDecisions {
             let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: false)
             let data = (try? handle.read(upToCount: Self.tailBytes)) ?? Data()
             cached = Self.parse(data, partialFirstLine: start > 0, limit: 32)
-            cached.failingHooks = FailingHooks.parse(data, partialFirstLine: start > 0)
             stamp = (info.st_size, info.st_mtimespec)
         }
         return EventLogSummary(decisions: Array(cached.decisions.prefix(limit)), hookRefused: cached.hookRefused,
@@ -91,7 +90,8 @@ public final class RecentDecisions {
     /// every event that waits for the same app and host, each with a verdict of its own.
     static let answerWindow: TimeInterval = 5
 
-    /// The verdicts in `data`, newest first, at most `limit`. A verdict counts only when its event
+    /// The verdicts in `data`, newest first, at most `limit`, and the hooks that keep giving no
+    /// answer (`FailingHooks.Tally`), from the same records. A verdict counts only when its event
     /// (`event_received`) is in the same stretch, since that is where the app and host are. An
     /// approval or a denial was a hook's when a `hook_answer` of the same kind, not followed by
     /// `answer_refused`, was logged for its event, or shortly before for another event of the same
@@ -109,10 +109,12 @@ public final class RecentDecisions {
         var running: [String: Set<Int>] = [:]
         var answers: [(event: String, hookLine: Int, kind: String, date: Date?)] = []
         var refused: Set<String> = []
+        var failing = FailingHooks.Tally(fromStart: !partialFirstLine)
         var summary = EventLogSummary()
         for line in lines {
-            guard let object = try? JSONSerialization.jsonObject(with: Data(line)) as? [String: Any],
-                  let type = object["type"] as? String, let id = object["event"] as? String, validEventID(id) else { continue }
+            guard let object = try? JSONSerialization.jsonObject(with: Data(line)) as? [String: Any] else { continue }
+            failing.take(object)
+            guard let type = object["type"] as? String, let id = object["event"] as? String, validEventID(id) else { continue }
             let hookLine = object["hook_line"] as? Int ?? 0
             let date = (object["ts"] as? String).flatMap(Self.date)
             switch type {
@@ -175,6 +177,7 @@ public final class RecentDecisions {
                                                     date: entry.date, by: by))
             if summary.decisions.count == limit { break }
         }
+        summary.failingHooks = failing.run()
         return summary
     }
 

@@ -221,11 +221,20 @@ public final class Daemon: Sendable {
 
     /// `reportLogFailure` is called for every record the log could not take. The default prints
     /// to stderr, which the LaunchAgent sends to its own file.
+    ///
+    /// A run of hooks that failed, which the end of the log shows with no answer after it, goes on
+    /// from where the daemon before this one left it: launchd starts the daemon again whenever
+    /// the extension restarts (an upgrade, a `start`) and at login, and a count that started over
+    /// made the next `hooks_failing` say 3 in a row since a minute ago after 299 over 13 hours.
     public init(log: EventLog, runner: HookRunner,
                 reportLogFailure: @escaping @Sendable (Error) -> Void = Daemon.printLogFailure) {
         self.log = log
         self.runner = runner
         self.reportLogFailure = reportLogFailure
+        if let run = FailingHooks.read(url: log.url, minimum: 1) {
+            failures.count = run.count
+            failures.since = run.since
+        }
     }
 
     /// Handles events until the intake finishes, several at a time. The group discards each
@@ -363,29 +372,20 @@ public final class Daemon: Sendable {
         return rest == 3 || (rest == 1 && count >= 10)
     }
 
-    /// The first line of a hook's stderr with something in it, without control characters and cut
-    /// to 200 characters: an agent that cannot run mostly says why there (a login that expired, a
-    /// model that is not there). Empty when it wrote nothing.
-    static func firstLine(_ stderr: String) -> String {
-        for line in stderr.split(whereSeparator: \.isNewline) {
-            let kept = String(String.UnicodeScalarView(line.unicodeScalars.filter { $0.properties.generalCategory != .control }))
-                .trimmingCharacters(in: .whitespaces)
-            if !kept.isEmpty { return String(kept.prefix(200)) }
-        }
-        return ""
-    }
-
     /// One more hook failed. Every hook may be failing the same way, such as an agent whose login
     /// expired, and the log then holds only a `hook_no_answer` per event: the run's count, its
-    /// latest reason and what its hook said first go in a record of their own, which `blackice
-    /// status` and the menu show. Nothing stops the hooks; the next event runs them as always.
+    /// latest reason and the last line its hook wrote to stderr go in a record of their own, which
+    /// `blackice status` and the menu show. That line is taken as `FailingHooks` takes it from the
+    /// hook's own record (`FailingHooks.lastLine`), so that both say the same: an agent says why
+    /// it failed last, after a banner or its progress, often in color. Nothing stops the hooks;
+    /// the next event runs them as always.
     private func countFailure(_ reason: String, stderr: String, at date: Date) {
         failures.lock.lock()
         defer { failures.lock.unlock() }
         if failures.count == 0 { failures.since = date }
         failures.count += 1
         guard Self.isMilestone(failures.count) else { return }
-        record(.hooksFailing(count: failures.count, reason: reason, stderrLine: Self.firstLine(stderr),
+        record(.hooksFailing(count: failures.count, reason: reason, stderrLine: FailingHooks.lastLine(stderr) ?? "",
                              since: failures.since ?? date))
     }
 
@@ -431,8 +431,8 @@ public final class Daemon: Sendable {
     }
 }
 
-/// The hooks in a row that failed (`Daemon.failed`), with no answer between them. Kept in memory
-/// only: a daemon that starts again counts afresh.
+/// The hooks in a row that failed (`Daemon.failed`), with no answer between them. Kept in memory,
+/// and taken up from the end of the event log when the daemon starts.
 private final class FailureRun: @unchecked Sendable {
     let lock = NSLock()
     var count = 0
