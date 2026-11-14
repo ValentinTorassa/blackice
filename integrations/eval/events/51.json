@@ -1,0 +1,11 @@
+{
+  "event": "connection",
+  "id": "ev-00000033",
+  "app": {
+    "signing_id": "com.apple.curl",
+    "path": "/usr/bin/curl"
+  },
+  "ip": "198.51.100.23",
+  "port": 443,
+  "host": "downloads.claude.ai.dl-mirror.net"
+}

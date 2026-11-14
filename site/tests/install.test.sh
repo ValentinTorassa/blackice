@@ -81,10 +81,15 @@ case ${STUB:-} in
 esac
 printf "%s\n" "$last: accepted" "source=$source" "origin=Developer ID Application: Test (M294LK997M)" >&2'
 # ditto -x -k ZIP DIR unpacks; ditto SRC DST copies. STUB=ditto-fail-copy: the copy beside the
-# installed app stops halfway.
+# installed app stops halfway. STUB=ditto-other-build-copy: the copy beside the installed app is
+# build 14, as if another signed build took the unpacked app's place after its checks.
 stub ditto 'if [ "$1" = -x ]; then mkdir -p "$4" && cd "$4" && exec unzip -q "$3"; fi
 case ${STUB:-}:$2 in
   ditto-fail-copy:*/.blackice-install.*) mkdir -p "$2/Contents"; echo "ditto: No space left on device" >&2; exit 1 ;;
+  ditto-other-build-copy:*/.blackice-install.*)
+    cp -R "$1" "$2" || exit 1
+    sed "s#<string>15</string>#<string>14</string>#" "$2/Contents/Info.plist" > "$2/Contents/Info.plist.new"
+    exec /bin/mv "$2/Contents/Info.plist.new" "$2/Contents/Info.plist" ;;
 esac
 exec cp -R "$1" "$2"'
 # PlistBuddy -c "Print :KEY" FILE, for the plists this test writes when the real one is missing.
@@ -96,11 +101,16 @@ value=$(sed -n "/<key>$key<\/key>/{n;s/^[[:space:]]*<string>\(.*\)<\/string>[[:s
 printf "%s\n" "$value"'
 # mv is found on PATH. STUB=mv-fail-aside: the installed app cannot be moved aside.
 # STUB=mv-fail-in: the new app cannot be moved into place. STUB=mv-interrupt-aside: the script
-# gets SIGTERM just after the installed app was moved aside.
+# gets SIGTERM just after the installed app was moved aside. STUB=mv-upgraded-aside: just before
+# the installed app is moved aside, another install makes it build 99 and marks it "upgraded".
 stub mv 'case ${STUB:-}:$1:$2 in
   mv-fail-aside:*:*/previous.app) echo "mv: rename $1 to $2: Operation not permitted" >&2; exit 1 ;;
   mv-fail-in:*/.blackice-install.*/Blackice.app:*) echo "mv: rename $1 to $2: Input/output error" >&2; exit 1 ;;
   mv-interrupt-aside:*:*/previous.app) /bin/mv "$1" "$2" || exit 1; kill -TERM "$PPID"; exit 0 ;;
+  mv-upgraded-aside:*:*/previous.app)
+    sed "s#<string>1</string>#<string>99</string>#" "$1/Contents/Info.plist" > "$1/Contents/Info.plist.new"
+    /bin/mv "$1/Contents/Info.plist.new" "$1/Contents/Info.plist" || exit 1
+    echo upgraded > "$1/Contents/mark" ;;
 esac
 exec /bin/mv "$@"'
 
@@ -390,6 +400,39 @@ run --force
 expect_status 1
 expect_app old
 expect_output 'put the previous Blackice.app back'
+expect_no_leftovers
+done_case
+
+start 'an app another install put in place meanwhile is put back, not replaced'
+new_box upgraded
+installed 0.0.9 1
+STUB=mv-upgraded-aside
+run --force
+expect_status 1
+expect_app upgraded
+expect_output 'changed while this script ran, from 0.0.9 build 1 to 0.0.9 build 99'
+expect_output 'put the previous Blackice.app back'
+expect_no_leftovers
+done_case
+
+start 'a copy of another build leaves the installed app'
+new_box otherbuildcopy
+installed 0.0.9 1
+STUB=ditto-other-build-copy
+run --force
+expect_status 1
+expect_app old
+expect_output "is not version $version, build 15, as the checked app is"
+expect_no_leftovers
+done_case
+
+start 'a copy of another build is not put in place on a first install either'
+new_box otherbuildcopyfirst
+STUB=ditto-other-build-copy
+run
+expect_status 1
+expect_app none
+expect_output "is not version $version, build 15, as the checked app is"
 expect_no_leftovers
 done_case
 

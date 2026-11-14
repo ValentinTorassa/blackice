@@ -76,11 +76,18 @@ struct HookEventTests {
             .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
             .appendingPathComponent("integrations/eval/events")
         let names = try FileManager.default.contentsOfDirectory(atPath: folder.path).filter { $0.hasSuffix(".json") }
-        // One event per case in cases.json, and no other.
-        let cases = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: folder.deletingLastPathComponent()
-            .appendingPathComponent("cases.json"))) as? [[String: Any]])
-        #expect(Set(names) == Set(cases.compactMap { ($0["id"] as? String).map { $0 + ".json" } }))
-        #expect(names.count == 37)
+        // One event per case in cases.json and cases-notes.json (whose cases are under "cases", with
+        // the notes they are for), and no other.
+        var ids = Set<String>()
+        for file in ["cases.json", "cases-notes.json"] {
+            let object = try JSONSerialization.jsonObject(with: Data(contentsOf: folder.deletingLastPathComponent()
+                .appendingPathComponent(file)))
+            let cases = try #require((object as? [[String: Any]]) ?? ((object as? [String: Any])?["cases"] as? [[String: Any]]),
+                                     "\(file)")
+            ids.formUnion(cases.compactMap { $0["id"] as? String })
+        }
+        #expect(Set(names) == Set(ids.map { $0 + ".json" }))
+        #expect(names.count == 51)
         for name in names {
             var object = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: folder.appendingPathComponent(name)))
                 as? [String: Any])
