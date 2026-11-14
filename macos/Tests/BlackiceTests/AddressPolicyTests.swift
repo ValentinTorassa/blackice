@@ -184,6 +184,45 @@ struct AddressOnlyPolicyTests {
         #expect(decide(flow(probe, port: 41641, tcp: false, address: "127.0.0.1"), ask) == .allow(reason: "loopback"))
     }
 
+    // The system resolver's multicast DNS carries the `.local` names and the discovery of AirDrop,
+    // AirPlay and printers: it passes in ask and block-all. Nothing else to those groups does.
+    @Test func theResolversMulticastDNSPasses() throws {
+        let resolver = IdentityResolution.verified(FilterPolicy.systemResolver)
+        func udp(_ identity: IdentityResolution, _ address: String, port: UInt16 = 5353, tcp: Bool = false,
+                 process: IdentityResolution? = nil) -> FlowFacts {
+            FlowFacts(direction: .outbound, identity: identity, internetSocket: true, tcp: tcp, hostname: nil, port: port,
+                      remoteAddress: IPAddress(address), process: process)
+        }
+        for mode in [Mode.ask, .blockAll] {
+            let rules = try snapshot(mode)
+            let other: FlowVerdict = .drop(reason: mode == .ask ? "no_host" : "no_rule")
+            for address in ["224.0.0.251", "ff02::fb", "ff02::fb%1", "ff02::fb%lo0", "FF02:0:0:0:0:0:0:FB"] {
+                #expect(decide(udp(resolver, address), rules) == .allow(reason: "mdns"), "\(mode) \(address)")
+                // Sent by the resolver for an app, and reported under the app.
+                #expect(decide(udp(probe, address, process: resolver), rules) == .allow(reason: "mdns"), "\(mode) \(address)")
+                // Any other app to the same group and port, ad hoc code too, as before.
+                #expect(decide(udp(probe, address), rules) == other, "\(mode) \(address)")
+                #expect(decide(udp(probe, address, process: probe), rules) == other, "\(mode) \(address)")
+                #expect(decide(udp(adHoc, address), rules) == .drop(reason: mode == .ask ? "no_host" : "adhoc_code"))
+                #expect(decide(udp(signed("com.apple.mDNSResponder", "ABCDE12345"), address), rules) == other)
+            }
+            // The resolver elsewhere: another port, another group, unicast 5353, or TCP.
+            for facts in [udp(resolver, "224.0.0.251", port: 5354), udp(resolver, "224.0.0.252"), udp(resolver, "ff02::fc"),
+                          udp(resolver, "ff05::fb"), udp(resolver, "192.168.1.20"), udp(resolver, "fe80::1%1"),
+                          udp(resolver, "224.0.0.251", tcp: true)] {
+                #expect(decide(facts, rules) != .allow(reason: "mdns"), "\(mode) \(facts)")
+            }
+            #expect(decide(udp(resolver, "192.168.1.20"), rules) == other)
+        }
+        // Accept-all lets everything through, and says what ask mode would do.
+        let acceptAll = try snapshot(.acceptAll)
+        #expect(decide(udp(resolver, "224.0.0.251"), acceptAll) == .allow(reason: "accept_all"))
+        #expect(FilterPolicy.dryRun(udp(resolver, "224.0.0.251"), snapshot: acceptAll) == "mdns")
+        #expect(FilterPolicy.dryRun(udp(probe, "224.0.0.251"), snapshot: acceptAll) == "drop:no_host")
+        // Nothing is kept for a restart: no host name was checked.
+        #expect(FilterPolicy.verified(udp(resolver, "224.0.0.251"), .allow(reason: "mdns"), snapshot: try snapshot(.ask)) == nil)
+    }
+
     @Test func multicastAndBroadcastAddresses() {
         for text in ["224.0.0.0", "224.0.0.251", "239.255.255.255", "255.255.255.255", "ff00::", "ff02::fb",
                      "ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff", "::ffff:239.255.255.250"] {

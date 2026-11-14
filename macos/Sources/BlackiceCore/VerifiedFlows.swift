@@ -142,6 +142,22 @@ public struct VerifiedFlows: Equatable, Sendable {
             keep(app: entry.app, entry.destination, entry.times, checking: true)
         }
     }
+
+    /// What a run saves: the last run's destinations as it read them at start, with this run's
+    /// on top (`merge`), less those checked longer ago than `maximumAge` at `timeOfDay`. The last
+    /// run's are kept for as long as the run lasts, not only while they name flows (`window`):
+    /// macOS does not give a new filter every socket open before it, so a VPN's tunnel can pass no
+    /// flow on its destination in a run, and one save without it lost it for the restart after,
+    /// whose lookup of the VPN's server then went into the tunnel it paused.
+    public static func toSave(lastRun: VerifiedFlows, thisRun: VerifiedFlows, timeOfDay: Double) -> VerifiedFlows {
+        var saving = lastRun
+        saving.merge(thisRun)
+        for (app, kept) in saving.apps {
+            let young = kept.filter { timeOfDay - $0.value.checked <= maximumAge }
+            saving.apps[app] = young.isEmpty ? nil : young
+        }
+        return saving
+    }
 }
 
 /// The destinations the extension saves for its next run. The file is root's, mode 0600, beside the
@@ -186,24 +202,43 @@ extension VerifiedFlows {
         return try? encoder.encode(SavedVerifiedFlows(flows: entries))
     }
 
-    /// What a file `saved` wrote holds, less the destinations checked longer ago than `maximumAge`
-    /// at `timeOfDay`, or after it. A use dated after `timeOfDay` counts as now. nil for a file
-    /// this version did not write, or one with an entry that is not valid.
+    /// `read`'s destinations, with no count of the entries left out.
     public init?(saved data: Data, timeOfDay: Double) {
-        guard let file = try? JSONDecoder().decode(SavedVerifiedFlows.self, from: data),
+        guard let read = Self.read(data, timeOfDay: timeOfDay) else { return nil }
+        self = read.flows
+    }
+
+    /// What a file `saved` wrote holds, less the destinations checked longer ago than `maximumAge`
+    /// at `timeOfDay`, or after it, and the entries that are not valid, which are counted
+    /// (`skipped`). A use dated after `timeOfDay` counts as now. nil for a file this version did
+    /// not write. Until 1.0.8 one entry that was not valid refused the whole file, so a check made
+    /// stricter in a later build would have lost every destination at the upgrade.
+    public static func read(_ data: Data, timeOfDay: Double) -> (flows: VerifiedFlows, skipped: Int)? {
+        guard let file = try? JSONDecoder().decode(SavedVerifiedFlowsFile.self, from: data),
               file.version == SavedVerifiedFlows.currentVersion,
               file.flows.count <= Self.limitPerApp * Self.appLimit else { return nil }
-        self.init()
+        var flows = VerifiedFlows()
+        var skipped = 0
         // Used longest ago first, as saved, so the limits keep the ones used last.
-        for entry in file.flows {
+        for saved in file.flows {
+            guard let entry = saved.value, let app = entry.app.identity, normalizeHost(entry.host) == entry.host,
+                  entry.port > 0, entry.at.isFinite, (entry.used ?? entry.at).isFinite,
+                  let address = IPAddress(entry.ip), address.destination == entry.ip, !address.isLinkLocal else {
+                skipped += 1
+                continue
+            }
             let used = entry.used ?? entry.at
-            guard let app = entry.app.identity, normalizeHost(entry.host) == entry.host, entry.port > 0,
-                  entry.at.isFinite, used.isFinite,
-                  let address = IPAddress(entry.ip), address.destination == entry.ip, !address.isLinkLocal else { return nil }
             guard entry.at <= timeOfDay, timeOfDay - entry.at <= Self.maximumAge else { continue }
-            keep(app: app, Destination(host: entry.host, address: address, port: entry.port),
-                 Times(checked: entry.at, used: min(used, timeOfDay)), checking: true)
+            flows.keep(app: app, Destination(host: entry.host, address: address, port: entry.port),
+                       Times(checked: entry.at, used: min(used, timeOfDay)), checking: true)
         }
-        revision = 0
+        flows.revision = 0
+        return (flows, skipped)
     }
+}
+
+/// SavedVerifiedFlows as `read` reads it: each entry on its own (SkippableEntry).
+private struct SavedVerifiedFlowsFile: Decodable {
+    let version: Int
+    let flows: [SkippableEntry<SavedVerifiedFlows.Entry>]
 }

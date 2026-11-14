@@ -199,6 +199,38 @@ struct VerifiedFlowsTests {
         #expect(ahead.names(app: app(vpn), address: other(50).address, port: 443).isEmpty)
     }
 
+    // macOS does not give a new filter every socket open before it: a run in which the VPN's tunnel
+    // passed no flow saved only its own destinations, and the restart after it paused the tunnel
+    // for a lookup that went into it. The last run's are saved for as long as the run lasts.
+    @Test func aRunThatSawNoFlowOfTheTunnelStillSavesIt() throws {
+        let day = 86_400.0
+        var first = VerifiedFlows()
+        first.record(app: app(vpn), destination(endpoint, there), timeOfDay: 0)
+        let firstFile = try #require(first.saved())
+        let lastRun = try #require(VerifiedFlows(saved: firstFile, timeOfDay: 10))
+        // The next run lets another app's flow through, long after its first 120 s.
+        var thisRun = VerifiedFlows()
+        thisRun.record(app: app(ssh), destination("host.ts.net", "100.66.32.75", 22), timeOfDay: day)
+        let saved = VerifiedFlows.toSave(lastRun: lastRun, thisRun: thisRun, timeOfDay: day)
+        #expect(saved.count == 2)
+        let file = try #require(saved.saved())
+        let next = try #require(VerifiedFlows(saved: file, timeOfDay: day + 60))
+        #expect(next.checked(app: app(vpn), address: IPAddress(there)!, port: 443) == [endpoint: 0])
+        #expect(next.names(app: app(ssh), address: IPAddress("100.66.32.75")!, port: 22) == ["host.ts.net"])
+        // A run that saw nothing new at all saves the last run's as they were.
+        #expect(VerifiedFlows.toSave(lastRun: lastRun, thisRun: VerifiedFlows(), timeOfDay: day).saved() == lastRun.saved())
+        // This run's times win, as in a merge.
+        var carried = VerifiedFlows()
+        carried.carry(app: app(vpn), destination(endpoint, there), checkedAt: 0, timeOfDay: 2 * day)
+        let both = VerifiedFlows.toSave(lastRun: lastRun, thisRun: carried, timeOfDay: 2 * day)
+        #expect(both.count == 1 && both.checked(app: app(vpn), address: IPAddress(there)!, port: 443) == [endpoint: 0])
+        // Kept for no more than 30 days after their check: past that they are not saved again.
+        let late = VerifiedFlows.toSave(lastRun: lastRun, thisRun: thisRun, timeOfDay: VerifiedFlows.maximumAge + 1)
+        #expect(late.count == 1 && late.names(app: app(vpn), address: IPAddress(there)!, port: 443).isEmpty)
+        #expect(late.names(app: app(ssh), address: IPAddress("100.66.32.75")!, port: 22) == ["host.ts.net"])
+        #expect(VerifiedFlows.toSave(lastRun: lastRun, thisRun: VerifiedFlows(), timeOfDay: VerifiedFlows.maximumAge).count == 1)
+    }
+
     // A restored host must not take the name away from a flow that DNS answers of this run name:
     // a flow with no host name is decided on exactly one name.
     @Test func aRestoredHostDoesNotUnnameAFlowThatDNSNames() throws {
@@ -260,7 +292,7 @@ struct VerifiedFlowsTests {
                                       .allow(reason: "approved"), snapshot: ask) == nil)
         #expect(FilterPolicy.verified(flow(vpn, address: "127.0.0.1"), .allow(reason: "loopback"), snapshot: ask) == nil)
         // Not kept: a link-local address, with or without its interface. A saved one has none,
-        // and a file with such an entry is refused whole.
+        // and such an entry in a file is left out.
         #expect(FilterPolicy.verified(flow(vpn, address: "fe80::1"), .allow(reason: "rule_line_3"), snapshot: ask) == nil)
         #expect(FilterPolicy.verified(flow(vpn, address: "fe80::1%1"), .allow(reason: "rule_line_3"), snapshot: ask) == nil)
         // Not kept: a flow that a `*` rule or an address rule covers, whose name nothing checked.
@@ -362,18 +394,33 @@ struct VerifiedFlowsTests {
         #expect(VerifiedFlows(saved: file(""), timeOfDay: 2000)?.count == 0)
         #expect(VerifiedFlows(saved: file(good, version: 2), timeOfDay: 2000) == nil)
         #expect(VerifiedFlows(saved: Data("not json".utf8), timeOfDay: 2000) == nil)
-        // One entry that is not valid refuses the file: a host that is not normalized, an address
-        // written another way or with an interface, port 0, an app with both forms or neither.
-        for bad in [good.replacingOccurrences(of: "edge.vpn.example.com", with: "Edge.VPN.example.com"),
-                    good.replacingOccurrences(of: "edge.vpn.example.com", with: "203.0.113.9"),
-                    good.replacingOccurrences(of: "203.0.113.7", with: "203.000.113.7"),
-                    good.replacingOccurrences(of: "203.0.113.7", with: "fe80::1%4"),
-                    good.replacingOccurrences(of: "203.0.113.7", with: "fe80::1"),
-                    good.replacingOccurrences(of: "\"port\":443", with: "\"port\":0"),
-                    good.replacingOccurrences(of: "\"team_id\":\"ABCDE12345\"", with: "\"team_id\":\"ABCDE12345\",\"cdhash\":\"\(testCDHash)\""),
-                    good.replacingOccurrences(of: "\"signing_id\":\"com.example.vpn\",", with: "")] {
-            #expect(VerifiedFlows(saved: file(good + "," + bad), timeOfDay: 2000) == nil, "\(bad)")
+        #expect(VerifiedFlows.read(Data(#"{"flows":{},"version":1}"#.utf8), timeOfDay: 2000) == nil)
+        // An entry that is not valid is left out and counted, and the others are read: a host that
+        // is not normalized, an address written another way or with an interface, port 0, an app
+        // with both forms or neither, and entries this build cannot decode at all. A check made
+        // stricter in a later build must not lose every destination at the upgrade.
+        let other = good.replacingOccurrences(of: "203.0.113.7", with: "198.51.100.4")
+        let bad = [good.replacingOccurrences(of: "edge.vpn.example.com", with: "Edge.VPN.example.com"),
+                   good.replacingOccurrences(of: "edge.vpn.example.com", with: "203.0.113.9"),
+                   good.replacingOccurrences(of: "203.0.113.7", with: "203.000.113.7"),
+                   good.replacingOccurrences(of: "203.0.113.7", with: "fe80::1%4"),
+                   good.replacingOccurrences(of: "203.0.113.7", with: "fe80::1"),
+                   good.replacingOccurrences(of: "\"port\":443", with: "\"port\":0"),
+                   good.replacingOccurrences(of: "\"port\":443", with: "\"port\":70000"),
+                   good.replacingOccurrences(of: "\"at\":1000", with: "\"at\":\"1000\""),
+                   good.replacingOccurrences(of: "\"team_id\":\"ABCDE12345\"", with: "\"team_id\":\"ABCDE12345\",\"cdhash\":\"\(testCDHash)\""),
+                   good.replacingOccurrences(of: "\"signing_id\":\"com.example.vpn\",", with: ""),
+                   good.replacingOccurrences(of: "\"host\":\"edge.vpn.example.com\",", with: ""),
+                   "null", "[]", "443"]
+        for entry in bad {
+            let read = VerifiedFlows.read(file(good + "," + entry + "," + other), timeOfDay: 2000)
+            #expect(read?.skipped == 1 && read?.flows.count == 2, "\(entry)")
+            #expect(read?.flows.names(app: app(vpn), address: IPAddress("198.51.100.4")!, port: 443) == [endpoint], "\(entry)")
         }
+        let mixed = VerifiedFlows.read(file(([good] + bad + [other]).joined(separator: ",")), timeOfDay: 2000)
+        #expect(mixed?.skipped == bad.count && mixed?.flows.count == 2)
+        // One too old or dated after now is not read back, and is no entry left out.
+        #expect(VerifiedFlows.read(file(good + "," + other), timeOfDay: 999)?.skipped == 0)
         // More entries than the limits allow.
         let entries = (0...(VerifiedFlows.limitPerApp * VerifiedFlows.appLimit)).map { _ in good }.joined(separator: ",")
         #expect(VerifiedFlows(saved: file(entries), timeOfDay: 2000) == nil)

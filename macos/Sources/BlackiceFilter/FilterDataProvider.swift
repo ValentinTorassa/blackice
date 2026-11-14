@@ -87,8 +87,10 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
     /// Under askLock. Connections of an app in a loop of drops, waiting for theirs.
     private var repeated = RepeatedDrops<Paused>()
     /// Under askLock. The UDP destinations this run let through on a name, saved for the next
-    /// run; and the last run's, which name this run's flows until `resumeUntil` (VerifiedFlows).
+    /// run; and the last run's, which name this run's flows until `resumeUntil` (VerifiedFlows)
+    /// and are saved again under this run's for as long as the run lasts (`lastRun`).
     private var verified = VerifiedFlows()
+    private var lastRun = VerifiedFlows()
     private var resumable: VerifiedFlows?
     private var resumeUntil: TimeInterval = 0
     private var resumedFlows = 0
@@ -120,6 +122,15 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
         let echPresent: Bool
         let stage: Stage
         let generation: UInt64
+
+        /// This flow, decided as it started, with the host whose address `verdict` checked
+        /// (FilterPolicy.checkedAtConnect): its hello, read once a hold or an answer lets it go
+        /// on, does not check that address again.
+        func checked(by verdict: FlowVerdict) -> Paused {
+            guard stage == .newFlow, serverName == nil else { return self }
+            return Paused(flow: flow, facts: FilterPolicy.checkedAtConnect(facts, verdict), serverName: serverName,
+                          echPresent: echPresent, stage: stage, generation: generation)
+        }
     }
 
     /// What to tell NetworkExtension now.
@@ -315,14 +326,15 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
         let would = snapshot.flatMap { FilterPolicy.dryRun(facts, snapshot: $0) }
         askLock.lock()
         let verdict = FilterPolicy.decide(facts, snapshot: snapshot, context: context(now: Self.now, scope: facts.scriptScope))
-        let (step, after) = place(verdict, paused, snapshot, now: Self.now, would: would)
+        let decided = paused.checked(by: verdict)
+        let (step, after) = place(verdict, decided, snapshot, now: Self.now, would: would)
         askLock.unlock()
         perform(after)
         switch step {
         case .allow: return .allow()
         case .drop: return .drop()
         case .pause: return .pause()
-        case .hold: return hold(flow, facts, snapshot)
+        case .hold: return hold(flow, decided.facts, snapshot)
         case .learnNames:
             guard let socket else { return .allow() }
             dnsLock.lock()
@@ -484,6 +496,10 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
             },
             denied: { [denials = ask.denials] identity, host in
                 denials.covers(identity, host: host, scope: scope, now: now)
+            },
+            lookupFailed: { [addresses] host in
+                if let resolved, resolved.host == host { return resolved.answers.isEmpty }
+                return addresses.failed(host)
             })
     }
 
@@ -614,17 +630,18 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
         snapshots.withInstalled { snapshot in
             var outcomes: [(Paused, Step, After)] = []
             askLock.lock()
-            for paused in lookups.finish(host) {
+            for waited in lookups.finish(host) {
                 let verdict: FlowVerdict
-                if paused.generation != snapshot?.generation {
+                if waited.generation != snapshot?.generation {
                     verdict = .drop(reason: "configuration_changed")
                 } else {
-                    let context = context(now: now, scope: paused.facts.scriptScope, resolved: (host, answers))
-                    verdict = paused.serverName.map {
-                        FilterPolicy.decide(paused.facts, serverName: .serverName($0, echPresent: paused.echPresent),
+                    let context = context(now: now, scope: waited.facts.scriptScope, resolved: (host, answers))
+                    verdict = waited.serverName.map {
+                        FilterPolicy.decide(waited.facts, serverName: .serverName($0, echPresent: waited.echPresent),
                                             snapshot: snapshot, context: context)
-                    } ?? FilterPolicy.decide(paused.facts, snapshot: snapshot, context: context)
+                    } ?? FilterPolicy.decide(waited.facts, snapshot: snapshot, context: context)
                 }
+                let paused = waited.checked(by: verdict)
                 let (step, after) = place(verdict, paused, snapshot, now: now)
                 outcomes.append((paused, step, after))
             }
@@ -833,10 +850,12 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
             control("approvals_kept", "in_memory")
             return
         }
-        let added = ask.approvals.restore(data, now: Self.now, timeOfDay: timeOfDay)
+        let restored = ask.approvals.restore(data, now: Self.now, timeOfDay: timeOfDay)
         savedApprovalsRevision = ask.approvals.revision
         askLock.unlock()
-        control("approvals_restored", added.map { "\($0)" } ?? "invalid_file")
+        // Entries that are not valid are left out, and the line counts them.
+        control("approvals_restored", restored.map { "\($0.added)" + ($0.skipped > 0 ? " skipped \($0.skipped)" : "") }
+            ?? "invalid_file")
     }
 
     /// On the lifecycle queue. Writes the approvals when they changed since the last save; with
@@ -887,33 +906,29 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
 
     /// On the lifecycle queue, at start: what the last run saved names this run's first flows.
     private func restoreVerified() {
-        let restored = Self.verifiedURL.flatMap { try? Data(contentsOf: $0) }
-            .flatMap { VerifiedFlows(saved: $0, timeOfDay: Date().timeIntervalSince1970) }
+        let read = Self.verifiedURL.flatMap { try? Data(contentsOf: $0) }
+            .flatMap { VerifiedFlows.read($0, timeOfDay: Date().timeIntervalSince1970) }
         askLock.lock()
-        resumable = restored
+        resumable = read?.flows
+        lastRun = read?.flows ?? VerifiedFlows()
         resumeUntil = Self.now + VerifiedFlows.window
         resumedFlows = 0
         askLock.unlock()
-        control("flows_restored", "\(restored?.count ?? 0)")
+        let skipped = read?.skipped ?? 0
+        control("flows_restored", "\(read?.flows.count ?? 0)" + (skipped > 0 ? " skipped \(skipped)" : ""))
     }
 
     /// On the lifecycle queue. Writes this run's destinations when there is something new, or
-    /// with `force`. While the last run's still name flows they are written too: a second stop
-    /// within `VerifiedFlows.window` must not lose a destination whose socket has sent nothing yet.
+    /// with `force`, onto the last run's: with no room, the ones used longest ago go, and those
+    /// are the last run's that no flow of this run has passed on (VerifiedFlows.toSave).
     private func saveVerified(force: Bool = false) {
         guard let url = Self.verifiedURL else { return }
         askLock.lock()
-        var saving = verified
-        let revision = verified.revision
-        if let resumable {
-            // This run's onto the last run's: with no room, the ones used longest ago go, and
-            // those are the last run's that no flow of this run has passed on.
-            var merged = resumable
-            merged.merge(saving)
-            saving = merged
-        }
+        let (last, this, revision) = (lastRun, verified, verified.revision)
         askLock.unlock()
-        guard force || revision != savedVerifiedRevision, let data = saving.saved() else { return }
+        guard force || revision != savedVerifiedRevision,
+              let data = VerifiedFlows.toSave(lastRun: last, thisRun: this, timeOfDay: Date().timeIntervalSince1970).saved()
+        else { return }
         do {
             try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true,
                                                     attributes: [.posixPermissions: 0o700])

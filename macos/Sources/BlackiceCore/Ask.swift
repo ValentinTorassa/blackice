@@ -171,6 +171,30 @@ public struct SavedApprovals: Codable, Equatable, Sendable {
     }
 }
 
+/// One entry of a file the extension saved, or nil when it does not decode. A later build may
+/// write, or check more strictly, what this one reads: one such entry must not cost the file's
+/// others, so it is left out and counted.
+struct SkippableEntry<Value: Decodable>: Decodable {
+    let value: Value?
+
+    init(from decoder: any Decoder) throws {
+        value = try? Value(from: decoder)
+    }
+}
+
+/// SavedApprovals as `restore` reads it: each approval on its own.
+private struct SavedApprovalsFile: Decodable {
+    let version: Int
+    let savedAt: Double
+    let approvals: [SkippableEntry<ApprovalSummary>]
+
+    enum CodingKeys: String, CodingKey {
+        case version
+        case savedAt = "saved_at"
+        case approvals
+    }
+}
+
 extension ApprovalTable {
     /// The file's contents: the approvals left at `now` (monotonic seconds), saved at `timeOfDay`
     /// (seconds since 1970).
@@ -181,17 +205,18 @@ extension ApprovalTable {
     }
 
     /// Adds the approvals in a file `saved` wrote, each for what it had left less the time of day
-    /// gone by since. Returns how many were added; nil for a file this version did not write, or
-    /// one with an entry that is not valid, which adds nothing. An approval of a link-local
-    /// address with an interface ("fe80::1%7"), which 1.0.6 took from `approve --host` and saved,
-    /// is left out: it matches no flow, and must not cost the file's other approvals.
+    /// gone by since. Returns how many were added and how many entries were not valid and were
+    /// left out (`skipped`); nil for a file this version did not write, which adds nothing. Until
+    /// 1.0.8 one entry that was not valid refused the whole file, so a check made stricter in a
+    /// later build would have taken every approval away at the upgrade. Among those left out: an
+    /// approval of a link-local address with an interface ("fe80::1%7"), which 1.0.6 took from
+    /// `approve --host` and saved, and which matches no flow.
     @discardableResult
-    public mutating func restore(_ data: Data, now: TimeInterval, timeOfDay: Double) -> Int? {
-        guard let file = try? JSONDecoder().decode(SavedApprovals.self, from: data),
+    public mutating func restore(_ data: Data, now: TimeInterval, timeOfDay: Double) -> (added: Int, skipped: Int)? {
+        guard let file = try? JSONDecoder().decode(SavedApprovalsFile.self, from: data),
               file.version == SavedApprovals.currentVersion, file.savedAt.isFinite,
               file.approvals.count <= Self.maximumEntries else { return nil }
-        let approvals = file.approvals.filter { !($0.host.contains("%") && IPAddress($0.host)?.isLinkLocal == true) }
-        guard approvals.allSatisfy({ $0.isValid && $0.secondsLeft <= Self.maximumSeconds }) else { return nil }
+        let approvals = file.approvals.compactMap(\.value).filter { $0.isValid && $0.secondsLeft <= Self.maximumSeconds }
         let gone = max(0, timeOfDay - file.savedAt)
         var added = 0
         for approval in approvals {
@@ -202,7 +227,7 @@ extension ApprovalTable {
                 seconds: Int(left), now: now)
             added += 1
         }
-        return added
+        return (added, file.approvals.count - approvals.count)
     }
 }
 
@@ -527,16 +552,23 @@ public struct AskState<Flow> {
                        released: released, verdicts: ids.map { ($0, verdict) })
     }
 
+    /// How far past its deadline an event may be found and still count as timed out on time. The
+    /// extension looks once a second; an event found later than this was not looked at in time
+    /// because the Mac slept, or the extension stalled, through its wait.
+    public static var lateSeconds: TimeInterval { 5 }
+
     /// Drops the flows of events past their deadline, then the flows whose hold ran out while
     /// their event stays pending (`hold_expired`), and forgets expired approvals and denials. An
     /// event that times out is not remembered as a denial. `timedOut` lists only the events that
-    /// ended.
+    /// ended. An event found more than `lateSeconds` past its deadline drops its flows as
+    /// `timeout;asleep`, so the log tells a wait the Mac slept through from one nobody answered.
     public mutating func expire(now: TimeInterval) -> (released: [Release<Flow>], timedOut: [String]) {
         approvals.expire(now: now)
         denials.expire(now: now)
         let entries = pending.expire(now: now)
         var released = entries.flatMap { entry in
-            entry.flows.map { Release(flow: $0.flow, allow: false, reason: "timeout", eventID: entry.event.id) }
+            let reason = now - entry.deadline > Self.lateSeconds ? "timeout;asleep" : "timeout"
+            return entry.flows.map { Release(flow: $0.flow, allow: false, reason: reason, eventID: entry.event.id) }
         }
         released += pending.expireHolds(now: now).map {
             Release(flow: $0.flow, allow: false, reason: "hold_expired", eventID: $0.eventID)

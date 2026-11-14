@@ -215,6 +215,7 @@ public struct FlowReport: Equatable, Sendable {
     /// What each drop reason means, as the report says it. A reason it does not know shows as logged.
     static let reasonWords: [String: String] = [
         "timeout": "nobody answered in time",
+        "timeout;asleep": "the Mac slept through the wait",
         "hold_expired": "held past macOS's limit while asking",
         "denied": "denied",
         "denied;remembered": "denied a moment ago",
@@ -236,6 +237,10 @@ public struct FlowReport: Equatable, Sendable {
         "server_name_unusable": "server name unusable",
         "hostname_invalid": "host name not valid",
         "address_mismatch": "address not the host's",
+        "address_mismatch;lookup_failed": "address not the host's: its lookup failed",
+        "address_mismatch;no_dns_names": "address not the host's, and no DNS answer named it",
+        "address_mismatch;dns_other_names": "address not the host's, but DNS answers named other hosts",
+        "address_mismatch;recheck": "address not the host's at the hello",
         "no_address": "no address",
         "invalid_signature": "invalid signature",
         "adhoc_code": "ad hoc signed",
@@ -247,19 +252,25 @@ public struct FlowReport: Equatable, Sendable {
         "provider_stopped": "filter stopped",
     ]
 
-    /// The words for a reason: known whole, or known up to a `;` with the rest after it in brackets.
+    /// The words for a reason: known whole, or known up to a `;`, the longest such part, with the
+    /// rest after it in brackets (`address_mismatch;lookup_failed;interpreter`).
     static func words(_ reason: String) -> String {
         if let words = reasonWords[reason] { return words }
-        let base = String(reason.prefix { $0 != ";" })
-        guard base != reason, let words = reasonWords[base] else { return reason }
-        return words + " (" + reason.dropFirst(base.count + 1) + ")"
+        var end = reason.endIndex
+        while let semicolon = reason[..<end].lastIndex(of: ";") {
+            if let words = reasonWords[String(reason[..<semicolon])] {
+                return words + " (" + reason[reason.index(after: semicolon)...] + ")"
+            }
+            end = semicolon
+        }
+        return reason
     }
 
     /// What lets a flow through without asking, grouped: "rules" for every `rule_line_N`.
     static func passGroup(_ reason: String) -> String {
         if reason.hasPrefix("rule_line_") { return "rules" }
         return ["apple_service": "Apple services", "approval": "approvals", "loopback": "loopback",
-                "system_resolver": "DNS", "inbound_not_filtered": "inbound"][reason] ?? reason
+                "system_resolver": "DNS", "mdns": "multicast DNS", "inbound_not_filtered": "inbound"][reason] ?? reason
     }
 
     /// An app as the log names it (`TEAMID/com.example.app`, `apple/com.apple.geod`,
