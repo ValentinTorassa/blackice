@@ -75,11 +75,17 @@ public struct FlowFacts: Equatable, Sendable {
     /// the last run checked them for this app, address and port, each at this time of day
     /// (VerifiedFlows.facts). A flow let through on one was not checked by this run.
     public let restored: [String: Double]
+    /// The host whose address passed the check when the flow started: its host name from the
+    /// system, once that decision held it for its TLS hello or asked about it with its address
+    /// matching (FilterPolicy.checkedAtConnect). Frozen then, like `dnsNames`: the hello names
+    /// that host as already checked. Empty for any other flow.
+    public internal(set) var checkedHosts: Set<String>
 
     public init(direction: FlowDirection, identity: IdentityResolution, internetSocket: Bool, tcp: Bool,
                 hostname: String?, port: UInt16?, remoteAddress: IPAddress?, process: IdentityResolution? = nil,
                 dnsNames: Set<String> = [], dnsAliases: Set<String> = [], executablePath: String? = nil,
-                scriptScope: ScriptScope = .any, title: String? = nil, restored: [String: Double] = [:]) {
+                scriptScope: ScriptScope = .any, title: String? = nil, restored: [String: Double] = [:],
+                checkedHosts: Set<String> = []) {
         self.direction = direction
         self.identity = identity
         self.process = process
@@ -98,6 +104,7 @@ public struct FlowFacts: Equatable, Sendable {
         self.scriptScope = scriptScope
         self.title = title
         self.restored = restored
+        self.checkedHosts = checkedHosts
     }
 
     /// The one name the remote address was given for, when there is exactly one. Several
@@ -151,13 +158,18 @@ public struct PolicyContext {
     /// Whether this app and host were denied a moment ago (AskState.denials). Only ask mode asks,
     /// so only ask mode looks: such a flow is dropped instead of asked about.
     public let denied: (AppIdentity, String) -> Bool
+    /// Whether this host's (normalized) answers are those of a lookup that failed or found none
+    /// (HostAddressCache.failed). It decides nothing: an `address_mismatch` says so in its reason.
+    public let lookupFailed: (String) -> Bool
 
     public init(approved: @escaping (AppIdentity, String) -> Bool,
                 address: @escaping (String, IPAddress?) -> AddressCheck,
-                denied: @escaping (AppIdentity, String) -> Bool = { _, _ in false }) {
+                denied: @escaping (AppIdentity, String) -> Bool = { _, _ in false },
+                lookupFailed: @escaping (String) -> Bool = { _ in false }) {
         self.approved = approved
         self.address = address
         self.denied = denied
+        self.lookupFailed = lookupFailed
     }
 }
 
@@ -300,7 +312,10 @@ public enum FilterPolicy {
             default: return .drop(reason: "server_name_mismatch")
             }
         }
-        return named(identity, rules, host: host, flow, snapshot, context, suffix: ";server_name")
+        // The flow's own host: a host name from the system was checked as the flow started
+        // (`checkedHosts`), and a name from a DNS answer came with the address.
+        return named(identity, rules, host: host, flow, snapshot, context, suffix: ";server_name",
+                     recheck: flow.hostname != nil)
     }
 
     /// A rule with hosts = ["*"] for the code `rules` names allows it outright: no host name is
@@ -503,8 +518,10 @@ public enum FilterPolicy {
 
     /// A flow with a host name: rules, then the Apple services table, then approvals, each only once
     /// the address checks out. `identity` is what approvals name, `rules` what rules may name.
+    /// `recheck` when `host` is the flow's own host name, at its hello.
     private static func named(_ identity: AppIdentity, _ rules: AppIdentity?, host: String, _ flow: FlowFacts,
-                              _ snapshot: ProviderConfiguration, _ context: PolicyContext, suffix: String) -> FlowVerdict {
+                              _ snapshot: ProviderConfiguration, _ context: PolicyContext, suffix: String,
+                              recheck: Bool = false) -> FlowVerdict {
         let line = rules.flatMap { snapshot.config.allowRule(for: $0, host: host) }?.line
         let service = line == nil && appleService(identity, host, snapshot.config)
         let ask = snapshot.mode == .ask
@@ -518,8 +535,9 @@ public enum FilterPolicy {
         }
         guard flow.remoteAddress != nil else { return .drop(reason: "no_address") }
         // An answer the resolver gave for this host and address counts like a lookup that found
-        // it, and so does one it gave for a name this host is an alias of.
-        let answered = flow.dnsNames.contains(host) || flow.dnsAliases.contains(host)
+        // it, and so does one it gave for a name this host is an alias of, and the check this
+        // flow passed for this host as it started.
+        let answered = flow.dnsNames.contains(host) || flow.dnsAliases.contains(host) || flow.checkedHosts.contains(host)
         switch answered ? AddressCheck.match : context.address(host, flow.remoteAddress) {
         case .unknown:
             // Ask mode looks the host up even with no rule, so a paused flow knows whether an
@@ -535,10 +553,47 @@ public enum FilterPolicy {
             // mode too: no answer could let this flow through, since an approval never releases a
             // flow whose address mismatches. Asking held a hook slot for nothing: in 18 hours of
             // 1.0.3 on the owner's Mac, 100 such events, each approved and its flow dropped anyway.
-            if !ask || line != nil || service || approved { return .drop(reason: "address_mismatch") }
+            if !ask || line != nil || service || approved {
+                return .drop(reason: "address_mismatch" + mismatchCause(host, flow, context, recheck: recheck))
+            }
             // With nothing naming the pair the answer still counts: an approval lets the app's
             // next connection through once its address checks out.
             return .ask(reason: "no_rule", addressMatches: false)
+        }
+    }
+
+    /// What follows `address_mismatch` in a drop's reason, so the log tells the causes apart:
+    /// `;recheck` for the flow's own host name checked again at its hello, which its first check
+    /// should spare (`checkedHosts`); `;lookup_failed` when the host's lookup failed or found no
+    /// address; `;no_dns_names` when no DNS answer the extension read gave the address a name; and
+    /// `;dns_other_names` when answers gave it, but for other hosts.
+    private static func mismatchCause(_ host: String, _ flow: FlowFacts, _ context: PolicyContext,
+                                      recheck: Bool) -> String {
+        if recheck { return ";recheck" }
+        if context.lookupFailed(host) { return ";lookup_failed" }
+        return flow.dnsNames.isEmpty ? ";no_dns_names" : ";dns_other_names"
+    }
+
+    /// `flow` with the host whose address `verdict` checked among its `checkedHosts`, where
+    /// `verdict` is `decide(_:snapshot:context:)`'s as the flow starts: its host name from the
+    /// system, when the verdict holds it for its hello (`readServerName`) or asks about it with its
+    /// address matching. `named` gives either only once that host's address has checked out. The
+    /// extension keeps these facts for the held or paused flow, so the hello decides that host's
+    /// address as checked, as it does a name from a DNS answer, and only the address: the server
+    /// name must still be that host, or a host covered by itself whose own address checks out.
+    /// Checked again at the hello, against answers up to 30 s old or a new lookup, a CDN that had
+    /// moved on meanwhile (an agent slow to approve, a connection opened ahead of its request)
+    /// dropped an approved or rule-covered flow as `address_mismatch`. Never for a verdict at the
+    /// hello: `readServerName` there means the hello is not whole yet, and nothing was checked.
+    public static func checkedAtConnect(_ flow: FlowFacts, _ verdict: FlowVerdict) -> FlowFacts {
+        guard let host = flow.hostname.flatMap(normalizeHost) else { return flow }
+        switch verdict {
+        case .readServerName, .ask(reason: _, addressMatches: true):
+            var checked = flow
+            checked.checkedHosts.insert(host)
+            return checked
+        default:
+            return flow
         }
     }
 

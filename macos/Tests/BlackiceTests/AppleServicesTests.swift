@@ -296,11 +296,11 @@ struct AppleServicesPolicyTests {
         let blockAll = try snapshot(.blockAll)
         let facts = flow(cloudd, "p01-ckdatabase.icloud.com")
         #expect(decide(facts, blockAll, unknown) == .resolveHost("p01-ckdatabase.icloud.com"))
-        #expect(decide(facts, blockAll, mismatching) == .drop(reason: "address_mismatch"))
+        #expect(decide(facts, blockAll, mismatching) == .drop(reason: "address_mismatch;no_dns_names"))
         #expect(decide(flow(cloudd, "p01-ckdatabase.icloud.com", address: nil), blockAll) == .drop(reason: "no_address"))
         let ask = try snapshot(.ask)
         // Ask mode drops it too: an approval would not release a flow whose address mismatches.
-        #expect(decide(facts, ask, mismatching) == .drop(reason: "address_mismatch"))
+        #expect(decide(facts, ask, mismatching) == .drop(reason: "address_mismatch;no_dns_names"))
     }
 
     @Test func serverNameOfAHeldServiceFlow() throws {
@@ -391,7 +391,7 @@ struct AnyHostRulePolicyTests {
         #expect(decide(dns(agent), blockAll) == .drop(reason: "no_host"))
         #expect(decide(dns(probe), blockAll) == .drop(reason: "no_rule"))
         #expect(decide(dns(probe), ask) == .drop(reason: "no_host"))
-        #expect(decide(flow(agent, "api.example.com"), blockAll, mismatching) == .drop(reason: "address_mismatch"))
+        #expect(decide(flow(agent, "api.example.com"), blockAll, mismatching) == .drop(reason: "address_mismatch;no_dns_names"))
         #expect(decide(flow(.adHoc(cdhash: testCDHash), nil, port: 53, tcp: false), ask) == .drop(reason: "no_host"))
     }
 

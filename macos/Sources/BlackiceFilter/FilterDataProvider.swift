@@ -120,6 +120,15 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
         let echPresent: Bool
         let stage: Stage
         let generation: UInt64
+
+        /// This flow, decided as it started, with the host whose address `verdict` checked
+        /// (FilterPolicy.checkedAtConnect): its hello, read once a hold or an answer lets it go
+        /// on, does not check that address again.
+        func checked(by verdict: FlowVerdict) -> Paused {
+            guard stage == .newFlow, serverName == nil else { return self }
+            return Paused(flow: flow, facts: FilterPolicy.checkedAtConnect(facts, verdict), serverName: serverName,
+                          echPresent: echPresent, stage: stage, generation: generation)
+        }
     }
 
     /// What to tell NetworkExtension now.
@@ -315,14 +324,15 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
         let would = snapshot.flatMap { FilterPolicy.dryRun(facts, snapshot: $0) }
         askLock.lock()
         let verdict = FilterPolicy.decide(facts, snapshot: snapshot, context: context(now: Self.now, scope: facts.scriptScope))
-        let (step, after) = place(verdict, paused, snapshot, now: Self.now, would: would)
+        let decided = paused.checked(by: verdict)
+        let (step, after) = place(verdict, decided, snapshot, now: Self.now, would: would)
         askLock.unlock()
         perform(after)
         switch step {
         case .allow: return .allow()
         case .drop: return .drop()
         case .pause: return .pause()
-        case .hold: return hold(flow, facts, snapshot)
+        case .hold: return hold(flow, decided.facts, snapshot)
         case .learnNames:
             guard let socket else { return .allow() }
             dnsLock.lock()
@@ -484,6 +494,10 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
             },
             denied: { [denials = ask.denials] identity, host in
                 denials.covers(identity, host: host, scope: scope, now: now)
+            },
+            lookupFailed: { [addresses] host in
+                if let resolved, resolved.host == host { return resolved.answers.isEmpty }
+                return addresses.failed(host)
             })
     }
 
@@ -614,17 +628,18 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
         snapshots.withInstalled { snapshot in
             var outcomes: [(Paused, Step, After)] = []
             askLock.lock()
-            for paused in lookups.finish(host) {
+            for waited in lookups.finish(host) {
                 let verdict: FlowVerdict
-                if paused.generation != snapshot?.generation {
+                if waited.generation != snapshot?.generation {
                     verdict = .drop(reason: "configuration_changed")
                 } else {
-                    let context = context(now: now, scope: paused.facts.scriptScope, resolved: (host, answers))
-                    verdict = paused.serverName.map {
-                        FilterPolicy.decide(paused.facts, serverName: .serverName($0, echPresent: paused.echPresent),
+                    let context = context(now: now, scope: waited.facts.scriptScope, resolved: (host, answers))
+                    verdict = waited.serverName.map {
+                        FilterPolicy.decide(waited.facts, serverName: .serverName($0, echPresent: waited.echPresent),
                                             snapshot: snapshot, context: context)
-                    } ?? FilterPolicy.decide(paused.facts, snapshot: snapshot, context: context)
+                    } ?? FilterPolicy.decide(waited.facts, snapshot: snapshot, context: context)
                 }
+                let paused = waited.checked(by: verdict)
                 let (step, after) = place(verdict, paused, snapshot, now: now)
                 outcomes.append((paused, step, after))
             }

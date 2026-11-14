@@ -89,7 +89,7 @@ struct DNSNamePolicyTests {
         #expect(try decide(web, .ask, approved) == .readServerName)
         #expect(try decide(web, serverName: host, .ask, approved) == .allow(reason: "approval;server_name"))
         // Without the alias blackice's own lookup decides, and its answers miss this address.
-        #expect(try decide(bare(adHoc, [end], port: 993, host: host), .ask, approved) == .drop(reason: "address_mismatch"))
+        #expect(try decide(bare(adHoc, [end], port: 993, host: host), .ask, approved) == .drop(reason: "address_mismatch;dns_other_names"))
         // A rule, in both modes.
         let pypi = bare(curl, ["pypi.map.fastly.net"], port: 80, host: "pypi.org", aliases: ["pypi.org"])
         #expect(try decide(pypi, .blockAll) == .allow(reason: "rule_line_8"))
