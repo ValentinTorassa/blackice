@@ -34,14 +34,16 @@ import LightweightCodeRequirements
 // in BLACKICE_EVENT_FILE, with the owner's notes from [agent] as notes.md beside it. It runs in
 // that directory, which is deleted once it is done. Every hook gets the event's ID in
 // BLACKICE_EVENT_ID. The token never reaches a hook. The hook answers on stdout (see HookAnswer):
-// the runner keeps the first `stdoutLimit` bytes and the first `stderrLimit` bytes of stderr, and
+// the runner keeps the first `stdoutLimit` bytes, and of stderr the first quarter of
+// `stderrLimit` bytes and the last three quarters, since an agent says why it failed last. It
 // drains the rest.
 //
 // Hooks are started with Process, which on macOS puts the child in a process group of its own,
 // passes it only stdin, stdout and stderr, and gives it every signal at its default with none
 // blocked (HookRunnerTests checks all three). At the deadline the group gets SIGTERM and, after a
-// grace period, SIGKILL. When the hook exits, whatever it left behind in its group is killed too.
-// A process that leaves the group on purpose (setsid, setpgid) escapes this.
+// grace period, SIGKILL; `stopAll` does the same to every running hook when the daemon stops.
+// When the hook exits, whatever it left behind in its group is killed too. A process that leaves
+// the group on purpose (setsid, setpgid) escapes this.
 //
 // At most `maximumConcurrent` hooks run at once. A hook that finds no free slot waits for one,
 // without holding a thread. Waiting hooks take turns between apps, first come first served
@@ -49,8 +51,8 @@ import LightweightCodeRequirements
 // 3 November 2026 Tailscale's network extension sent 316 of 905 events). A waiting hook is
 // dropped when less than `minimumStartBudget` of its time is left (`deadline_near`), when its
 // event ends while it waits (`event_ended`), and when `maximumWaiting` hooks already wait
-// (`queue_full`). A dropped hook's connection is denied when its timeout passes, unless
-// something else answers it.
+// (`queue_full`), and when the daemon stops (`daemon_stopping`). A dropped hook's connection is
+// denied when its timeout passes, unless something else answers it.
 
 public struct HookResult: Equatable, Sendable {
     public enum Outcome: Equatable, Sendable {
@@ -58,9 +60,10 @@ public struct HookResult: Equatable, Sendable {
         case exited(status: Int32)
         /// The shell died from a signal that blackice did not send.
         case signaled(signal: Int32)
-        /// The deadline passed and blackice killed the hook's process group. The signal is the one
-        /// that ended the shell: SIGTERM, or SIGKILL after the grace period.
-        case timedOut(signal: Int32)
+        /// blackice killed the hook's process group: its deadline passed, or the daemon stopped
+        /// (`reason`). The signal is the one that ended the shell: SIGTERM, or SIGKILL after the
+        /// grace period.
+        case timedOut(signal: Int32, reason: KillReason = .deadline)
         /// The hook was not started.
         case dropped(DropReason)
         /// The program could not be started, or the event's file or folder could not be made.
@@ -85,12 +88,29 @@ public struct HookResult: Equatable, Sendable {
         /// `maximumWaiting` hooks were already waiting for a slot.
         case queueFull = "queue_full"
         case invalidEventID = "invalid_event_id"
+        /// The daemon stopped (`HookRunner.stopAll`) before the hook got a slot.
+        case daemonStopping = "daemon_stopping"
     }
+
+    /// Why blackice killed a hook's process group.
+    public enum KillReason: String, Equatable, Sendable {
+        /// The event's deadline or the hook's timeout passed.
+        case deadline
+        /// The daemon stopped (`HookRunner.stopAll`): the connection to the extension ended, or
+        /// launchd sent it SIGTERM.
+        case daemonStopping = "daemon_stopping"
+    }
+
+    /// What marks the middle of a hook's stderr that was cut, in the result and in the event log:
+    /// a line of its own, so that neither end is read as one line with the other.
+    public static let cutMarker = "\n…\n"
 
     /// Line of the hook's [[hook]] header in blackice.toml; identifies the hook.
     public let hookLine: Int
     public let outcome: Outcome
-    /// The first `stderrLimit` bytes the hook wrote to stderr, decoded as UTF-8 with replacement.
+    /// What the hook wrote to stderr, decoded as UTF-8 with replacement: all of it, or, past
+    /// `stderrLimit` bytes, its first quarter and its last three quarters with `cutMarker`
+    /// between them, and `stderrTruncated` true.
     public let stderr: String
     public let stderrTruncated: Bool
     /// The first `stdoutLimit` bytes the hook wrote to stdout, where it answers.
@@ -103,9 +123,13 @@ public struct HookResult: Equatable, Sendable {
     /// A file the agent would load as instructions that was in its home once the hook exited,
     /// though not before it started: whatever the hook answered does not count.
     public let unsafeHome: String?
+    /// How much longer the hook took by the time of day than in time awake: about how long the
+    /// Mac slept while it ran, which its timeout does not count.
+    public let slept: TimeInterval
 
     public init(hookLine: Int, outcome: Outcome, stderr: String, stderrTruncated: Bool, duration: TimeInterval,
-                waited: TimeInterval = 0, stdout: Data = Data(), stdoutTruncated: Bool = false, unsafeHome: String? = nil) {
+                waited: TimeInterval = 0, stdout: Data = Data(), stdoutTruncated: Bool = false, unsafeHome: String? = nil,
+                slept: TimeInterval = 0) {
         self.hookLine = hookLine
         self.outcome = outcome
         self.stderr = stderr
@@ -115,15 +139,17 @@ public struct HookResult: Equatable, Sendable {
         self.duration = duration
         self.waited = waited
         self.unsafeHome = unsafeHome
+        self.slept = slept
     }
 
     /// The hook's answer, or why it has none. nil when the hook did not run (dropped, failed to
-    /// start or refused), which its own record says. An answer counts only from a hook that
-    /// exited with status 0 before its deadline, with its agent's home as it was when it started.
+    /// start or refused) or was killed because the daemon stopped, which its own record says. An
+    /// answer counts only from a hook that exited with status 0 before its deadline, with its
+    /// agent's home as it was when it started.
     public var answer: Result<HookAnswer, HookResult.NoAnswer>? {
         switch outcome {
-        case .dropped, .failedToStart, .refused, .unsafeHome: return nil
-        case .exited, .signaled, .timedOut: break
+        case .dropped, .failedToStart, .refused, .unsafeHome, .timedOut(_, .daemonStopping): return nil
+        case .exited, .signaled, .timedOut(_, .deadline): break
         }
         if let unsafeHome { return .failure(.unsafeHome(unsafeHome)) }
         switch outcome {
@@ -131,8 +157,8 @@ public struct HookResult: Equatable, Sendable {
             return HookAnswer.parse(stdout, truncated: stdoutTruncated).mapError { .output($0) }
         case .exited(let status): return .failure(.exitStatus(status))
         case .signaled(let signal): return .failure(.signaled(signal))
-        case .timedOut: return .failure(.deadline)
-        case .dropped, .failedToStart, .refused, .unsafeHome: return nil
+        case .timedOut(_, .deadline): return .failure(.deadline)
+        case .dropped, .failedToStart, .refused, .unsafeHome, .timedOut(_, .daemonStopping): return nil
         }
     }
 
@@ -182,6 +208,7 @@ public final class HookRunner: @unchecked Sendable {
         public var minimumStartBudget: TimeInterval
         /// Time between SIGTERM and SIGKILL.
         public var gracePeriod: TimeInterval
+        /// How much of a hook's stderr is kept: a quarter from its start and the rest from its end.
         public var stderrLimit: Int
         public var stdoutLimit: Int
         /// The identity of a program hook just after it started, before its stdin is written.
@@ -284,6 +311,8 @@ public final class HookRunner: @unchecked Sendable {
     private var turns: [String] = []
     private var waitingTotal = 0
     private var nextTicket: UInt64 = 0
+    /// Set by `stopAll`, never cleared: no hook starts once the daemon stops.
+    private var stopping = false
 
     private struct Waiter {
         let ticket: UInt64
@@ -363,6 +392,31 @@ public final class HookRunner: @unchecked Sendable {
         ended.forEach { $0.continuation.resume(returning: .dropped(.eventEnded)) }
     }
 
+    /// The daemon stops: the connection to the extension ended, or launchd sent it SIGTERM. Every
+    /// hook that waits for a slot is dropped (`daemon_stopping`), none starts from now on, and each
+    /// running hook ends as at its deadline: its process group gets SIGTERM from the hook's own
+    /// thread, which looks every 10 ms, and SIGKILL after the grace period (`hook_killed`, reason
+    /// `daemon_stopping`), with no `hook_no_answer` after it. Returns at once;
+    /// `runningCount` is 0 once they are gone. Up to 1.0.7 nothing stopped them: after the
+    /// extension restarted, the old daemon lived until its last hook's timeout, launchd could not
+    /// start the new one meanwhile, and the new extension's events found no daemon.
+    public func stopAll() {
+        lock.lock()
+        stopping = true
+        let dropped = waiting.values.flatMap { $0 }
+        waiting = [:]
+        turns = []
+        waitingTotal = 0
+        lock.unlock()
+        dropped.forEach { $0.continuation.resume(returning: .dropped(.daemonStopping)) }
+    }
+
+    private var isStopping: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return stopping
+    }
+
     // MARK: - One hook
 
     private func runOne(_ hook: Hook, for event: HookEvent, timeoutSeconds: Int, notes: String?,
@@ -398,12 +452,16 @@ public final class HookRunner: @unchecked Sendable {
     private func runBlocking(_ hook: Hook, event: HookEvent, timeoutSeconds: Int, notes: String?, waited: TimeInterval,
                              progress: @Sendable (HookProgress) -> Void) -> HookResult {
         defer { releaseSlot() }
+        // Both clocks: the time awake stops while the Mac sleeps and the time of day does not, so
+        // the difference at the end says how long a hook was asleep.
         let started = uptime()
+        let startedAt = options.wallClock()
         func finish(_ outcome: HookResult.Outcome, stderr: String = "", truncated: Bool = false,
                     stdout: Data = Data(), stdoutTruncated: Bool = false, unsafeHome: String? = nil) -> HookResult {
-            HookResult(hookLine: hook.line, outcome: outcome, stderr: stderr, stderrTruncated: truncated,
-                       duration: uptime() - started, waited: waited, stdout: stdout, stdoutTruncated: stdoutTruncated,
-                       unsafeHome: unsafeHome)
+            let duration = uptime() - started
+            return HookResult(hookLine: hook.line, outcome: outcome, stderr: stderr, stderrTruncated: truncated,
+                              duration: duration, waited: waited, stdout: stdout, stdoutTruncated: stdoutTruncated,
+                              unsafeHome: unsafeHome, slept: options.wallClock().timeIntervalSince(startedAt) - duration)
         }
 
         let budget = min(event.deadline.timeIntervalSince(options.wallClock()), TimeInterval(timeoutSeconds))
@@ -461,6 +519,8 @@ public final class HookRunner: @unchecked Sendable {
             return finish(.failedToStart("\(error)"))
         }
         environment["BLACKICE_EVENT_ID"] = event.id
+        // The slot may have come just as the daemon stopped.
+        guard !isStopping else { return finish(.dropped(.daemonStopping)) }
 
         let child: SpawnedHook
         do {
@@ -470,9 +530,9 @@ public final class HookRunner: @unchecked Sendable {
             return finish(.failedToStart("\(error)"))
         }
         // Read from the start, so that a hook that writes much before the check below never blocks.
-        let collector = OutputCollector(limit: options.stderrLimit)
+        let collector = OutputCollector(head: options.stderrLimit / 4, tail: options.stderrLimit - options.stderrLimit / 4)
         collector.start(reading: child.stderr)
-        let answer = OutputCollector(limit: options.stdoutLimit)
+        let answer = OutputCollector(head: options.stdoutLimit)
         answer.start(reading: child.stdout)
 
         if let program = hook.program {
@@ -513,15 +573,22 @@ public final class HookRunner: @unchecked Sendable {
         // `killAt` is in time awake. A sleep stops that clock but not the deadline's, so the time of
         // day is checked too: on 8 November 2026 four hooks the Mac slept through held every slot
         // for 12 minutes after their events had timed out, and the events after them got no hook.
+        // A daemon that stops ends its hooks the same way.
         let killAt = started + budget
         var lastSignal: Int32?
         var termSentAt: TimeInterval = 0
+        var killReason = HookResult.KillReason.deadline
         while !hasExited(child.pid) {
             let now = uptime()
-            if lastSignal == nil, now >= killAt || options.wallClock() >= event.deadline {
-                _ = kill(-child.pid, SIGTERM)
-                lastSignal = SIGTERM
-                termSentAt = now
+            if lastSignal == nil {
+                let reason: HookResult.KillReason? = now >= killAt || options.wallClock() >= event.deadline ? .deadline
+                    : isStopping ? .daemonStopping : nil
+                if let reason {
+                    _ = kill(-child.pid, SIGTERM)
+                    lastSignal = SIGTERM
+                    termSentAt = now
+                    killReason = reason
+                }
             } else if lastSignal == SIGTERM, now >= termSentAt + options.gracePeriod {
                 _ = kill(-child.pid, SIGKILL)
                 lastSignal = SIGKILL
@@ -542,7 +609,7 @@ public final class HookRunner: @unchecked Sendable {
         let killed = child.process.terminationReason == .uncaughtSignal
         let outcome: HookResult.Outcome
         if let lastSignal {
-            outcome = .timedOut(signal: killed ? status : lastSignal)
+            outcome = .timedOut(signal: killed ? status : lastSignal, reason: killReason)
         } else if killed {
             outcome = .signaled(signal: status)
         } else {
@@ -576,6 +643,11 @@ public final class HookRunner: @unchecked Sendable {
         var queued = false
         let admission: Admission = await withCheckedContinuation { continuation in
             lock.lock()
+            guard !stopping else {
+                lock.unlock()
+                continuation.resume(returning: .dropped(.daemonStopping))
+                return
+            }
             if running < options.maximumConcurrent {
                 running += 1
                 lock.unlock()
@@ -780,18 +852,24 @@ public final class HookRunner: @unchecked Sendable {
     }
 }
 
-/// Collects up to `limit` bytes from a pipe on its own thread and drains the rest, so a chatty
-/// hook never blocks on a full pipe. Reading stops at end of file, or shortly after `stop` when a
-/// process outside the hook's group still holds the pipe open.
+/// Collects what a hook writes to a pipe on its own thread and drains the rest, so a chatty hook
+/// never blocks on a full pipe: the first `head` bytes and, with a `tail`, the last `tail` bytes,
+/// with `HookResult.cutMarker` between them when the middle was cut. Reading stops at end of
+/// file, or shortly after `stop` when a process outside the hook's group still holds the pipe open.
 private final class OutputCollector: @unchecked Sendable {
     private let lock = NSLock()
     private let done = DispatchSemaphore(value: 0)
-    private let limit: Int
-    private var data = Data()
+    private let headLimit: Int
+    private let tailLimit: Int
+    private var head = Data()
+    private var tail = Data()
     private var truncated = false
     private var stopAt: TimeInterval?
 
-    init(limit: Int) { self.limit = limit }
+    init(head: Int, tail: Int = 0) {
+        headLimit = head
+        tailLimit = tail
+    }
 
     func start(reading fd: Int32) {
         Thread { self.read(fd) }.start()
@@ -812,7 +890,8 @@ private final class OutputCollector: @unchecked Sendable {
         done.wait()
         lock.lock()
         defer { lock.unlock() }
-        return (data, truncated)
+        guard truncated, tailLimit > 0 else { return (head + tail, truncated) }
+        return (head + Data(HookResult.cutMarker.utf8) + tail, true)
     }
 
     private func shouldStop() -> Bool {
@@ -832,9 +911,19 @@ private final class OutputCollector: @unchecked Sendable {
             if count == 0 { break }
             if count < 0 { if errno == EINTR || errno == EAGAIN { continue } else { break } }
             lock.lock()
-            let room = max(0, limit - data.count)
-            data.append(contentsOf: buffer[0..<min(room, count)])
-            if count > room { truncated = true }
+            let taken = min(max(0, headLimit - head.count), count)
+            head.append(contentsOf: buffer[0..<taken])
+            if count > taken {
+                if tailLimit > 0 {
+                    tail.append(contentsOf: buffer[taken..<count])
+                    if tail.count > tailLimit {
+                        tail = Data(tail.suffix(tailLimit))
+                        truncated = true
+                    }
+                } else {
+                    truncated = true
+                }
+            }
             lock.unlock()
         }
         close(fd)
