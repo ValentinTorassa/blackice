@@ -535,7 +535,8 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
         case .resolveHost(let host):
             switch lookups.add(paused, host: host, app: facts.identity.appIdentity) {
             case .startLookup: return (.pause, .lookUp(host))
-            case .waiting: return (.pause, .nothing)
+            // Its lookup starts as another ends (finishLookup).
+            case .waiting, .queued: return (.pause, .nothing)
             case .full:
                 return drop(paused, .drop(reason: "lookup_capacity"), snapshot, now: now)
             case .appFull:
@@ -619,7 +620,8 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
     }
 
     /// On resolverQueue: resolves, then decides again every flow that waited for this host. From
-    /// the generation check to the last resume no configuration is installed (`release`).
+    /// the generation check to the last resume no configuration is installed (`release`). The
+    /// lookups that waited their turn (LookupWaiters.lookupLimit) start as this one ends.
     private func finishLookup(_ host: String) {
         let answers = addresses.lookUp(host)
         let now = Self.now
@@ -627,7 +629,9 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
         snapshots.withInstalled { snapshot in
             var outcomes: [(Paused, Step, After)] = []
             askLock.lock()
-            for waited in lookups.finish(host) {
+            let waiters = lookups.finish(host)
+            while let next = lookups.nextLookup() { afters.append(.lookUp(next)) }
+            for waited in waiters {
                 let verdict: FlowVerdict
                 if waited.generation != snapshot?.generation {
                     verdict = .drop(reason: "configuration_changed")

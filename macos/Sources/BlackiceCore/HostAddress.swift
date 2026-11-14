@@ -6,8 +6,8 @@ import Foundation
 // Rules and approvals name hosts, but an app picks both the name macOS attaches to a flow (or
 // the TLS server name it sends) and the address it connects to. So before a rule or an approval
 // counts, the host is resolved with the system resolver and the flow's remote address must be
-// among the answers. Answers are cached for a short, fixed time, a failed lookup for 2 s. A
-// mismatch is not an error: the rule or approval simply does not match, so the flow is dropped
+// among the answers. Answers are cached for a short, fixed time, a failed lookup for 2 s, longer
+// while the host's lookups keep failing. A mismatch is not an error: the rule or approval simply does not match, so the flow is dropped
 // with "address_mismatch" as the verdict's reason, and after it why (FilterPolicy). Ask mode asks
 // only about a pair nothing names, for the app's next connection.
 //
@@ -311,7 +311,15 @@ public final class HostAddressCache: @unchecked Sendable {
     private let limit: Int
     private let clock: @Sendable () -> TimeInterval
     private let lock = NSLock()
-    private var entries: [String: (addresses: Set<IPAddress>, lookedUpAt: TimeInterval, expires: TimeInterval)] = [:]
+    private var entries: [String: Entry] = [:]
+
+    private struct Entry {
+        let addresses: Set<IPAddress>
+        let lookedUpAt: TimeInterval
+        let expires: TimeInterval
+        /// The host's lookups that failed in a row, up to this one; 0 for answers.
+        let failures: Int
+    }
 
     /// `clock` returns seconds on a monotonic scale; the default counts sleep (continuousSeconds).
     public init(resolver: any HostResolving, ttl: TimeInterval = defaultTTL, limit: Int = defaultLimit,
@@ -372,26 +380,59 @@ public final class HostAddressCache: @unchecked Sendable {
     /// which every address mismatches. Call it off the flow path.
     @discardableResult
     public func lookUp(_ host: String) -> Set<IPAddress> {
+        let started = clock()
         let answers = Set(resolver.resolve(host) ?? [])
-        store(host, answers)
+        store(host, answers, lookupStarted: started)
         return answers
     }
 
-    /// Answers are kept for `ttl`; no answers, a failed lookup's, for `refreshAfter` at most, so
-    /// the next connection after that looks the host up again. One failure (a resolver that timed
-    /// out, SERVFAIL, a network that changed or a Mac just awake) dropped every connection to
-    /// the host as `address_mismatch` for the whole `ttl`, those a rule or an approval covers
-    /// included. One lookup per host at a time (LookupWaiters) keeps that from becoming a storm:
-    /// while the resolver keeps failing, the next starts `refreshAfter` after the last one ended at
-    /// the earliest.
-    public func store(_ host: String, _ answers: Set<IPAddress>) {
+    /// Answers are kept for `ttl`. No answers, a failed lookup's, count for `refreshAfter` the
+    /// first time, so the next connection after that looks the host up again: one failure (a
+    /// resolver that timed out, SERVFAIL, a network that changed or a Mac just awake) dropped every
+    /// connection to the host as `address_mismatch` for the whole `ttl`, those a rule or an
+    /// approval covers included. Each failure in a row after it counts twice as long as the one
+    /// before, up to `ttl` (2, 4, 8, 16, then 30 s), and answers end the run. While the resolver
+    /// stays down (no network, or a resolver that times out) apps keep trying the hosts they use,
+    /// and a lookup of each of them every 2 s held a thread for the resolver's whole timeout, more
+    /// threads the longer it lasted. One lookup per host at a time (LookupWaiters) still keeps a
+    /// burst of connections to one lookup. A failure is in a row only when its lookup started
+    /// within `ttl` of the last one's expiry (`streak`); `lookupStarted` is when it started, now
+    /// when nil.
+    public func store(_ host: String, _ answers: Set<IPAddress>, lookupStarted: TimeInterval? = nil) {
         lock.lock(); defer { lock.unlock() }
         let now = clock()
+        let ttl = self.ttl
+        let before = entries[host].map { Self.streak($0, at: lookupStarted ?? now, ttl: ttl) } ?? 0
         if entries.count >= limit, entries[host] == nil {
-            entries = entries.filter { $0.value.expires > now }
+            // Expired answers go, and so do failures that no lookup can continue any more.
+            entries = entries.filter { $0.value.expires > now || Self.streak($0.value, at: now, ttl: ttl) > 0 }
             if entries.count >= limit { entries.removeAll(keepingCapacity: true) }
         }
-        entries[host] = (answers, now, now + (answers.isEmpty ? min(ttl, Self.refreshAfter) : ttl))
+        let failures = answers.isEmpty ? min(before, Self.failuresCounted - 1) + 1 : 0
+        let time = answers.isEmpty ? Self.failureTime(failures, ttl: ttl) : ttl
+        entries[host] = Entry(addresses: answers, lookedUpAt: now, expires: now + time, failures: failures)
+    }
+
+    /// The count of failures in a row stops here, well past where their time reaches `ttl`.
+    private static let failuresCounted = 16
+
+    /// The failures in a row that `entry` passes on to a lookup that starts at `time`: none for
+    /// answers, nor once `ttl` has gone by since it expired, so one failure an hour after the last
+    /// run counts for `refreshAfter` again.
+    private static func streak(_ entry: Entry, at time: TimeInterval, ttl: TimeInterval) -> Int {
+        time - entry.expires <= ttl ? entry.failures : 0
+    }
+
+    /// How long the `failures`-th failed lookup of a host in a row counts: `refreshAfter`, twice
+    /// that for each failure before it, and never longer than `ttl`.
+    private static func failureTime(_ failures: Int, ttl: TimeInterval) -> TimeInterval {
+        var time = refreshAfter
+        var counted = 1
+        while counted < failures, time < ttl {
+            time *= 2
+            counted += 1
+        }
+        return min(time, ttl)
     }
 
     public func removeAll() {
@@ -404,24 +445,46 @@ public final class HostAddressCache: @unchecked Sendable {
 /// One app takes at most a quarter of the places, as in the other tables of waiting connections:
 /// on 10 November 2026 a burst of one app's connections took all 1024 while lookups were slow, and
 /// another app's connection that a rule allowed was dropped.
+///
+/// At most `lookupLimit` lookups run at once, and another host's waits its turn. Each lookup
+/// holds a thread of the extension's resolver queue for as long as getaddrinfo blocks, the
+/// resolver's whole timeout when it does not answer, and nothing else bounded them but the 1024
+/// places: a resolver that timed out held a thread for every host apps tried meanwhile.
 public struct LookupWaiters<Flow> {
     public let limit: Int
     public let limitPerApp: Int
-    /// The app is nil for a flow whose code has no identity an approval could name.
-    private var waiting: [String: [(flow: Flow, app: AppIdentity?)]] = [:]
+    /// 16 by default: a lookup the resolver answers takes milliseconds, so in use none waits.
+    public let lookupLimit: Int
+    private var waiting: [String: Waiting] = [:]
+    /// Hosts whose lookup waits its turn, the oldest first. One whose flows have gone meanwhile
+    /// (removeAll, or another lookup of the host that ended) is passed over (`nextLookup`).
+    private var queued: [String] = []
     private var perApp: [AppIdentity?: Int] = [:]
     public private(set) var count = 0
+    /// Lookups started and not finished yet.
+    public private(set) var running = 0
 
-    public init(limit: Int = 1024, limitPerApp: Int? = nil) {
+    private struct Waiting {
+        /// The app is nil for a flow whose code has no identity an approval could name.
+        var flows: [(flow: Flow, app: AppIdentity?)]
+        /// Whether the host's lookup has started; false while it waits its turn.
+        var started: Bool
+    }
+
+    public init(limit: Int = 1024, limitPerApp: Int? = nil, lookupLimit: Int = 16) {
         self.limit = limit
         self.limitPerApp = limitPerApp ?? limit / 4
+        self.lookupLimit = max(lookupLimit, 1)
     }
 
     public enum Added: Equatable {
         /// The first flow for this host: the caller starts the lookup.
         case startLookup
-        /// A lookup for this host is already running.
+        /// A lookup for this host is already running or waiting its turn.
         case waiting
+        /// The first flow for this host while `lookupLimit` lookups run: its lookup starts when
+        /// one of them ends (`nextLookup`).
+        case queued
         /// Too many flows are waiting; the caller drops this one.
         case full
         /// The flow's app has its share of the places; the caller drops this one.
@@ -434,19 +497,28 @@ public struct LookupWaiters<Flow> {
         count += 1
         perApp[app, default: 0] += 1
         if waiting[host] != nil {
-            waiting[host]?.append((flow, app))
+            waiting[host]?.flows.append((flow, app))
             return .waiting
         }
-        waiting[host] = [(flow, app)]
+        guard running < lookupLimit else {
+            waiting[host] = Waiting(flows: [(flow, app)], started: false)
+            queued.append(host)
+            return .queued
+        }
+        waiting[host] = Waiting(flows: [(flow, app)], started: true)
+        running += 1
         return .startLookup
     }
 
     /// How many of `app`'s flows wait.
     public func waitingFor(_ app: AppIdentity?) -> Int { perApp[app] ?? 0 }
 
-    /// The flows waiting for `host`, removed.
+    /// The flows waiting for `host`, removed, as a lookup of it ends: one lookup fewer runs. Every
+    /// lookup that `add` or `nextLookup` starts ends here once, whatever became of its flows, and
+    /// the caller then starts what `nextLookup` gives.
     public mutating func finish(_ host: String) -> [Flow] {
-        let entries = waiting.removeValue(forKey: host) ?? []
+        running = max(running - 1, 0)
+        let entries = waiting.removeValue(forKey: host)?.flows ?? []
         count -= entries.count
         for entry in entries {
             let left = (perApp[entry.app] ?? 1) - 1
@@ -455,9 +527,24 @@ public struct LookupWaiters<Flow> {
         return entries.map(\.flow)
     }
 
+    /// The host whose lookup the caller starts now, counted as running: the one that has waited
+    /// its turn longest, while fewer than `lookupLimit` run. nil when none can start.
+    public mutating func nextLookup() -> String? {
+        while running < lookupLimit, !queued.isEmpty {
+            let host = queued.removeFirst()
+            guard waiting[host]?.started == false else { continue }
+            waiting[host]?.started = true
+            running += 1
+            return host
+        }
+        return nil
+    }
+
+    /// Every waiting flow, removed. Lookups that run go on counting until they end (`finish`).
     public mutating func removeAll() -> [Flow] {
-        let flows = waiting.values.flatMap { $0.map(\.flow) }
+        let flows = waiting.values.flatMap { $0.flows.map(\.flow) }
         waiting.removeAll()
+        queued.removeAll()
         perApp.removeAll()
         count = 0
         return flows
