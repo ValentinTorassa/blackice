@@ -144,6 +144,30 @@ struct FailingHooksTests {
                                    partialFirstLine: false, minimum: 1)?.count == 1)
     }
 
+    /// The end of the log can hold the daemon's record and every failure it counted, but not the
+    /// answer before them: the record counted the run from its start, so the count is the whole
+    /// run's, not "at least" that many. A record that counted fewer than the log shows up to it
+    /// is from a daemon that lost count, and the run may have begun before the stretch.
+    @Test func aRecordThatCountedEveryFailureShownGivesTheWholeRun() {
+        func noAnswer(_ index: Int, at time: String) -> String {
+            #"{"type":"hook_no_answer","event":"ev-0000000\#(index)","hook_line":12,"reason":"exit_status","status":1,"ts":"2027-01-15T\#(time).000Z"}"#
+        }
+        let failing = #"{"type":"hooks_failing","count":3,"reason":"exit_status","stderr_line":"\#(apiError)","since":"2027-01-15T07:00:00.000Z","ts":"2027-01-15T07:02:00.000Z"}"#
+        let run = [noAnswer(1, at: "07:00:00"), noAnswer(2, at: "07:01:00"), noAnswer(3, at: "07:02:00"), failing]
+        #expect(FailingHooks.parse(lines(["piece of a record\"}"] + run), partialFirstLine: true)
+            == FailingHooks(count: 3, since: FailingHooks.date("2027-01-15T07:00:00.000Z"),
+                            last: FailingHooks.date("2027-01-15T07:02:00.000Z"), reason: apiError))
+        // Hooks with no answer after it add to the whole count.
+        let longer = FailingHooks.parse(lines(["x"] + run + [noAnswer(4, at: "07:03:00")]), partialFirstLine: true)
+        #expect(longer?.count == 4 && longer?.atLeast == false)
+        // Without the record, the same stretch is at least that many.
+        #expect(FailingHooks.parse(lines(["x"] + run.dropLast()), partialFirstLine: true)?.atLeast == true)
+        // A record that counted fewer leaves it at least that many.
+        let short = #"{"type":"hooks_failing","count":2,"reason":"exit_status","ts":"2027-01-15T07:02:00.000Z"}"#
+        let lost = FailingHooks.parse(lines(["x"] + run.dropLast() + [short]), partialFirstLine: true)
+        #expect(lost?.count == 3 && lost?.atLeast == true)
+    }
+
     /// `status` and the menu say so for an hour after the latest failure, not for ever: the
     /// answerer may have been switched or mended, with nothing asked since.
     @Test func aRunIsShownForAnHourAfterTheLatestFailure() {
