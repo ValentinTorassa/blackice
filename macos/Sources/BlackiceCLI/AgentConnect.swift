@@ -1060,7 +1060,7 @@ extension CLI {
         if let settingsPath = paths.settings, let makeSettings = profile.settings {
             do {
                 let settings = try makeSettings(files.contents(atPath: settingsPath))
-                try writeAtomically(settings, to: settingsPath, mode: 0o600)
+                try writeAtomically(settings, to: settingsPath, mode: 0o600, followingLinks: false)
             } catch {
                 return fail(ExitCode.cannotCreate, "Cannot write \(Describe.path(settingsPath, home: interaction.home)): \(describe(error))")
             }
@@ -1294,9 +1294,11 @@ extension CLI {
             stderr("  blackice agent connect: the file it would write does not parse (\(error)); nothing was written")
             return (nil, ExitCode.cannotCreate)
         }
-        let mode = (try? FileManager.default.attributesOfItem(atPath: path)[.posixPermissions] as? NSNumber)?.uint16Value ?? 0o644
+        // The mode of the file a symbolic link points at, as writeAtomically writes that file.
+        var info = stat()
+        let mode = stat(path, &info) == 0 ? info.st_mode & 0o777 : 0o644
         do {
-            try writeAtomically(Data(text.utf8), to: path, mode: mode_t(mode), replacing: Data(previous.utf8))
+            try writeAtomically(Data(text.utf8), to: path, mode: mode, replacing: Data(previous.utf8))
         } catch is ChangedMeanwhile {
             return changed()
         } catch {
@@ -1315,8 +1317,16 @@ extension CLI {
     /// (`lockBeside`), so that of two blackice writers that read the same text only the first
     /// writes. Until 1.0.3 the check and the rename were apart, and both could pass the check.
     /// An editor that takes no lock can still write between them, for the moment the rename takes.
+    ///
+    /// With `followingLinks`, a `path` that is a symbolic link stays one: the file it points at is
+    /// written, with the temporary file and the lock beside that file, since a rename onto the link
+    /// would put a file in its place. Until 1.0.8 it did: a blackice.toml linked from elsewhere
+    /// became a file of its own, and the file the link pointed at kept the old text. A link that
+    /// leads nowhere is replaced as before. Without `followingLinks`, as for a file blackice keeps
+    /// in the agent's home, a link is replaced and never followed out of there.
     static func writeAtomically(_ data: Data, to path: String, mode: mode_t, replacing expected: Data? = nil,
-                                lockSeconds: TimeInterval = 5) throws {
+                                lockSeconds: TimeInterval = 5, followingLinks: Bool = true) throws {
+        let path = followingLinks ? resolvingLinks(path) : path
         let temporary = temporaryPath(for: path)
         unlink(temporary)
         let descriptor = open(temporary, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, mode)
@@ -1337,6 +1347,14 @@ extension CLI {
             unlink(temporary)
             throw error
         }
+    }
+
+    /// The file `path` names, every symbolic link on the way followed (realpath(3)); `path` itself
+    /// when that fails, as for a file not there yet or a link that leads nowhere.
+    static func resolvingLinks(_ path: String) -> String {
+        guard let resolved = realpath(path, nil) else { return path }
+        defer { free(resolved) }
+        return String(cString: resolved)
     }
 
     /// Takes an exclusive flock(2) on the lock file beside `path` (`lockPath(for:)`), and returns

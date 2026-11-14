@@ -487,6 +487,8 @@ struct RunTests {
         #expect(written.hasSuffix("[[allow]]\ncdhash = \"\(testCDHash)\"\nhosts = [\"uploads.github.com\"]\n"))
         #expect(try BlackiceConfig(text: written).allowRule(for: .cdhash(testCDHash), host: "uploads.github.com") != nil)
         #expect(saved.stdout.contains("never counts"))
+        // The file changed, so the next start loads it as it is, and not a switch made with the menu.
+        #expect(saved.stdout.contains("; it counts from the next blackice start, which also loads the file's own mode and answerer"))
         // A refused approval saves nothing, and neither does one whose hosts are all covered.
         let refused = run(arguments, files: [path: Data(written.utf8)], system: FakeSystem(status: ExitCode.noPermission))
         #expect(refused.status == 77)

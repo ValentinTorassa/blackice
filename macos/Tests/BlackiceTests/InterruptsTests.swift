@@ -42,6 +42,26 @@ import Testing
         #expect(Interrupts.signals.map(handling) == before)
     }
 
+    /// A write to a pipe nobody reads any more, as a command run over ssh with no terminal makes
+    /// once the session drops: caught as the other signals are, and the write fails.
+    @Test func aBrokenPipeIsCaught() {
+        var ends: [Int32] = [0, 0]
+        #expect(pipe(&ends) == 0)
+        close(ends[0])
+        defer { close(ends[1]) }
+        let release = Interrupts.catchAll()
+        defer { release() }
+        let byte: [UInt8] = [0x0A]
+        // macOS sends it to the process, so any thread that does not block it may take it.
+        let deadline = Date().addingTimeInterval(5)
+        #expect(unblocked { () -> Int in
+            let written = write(ends[1], byte, 1)
+            while !Interrupts.interrupted, Date() < deadline { usleep(10_000) }
+            return written
+        } == -1)
+        #expect(Interrupts.caught == SIGPIPE)
+    }
+
     @Test func aLineIsReadUpToItsEnd() {
         var ends: [Int32] = [0, 0]
         #expect(pipe(&ends) == 0)
