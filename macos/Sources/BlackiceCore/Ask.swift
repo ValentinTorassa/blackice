@@ -171,6 +171,30 @@ public struct SavedApprovals: Codable, Equatable, Sendable {
     }
 }
 
+/// One entry of a file the extension saved, or nil when it does not decode. A later build may
+/// write, or check more strictly, what this one reads: one such entry must not cost the file's
+/// others, so it is left out and counted.
+struct SkippableEntry<Value: Decodable>: Decodable {
+    let value: Value?
+
+    init(from decoder: any Decoder) throws {
+        value = try? Value(from: decoder)
+    }
+}
+
+/// SavedApprovals as `restore` reads it: each approval on its own.
+private struct SavedApprovalsFile: Decodable {
+    let version: Int
+    let savedAt: Double
+    let approvals: [SkippableEntry<ApprovalSummary>]
+
+    enum CodingKeys: String, CodingKey {
+        case version
+        case savedAt = "saved_at"
+        case approvals
+    }
+}
+
 extension ApprovalTable {
     /// The file's contents: the approvals left at `now` (monotonic seconds), saved at `timeOfDay`
     /// (seconds since 1970).
@@ -181,17 +205,18 @@ extension ApprovalTable {
     }
 
     /// Adds the approvals in a file `saved` wrote, each for what it had left less the time of day
-    /// gone by since. Returns how many were added; nil for a file this version did not write, or
-    /// one with an entry that is not valid, which adds nothing. An approval of a link-local
-    /// address with an interface ("fe80::1%7"), which 1.0.6 took from `approve --host` and saved,
-    /// is left out: it matches no flow, and must not cost the file's other approvals.
+    /// gone by since. Returns how many were added and how many entries were not valid and were
+    /// left out (`skipped`); nil for a file this version did not write, which adds nothing. Until
+    /// 1.0.8 one entry that was not valid refused the whole file, so a check made stricter in a
+    /// later build would have taken every approval away at the upgrade. Among those left out: an
+    /// approval of a link-local address with an interface ("fe80::1%7"), which 1.0.6 took from
+    /// `approve --host` and saved, and which matches no flow.
     @discardableResult
-    public mutating func restore(_ data: Data, now: TimeInterval, timeOfDay: Double) -> Int? {
-        guard let file = try? JSONDecoder().decode(SavedApprovals.self, from: data),
+    public mutating func restore(_ data: Data, now: TimeInterval, timeOfDay: Double) -> (added: Int, skipped: Int)? {
+        guard let file = try? JSONDecoder().decode(SavedApprovalsFile.self, from: data),
               file.version == SavedApprovals.currentVersion, file.savedAt.isFinite,
               file.approvals.count <= Self.maximumEntries else { return nil }
-        let approvals = file.approvals.filter { !($0.host.contains("%") && IPAddress($0.host)?.isLinkLocal == true) }
-        guard approvals.allSatisfy({ $0.isValid && $0.secondsLeft <= Self.maximumSeconds }) else { return nil }
+        let approvals = file.approvals.compactMap(\.value).filter { $0.isValid && $0.secondsLeft <= Self.maximumSeconds }
         let gone = max(0, timeOfDay - file.savedAt)
         var added = 0
         for approval in approvals {
@@ -202,7 +227,7 @@ extension ApprovalTable {
                 seconds: Int(left), now: now)
             added += 1
         }
-        return added
+        return (added, file.approvals.count - approvals.count)
     }
 }
 
