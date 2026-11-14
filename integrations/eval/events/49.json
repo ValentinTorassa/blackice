@@ -1,0 +1,11 @@
+{
+  "event": "connection",
+  "id": "ev-00000031",
+  "app": {
+    "signing_id": "com.apple.curl",
+    "path": "/usr/bin/curl"
+  },
+  "ip": "100.88.1.2",
+  "port": 8771,
+  "host": "nas.tail9zz999.ts.net"
+}

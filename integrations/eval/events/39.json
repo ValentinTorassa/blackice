@@ -1,0 +1,11 @@
+{
+  "event": "connection",
+  "id": "ev-00000027",
+  "app": {
+    "cdhash": "3f9a6c1e08d27b45e9c3a1f7d2b06e48c5a9d13b",
+    "path": "/opt/homebrew/Cellar/go/1.25.4/libexec/bin/go"
+  },
+  "ip": "142.250.79.27",
+  "port": 443,
+  "host": "storage.googleapis.com"
+}

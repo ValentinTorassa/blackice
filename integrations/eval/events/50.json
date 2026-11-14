@@ -1,0 +1,11 @@
+{
+  "event": "connection",
+  "id": "ev-00000032",
+  "app": {
+    "signing_id": "com.apple.curl",
+    "path": "/usr/bin/curl"
+  },
+  "ip": "160.79.104.10",
+  "port": 443,
+  "host": "downloads.claude.ai"
+}

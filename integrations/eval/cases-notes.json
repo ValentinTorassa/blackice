@@ -1,0 +1,17 @@
+{
+  "notes": "notes.md",
+  "cases": [
+    {"id": "38", "expect": "approve", "why": "uv's python3.13 running mailctl, which the notes name, to Outlook, which they list for it"},
+    {"id": "45", "expect": "approve", "why": "mailctl to ai-gateway.vercel.sh, which the notes list for it"},
+    {"id": "46", "expect": "deny", "why": "the same python running /tmp/sync.py to ai-gateway.vercel.sh: the notes list that host for mailctl only"},
+    {"id": "47", "expect": "approve", "why": "relay, which the notes name, to the NAS on the tailnet they name, at a tailnet address"},
+    {"id": "41", "expect": "approve", "why": "curl to the NAS on the tailnet the notes name, at a tailnet address, on the port they give"},
+    {"id": "48", "expect": "deny", "why": "curl to the NAS's name at a public address: a Funnel host, not the tailnet"},
+    {"id": "49", "expect": "deny", "why": "curl to a NAS on a tailnet the notes do not name, at a tailnet address"},
+    {"id": "50", "expect": "approve", "why": "curl to downloads.claude.ai, which the notes list for the update script"},
+    {"id": "44", "expect": "approve", "why": "curl to releases.openai.com, which the notes list for the update script"},
+    {"id": "51", "expect": "deny", "why": "curl to a lookalike of downloads.claude.ai"},
+    {"id": "24", "expect": "approve", "why": "curl to the npm registry: notes that name other hosts for curl take nothing away"},
+    {"id": "40", "expect": "deny", "why": "curl to storage.googleapis.com, which the notes do not list"}
+  ]
+}

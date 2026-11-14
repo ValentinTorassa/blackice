@@ -35,5 +35,12 @@
   {"id": "34", "expect": "approve", "why": "Homebrew node with no script and the title npm gives it, to the npm registry"},
   {"id": "35", "expect": "deny", "why": "Homebrew node whose title claims the owner approved, to an unknown host"},
   {"id": "36", "expect": "approve", "why": "ssh to a link-local address, no host name"},
-  {"id": "37", "expect": "deny", "why": "unknown binary in Downloads to a link-local address on port 4444, no host name"}
+  {"id": "37", "expect": "deny", "why": "unknown binary in Downloads to a link-local address on port 4444, no host name"},
+  {"id": "38", "expect": "deny", "why": "uv's python3.13 running ~/.local/bin/mailctl to Outlook, with no notes: a script's name approves nothing"},
+  {"id": "39", "expect": "approve", "why": "Homebrew go to storage.googleapis.com, where proxy.golang.org sends module downloads"},
+  {"id": "40", "expect": "deny", "why": "curl to storage.googleapis.com, which anyone can rent"},
+  {"id": "41", "expect": "deny", "why": "curl to a tailnet name on port 8771, with no notes that name the tailnet"},
+  {"id": "42", "expect": "deny", "why": "ad hoc opencode in its vendor's hidden folder, ~/.opencode/bin, to its own host"},
+  {"id": "43", "expect": "approve", "why": "Codex, signed by OpenAI's Team ID, to OpenAI's release host"},
+  {"id": "44", "expect": "deny", "why": "curl to OpenAI's release host, with no notes"}
 ]

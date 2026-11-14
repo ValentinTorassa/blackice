@@ -1,0 +1,11 @@
+{
+  "event": "connection",
+  "id": "ev-00000028",
+  "app": {
+    "signing_id": "com.apple.curl",
+    "path": "/usr/bin/curl"
+  },
+  "ip": "142.250.79.27",
+  "port": 443,
+  "host": "storage.googleapis.com"
+}

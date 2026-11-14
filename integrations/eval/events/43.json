@@ -1,0 +1,12 @@
+{
+  "event": "connection",
+  "id": "ev-0000002b",
+  "app": {
+    "signing_id": "codex",
+    "team_id": "2DC432GLL2",
+    "path": "/opt/homebrew/Caskroom/codex/0.169.0/bin/codex"
+  },
+  "ip": "104.18.33.45",
+  "port": 443,
+  "host": "releases.openai.com"
+}
