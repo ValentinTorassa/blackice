@@ -48,6 +48,14 @@ sample connection, a rule that lets it reach its model, and its hook. Its tools 
 
 [`integrations/eval/run.sh`](integrations/eval/run.sh) runs any of them over the same 37 cases.
 
+## When nobody answers
+
+In ask mode a connection waits until `timeout_seconds` in `blackice.toml` (10 s by default, at most 120). If no one
+answers by then, it is dropped: nothing piles up for later. While it waits, `blackice pending` lists it with the
+`blackice approve` line that lets it through, so you can still answer it yourself. A denial is remembered for 10
+minutes, and the app's new connections to that host are dropped without asking. At most 4 hooks run at once and up
+to 256 wait their turn; a waiting hook is skipped when its connection has ended or its deadline is too close.
+
 ## Development
 
 ```console
