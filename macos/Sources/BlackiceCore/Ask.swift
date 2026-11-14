@@ -552,16 +552,23 @@ public struct AskState<Flow> {
                        released: released, verdicts: ids.map { ($0, verdict) })
     }
 
+    /// How far past its deadline an event may be found and still count as timed out on time. The
+    /// extension looks once a second; an event found later than this was not looked at in time
+    /// because the Mac slept, or the extension stalled, through its wait.
+    public static var lateSeconds: TimeInterval { 5 }
+
     /// Drops the flows of events past their deadline, then the flows whose hold ran out while
     /// their event stays pending (`hold_expired`), and forgets expired approvals and denials. An
     /// event that times out is not remembered as a denial. `timedOut` lists only the events that
-    /// ended.
+    /// ended. An event found more than `lateSeconds` past its deadline drops its flows as
+    /// `timeout;asleep`, so the log tells a wait the Mac slept through from one nobody answered.
     public mutating func expire(now: TimeInterval) -> (released: [Release<Flow>], timedOut: [String]) {
         approvals.expire(now: now)
         denials.expire(now: now)
         let entries = pending.expire(now: now)
         var released = entries.flatMap { entry in
-            entry.flows.map { Release(flow: $0.flow, allow: false, reason: "timeout", eventID: entry.event.id) }
+            let reason = now - entry.deadline > Self.lateSeconds ? "timeout;asleep" : "timeout"
+            return entry.flows.map { Release(flow: $0.flow, allow: false, reason: reason, eventID: entry.event.id) }
         }
         released += pending.expireHolds(now: now).map {
             Release(flow: $0.flow, allow: false, reason: "hold_expired", eventID: $0.eventID)

@@ -584,6 +584,29 @@ struct AskStateTests {
         #expect(ask.pending.eventCount == 0 && ask.approvals.count == 0)
     }
 
+    // The extension looks once a second, and its timer does not run while the Mac sleeps: an
+    // event found more than 5 s past its deadline was not looked at in time, and says so.
+    @Test func aWaitTheMacSleptThroughSaysSo() {
+        let maker = EventMaker()
+        let key = pendingKey()
+        for (now, reason) in [(10.0, "timeout"), (15.0, "timeout"), (15.5, "timeout;asleep"), (3610.0, "timeout;asleep")] {
+            var ask = AskState<String>()
+            _ = ask.pending.add("curl", key: key, addressMatches: true, now: 0, timeout: 10, makeEvent: maker.make(key))
+            _ = ask.pending.add("nscurl", key: key, addressMatches: true, now: 2, timeout: 10, makeEvent: maker.make(key))
+            let (released, timedOut) = ask.expire(now: now)
+            #expect(released.map(\.reason) == [reason, reason] && released.allSatisfy { !$0.allow } && timedOut.count == 1,
+                    "\(now)")
+        }
+        // Each event by its own deadline: one found on time, one late.
+        var ask = AskState<String>()
+        let elsewhere = pendingKey(tool, "example.org")
+        _ = ask.pending.add("early", key: key, addressMatches: true, now: 0, timeout: 10, makeEvent: maker.make(key))
+        _ = ask.pending.add("late", key: elsewhere, addressMatches: true, now: 9, timeout: 10, makeEvent: maker.make(elsewhere))
+        let reasons = Dictionary(uniqueKeysWithValues: ask.expire(now: 19).released.map { ($0.flow, $0.reason) })
+        #expect(reasons == ["early": "timeout;asleep", "late": "timeout"])
+        #expect(AskState<String>.lateSeconds == 5)
+    }
+
     @Test func holdExpiredDropsTheFlowAndKeepsTheEvent() throws {
         var ask = AskState<String>()
         let maker = EventMaker()
