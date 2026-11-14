@@ -97,9 +97,10 @@ public final class RecentDecisions {
     /// `answer_refused`, was logged for its event, or shortly before for another event of the same
     /// app and host. Otherwise it was a person's when no hook of its event was still waiting or
     /// running; when one was (or a log from before hooks answered on their output says no more),
-    /// who answered is left unknown. Lines that are not records of the log's shape are skipped;
-    /// when the stretch starts inside the file, its first line is a piece of a record and is
-    /// skipped too.
+    /// who answered is left unknown. A hook ends with its answer or its `hook_no_answer`, or with
+    /// a record of its own when there is none: dropped, failed to start, refused, or killed as
+    /// the daemon stopped. Lines that are not records of the log's shape are skipped; when the
+    /// stretch starts inside the file, its first line is a piece of a record and is skipped too.
     public static func parse(_ data: Data, partialFirstLine: Bool, limit: Int) -> EventLogSummary {
         var lines = data.split(separator: 0x0A, omittingEmptySubsequences: true)
         if partialFirstLine, !lines.isEmpty, data.first != 0x0A { lines.removeFirst() }
@@ -140,7 +141,10 @@ public final class RecentDecisions {
                 if let kind = object["answer"] as? String { answers.append((id, hookLine, kind, date)) }
             case "answer_refused":
                 refused.insert("\(id) \(hookLine)")
-            case "hook_refused", "hook_no_answer", "hook_dropped", "hook_failed":
+            // `hook_killed` is followed by `hook_no_answer` at the deadline, but not when the
+            // daemon stopped (`daemon_stopping`); such a hook would run on here, and an approval
+            // by hand after it would show no one who gave it.
+            case "hook_refused", "hook_no_answer", "hook_dropped", "hook_failed", "hook_killed":
                 running[id]?.remove(hookLine)
                 let home = object["reason"] as? String == "agent_home"
                 if type == "hook_refused" || (type == "hook_no_answer" && home) {

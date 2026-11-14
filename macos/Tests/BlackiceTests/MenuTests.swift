@@ -590,6 +590,23 @@ struct RecentDecisionsTests {
             == FailingHooks.parse(data.dropFirst(10), partialFirstLine: true))
     }
 
+    /// A hook the daemon killed as it stopped has no `hook_no_answer` after it: it has ended all
+    /// the same, and an approval by hand after it was a person's.
+    @Test func aHookKilledAsTheDaemonStoppedHasEnded() throws {
+        let directory = try makePrivateDirectory()
+        defer { removeTree(directory) }
+        let url = directory.appendingPathComponent("events.jsonl")
+        let log = try EventLog(url: url)
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        try log.append(.eventReceived(testEvent(host: "a.example", id: "ev-00000001")), at: start)
+        try log.append(.hookStarted(eventID: "ev-00000001", hookLine: 7, pid: 42), at: start)
+        try log.append(.hookFinished(eventID: "ev-00000001", HookResult(hookLine: 7, outcome: .timedOut(signal: SIGTERM, reason: .daemonStopping),
+                                                                        stderr: "", stderrTruncated: false, duration: 1)),
+                       at: start.addingTimeInterval(1))
+        try log.append(.verdict(eventID: "ev-00000001", .approved), at: start.addingTimeInterval(5))
+        #expect(RecentDecisions(url: url).latest(limit: 5).decisions.map(\.by) == [.hand])
+    }
+
     @Test func aStretchThatStartsMidRecordSkipsThatPiece() {
         let text = #"ype":"verdict","event":"ev-00000001","verdict":"approved"}"# + "\n" +
             #"{"type":"event_received","event":"ev-00000002","app_signing_id":"com.apple.curl","host":"pypi.org","ip":"203.0.113.1","port":443}"# + "\n" +
