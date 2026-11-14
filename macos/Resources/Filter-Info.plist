@@ -13,7 +13,7 @@
     <key>CFBundlePackageType</key><string>SYSX</string>
     <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
     <key>CFBundleVersion</key><string>1</string>
-    <key>CFBundleShortVersionString</key><string>1.0.7</string>
+    <key>CFBundleShortVersionString</key><string>1.0.8</string>
     <!-- The commit the build comes from. scripts/sign.sh writes it before signing, and signs a release
          only from a tree with nothing uncommitted (DRY=1 adds -dirty). "none" until then. -->
     <key>BlackiceSourceCommit</key><string>none</string>

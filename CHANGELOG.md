@@ -1,5 +1,84 @@
 # Changelog
 
+## 1.0.8 (unreleased)
+
+Read from three days of the owner's own `events.jsonl` (551 events on 1.0.7 since 11 November, fx answering, a
+60 s timeout) and `blackice report --last 24h` (66,936 connections, 3,271 dropped), and from a review of the code.
+
+Fixed:
+- An upgrade's `blackice start` stopped part way no longer leaves blackice off. Control-C, a closed terminal or a
+  dropped ssh session while it waited for the kernel left the filter saved off, and so did a configuration changed
+  meanwhile or a failed save. It now turns the filter back on with the configuration it had, says so, and exits
+  with 130. `status` says a filter that is off was turned off "in System Settings, or by a blackice start that did
+  not finish". A broken pipe counts as an interrupt in `start`, `agent connect` and the app selector.
+- The daemon stops its hooks when the network extension's connection ends. It waited for each hook to end on its
+  own or at its timeout, so after the extension restarted (an upgrade, a `start` or a `stop`) the old daemon lived
+  up to the timeout and 2 s more, launchd could not start the new one, and the new extension's events were not sent
+  (`event_not_sent no_daemon`). Waiting hooks are dropped (`hook_dropped`, `daemon_stopping`), running ones end as
+  at their deadline (`hook_killed`, `daemon_stopping`), and the daemon exits within the grace period. On SIGTERM
+  (`agent install`, logout, `launchctl kill TERM`) it does the same before it exits; until now its hooks went on
+  alone. The 1.0.7 daemon that runs while 1.0.8 is installed still behaves the old way, once.
+- The daemon no longer ends when a line of its own cannot be written, on a full disk: the line is dropped. Each
+  line of `daemon.err.log` and `daemon.out.log` now starts with the time in UTC to the millisecond and the daemon's
+  PID. No two records of `events.jsonl` share a line after a write that failed part of the way, and a log deleted
+  or moved away while the daemon runs is created again at its path.
+- A failed lookup counts for 2 s, not 30 s. One timeout of the resolver (Tailscale's 100.100.100.100, say) dropped
+  every connection to that host that no DNS answer named as `address_mismatch` for half a minute, those a rule or an
+  approval covers included.
+- A connection held for its TLS hello, or approved after a wait, is no longer checked against its host's addresses
+  a second time at the hello: a CDN that rotated its answers meanwhile dropped it. The address that passed as the
+  flow started is kept for that host only; the server name is still checked, and a rule, an Apple service or an
+  approval must still cover it at the hello.
+- macOS's multicast DNS passes. mDNSResponder's UDP to 224.0.0.251 and ff02::fb on port 5353 was dropped as
+  `no_host` in ask mode and `no_rule` in block-all, about 170 an hour on the owner's Mac, which keeps `.local` names,
+  AirDrop and AirPlay from being found. It passes in both as `mdns`; other apps to those groups, and unicast 5353,
+  are dropped as before.
+- One entry that is not valid in `approvals.json` or `verified-flows.json` is left out and counted (`skipped N` on
+  the control line); it no longer costs the whole file. Both files are written as 1.0.7 writes them.
+- The UDP destinations kept for a restart are saved for the whole run, not only while the last run's could still be
+  reused: one start in which macOS did not hand the VPN's socket to the new filter forgot the tunnel, and a later
+  restart could deadlock the AWS VPN again.
+- `blackice start` says before Touch ID which switch made with `blackice mode` or the menu it drops because the
+  file changed, such as `fx answers now, switched with blackice mode or the menu; blackice.toml has Claude Code,
+  and this start loads it.` `approve --save` says the next start also loads the file's own mode and answerer.
+- `blackice mode` refuses before Touch ID while the filter is off or an upgrade is unfinished, and says what to run;
+  it asked for Touch ID and then gave the advice of a failed restart.
+- A `blackice.toml` that is a symbolic link stays one when `agent connect` or `approve --save` writes it, and keeps
+  its target's mode.
+- An approval an agent broke in two, `approve` on one line and `24h` on the next, counts as `approve 24h`. It was
+  dropped at the deadline as an unrecognized line.
+- The agents' instructions no longer contradict themselves on runtimes, scripts, unknown Team IDs and vendor
+  folders. Live answers for one app and host went both ways: mailctl to outlook.office365.com 21 approved and 3
+  denied, opencode 4 and 16, codex 21 and 2. `go` may reach `storage.googleapis.com`, where proxy.golang.org sends
+  module downloads; that host stays a deny for curl and interpreters. A `*.ts.net` name is the owner's only on a
+  tailnet the notes name and at a tailnet address. fx answers in the same two plain lines as the other agents.
+- The install script checks the copy it puts in place for the checked version and build, not only its signature,
+  and reads the installed app again once it is moved aside: an app another install put there meanwhile is put
+  back, not replaced.
+
+New:
+- `blackice status` and the menu say when the agent keeps failing: from three hooks in a row with no answer of
+  their own making, since when, how many, and the last line of the hook's error, such as `fx ask: API request
+  failed · HTTP 502 · insufficient_funds`. On 4 and 5 November fx failed 299 times in a row over 13 hours and
+  nothing said so. The daemon writes `hooks_failing` to `events.jsonl` at 3, 10, 30, 100… in a row, and
+  `hooks_recovered` once one answers. Nothing stops or replaces the hooks.
+- `blackice status` marks a mode or an answerer switched with `blackice mode` or the menu, and a file changed since
+  the last start (`file` row).
+- A wait the Mac slept through is dropped as `timeout;asleep`, and `blackice report` says "the Mac slept through the
+  wait": most of the owner's timeouts were hooks that had run 1 to 4 s when the Mac went to sleep. `hook_killed`
+  and `hook_exited` have `slept_ms` when the Mac slept more than a second during the hook.
+- `address_mismatch` says why: `;lookup_failed`, `;no_dns_names` or `;dns_other_names`.
+- A hook's stderr keeps its end, where agents say why they failed: the first 1 KiB and the last 3 KiB, and in the
+  log the first 512 and the last 1,536 characters, with a line `…` where it was cut. `hook_no_answer` for an
+  unrecognized line has `previous_prefix`, and an answer the extension does not reply to within 10 s is logged as
+  `answer_refused` `reply_timeout`, no longer `unreachable`.
+- Each build names the commit it was built from, `BlackiceSourceCommit` in the app's and the extension's
+  Info.plist, under the signature. `sign.sh` signs a release only from a tree with nothing uncommitted, and
+  `package.sh` prints the commit.
+- The eval has 51 events: cases 38 to 44 from the owner's own denials, and 12 cases with notes
+  (`CASES=cases-notes.json`). `REPEAT=n` runs each case n times and says how often the answers agreed.
+- `brew uninstall --zap` also trashes `~/.config/blackice/agent`, the agents' homes and their sign-ins.
+
 ## 1.0.7 (11 November 2026)
 
 New:
