@@ -347,6 +347,54 @@ struct HostAddressCacheTests {
         for seconds: TimeInterval in [2, 4, 8, 16, 30] { failure(of: slow, counts: seconds) }
     }
 
+    // After an outage (a Wi-Fi switch, a VPN that reconnects) a host's failure that counted 30 s
+    // dropped every connection to it that no DNS answer named as address_mismatch;lookup_failed
+    // until its own next lookup, though the resolver answered again. Once another host is found
+    // since the failure, and 2 s after it, the host is looked up again; its run goes on.
+    @Test func aFailureEndsOnceAnotherHostIsFoundAgain() {
+        let resolver = FakeResolver(["api.example.com": nil, "www.example.com": ["198.51.100.1"], "gone.example.com": nil])
+        let clock = Clock()
+        let cache = HostAddressCache(resolver: resolver, ttl: 30, clock: { clock.now })
+        let address = ip("203.0.113.7")
+        // Found before the outage, which says nothing of the failures after it.
+        cache.lookUp("www.example.com")
+        for seconds: TimeInterval in [2, 4, 8, 16] {
+            #expect(cache.lookUp("api.example.com").isEmpty)
+            clock.advance(seconds)
+        }
+        // The fifth failure in a row, which counts 30 s.
+        #expect(cache.lookUp("api.example.com").isEmpty)
+        clock.advance(10)
+        #expect(cache.checkOrRefresh(host: "api.example.com", address: address) == .lookupFailed)
+        // Another host's failure says nothing either.
+        cache.lookUp("gone.example.com")
+        clock.advance(2)
+        #expect(cache.checkOrRefresh(host: "api.example.com", address: address) == .lookupFailed)
+        // The resolver is back: another host is found, and the failure is looked up again.
+        cache.lookUp("www.example.com")
+        #expect(cache.checkOrRefresh(host: "api.example.com", address: address) == .unknown)
+        // For a flow that cannot wait it is still a failed lookup.
+        #expect(cache.check(host: "api.example.com", address: address) == .lookupFailed)
+        // A failure less than 2 s old is what the resolver says now, whatever was found since.
+        #expect(cache.lookUp("api.example.com").isEmpty)
+        clock.advance(0.5)
+        cache.lookUp("www.example.com")
+        clock.advance(1.25)
+        #expect(cache.checkOrRefresh(host: "api.example.com", address: address) == .lookupFailed)
+        clock.advance(0.25)
+        #expect(cache.checkOrRefresh(host: "api.example.com", address: address) == .unknown)
+        // The run goes on: with nothing found since, the next failure counts 30 s.
+        #expect(cache.lookUp("api.example.com").isEmpty)
+        clock.advance(29.5)
+        #expect(cache.checkOrRefresh(host: "api.example.com", address: address) == .lookupFailed)
+        clock.advance(0.5)
+        #expect(cache.checkOrRefresh(host: "api.example.com", address: address) == .unknown)
+        // Its own answers end it, as before.
+        resolver.set("api.example.com", ["203.0.113.7"])
+        cache.lookUp("api.example.com")
+        #expect(cache.checkOrRefresh(host: "api.example.com", address: address) == .match)
+    }
+
     // A host whose last lookup failed less than 30 s ago may wait its turn for the next one:
     // until 1.0.8 a failure counted the whole 30 s, and every connection to the host that no DNS
     // answer named was dropped meanwhile. Any other host is looked up at once.

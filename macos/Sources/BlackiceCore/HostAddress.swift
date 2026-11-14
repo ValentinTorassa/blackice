@@ -312,6 +312,8 @@ public final class HostAddressCache: @unchecked Sendable {
     private let clock: @Sendable () -> TimeInterval
     private let lock = NSLock()
     private var entries: [String: Entry] = [:]
+    /// When a lookup of any host last found answers; nil before the first (`checkOrRefresh`).
+    private var lastFound: TimeInterval?
 
     private struct Entry {
         let addresses: Set<IPAddress>
@@ -345,16 +347,30 @@ public final class HostAddressCache: @unchecked Sendable {
     /// what the resolver says now. CDNs answer with TTLs of seconds and rotate their addresses: on
     /// 8 November 2026 outlook.office365.com had A records of 2 to 4 s and 13 answer sets in
     /// 3 minutes, and the first address of half its answers was not in answers up to 30 s old.
-    /// An address that cannot be checked stays a mismatch. A failed lookup (no answers) is
-    /// `lookupFailed` until it expires (`store`).
+    /// An address that cannot be checked stays a mismatch.
+    ///
+    /// A failed lookup (no answers) is `lookupFailed` until it expires (`store`), or until it is
+    /// `refreshAfter` old and a lookup of another host has found answers since. After an outage
+    /// (a Wi-Fi switch, a VPN that reconnects) a host's fifth failure in a row counts 30 s, and
+    /// only its own next lookup ended the run: for up to 30 s after the resolver came back, every
+    /// connection to the host that no DNS answer named was dropped as
+    /// `address_mismatch;lookup_failed`, those a rule or an approval covers included. Answers for
+    /// another host say the resolver works again, so this one is asked again. Its run goes on
+    /// (`store`): while its own lookups keep failing, behind a split-DNS server that is gone say,
+    /// each waits its turn behind other recent failures' (`failedRecently`, LookupWaiters).
     public func checkOrRefresh(host: String, address: IPAddress?) -> AddressCheck {
         lock.lock()
         let entry = entries[host]
         let now = clock()
+        let lastFound = self.lastFound
         lock.unlock()
         guard let entry, entry.expires > now else { return .unknown }
+        let age = now - entry.lookedUpAt
         let result = Self.check(address, against: entry.addresses)
-        if result == .mismatch, address?.isCheckable == true, now - entry.lookedUpAt >= Self.refreshAfter {
+        if result == .mismatch, address?.isCheckable == true, age >= Self.refreshAfter {
+            return .unknown
+        }
+        if result == .lookupFailed, age >= Self.refreshAfter, let lastFound, lastFound > entry.lookedUpAt {
             return .unknown
         }
         return result
@@ -402,13 +418,14 @@ public final class HostAddressCache: @unchecked Sendable {
     /// resolver that timed out, SERVFAIL, a network that changed or a Mac just awake) dropped every
     /// connection to the host as `address_mismatch` for the whole `ttl`, those a rule or an
     /// approval covers included. Each failure in a row after it counts twice as long as the one
-    /// before, up to `ttl` (2, 4, 8, 16, then 30 s), and answers end the run. While the resolver
-    /// stays down (no network, or a resolver that times out) apps keep trying the hosts they use,
-    /// and a lookup of each of them every 2 s held a thread for the resolver's whole timeout, more
-    /// threads the longer it lasted. One lookup per host at a time (LookupWaiters) still keeps a
-    /// burst of connections to one lookup. A failure is in a row only when its lookup started
-    /// within `ttl` of the last one's expiry (`streak`); `lookupStarted` is when it started, now
-    /// when nil.
+    /// before, up to `ttl` (2, 4, 8, 16, then 30 s), and answers end the run; answers for another
+    /// host found since a failure cut its time short (`checkOrRefresh`), not the run. While the
+    /// resolver stays down (no network, or a resolver that times out) apps keep trying the hosts
+    /// they use, and a lookup of each of them every 2 s held a thread for the resolver's whole
+    /// timeout, more threads the longer it lasted. One lookup per host at a time (LookupWaiters)
+    /// still keeps a burst of connections to one lookup. A failure is in a row only when its
+    /// lookup started within `ttl` of the last one's expiry (`streak`); `lookupStarted` is when it
+    /// started, now when nil.
     public func store(_ host: String, _ answers: Set<IPAddress>, lookupStarted: TimeInterval? = nil) {
         lock.lock(); defer { lock.unlock() }
         let now = clock()
@@ -422,6 +439,7 @@ public final class HostAddressCache: @unchecked Sendable {
         let failures = answers.isEmpty ? min(before, Self.failuresCounted - 1) + 1 : 0
         let time = answers.isEmpty ? Self.failureTime(failures, ttl: ttl) : ttl
         entries[host] = Entry(addresses: answers, lookedUpAt: now, expires: now + time, failures: failures)
+        if !answers.isEmpty { lastFound = now }
     }
 
     /// The count of failures in a row stops here, well past where their time reaches `ttl`.
@@ -449,6 +467,7 @@ public final class HostAddressCache: @unchecked Sendable {
     public func removeAll() {
         lock.lock(); defer { lock.unlock() }
         entries.removeAll()
+        lastFound = nil
     }
 }
 
