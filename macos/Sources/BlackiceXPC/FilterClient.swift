@@ -153,6 +153,11 @@ public final class XPCEventIntake: NSObject, EventIntake, EventReceiverXPC, @unc
                 report("the network extension went away")
                 continuation.finish()
             }
+            // Set before `stop` can see the stream: a stream finished first never calls a handler
+            // set after, and the connection then stayed open, so the extension went on sending
+            // events to a daemon on its way out, each to wait until its deadline.
+            let opened = ObjectIdentifier(connection)
+            continuation.onTermination = { [weak self] _ in self?.close(opened) }
             lock.lock()
             guard !stopped else {
                 lock.unlock()
@@ -162,9 +167,11 @@ public final class XPCEventIntake: NSObject, EventIntake, EventReceiverXPC, @unc
             }
             self.continuation = continuation
             self.connection = connection
-            lock.unlock()
-            continuation.onTermination = { [weak self] _ in self?.close() }
+            // Resumed under the lock, so that `stop` comes either before, and the connection is
+            // never resumed, or after, and finishing the stream closes it. NSXPCConnection calls
+            // its handlers on a queue of its own, never from within resume().
             connection.resume()
+            lock.unlock()
             Task { [report] in
                 do {
                     let configuration = try await self.configuration()
@@ -256,13 +263,17 @@ public final class XPCEventIntake: NSObject, EventIntake, EventReceiverXPC, @unc
         return connection
     }
 
-    private func close() {
+    /// Ends the connection `opened` names, with its stream, when it is still the one held.
+    private func close(_ opened: ObjectIdentifier) {
         lock.lock()
-        let current = connection
+        guard let current = connection, ObjectIdentifier(current) == opened else {
+            lock.unlock()
+            return
+        }
         connection = nil
         continuation = nil
         lock.unlock()
-        current?.invalidate()
+        current.invalidate()
     }
 
     public func receive(_ message: Data, reply: @escaping (Bool) -> Void) {
