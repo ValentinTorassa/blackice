@@ -830,3 +830,243 @@ struct AgentAnswersTests {
         #expect(kept.mode == .blockAll && kept.config.answers == .you && kept.config.activeHooks.isEmpty)
     }
 }
+
+/// A file as an owner's grows over 1.0.x: written by the questions, then by hand, by `agent
+/// connect` and by `approve --save`, with comments throughout. A release must go on reading it as
+/// the one before did, since `start` loads it and a table read otherwise changes what passes.
+struct OwnerFileTests {
+    static let gh = "8fbec897bc4d2bf005bff3945dc800000ded2752"
+    static let aws = "0123456789abcdef0123456789abcdef01234567"
+
+    static let text = """
+    # blackice.toml: written by blackice init, then by hand and by blackice agent connect.
+    mode = "ask"            # accept-all, ask or block-all
+    timeout_seconds = 60    # in ask mode, no answer in time means deny
+    apple_services = true   # macOS's own services pass
+
+    # The agents that answer, to their providers.
+    [[allow]]
+    app = "com.vercel.fx"
+    team = "JW6Y669B67"
+    hosts = ["api.vercel.com", "ai-gateway.vercel.sh"]
+
+    [[allow]]
+    app = "com.anthropic.claude-code"
+    team = "Q6L2SF6YDW"
+    hosts = ["*.anthropic.com", "bridge.claudeusercontent.com"]
+
+    [[allow]]
+    app = "codex"
+    team = "2DC432GLL2"
+    hosts = ["api.openai.com", "chatgpt.com"]
+
+    # Browsers go anywhere.
+    [[allow]]
+    app = "com.google.Chrome"
+    team = "EQHXZ8M8AV"
+    hosts = ["*"]
+
+    [[allow]]
+    app = "com.apple.Safari"   # Apple's own: no team
+    hosts = ["*"]
+
+    [[allow]]
+    app = 'org.mozilla.firefox'
+    team = '43AQ936H96'
+    hosts = [ "*" ]
+
+    [[allow]]
+    app = "com.microsoft.VSCode"
+    team = "UBF8T346G9"
+    hosts = [
+      "*.visualstudio.com",
+      "update.code.visualstudio.com",   # its updates
+      "*.vscode-cdn.net",
+    ]
+
+    [[allow]]
+    app = "com.tinyspeck.slackmacgap"
+    team = "BQR82RBBHL"
+    hosts = ["*.slack.com", "*.slack-edge.com"]
+
+    # The tailnet: its network extension, and ssh to the machines on it.
+    [[allow]]
+    app = "io.tailscale.ipn.macsys.network-extension"
+    team = "W5364U7YZB"
+    hosts = ["*"]
+
+    [[allow]]
+    app = "com.apple.ssh"
+    hosts = ["100.64.0.0/10", "fd7a:115c:a1e0::/48", "*.ts.net", "github.com", "192.168.1.10"]
+
+    [[allow]]
+    app = "com.apple.git-remote-http"
+    hosts = ["github.com", "*.github.com"]
+
+    [[allow]]
+    app = "com.apple.curl"
+    hosts = ["pypi.org", "files.pythonhosted.org"]
+
+    [[allow]]
+    app = "com.docker.docker"
+    team = "9BNSXJN65R"
+    hosts = ["*.docker.io", "*.docker.com", "production.cloudflare.docker.com"]
+
+    [[allow]]
+    app = "com.1password.1password"
+    team = "2BUA8C4S2C"
+    hosts = ["*.1password.com", "*.1passwordusercontent.com"]
+
+    [[allow]]
+    app = "us.zoom.xos"
+    team = "BJ4HAAB9B3"
+    hosts = ["*.zoom.us"]
+
+    [[allow]]
+    app = "com.spotify.client"
+    team = "2FNC3A47ZF"
+    hosts = ["*.spotify.com", "*.scdn.co", "*.spotifycdn.com"]
+
+    [[allow]]
+    app = "com.amazonaws.acvc.osx"
+    team = "94KV3E626L"
+    hosts = ["*.amazonaws.com", "*.awsapps.com"]
+
+    [[allow]]
+    app = "com.hnc.Discord"
+    team = "53Q6R32WPB"
+    hosts = ["discord.com", "*.discord.com", "*.discord.gg", "*.discordapp.net"]
+
+    [[allow]]
+    app = "net.whatsapp.WhatsApp"
+    team = "57T9237FN3"
+    hosts = ["*.whatsapp.net", "*.whatsapp.com"]
+
+    [[allow]]
+    app = "com.apple.dt.Xcode"
+    hosts = ["developer.apple.com", "*.apple.com", "17.0.0.0/8"]
+
+    [[allow]]
+    app = "com.example.mailctl"
+    team = "ABCDE12345"
+    hosts = ["outlook.office365.com", "login.microsoftonline.com"]
+
+    # Added by blackice approve --save for cdhash 8fbec897. That build only: an upgrade changes its cdhash.
+    [[allow]]
+    cdhash = "\(gh)"   # Homebrew's gh
+    hosts = ["api.github.com", "*.githubusercontent.com", "140.82.112.0/20"]
+
+    # Added by blackice approve --save for cdhash 01234567. That build only: an upgrade changes its cdhash.
+    [[allow]]
+    cdhash = "\(aws)"
+    hosts = ["*.amazonaws.com"]
+
+    [[allow]]
+    cdhash = '\(testCDHash)'
+    hosts = ["*"]
+
+    [[hook]]
+    on = "connection"
+    program = "/Users/me/.local/bin/fx"
+    app = "com.vercel.fx"
+    team = "JW6Y669B67"
+    args = ["ask", "--no-save", "--no-color", "--model", "anthropic/claude-haiku-5.5"]
+    env = ["FX_DISABLE_KEYCHAIN=1", "HOME=/Users/me/.config/blackice/agent"]
+    instructions = "fx"
+
+    [[hook]]
+    on = "connection"
+    program = "/Users/me/.local/bin/claude"
+    app = "com.anthropic.claude-code"
+    team = "Q6L2SF6YDW"
+    args = ["-p", "--model", "haiku", "--tools", "Read"]
+    env = ["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1", "CLAUDE_CONFIG_DIR=/Users/me/.config/blackice/agent/.claude"]
+    instructions = "claude-code"
+
+    [[hook]]
+    on = "connection"
+    program = "/opt/homebrew/bin/codex"
+    app = "codex"
+    team = "2DC432GLL2"
+    args = ["exec", "--model", "gpt-5-mini"]
+    env = ["CODEX_HOME=/Users/me/.config/blackice/agent/.codex"]
+    instructions = "codex"
+
+    [agent]
+    answers = "claude-code"   # who answers in ask mode
+    notes = \"\"\"
+    I work on a data platform and on blackice itself.
+    \tDeny analytics and ad hosts, such as "stats.example.com".
+    Approve package registries (pypi.org, registry.npmjs.org) for an hour, never for a day.
+    \"\"\"
+    """
+
+    @Test func anOwnersFileReadsAsItDid() throws {
+        let config = try BlackiceConfig(text: Self.text)
+        let lines = Self.text.components(separatedBy: "\n")
+        func starts(_ header: String) -> [Int] { lines.indices.filter { lines[$0] == header }.map { $0 + 1 } }
+        #expect(config.mode == .ask && config.timeoutSeconds == 60 && config.appleServices && config.loopback)
+        #expect(config.summary == "mode ask, timeout 60 s, 24 allow rules, 3 hooks, notes for the agent, Claude Code answers")
+
+        // Every rule, in order, on the line its table starts on, for the code it names and its hosts.
+        #expect(config.allow.count == 24 && config.allow.map(\.line) == starts("[[allow]]"))
+        func signed(_ id: String, _ team: String? = nil) -> AppIdentity { .signed(SigningIdentity(signingID: id, teamID: team)) }
+        #expect(config.allow.map(\.code) == [
+            signed("com.vercel.fx", "JW6Y669B67"), signed("com.anthropic.claude-code", "Q6L2SF6YDW"), signed("codex", "2DC432GLL2"),
+            signed("com.google.Chrome", "EQHXZ8M8AV"), signed("com.apple.Safari"), signed("org.mozilla.firefox", "43AQ936H96"),
+            signed("com.microsoft.VSCode", "UBF8T346G9"), signed("com.tinyspeck.slackmacgap", "BQR82RBBHL"),
+            signed("io.tailscale.ipn.macsys.network-extension", "W5364U7YZB"), signed("com.apple.ssh"),
+            signed("com.apple.git-remote-http"), signed("com.apple.curl"), signed("com.docker.docker", "9BNSXJN65R"),
+            signed("com.1password.1password", "2BUA8C4S2C"), signed("us.zoom.xos", "BJ4HAAB9B3"),
+            signed("com.spotify.client", "2FNC3A47ZF"), signed("com.amazonaws.acvc.osx", "94KV3E626L"),
+            signed("com.hnc.Discord", "53Q6R32WPB"), signed("net.whatsapp.WhatsApp", "57T9237FN3"), signed("com.apple.dt.Xcode"),
+            signed("com.example.mailctl", "ABCDE12345"), .cdhash(Self.gh), .cdhash(Self.aws), .cdhash(testCDHash),
+        ])
+        #expect(config.allow.map(\.anyHost) == [false, false, false, true, true, true, false, false, true, false, false, false,
+                                                 false, false, false, false, false, false, false, false, false, false, false, true])
+        #expect(config.allow.map { $0.hosts.count + $0.addresses.count } == [2, 2, 2, 0, 0, 0, 3, 2, 0, 5, 2, 2,
+                                                                              3, 2, 1, 3, 2, 4, 2, 3, 2, 3, 1, 0])
+        #expect(config.allow[6].hosts.map(\.source) == ["*.visualstudio.com", "update.code.visualstudio.com", "*.vscode-cdn.net"])
+        #expect(config.allow[9].hosts.map(\.source) == ["*.ts.net", "github.com"])
+        #expect(config.allow[9].addresses.map(\.source) == ["100.64.0.0/10", "fd7a:115c:a1e0::/48", "192.168.1.10"])
+        #expect(config.allow[21].hosts.map(\.source) == ["api.github.com", "*.githubusercontent.com"])
+        #expect(config.allow[21].addresses.map(\.source) == ["140.82.112.0/20"])
+        let ssh = SigningIdentity(signingID: "com.apple.ssh", teamID: nil)
+        #expect(config.allowRule(for: ssh, host: "server.example.ts.net")?.line == starts("[[allow]]")[9])
+        #expect(config.addressRule(for: ssh, address: IPAddress("100.66.32.75")!)?.line == starts("[[allow]]")[9])
+        #expect(config.allowRule(for: .cdhash(Self.gh), host: "objects.githubusercontent.com")?.line == starts("[[allow]]")[21])
+        #expect(config.anyHostRule(for: .cdhash(testCDHash))?.line == starts("[[allow]]")[23])
+        #expect(config.allowRule(for: .signed(SigningIdentity(signingID: "com.apple.curl", teamID: nil)), host: "example.com") == nil)
+
+        // The hooks agent connect wrote, and who answers.
+        let home = "/Users/me/.config/blackice/agent"
+        #expect(config.hooks.map(\.line) == starts("[[hook]]"))
+        #expect(config.hooks.map(\.program) == [
+            HookProgram(path: "/Users/me/.local/bin/fx", arguments: ["ask", "--no-save", "--no-color", "--model", "anthropic/claude-haiku-5.5"],
+                        environment: ["FX_DISABLE_KEYCHAIN": "1", "HOME": home],
+                        identity: SigningIdentity(signingID: "com.vercel.fx", teamID: "JW6Y669B67"), instructions: .fx),
+            HookProgram(path: "/Users/me/.local/bin/claude", arguments: ["-p", "--model", "haiku", "--tools", "Read"],
+                        environment: ["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1", "CLAUDE_CONFIG_DIR": home + "/.claude"],
+                        identity: SigningIdentity(signingID: "com.anthropic.claude-code", teamID: "Q6L2SF6YDW"), instructions: .claudeCode),
+            HookProgram(path: "/opt/homebrew/bin/codex", arguments: ["exec", "--model", "gpt-5-mini"],
+                        environment: ["CODEX_HOME": home + "/.codex"],
+                        identity: SigningIdentity(signingID: "codex", teamID: "2DC432GLL2"), instructions: .codex),
+        ])
+        #expect(config.answers == .agent(.claudeCode) && config.activeHooks == [config.hooks[1]])
+        #expect(config.answering == Answering(agents: [.fx, .claudeCode, .codex], answerer: .agent(.claudeCode)))
+        // The newline before the closing quotes is part of the notes.
+        #expect(config.agentNotes == "I work on a data platform and on blackice itself.\n" +
+                "\tDeny analytics and ad hosts, such as \"stats.example.com\".\n" +
+                "Approve package registries (pypi.org, registry.npmjs.org) for an hour, never for a day.\n")
+
+        // A switch with the menu changes only the answers line, which start then keeps.
+        let started = try ProviderConfiguration.starting(configText: Self.text, after: nil, keepingSwitches: true)
+        let switched = try started.with(mode: .ask, answerer: .agent(.fx))
+        #expect(switched.isStarted(from: Self.text))
+        #expect(switched.config.allow == config.allow && switched.config.hooks == config.hooks && switched.config.agentNotes == config.agentNotes)
+        #expect(switched.configText.components(separatedBy: "\n").filter { !lines.contains($0) }
+            == [#"answers = "fx"  # set by blackice mode; blackice.toml has "claude-code""#])
+        let kept = try ProviderConfiguration.starting(configText: Self.text, after: switched, keepingSwitches: true)
+        #expect(kept.config.answers == .agent(.fx) && kept.config.allow == config.allow)
+    }
+}
