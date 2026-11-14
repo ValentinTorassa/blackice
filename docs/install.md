@@ -196,7 +196,9 @@ on. If macOS is still at it after 90 s, `start` goes on, and it and `blackice st
 connection gets through until it is done. A `start` after a `stop` waits the same way.
 
 Stopping an upgrade's `start` part way, with Control-C, by closing the terminal or when an ssh session drops, turns the
-filter back on with the configuration it had and exits with status 130: run `blackice start` again. Only a `start`
+filter back on with the configuration it had and exits with status 130: run `blackice start` again. At the first
+Control-C while it waits for the kernel, or for macOS to replace the extension, it says so and waits on (90 s at most),
+since a filter turned on sooner is held with the one going; a second turns the filter on at once. Only a `start`
 killed outright leaves the filter off, and `blackice status` then says it was turned off in System Settings or by a
 `start` that did not finish.
 

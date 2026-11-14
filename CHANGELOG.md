@@ -9,7 +9,9 @@ Fixed:
 - An upgrade's `blackice start` stopped part way no longer leaves blackice off. Control-C, a closed terminal or a
   dropped ssh session while it waited for the kernel left the filter saved off, and so did a configuration changed
   meanwhile or a failed save. It now turns the filter back on with the configuration it had, says so, and exits
-  with 130. `status` says a filter that is off was turned off "in System Settings, or by a blackice start that did
+  with 130. At the first Control-C it waits on, as it would have, for macOS to let the old filter go or to finish
+  replacing the extension, since a filter turned on sooner is held with the one going; a second Control-C turns it on
+  at once. `status` says a filter that is off was turned off "in System Settings, or by a blackice start that did
   not finish". A broken pipe counts as an interrupt in `start`, `agent connect` and the app selector.
 - The daemon stops its hooks when the network extension's connection ends. It waited for each hook to end on its
   own or at its timeout, so after the extension restarted (an upgrade, a `start` or a `stop`) the old daemon lived
@@ -24,7 +26,9 @@ Fixed:
   or moved away while the daemon runs is created again at its path.
 - A failed lookup counts for 2 s, not 30 s. One timeout of the resolver (Tailscale's 100.100.100.100, say) dropped
   every connection to that host that no DNS answer named as `address_mismatch` for half a minute, those a rule or an
-  approval covers included.
+  approval covers included. Failures of one host in a row count longer, 4, 8, 16, then 30 s, until a lookup finds
+  it, so a resolver that stays down is not asked every 2 s for every host apps try; and at most 16 lookups run at
+  once, the others waiting their turn.
 - A connection held for its TLS hello, or approved after a wait, is no longer checked against its host's addresses
   a second time at the hello: a CDN that rotated its answers meanwhile dropped it. The address that passed as the
   flow started is kept for that host only; the server name is still checked, and a rule, an Apple service or an
@@ -42,9 +46,11 @@ Fixed:
   file changed, such as `fx answers now, switched with blackice mode or the menu; blackice.toml has Claude Code,
   and this start loads it.` `approve --save` says the next start also loads the file's own mode and answerer.
 - `blackice mode` refuses before Touch ID while the filter is off or an upgrade is unfinished, and says what to run;
-  it asked for Touch ID and then gave the advice of a failed restart.
+  it asked for Touch ID and then gave the advice of a failed restart. A mode it is already in is said as before, and
+  it asks macOS about the upgrade only when the extension does not answer.
 - A `blackice.toml` that is a symbolic link stays one when `agent connect` or `approve --save` writes it, and keeps
-  its target's mode.
+  its target's mode. Its lock stays in `~/.config/blackice`; when the folder of the file it points at cannot be
+  written (the Nix store, say), the link is replaced by a file as 1.0.7 did, and blackice says so.
 - An approval an agent broke in two, `approve` on one line and `24h` on the next, counts as `approve 24h`. It was
   dropped at the deadline as an unrecognized line.
 - The agents' instructions no longer contradict themselves on runtimes, scripts, unknown Team IDs and vendor
@@ -58,16 +64,19 @@ Fixed:
 
 New:
 - `blackice status` and the menu say when the agent keeps failing: from three hooks in a row with no answer of
-  their own making, since when, how many, and the last line of the hook's error, such as `fx ask: API request
-  failed · HTTP 502 · insufficient_funds`. On 4 and 5 November fx failed 299 times in a row over 13 hours and
-  nothing said so. The daemon writes `hooks_failing` to `events.jsonl` at 3, 10, 30, 100… in a row, and
-  `hooks_recovered` once one answers. Nothing stops or replaces the hooks.
+  their own making, since when, how many, when the last one failed, and the last line of the hook's error with its
+  colors out, such as `fx ask: API request failed · HTTP 502 · insufficient_funds`, for an hour after the last
+  failure. On 4 and 5 November fx failed 299 times in a row over 13 hours and nothing said so. The daemon writes
+  `hooks_failing` to `events.jsonl` at 3, 10, 30, 100… in a row, and `hooks_recovered` once one answers; a daemon
+  that starts again (an upgrade, a `start`, a login) goes on with the run the log shows rather than counting from 1.
+  Nothing stops or replaces the hooks.
 - `blackice status` marks a mode or an answerer switched with `blackice mode` or the menu, and a file changed since
   the last start (`file` row).
 - A wait the Mac slept through is dropped as `timeout;asleep`, and `blackice report` says "the Mac slept through the
   wait": most of the owner's timeouts were hooks that had run 1 to 4 s when the Mac went to sleep. `hook_killed`
   and `hook_exited` have `slept_ms` when the Mac slept more than a second during the hook.
-- `address_mismatch` says why: `;lookup_failed`, `;no_dns_names` or `;dns_other_names`.
+- `address_mismatch` says why, from the answers that decided it: `;lookup_failed`, `;no_dns_names` or
+  `;dns_other_names`.
 - A hook's stderr keeps its end, where agents say why they failed: the first 1 KiB and the last 3 KiB, and in the
   log the first 512 and the last 1,536 characters, with a line `…` where it was cut. `hook_no_answer` for an
   unrecognized line has `previous_prefix`, and an answer the extension does not reply to within 10 s is logged as
