@@ -62,6 +62,44 @@ import Testing
         #expect(Interrupts.caught == SIGPIPE)
     }
 
+    /// Each signal counts, so that an upgrade's start can tell a second Control-C from the first,
+    /// but a broken pipe after another signal does not: once the session is gone each line written
+    /// brings one. Back to 0 with the outermost release.
+    @Test func signalsAreCountedButNotTheBrokenPipesAfterThem() {
+        var ends: [Int32] = [0, 0]
+        #expect(pipe(&ends) == 0)
+        close(ends[0])
+        defer { close(ends[1]) }
+        let release = Interrupts.catchAll()
+        #expect(Interrupts.count == 0)
+        let process = getpid()
+        func send(_ signal: Int32, until count: Int) {
+            let deadline = Date().addingTimeInterval(5)
+            unblocked {
+                kill(process, signal)
+                while Interrupts.caught != signal || Interrupts.count < count, Date() < deadline { usleep(10_000) }
+            }
+        }
+        send(SIGHUP, until: 1)
+        #expect(Interrupts.count == 1)
+        let byte: [UInt8] = [0x0A]
+        let deadline = Date().addingTimeInterval(5)
+        #expect(unblocked { () -> Int in
+            let written = write(ends[1], byte, 1)
+            while Interrupts.caught != SIGPIPE, Date() < deadline { usleep(10_000) }
+            return written
+        } == -1)
+        #expect(Interrupts.caught == SIGPIPE && Interrupts.count == 1)
+        send(SIGINT, until: 2)
+        #expect(Interrupts.count == 2)
+        // A catch inside another keeps the count.
+        let inner = Interrupts.catchAll()
+        inner()
+        #expect(Interrupts.count == 2)
+        release()
+        #expect(Interrupts.count == 0 && !Interrupts.interrupted)
+    }
+
     @Test func aLineIsReadUpToItsEnd() {
         var ends: [Int32] = [0, 0]
         #expect(pipe(&ends) == 0)

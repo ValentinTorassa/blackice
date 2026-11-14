@@ -680,6 +680,11 @@ struct ReportTests {
             "In block-all mode now, switched with blackice mode or the menu; blackice.toml has ask mode, and this start loads it.",
             "You answer now, switched with blackice mode or the menu; blackice.toml has Claude Code, and this start loads it.",
         ])
+        // With a hook of one's own it is the hooks that answer, as status says.
+        let own = "mode = 'ask'\n" + fx + claude + "[[hook]]\non = 'connection'\nrun = 'true'\n[agent]\nanswers = 'claude-code'\n"
+        #expect(try dropped(try ProviderConfiguration(generation: 2, mode: .ask, configText: own).with(mode: .ask, answerer: .you),
+                            own + rule)
+            == ["Your hooks answer now, switched with blackice mode or the menu; blackice.toml has Claude Code, and this start loads it."])
         // A file that has you answering, or names no one.
         let you = "mode = 'ask'\n" + fx + claude + "[agent]\nanswers = 'you'\n"
         #expect(try dropped(try ProviderConfiguration(generation: 2, mode: .ask, configText: you)
@@ -797,15 +802,49 @@ struct ReportTests {
             "blackice start did not finish, and could not turn blackice's filter back on: blackice is off, and no connection " +
                 "is checked. Run blackice start again.",
         ])
-        #expect(CLI.modeRefusal(enabled: false, upgrade: { () -> UnfinishedUpgrade? in
-            Issue.record("asked about the upgrade while off")
+        func notAsked() -> UnfinishedUpgrade? {
+            Issue.record("asked about the upgrade")
             return nil
-        }())
-            == CLI.turnedOffLine)
-        #expect(CLI.modeRefusal(enabled: true, upgrade: UnfinishedUpgrade(app: "16", running: ["15"]))
+        }
+        #expect(CLI.modeRefusal(enabled: false, unchanged: false, upgrade: notAsked()) == CLI.turnedOffLine)
+        #expect(CLI.modeRefusal(enabled: false, unchanged: true, upgrade: notAsked()) == CLI.turnedOffLine)
+        // Worded for agent connect and the menu as well as blackice mode, which all change the mode.
+        #expect(CLI.modeRefusal(enabled: true, unchanged: false, upgrade: UnfinishedUpgrade(app: "16", running: ["15"]))
             == "blackice was upgraded to build 16, but macOS still runs build 15's network extension. " +
-               "blackice start finishes the upgrade. Then run blackice mode again.")
-        #expect(CLI.modeRefusal(enabled: true, upgrade: nil) == nil)
+               "blackice start finishes the upgrade. Run it, then try again.")
+        #expect(CLI.modeRefusal(enabled: true, unchanged: false, upgrade: nil) == nil)
+        // Already in that mode: said as such, with no question to macOS and no refusal.
+        #expect(CLI.modeRefusal(enabled: true, unchanged: true, upgrade: notAsked()) == nil)
+    }
+
+    /// An upgrade's start, stopped while it waits with the filter off, waits on at the first
+    /// Control-C and says so once, and stops waiting at the second: a filter turned on at the first
+    /// would be held with the one the kernel is still disconnecting.
+    @Test func anUpgradeStoppedOnceWaitsAndTwiceStops() {
+        let kernel = "Waiting for macOS to let the old filter go before turning blackice back on; " +
+            "press Control-C again to turn it on now."
+        let request = "Waiting for macOS to finish replacing blackice's network extension before turning blackice back on; " +
+            "press Control-C again to turn it on now."
+        #expect(CLI.waitingAfterInterruptLine(.kernel) == kernel)
+        #expect(CLI.waitingAfterInterruptLine(.request) == request)
+
+        var duringKernel = UpgradeInterruption()
+        #expect([0, 0, 1, 1, 1, 2, 3].map { duringKernel.action(.kernel, interrupts: $0) }
+            == [.wait, .wait, .tell(kernel), .wait, .wait, .stop, .stop])
+        // Said once a start, whichever wait came first.
+        #expect(duringKernel.action(.request, interrupts: 1) == .wait)
+
+        var duringRequest = UpgradeInterruption()
+        #expect([0, 1, 1, 2].map { duringRequest.action(.request, interrupts: $0) } == [.wait, .tell(request), .wait, .stop])
+        // Two at once, as from a terminal and a closed session together: nothing more to wait for.
+        var both = UpgradeInterruption()
+        #expect(both.action(.kernel, interrupts: 2) == .stop)
+
+        var said: [String] = []
+        var asked = UpgradeInterruption()
+        #expect([0, 1, 1, 2].map { asked.stopWaiting(.kernel, interrupts: $0, say: { said.append($0) }) }
+            == [false, false, false, true])
+        #expect(said == [kernel])
     }
 
     @Test func modeAndFirstStartHints() throws {

@@ -63,27 +63,35 @@ public final class NESystemControl: SystemControlling {
         // November 2026). Only where the kernel's list of filters can be read.
         //
         // From the turn-off until the filter is saved on again, Control-C, a closed terminal, a
-        // dropped ssh session and SIGTERM are caught: the waits stop, the filter is turned back on
-        // (putBack) and start exits with 130. Every other way out before that save turns it back
-        // on too. Until 1.0.8 nothing was caught there, and such an upgrade left the filter saved
-        // off, which status put down to System Settings.
+        // dropped ssh session and SIGTERM are caught, the filter is turned back on (putBack) and
+        // start exits with 130. Every other way out before that save turns it back on too. Until
+        // 1.0.8 nothing was caught there, and such an upgrade left the filter saved off, which
+        // status put down to System Settings. A first signal lets the wait for the kernel, or for
+        // the extension request, go on to its end, since a filter turned on before then is held
+        // with the one going, or replaced while on; a second ends it at once (UpgradeInterruption).
         var turnedOff = false
         var release: (() -> Void)?
         defer { release?() }
+        var interruption = UpgradeInterruption()
+        func stopWaiting(_ wait: UpgradeInterruption.Wait) -> Bool {
+            interruption.stopWaiting(wait, interrupts: Interrupts.count, say: output.stdout)
+        }
         if saved.enabled, saved.providerBundleID != nil, KernelFilters.count() != nil, Self.unfinishedUpgrade() != nil {
             guard let (manager, current) = loadSaved(output) else { return ExitCode.software }
             if let owner = current.foreignOwner { return refuseForeign(owner, output) }
             guard current.configuration == saved.configuration else { return changedMeanwhile(output) }
             release = Interrupts.catchAll()
             // Not saved: the filter is on as it was.
-            guard turnOff(manager, output) else { return Interrupts.interrupted ? ExitCode.interrupted : ExitCode.software }
+            guard turnOff(manager, output, stopping: { stopWaiting(.kernel) }) else {
+                return Interrupts.interrupted ? ExitCode.interrupted : ExitCode.software
+            }
             turnedOff = true
             if Interrupts.interrupted { return putBack(ExitCode.interrupted, output) }
         }
 
         let (activation, replaced, neededApproval, _) = runExtensionRequest(
             OSSystemExtensionRequest.activationRequest(forExtensionWithIdentifier: BlackiceIdentifiers.filter, queue: .main),
-            output, stopping: { turnedOff && Interrupts.interrupted })
+            output, stopping: { turnedOff && stopWaiting(.request) })
         // The new build is not in place: the build macOS runs goes on filtering.
         guard activation == ExitCode.success else { return turnedOff ? putBack(activation, output) : activation }
         if turnedOff, Interrupts.interrupted { return putBack(ExitCode.interrupted, output) }
@@ -95,7 +103,8 @@ public final class NESystemControl: SystemControlling {
 
         // A filter that was off when start began can still be going too: macOS can take as long
         // over the one a `blackice stop` turned off (10.1 s on 11 November 2026), and the filter
-        // saved below would be held with it. Wait the same way; blackice is off meanwhile as it was.
+        // saved below would be held with it. Wait the same way; blackice is off meanwhile as it was,
+        // and a signal caught meanwhile is for whoever caught it to look at once start returns.
         if !saved.enabled || saved.providerBundleID == nil, let filters = KernelFilters.count() {
             letGo(after: filters, appear: 0, output)
         }
@@ -180,37 +189,45 @@ public final class NESystemControl: SystemControlling {
 
     /// Turns the filter off and waits until the kernel has let it go, so that the filter started
     /// next is not held with it (KernelFilters.gone), saying so when that lasts. false when the
-    /// settings could not be saved.
-    private func turnOff(_ manager: NEFilterManager, _ output: SystemOutput) -> Bool {
+    /// settings could not be saved. `stopping` as in `letGo`.
+    private func turnOff(_ manager: NEFilterManager, _ output: SystemOutput, stopping: () -> Bool) -> Bool {
         let filters = KernelFilters.count()
         manager.isEnabled = false
         guard save(manager, output) else { return false }
-        if let filters { letGo(after: filters, appear: 2, output) }
+        if let filters { letGo(after: filters, appear: 2, output, stopping: stopping) }
         return true
     }
 
     /// Waits until the kernel has let go of a filter that was turned off, its list having had
     /// `filters` until then, for turnedOffLimit at most, and says so when that lasts. `appear` as in
-    /// KernelFilters.gone: 0 when the filter was turned off before this command. Stops at once
-    /// when a signal is caught (Interrupts), which only happens where start catches them.
-    private func letGo(after filters: Int, appear: TimeInterval, _ output: SystemOutput) {
+    /// KernelFilters.gone: 0 when the filter was turned off before this command.
+    ///
+    /// `stopping` is asked before each look at the kernel's list, and ends the wait when it says
+    /// so. Only the code that turns the filter back on after a signal passes one (start around an
+    /// upgrade, and `restart`). Elsewhere the wait goes on whatever was caught: `agent connect`
+    /// catches signals around the start it runs, and looks at them once start returns, and a
+    /// start that found the filter off has nothing to put back.
+    private func letGo(after filters: Int, appear: TimeInterval, _ output: SystemOutput, stopping: () -> Bool = { false }) {
         let limit = Int(Self.turnedOffLimit)
-        if !KernelFilters.gone(after: filters, appear: appear, limit: Self.turnedOffLimit,
-                               held: { CLI.turnedOffLines($0, limit: limit).forEach(output.stdout) },
-                               stopping: { Interrupts.interrupted }),
-           !Interrupts.interrupted {
-            output.stdout(CLI.turnedOffTooLong(limit: limit))
-        }
+        var stopped = false
+        let gone = KernelFilters.gone(after: filters, appear: appear, limit: Self.turnedOffLimit,
+                                      held: { CLI.turnedOffLines($0, limit: limit).forEach(output.stdout) },
+                                      stopping: { stopped = stopping(); return stopped })
+        if !gone, !stopped { output.stdout(CLI.turnedOffTooLong(limit: limit)) }
     }
 
     /// Turns the filter off and on again, catching signals in between as start does around an
-    /// upgrade, so that one there does not leave it off: the wait stops and the filter is turned
-    /// on at once. 130 when a signal was caught, once the filter is on.
+    /// upgrade, so that one there does not leave it off: the first lets the wait for the kernel go
+    /// on to its end, a second ends it, and the filter is turned on. 130 when a signal was caught,
+    /// once the filter is on.
     private func restart(_ manager: NEFilterManager, _ output: SystemOutput) -> Int32 {
         let release = Interrupts.catchAll()
         defer { release() }
+        var interruption = UpgradeInterruption()
         // Not saved: the filter is on as it was.
-        guard turnOff(manager, output) else { return Interrupts.interrupted ? ExitCode.interrupted : ExitCode.software }
+        guard turnOff(manager, output, stopping: {
+            interruption.stopWaiting(.kernel, interrupts: Interrupts.count, say: output.stdout)
+        }) else { return Interrupts.interrupted ? ExitCode.interrupted : ExitCode.software }
         manager.isEnabled = true
         guard save(manager, output) else { return putBack(ExitCode.software, output) }
         if Interrupts.interrupted {
@@ -355,6 +372,17 @@ public final class NESystemControl: SystemControlling {
         return UnfinishedUpgrade(app: Peers.extensionBuild(app: Bundle.main.bundleURL), running: running)
     }
 
+    /// `unfinishedUpgrade`, asked of macOS only when the extension does not answer. Each build
+    /// listens on a Mach service of its own, named with its CFBundleVersion (Peers.machServiceName),
+    /// and this app looks up the name of the build inside it: the extension that answers is that
+    /// build, so no upgrade is unfinished. That is one request over XPC where mode, before Touch ID,
+    /// sent a properties request to macOS each time, waiting up to 5 s on the main run loop. With
+    /// no answer it is the properties request, as for `status`.
+    static func unreachableUpgrade() -> UnfinishedUpgrade? {
+        if let teamID = CodeIdentity.current()?.teamID, (try? FilterClient(teamID: teamID).pending()) != nil { return nil }
+        return unfinishedUpgrade()
+    }
+
     /// The builds of the extension macOS has enabled and is not uninstalling, from one properties
     /// request; nil when macOS does not say within 5 s.
     static func runningBuilds() -> [String]? {
@@ -382,18 +410,19 @@ public final class NESystemControl: SystemControlling {
             output.stderr("blackice is off. Start it first: blackice start")
             return ExitCode.unavailable
         }
-        // Turned off, or an upgrade not finished: no filter would take what mode saves. Said before
-        // Touch ID, as `deny --all` does.
-        if let refusal = CLI.modeRefusal(enabled: saved.enabled, upgrade: Self.unfinishedUpgrade()) {
-            output.stderr(refusal)
-            return ExitCode.unavailable
-        }
         if let answerer, let refusal = CLI.answererRefusal(answerer, config: existing.config) {
             output.stderr(refusal)
             return ExitCode.unavailable
         }
         let newAnswerer = answerer.flatMap { $0 == existing.config.answering.answerer ? nil : $0 }
-        if existing.mode == mode, newAnswerer == nil {
+        let unchanged = existing.mode == mode && newAnswerer == nil
+        // Turned off, or an upgrade not finished: no filter would take what mode saves. Said before
+        // Touch ID, as `deny --all` does.
+        if let refusal = CLI.modeRefusal(enabled: saved.enabled, unchanged: unchanged, upgrade: Self.unreachableUpgrade()) {
+            output.stderr(refusal)
+            return ExitCode.unavailable
+        }
+        if unchanged {
             output.stdout(CLI.alreadyLine(existing))
             return ExitCode.success
         }
