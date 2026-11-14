@@ -164,10 +164,14 @@ struct HostAddressCacheTests {
         #expect(HostAddressCache.check(ip("fe80::1"), against: [ip("fe80::1")]) == .mismatch)
     }
 
+    // A failed lookup matches no address, and the check says the lookup failed.
     @Test func failedLookupMismatchesEverything() {
         let cache = HostAddressCache(resolver: FakeResolver(["gone.example.com": nil]))
         #expect(cache.lookUp("gone.example.com").isEmpty)
-        #expect(cache.check(host: "gone.example.com", address: ip("203.0.113.7")) == .mismatch)
+        #expect(cache.check(host: "gone.example.com", address: ip("203.0.113.7")) == .lookupFailed)
+        #expect(cache.checkOrRefresh(host: "gone.example.com", address: ip("203.0.113.7")) == .lookupFailed)
+        #expect(cache.check(host: "gone.example.com", address: ip("fe80::1")) == .lookupFailed)
+        #expect(HostAddressCache.check(ip("203.0.113.7"), against: []) == .lookupFailed)
     }
 
     @Test func answersExpireAfterTheTTL() {
@@ -219,7 +223,6 @@ struct HostAddressCacheTests {
         clock.advance(10)
         #expect(cache.checkOrRefresh(host: "printer.local", address: ip("fe80::1")) == .mismatch)
         #expect(cache.checkOrRefresh(host: "printer.local", address: nil) == .mismatch)
-        #expect(!cache.failed("printer.local"))
         // Expired answers are unknown, as with check.
         clock.advance(20)
         #expect(cache.checkOrRefresh(host: "printer.local", address: ip("fe80::1")) == .unknown)
@@ -236,16 +239,15 @@ struct HostAddressCacheTests {
         // Meanwhile it is a mismatch, plain or refreshed, so a burst costs no more lookups, and
         // the cache says why.
         clock.advance(1.5)
-        #expect(cache.checkOrRefresh(host: "api.example.com", address: ip("203.0.113.7")) == .mismatch)
-        #expect(cache.check(host: "api.example.com", address: ip("203.0.113.7")) == .mismatch)
-        #expect(cache.failed("api.example.com") && !cache.failed("other.example.com"))
+        #expect(cache.checkOrRefresh(host: "api.example.com", address: ip("203.0.113.7")) == .lookupFailed)
+        #expect(cache.check(host: "api.example.com", address: ip("203.0.113.7")) == .lookupFailed)
+        #expect(cache.check(host: "other.example.com", address: ip("203.0.113.7")) == .unknown)
         // The resolver comes back; 2 s after the failure the host is looked up again.
         #expect(resolver.lookups("api.example.com") == 1)
         resolver.set("api.example.com", ["203.0.113.7"])
         clock.advance(0.5)
         #expect(cache.checkOrRefresh(host: "api.example.com", address: ip("203.0.113.7")) == .unknown)
         #expect(cache.check(host: "api.example.com", address: ip("203.0.113.7")) == .unknown)
-        #expect(!cache.failed("api.example.com"))
         cache.lookUp("api.example.com")
         #expect(cache.checkOrRefresh(host: "api.example.com", address: ip("203.0.113.7")) == .match)
         #expect(resolver.lookups("api.example.com") == 2)

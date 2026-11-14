@@ -288,8 +288,13 @@ public struct SystemHostResolver: HostResolving {
 public enum AddressCheck: Equatable, Sendable {
     /// The flow's address is among the host's current answers.
     case match
-    /// It is not, the lookup failed, or the flow has no address.
+    /// It is not, or the flow has no address.
     case mismatch
+    /// The host's answers are a failed lookup's: none, which no address matches. Decided as a
+    /// mismatch, and told apart only so that a drop says why (`address_mismatch;lookup_failed`),
+    /// from the same answers that decided it: read again later, the cache may hold another
+    /// lookup's by then.
+    case lookupFailed
     /// Not looked up yet, or the cached answers expired: resolve first.
     case unknown
 }
@@ -332,8 +337,8 @@ public final class HostAddressCache: @unchecked Sendable {
     /// what the resolver says now. CDNs answer with TTLs of seconds and rotate their addresses: on
     /// 8 November 2026 outlook.office365.com had A records of 2 to 4 s and 13 answer sets in
     /// 3 minutes, and the first address of half its answers was not in answers up to 30 s old.
-    /// An address that cannot be checked stays a mismatch. A failed lookup (no answers) is a
-    /// mismatch until it expires, `refreshAfter` after it (`store`).
+    /// An address that cannot be checked stays a mismatch. A failed lookup (no answers) is
+    /// `lookupFailed` until it expires (`store`).
     public func checkOrRefresh(host: String, address: IPAddress?) -> AddressCheck {
         lock.lock()
         let entry = entries[host]
@@ -341,22 +346,17 @@ public final class HostAddressCache: @unchecked Sendable {
         lock.unlock()
         guard let entry, entry.expires > now else { return .unknown }
         let result = Self.check(address, against: entry.addresses)
-        if result == .mismatch, !entry.addresses.isEmpty, address?.isCheckable == true,
-           now - entry.lookedUpAt >= Self.refreshAfter {
+        if result == .mismatch, address?.isCheckable == true, now - entry.lookedUpAt >= Self.refreshAfter {
             return .unknown
         }
         return result
     }
 
-    /// Whether the current answers for `host` are a failed lookup's: none, and not expired yet. A
-    /// flow dropped then as `address_mismatch` says `;lookup_failed` after it (FilterPolicy).
-    public func failed(_ host: String) -> Bool {
-        cached(host)?.isEmpty == true
-    }
-
     /// A link-local address matches only an answer on the same interface, and never when its
-    /// interface is not known.
+    /// interface is not known. No answers are a failed lookup's (`lookUp`), which every address
+    /// mismatches: `lookupFailed`, so the verdict's reason comes from the answers that decided it.
     public static func check(_ address: IPAddress?, against answers: Set<IPAddress>) -> AddressCheck {
+        if answers.isEmpty { return .lookupFailed }
         guard let address, address.isCheckable else { return .mismatch }
         return answers.contains(address) ? .match : .mismatch
     }
