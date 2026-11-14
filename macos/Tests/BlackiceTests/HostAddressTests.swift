@@ -347,6 +347,35 @@ struct HostAddressCacheTests {
         for seconds: TimeInterval in [2, 4, 8, 16, 30] { failure(of: slow, counts: seconds) }
     }
 
+    // A host whose last lookup failed less than 30 s ago may wait its turn for the next one:
+    // until 1.0.8 a failure counted the whole 30 s, and every connection to the host that no DNS
+    // answer named was dropped meanwhile. Any other host is looked up at once.
+    @Test func aFailureIsRecentForThirtySecondsAfterItsLookup() {
+        let resolver = FakeResolver(["api.example.com": nil, "www.example.com": ["203.0.113.7"]])
+        let clock = Clock()
+        let cache = HostAddressCache(resolver: resolver, ttl: 30, clock: { clock.now })
+        #expect(!cache.failedRecently("api.example.com"))
+        cache.lookUp("api.example.com")
+        cache.lookUp("www.example.com")
+        #expect(cache.failedRecently("api.example.com") && !cache.failedRecently("www.example.com"))
+        // Past the failure's 2 s, and until 30 s after it.
+        clock.advance(29.9)
+        #expect(cache.checkOrRefresh(host: "api.example.com", address: ip("203.0.113.7")) == .unknown)
+        #expect(cache.failedRecently("api.example.com"))
+        clock.advance(0.1)
+        #expect(!cache.failedRecently("api.example.com"))
+        // Each failure from the end of its lookup; answers end it.
+        cache.lookUp("api.example.com")
+        clock.advance(10)
+        #expect(cache.failedRecently("api.example.com"))
+        resolver.set("api.example.com", ["203.0.113.8"])
+        cache.lookUp("api.example.com")
+        #expect(!cache.failedRecently("api.example.com"))
+        let slow = HostAddressCache(resolver: TimingOutResolver(clock, seconds: 45), ttl: 30, clock: { clock.now })
+        slow.lookUp("api.example.com")
+        #expect(slow.failedRecently("api.example.com"))
+    }
+
     @Test func staysBounded() {
         let clock = Clock()
         let cache = HostAddressCache(resolver: FakeResolver([:]), ttl: 30, limit: 2, clock: { clock.now })
@@ -421,28 +450,102 @@ struct LookupWaitersTests {
     }
 
     // Each lookup holds a thread while the resolver takes its time: at most lookupLimit run at
-    // once, and another host's waits its turn, the oldest first, as lookups end.
+    // once when a host that failed recently would start one, and its lookup waits its turn, the
+    // oldest first, as lookups end.
     @Test func atMostTheLimitOfLookupsRunAtOnce() {
         var waiters = LookupWaiters<Int>(limit: 16, limitPerApp: 16, lookupLimit: 2)
         #expect(LookupWaiters<Int>().lookupLimit == 16)
-        #expect(waiters.add(1, host: "a.example.com", app: app) == .startLookup)
-        #expect(waiters.add(2, host: "b.example.com", app: app) == .startLookup)
-        #expect(waiters.add(3, host: "c.example.com", app: other) == .queued)
-        #expect(waiters.add(4, host: "c.example.com", app: app) == .waiting)
-        #expect(waiters.add(5, host: "d.example.com", app: nil) == .queued)
-        #expect(waiters.add(6, host: "a.example.com", app: nil) == .waiting)
+        #expect(waiters.add(1, host: "a.example.com", app: app, failedRecently: true) == .startLookup)
+        #expect(waiters.add(2, host: "b.example.com", app: app, failedRecently: true) == .startLookup)
+        #expect(waiters.add(3, host: "c.example.com", app: other, failedRecently: true) == .queued)
+        #expect(waiters.add(4, host: "c.example.com", app: app, failedRecently: true) == .waiting)
+        #expect(waiters.add(5, host: "d.example.com", app: nil, failedRecently: true) == .queued)
+        #expect(waiters.add(6, host: "a.example.com", app: nil, failedRecently: true) == .waiting)
         #expect(waiters.running == 2 && waiters.count == 6 && waiters.nextLookup() == nil)
         // A lookup ends: the host that waited longest starts, and the next waits for another end.
         #expect(waiters.finish("a.example.com") == [1, 6])
         #expect(waiters.nextLookup() == "c.example.com" && waiters.nextLookup() == nil && waiters.running == 2)
-        #expect(waiters.add(7, host: "e.example.com", app: other) == .queued)
+        #expect(waiters.add(7, host: "e.example.com", app: other, failedRecently: true) == .queued)
         #expect(waiters.finish("b.example.com") == [2])
         #expect(waiters.nextLookup() == "d.example.com" && waiters.nextLookup() == nil)
         #expect(waiters.finish("c.example.com") == [3, 4])
         #expect(waiters.nextLookup() == "e.example.com")
         #expect(waiters.finish("d.example.com") == [5] && waiters.finish("e.example.com") == [7])
         #expect(waiters.nextLookup() == nil && waiters.running == 0 && waiters.count == 0)
-        #expect(waiters.add(8, host: "f.example.com", app: app) == .startLookup)
+        #expect(waiters.add(8, host: "f.example.com", app: app, failedRecently: true) == .startLookup)
+    }
+
+    // A host with no recent failure is looked up at once, however many lookups run, as in 1.0.7:
+    // a resolver that hangs for some hosts (a split-DNS domain whose server is gone, about 30 s a
+    // lookup) kept the lookups of the others waiting behind them, until their flows filled the
+    // places and connections a rule allowed were dropped as lookup_capacity. Its lookup counts
+    // with the rest, so a host that failed recently waits until fewer than the limit run.
+    @Test func aHostWithNoRecentFailureIsLookedUpAtOnce() {
+        var waiters = LookupWaiters<Int>(limit: 16, limitPerApp: 16, lookupLimit: 2)
+        #expect(waiters.add(1, host: "a.corp.example", app: app, failedRecently: true) == .startLookup)
+        #expect(waiters.add(2, host: "b.corp.example", app: app, failedRecently: true) == .startLookup)
+        #expect(waiters.add(3, host: "c.corp.example", app: app, failedRecently: true) == .queued)
+        #expect(waiters.add(4, host: "api.example.com", app: other) == .startLookup)
+        #expect(waiters.add(5, host: "api.example.com", app: other) == .waiting)
+        #expect(waiters.add(6, host: "cdn.example.com", app: nil, failedRecently: false) == .startLookup)
+        #expect(waiters.running == 4 && waiters.nextLookup() == nil)
+        // Answered at once, while the lookups of a and b hang: c still waits its turn.
+        #expect(waiters.finish("api.example.com") == [4, 5] && waiters.finish("cdn.example.com") == [6])
+        #expect(waiters.nextLookup() == nil && waiters.running == 2)
+        #expect(waiters.add(7, host: "api.example.com", app: other) == .startLookup)
+        #expect(waiters.finish("api.example.com") == [7] && waiters.nextLookup() == nil)
+        // A hung lookup ends: c's turn.
+        #expect(waiters.finish("a.corp.example") == [1])
+        #expect(waiters.nextLookup() == "c.corp.example" && waiters.running == 2)
+        #expect(waiters.finish("b.corp.example") == [2] && waiters.finish("c.corp.example") == [3])
+        #expect(waiters.running == 0 && waiters.count == 0)
+    }
+
+    // A flow waits at most turnWait for a lookup that waits its turn, from when it began to wait;
+    // then the maintenance timer drops it as lookup_timeout. Flows whose lookup has started wait
+    // for its end. Every flow comes back once, by expire or by finish, and nothing is left.
+    @Test func flowsWaitingTheirTurnAreDroppedAfterTenSeconds() {
+        #expect(LookupWaiters<Int>.turnWait == 10)
+        var waiters = LookupWaiters<Int>(limit: 16, limitPerApp: 16, lookupLimit: 1)
+        #expect(waiters.add(1, host: "a.corp.example", app: app, failedRecently: true, now: 100) == .startLookup)
+        #expect(waiters.add(2, host: "b.corp.example", app: app, failedRecently: true, now: 100) == .queued)
+        #expect(waiters.add(3, host: "c.corp.example", app: other, failedRecently: true, now: 103) == .queued)
+        #expect(waiters.add(4, host: "b.corp.example", app: other, failedRecently: true, now: 106) == .waiting)
+        #expect(waiters.add(5, host: "a.corp.example", app: other, failedRecently: true, now: 100) == .waiting)
+        #expect(waiters.expire(now: 109.9).isEmpty)
+        // Each flow from its own start: b's first goes, its second keeps b's turn.
+        #expect(waiters.expire(now: 110) == [2])
+        #expect(waiters.count == 4 && waiters.waitingFor(app) == 1 && waiters.waitingFor(other) == 3)
+        // c's only flow goes, and its turn with it.
+        #expect(waiters.expire(now: 113) == [3])
+        #expect(waiters.expire(now: 115).isEmpty && waiters.count == 3)
+        // a's lookup ran all along, and its flows were never dropped.
+        #expect(waiters.finish("a.corp.example") == [1, 5])
+        #expect(waiters.nextLookup() == "b.corp.example" && waiters.nextLookup() == nil)
+        // b's lookup has started: its flow waits for it, past turnWait.
+        #expect(waiters.expire(now: 200).isEmpty)
+        #expect(waiters.finish("b.corp.example") == [4])
+        #expect(waiters.count == 0 && waiters.running == 0 && waiters.waitingFor(app) == 0 && waiters.waitingFor(other) == 0)
+        // c, queued again, has one turn, in order.
+        #expect(waiters.add(6, host: "a.corp.example", app: app, failedRecently: true, now: 300) == .startLookup)
+        #expect(waiters.add(7, host: "c.corp.example", app: app, failedRecently: true, now: 300) == .queued)
+        #expect(waiters.add(8, host: "d.corp.example", app: app, failedRecently: true, now: 301) == .queued)
+        #expect(waiters.finish("a.corp.example") == [6])
+        #expect(waiters.nextLookup() == "c.corp.example" && waiters.nextLookup() == nil)
+        #expect(waiters.finish("c.corp.example") == [7])
+        #expect(waiters.nextLookup() == "d.corp.example" && waiters.nextLookup() == nil)
+        #expect(waiters.finish("d.corp.example") == [8] && waiters.nextLookup() == nil)
+        #expect(waiters.running == 0 && waiters.count == 0)
+        // Many flows of several hosts waiting their turn, all past it: each comes back once.
+        #expect(waiters.add(0, host: "hung.corp.example", app: nil, failedRecently: true, now: 400) == .startLookup)
+        for index in 1...12 {
+            #expect(waiters.add(index, host: "h\(index % 5).corp.example", app: index % 2 == 0 ? app : other,
+                                failedRecently: true, now: 400 + Double(index) / 10) == (index <= 5 ? .queued : .waiting))
+        }
+        #expect(waiters.expire(now: 410.5).sorted() == [1, 2, 3, 4, 5])
+        #expect(waiters.expire(now: 412).sorted() == Array(6...12))
+        #expect(waiters.count == 1 && waiters.waitingFor(app) == 0 && waiters.waitingFor(other) == 0)
+        #expect(waiters.finish("hung.corp.example") == [0] && waiters.nextLookup() == nil && waiters.count == 0)
     }
 
     // removeAll drops the flows that wait their turn with the rest, and the lookups still running
@@ -450,16 +553,16 @@ struct LookupWaitersTests {
     @Test func lookupsThatRunCountUntilTheyEndAfterRemoveAll() {
         var waiters = LookupWaiters<Int>(limit: 16, limitPerApp: 16, lookupLimit: 1)
         #expect(waiters.add(1, host: "a.example.com", app: app) == .startLookup)
-        #expect(waiters.add(2, host: "b.example.com", app: app) == .queued)
+        #expect(waiters.add(2, host: "b.example.com", app: app, failedRecently: true) == .queued)
         #expect(Set(waiters.removeAll()) == [1, 2] && waiters.running == 1)
-        #expect(waiters.add(3, host: "c.example.com", app: app) == .queued)
+        #expect(waiters.add(3, host: "c.example.com", app: app, failedRecently: true) == .queued)
         #expect(waiters.finish("a.example.com").isEmpty && waiters.running == 0)
         // b went with removeAll: c is next.
         #expect(waiters.nextLookup() == "c.example.com" && waiters.nextLookup() == nil)
         // c's lookup runs on across another removeAll. A flow for c then waits its turn; that
         // lookup's answers serve it, and its own turn is passed over.
         #expect(waiters.removeAll() == [3])
-        #expect(waiters.add(4, host: "c.example.com", app: app) == .queued)
+        #expect(waiters.add(4, host: "c.example.com", app: app, failedRecently: true) == .queued)
         #expect(waiters.finish("c.example.com") == [4] && waiters.nextLookup() == nil && waiters.running == 0)
         #expect(waiters.add(5, host: "c.example.com", app: app) == .startLookup)
         #expect(waiters.finish("c.example.com") == [5] && waiters.running == 0)
