@@ -163,7 +163,7 @@ the hook; without it, fx runs with your own `HOME`. `MODEL=id` picks another mod
 passes that file's text as the owner's notes, as the daemon does with `notes` in `[agent]`. `KEEP=1` keeps the work
 directory with fx's stdout and stderr for each event.
 
-There are 33 events. The first twelve were fx's own, and they cover:
+There are 51 events (cases 1 to 44 in `cases.json`, and 12 with the owner's notes in `cases-notes.json`, which `CASES=cases-notes.json` runs; `REPEAT=n` runs each case n times and says how often the answers agreed). The first twelve were fx's own, and they cover:
 
 - apps reaching their own servers: VS Code, Chrome, Docker and GitHub Desktop;
 - two programs signed ad hoc, named by their cdhash: a Homebrew `gh` reaching the GitHub API,

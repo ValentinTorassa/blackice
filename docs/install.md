@@ -67,6 +67,9 @@ $ spctl --assess --type execute -vv Blackice.app
 $ ditto Blackice.app /Applications/Blackice.app
 ```
 
+Since 1.0.8 the app names the commit it was built from, under its signature:
+`/usr/libexec/PlistBuddy -c 'Print :BlackiceSourceCommit' Blackice.app/Contents/Info.plist`.
+
 `codesign --verify` should say `valid on disk` and `satisfies its Designated Requirement`, `stapler` that the validate
 action worked, and `spctl` `accepted` with `source=Notarized Developer ID`. If one fails, or the Team ID is not
 M294LK997M, do not install that copy. macOS activates the extension only from `/Applications`.
@@ -181,7 +184,8 @@ $ blackice start
 ```
 
 `start` waits for the new extension and loads your configuration into it (Touch ID). If it exits with status 75, restart
-the Mac and run it again. An open menu bar app reopens by itself.
+the Mac and run it again. An open menu bar app reopens by itself. Before Touch ID it says what it keeps, and which switch
+made with `blackice mode` or the menu it drops because `blackice.toml` changed since the last start.
 
 On macOS 27.0.1 the kernel can stay at one socket while it disconnects the old build's filter (4 to 116 s in seven
 upgrades), and a filter started meanwhile lets no new connection through. So `start` turns the old filter off, waits for
@@ -190,6 +194,11 @@ at once when the socket is an ICMP one bound to no address; at a UDP socket it w
 checked in those seconds, and `start` says so when the wait lasts over a second, with the app whose socket macOS waits
 on. If macOS is still at it after 90 s, `start` goes on, and it and `blackice status` (a `network` line) say that no new
 connection gets through until it is done. A `start` after a `stop` waits the same way.
+
+Stopping an upgrade's `start` part way, with Control-C, by closing the terminal or when an ssh session drops, turns the
+filter back on with the configuration it had and exits with status 130: run `blackice start` again. Only a `start`
+killed outright leaves the filter off, and `blackice status` then says it was turned off in System Settings or by a
+`start` that did not finish.
 
 ## Uninstall
 
@@ -205,7 +214,10 @@ you to confirm removing the extension in a dialog of its own. It needs no networ
 `brew uninstall --cask blackice` in place of `rm`, after `blackice stop`: Homebrew cannot remove the extension. Removing
 the app needs App Management for Terminal (System Settings → Privacy & Security → App Management).
 `systemextensionsctl list` may show the extension waiting to uninstall until the next restart. Your settings and logs
-stay; to remove them too: `rm -rf ~/.config/blackice ~/Library/Logs/blackice`.
+stay; to remove them too: `rm -rf ~/.config/blackice ~/Library/Logs/blackice`. `~/.config/blackice/agent` holds the
+agents' homes, with the sign-ins of fx, Codex and opencode as files; Claude Code keeps its sign-in in the keychain.
+`brew uninstall --zap --cask blackice` removes `~/.config/blackice/agent` and `~/Library/Logs/blackice` and keeps
+`blackice.toml`.
 
 ## Rollback
 
