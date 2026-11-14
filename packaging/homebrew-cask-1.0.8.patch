@@ -1,0 +1,35 @@
+For the tap, ValentinTorassa/homebrew-tap, at release time: not applied here.
+
+Against Casks/blackice.rb as the tap has it for 1.0.7 (version "1.0.7", sha256 1e013215...e018).
+`brew uninstall --zap --cask blackice` also trashes ~/.config/blackice/agent: the agents' homes
+that `blackice agent connect` makes, with their sign-ins as files (fx's auth.json, Codex's,
+opencode's). Claude Code's sign-in is a login keychain item, which zap cannot remove.
+blackice.toml stays, as before.
+
+The version and the sha256 are not in this patch. They stay for release time, from package.sh's
+output, as for every release:
+
+    scripts/update-cask.sh 1.0.8 <SHA-256 of Blackice-1.0.8.zip>
+
+In a clone of the tap: git apply /path/to/blackice/packaging/homebrew-cask-1.0.8.patch
+(or patch -p1 < it), then update-cask.sh as above, then brew audit --cask --strict blackice.
+
+--- a/Casks/blackice.rb
++++ b/Casks/blackice.rb
+@@ -35,8 +35,14 @@
+   # content filter stay: only `blackice stop` removes them (see the caveats).
+   uninstall launchctl: "com.valentorassa.blackice.daemon"
+
+-  # The daemon's logs and event log. ~/.config/blackice holds the user's configuration and stays.
+-  zap trash: "~/Library/Logs/blackice"
++  # The agents' homes from `blackice agent connect`, with their sign-ins (fx's, Codex's and
++  # opencode's are files there; Claude Code's is a login keychain item that zap leaves), and the
++  # daemon's logs and event log. blackice.toml, in ~/.config/blackice, holds the user's
++  # configuration and stays.
++  zap trash: [
++    "~/.config/blackice/agent",
++    "~/Library/Logs/blackice",
++  ]
+
+   caveats <<~EOS
+     blackice needs macOS 14.4 or later; Homebrew checks only for macOS 14.
