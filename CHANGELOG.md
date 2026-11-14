@@ -10,8 +10,10 @@ Fixed:
   dropped ssh session while it waited for the kernel left the filter saved off, and so did a configuration changed
   meanwhile or a failed save. It now turns the filter back on with the configuration it had, says so, and exits
   with 130. At the first Control-C it waits on, as it would have, for macOS to let the old filter go or to finish
-  replacing the extension, since a filter turned on sooner is held with the one going; a second Control-C turns it on
-  at once. `status` says a filter that is off was turned off "in System Settings, or by a blackice start that did
+  replacing the extension, since a filter turned on sooner is held with the one going; a second Control-C, or a SIGTERM at
+  any point, turns it on at once. A closed terminal's second SIGHUP, and the broken pipes after it, are not a second
+  Control-C. A Control-C that `agent connect` caught during start's Touch ID ends start before it turns the filter
+  off, which stays on as it was. `status` says a filter that is off was turned off "in System Settings, or by a blackice start that did
   not finish". A broken pipe counts as an interrupt in `start`, `agent connect` and the app selector.
 - The daemon stops its hooks when the network extension's connection ends. It waited for each hook to end on its
   own or at its timeout, so after the extension restarted (an upgrade, a `start` or a `stop`) the old daemon lived
@@ -27,8 +29,10 @@ Fixed:
 - A failed lookup counts for 2 s, not 30 s. One timeout of the resolver (Tailscale's 100.100.100.100, say) dropped
   every connection to that host that no DNS answer named as `address_mismatch` for half a minute, those a rule or an
   approval covers included. Failures of one host in a row count longer, 4, 8, 16, then 30 s, until a lookup finds
-  it, so a resolver that stays down is not asked every 2 s for every host apps try; and at most 16 lookups run at
-  once, the others waiting their turn.
+  it, so a resolver that stays down is not asked every 2 s for every host apps try. A failure 2 s old or older is
+  looked up again once another host's lookup has found answers since, so a host is not left failing for up to 30 s
+  after a Wi-Fi switch or a VPN reconnect. Only a host whose lookup failed less than 30 s ago waits its turn behind
+  16 running lookups, for 10 s at most (`lookup_timeout`); any other host is looked up at once, as in 1.0.7.
 - A connection held for its TLS hello, or approved after a wait, is no longer checked against its host's addresses
   a second time at the hello: a CDN that rotated its answers meanwhile dropped it. The address that passed as the
   flow started is kept for that host only; the server name is still checked, and a rule, an Apple service or an
