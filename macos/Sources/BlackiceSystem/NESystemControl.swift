@@ -68,13 +68,14 @@ public final class NESystemControl: SystemControlling {
         // 1.0.8 nothing was caught there, and such an upgrade left the filter saved off, which
         // status put down to System Settings. A first signal lets the wait for the kernel, or for
         // the extension request, go on to its end, since a filter turned on before then is held
-        // with the one going, or replaced while on; a second ends it at once (UpgradeInterruption).
+        // with the one going, or replaced while on; a second, or SIGTERM, ends it at once
+        // (UpgradeInterruption).
         var turnedOff = false
         var release: (() -> Void)?
         defer { release?() }
         var interruption = UpgradeInterruption()
         func stopWaiting(_ wait: UpgradeInterruption.Wait) -> Bool {
-            interruption.stopWaiting(wait, interrupts: Interrupts.count, say: output.stdout)
+            interruption.stopWaiting(wait, interrupts: Interrupts.count, terminated: Interrupts.terminated, say: output.stdout)
         }
         if saved.enabled, saved.providerBundleID != nil, KernelFilters.count() != nil, Self.unfinishedUpgrade() != nil {
             guard let (manager, current) = loadSaved(output) else { return ExitCode.software }
@@ -218,15 +219,15 @@ public final class NESystemControl: SystemControlling {
 
     /// Turns the filter off and on again, catching signals in between as start does around an
     /// upgrade, so that one there does not leave it off: the first lets the wait for the kernel go
-    /// on to its end, a second ends it, and the filter is turned on. 130 when a signal was caught,
-    /// once the filter is on.
+    /// on to its end, a second or SIGTERM ends it, and the filter is turned on. 130 when a signal
+    /// was caught, once the filter is on.
     private func restart(_ manager: NEFilterManager, _ output: SystemOutput) -> Int32 {
         let release = Interrupts.catchAll()
         defer { release() }
         var interruption = UpgradeInterruption()
         // Not saved: the filter is on as it was.
         guard turnOff(manager, output, stopping: {
-            interruption.stopWaiting(.kernel, interrupts: Interrupts.count, say: output.stdout)
+            interruption.stopWaiting(.kernel, interrupts: Interrupts.count, terminated: Interrupts.terminated, say: output.stdout)
         }) else { return Interrupts.interrupted ? ExitCode.interrupted : ExitCode.software }
         manager.isEnabled = true
         guard save(manager, output) else { return putBack(ExitCode.software, output) }

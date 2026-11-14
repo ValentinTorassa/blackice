@@ -865,6 +865,25 @@ struct ReportTests {
         #expect(said == [kernel])
     }
 
+    /// SIGTERM stops the wait at once, whether it is the first signal or comes after a closed
+    /// terminal's: launchd, a supervisor or kill(1) sends it, often with SIGKILL a few seconds
+    /// later, and a start killed while it waits would leave the filter saved off.
+    @Test func anUpgradeStoppedBySIGTERMStopsWaiting() {
+        var first = UpgradeInterruption()
+        #expect(first.action(.kernel, interrupts: 1, terminated: true) == .stop)
+        var duringRequest = UpgradeInterruption()
+        #expect(duringRequest.action(.request, interrupts: 1, terminated: true) == .stop)
+        // A hang-up first, told about, then SIGTERM, which counts no further.
+        var later = UpgradeInterruption()
+        #expect(later.action(.kernel, interrupts: 1) == .tell(CLI.waitingAfterInterruptLine(.kernel)))
+        #expect(later.action(.kernel, interrupts: 1) == .wait)
+        #expect(later.action(.request, interrupts: 1, terminated: true) == .stop)
+        var said: [String] = []
+        var asked = UpgradeInterruption()
+        let stopped = asked.stopWaiting(.kernel, interrupts: 1, terminated: true, say: { said.append($0) })
+        #expect(stopped && said.isEmpty)
+    }
+
     @Test func modeAndFirstStartHints() throws {
         #expect(CLI.modeChangedLines(try snapshot(.blockAll), daemonRunning: false) == ["✓ Now in block-all mode"])
         #expect(CLI.modeChangedLines(try snapshot(.ask), daemonRunning: false) == ["✓ Now in ask mode, you answer: blackice pending"])

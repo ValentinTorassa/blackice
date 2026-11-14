@@ -22,6 +22,11 @@ public enum Interrupts {
     /// Control-C again. An upgrade's `blackice start` goes on waiting at the first signal and
     /// stops at the second (UpgradeInterruption).
     nonisolated(unsafe) public private(set) static var count = 0
+    /// Whether SIGTERM was among the signals caught, back to false with `caught`. It comes from
+    /// launchd, a supervisor or kill(1) rather than a person, often with SIGKILL a few seconds
+    /// later, so an upgrade's start does not wait on at it as at a first Control-C
+    /// (UpgradeInterruption).
+    nonisolated(unsafe) public private(set) static var terminated = false
     nonisolated(unsafe) private static var depth = 0
 
     public static var interrupted: Bool { caught != 0 }
@@ -36,6 +41,7 @@ public enum Interrupts {
             var action = sigaction()
             action.__sigaction_u = __sigaction_u(__sa_handler: { signal in
                 if Interrupts.caught == 0 || signal == SIGINT || signal == SIGQUIT { Interrupts.count += 1 }
+                if signal == SIGTERM { Interrupts.terminated = true }
                 Interrupts.caught = signal
             })
             sigemptyset(&action.sa_mask)
@@ -52,6 +58,7 @@ public enum Interrupts {
             if depth == 0 {
                 caught = 0
                 count = 0
+                terminated = false
             }
         }
     }
@@ -87,8 +94,10 @@ public enum Interrupts {
 /// done (4 to 59 s in six upgrades on 10 and 11 November 2026, 116 s once; FilterDisconnect): the
 /// stall the wait is there to avoid. Turned on during the request, it would be replaced while on,
 /// which is how that stall comes about. So the first signal is told what start waits for, and the
-/// wait goes on to its end, as long as it would have lasted; a second ends it at once. Either way
-/// start then turns the filter back on and exits with 130.
+/// wait goes on to its end, as long as it would have lasted; a second ends it at once. SIGTERM
+/// ends it at once too, first or not: launchd, a supervisor or kill(1) sends it, often with
+/// SIGKILL a few seconds later, and start killed while it waits leaves the filter saved off.
+/// Either way start then turns the filter back on and exits with 130.
 public struct UpgradeInterruption: Sendable {
     /// What start waits for.
     public enum Wait: Equatable, Sendable {
@@ -104,7 +113,7 @@ public struct UpgradeInterruption: Sendable {
         case wait
         /// Goes on waiting, having said this line: the first signal.
         case tell(String)
-        /// Stops waiting, and turns the filter back on now: a second signal.
+        /// Stops waiting, and turns the filter back on now: a second signal, or SIGTERM.
         case stop
     }
 
@@ -114,8 +123,9 @@ public struct UpgradeInterruption: Sendable {
     public init() {}
 
     /// What to do while waiting for `wait`, `interrupts` signals having been caught
-    /// (`Interrupts.count`).
-    public mutating func action(_ wait: Wait, interrupts: Int) -> Action {
+    /// (`Interrupts.count`), SIGTERM among them when `terminated` (`Interrupts.terminated`).
+    public mutating func action(_ wait: Wait, interrupts: Int, terminated: Bool = false) -> Action {
+        if terminated { return .stop }
         switch interrupts {
         case ...0:
             return .wait
@@ -130,8 +140,9 @@ public struct UpgradeInterruption: Sendable {
 
     /// `action`, with its line said through `say`: whether to stop waiting now. Asked before each
     /// look at what start waits for.
-    public mutating func stopWaiting(_ wait: Wait, interrupts: Int, say: (String) -> Void) -> Bool {
-        switch action(wait, interrupts: interrupts) {
+    public mutating func stopWaiting(_ wait: Wait, interrupts: Int, terminated: Bool = false,
+                                     say: (String) -> Void) -> Bool {
+        switch action(wait, interrupts: interrupts, terminated: terminated) {
         case .wait:
             return false
         case .tell(let line):

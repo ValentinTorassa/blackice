@@ -32,13 +32,13 @@ import Testing
             kill(getpid(), SIGTERM)
             while !Interrupts.interrupted, Date() < deadline { usleep(10_000) }
         }
-        #expect(Interrupts.caught == SIGTERM)
+        #expect(Interrupts.caught == SIGTERM && Interrupts.count == 1 && Interrupts.terminated)
         // A catch inside another keeps what the outer one caught.
         let inner = Interrupts.catchAll()
         inner()
-        #expect(Interrupts.interrupted)
+        #expect(Interrupts.interrupted && Interrupts.terminated)
         release()
-        #expect(!Interrupts.interrupted)
+        #expect(!Interrupts.interrupted && !Interrupts.terminated)
         #expect(Interrupts.signals.map(handling) == before)
     }
 
@@ -92,9 +92,10 @@ import Testing
         } == -1)
         #expect(Interrupts.caught == SIGPIPE && Interrupts.count == 1)
         send(SIGHUP, until: 1)
-        #expect(Interrupts.caught == SIGHUP && Interrupts.count == 1)
+        #expect(Interrupts.caught == SIGHUP && Interrupts.count == 1 && !Interrupts.terminated)
+        // SIGTERM does not count again, but is kept apart: an upgrade's start stops at it.
         send(SIGTERM, until: 1)
-        #expect(Interrupts.caught == SIGTERM && Interrupts.count == 1)
+        #expect(Interrupts.caught == SIGTERM && Interrupts.count == 1 && Interrupts.terminated)
         send(SIGQUIT, until: 2)
         #expect(Interrupts.count == 2)
         send(SIGHUP, until: 2)
@@ -106,7 +107,7 @@ import Testing
         inner()
         #expect(Interrupts.count == 3)
         release()
-        #expect(Interrupts.count == 0 && !Interrupts.interrupted)
+        #expect(Interrupts.count == 0 && !Interrupts.interrupted && !Interrupts.terminated)
     }
 
     @Test func aLineIsReadUpToItsEnd() {
