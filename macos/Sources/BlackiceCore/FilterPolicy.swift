@@ -20,7 +20,8 @@ import Foundation
 //   is not.
 // A host or address that does not check out is "no rule or approval matches", never an error.
 // In every mode, inbound flows pass (only outbound connections are filtered) and Apple's
-// resolver may reach port 53, since rules name hosts and need name lookups to work. Loopback
+// resolver may reach port 53, since rules name hosts and need name lookups to work, and its
+// multicast DNS (port 5353 of 224.0.0.251 and ff02::fb) passes as `mdns`. Loopback
 // destinations pass too, unless blackice.toml says loopback = false.
 // In ask and block-all the extension also reads the resolver's DNS responses, passing every
 // byte, to learn which names each address was given for (DNSMessage.swift). A flow with no host
@@ -181,6 +182,13 @@ public enum FilterPolicy {
     public static let encryptedDNSPort: UInt16 = 853
     /// The port where a missing host name is read from the TLS server name.
     public static let tlsPort: UInt16 = 443
+    /// Multicast DNS (RFC 6762), which the system resolver sends to 224.0.0.251 and ff02::fb.
+    public static let multicastDNSPort: UInt16 = 5353
+    /// Those two groups, as `IPAddress.bytes`.
+    private static let multicastDNSGroups: [[UInt8]] = [
+        [224, 0, 0, 251],
+        [0xFF, 0x02] + [UInt8](repeating: 0, count: 13) + [0xFB],
+    ]
     /// Ask mode's limit for a paused flow the server already sees as connected, or a UDP flow.
     /// Servers close a TCP connection that sends no TLS hello (GitHub after 11 s, Cloudflare
     /// after 15 s, measured on 3 November 2026), and macOS drops a UDP flow paused for 10 s. The
@@ -203,6 +211,7 @@ public enum FilterPolicy {
         // on this Mac, and its own connections out are filtered under its own identity.
         if snapshot.config.loopback, flow.remoteAddress?.isLoopback == true { return .allow(reason: "loopback") }
         if snapshot.mode == .acceptAll { return .allow(reason: "accept_all") }
+        if isMulticastDNS(flow) { return .allow(reason: "mdns") }
         // The resolver's encrypted DNS, on 443 (HTTPS, or HTTP/3 over UDP) or 853, which macOS tries
         // on its own when a resolver offers it. Its answers cannot be read, and they are what names
         // the addresses that apps connect to, so it is dropped at once, with no event, and macOS
@@ -215,6 +224,18 @@ public enum FilterPolicy {
         // From here on the app counts, and its verdict says when rules naming it were set aside.
         let aside = setAside(flow, snapshot.config)
         return decideApp(flow, snapshot, context, aside: aside).adding(aside)
+    }
+
+    /// The system resolver's multicast DNS: UDP from mDNSResponder, or sent by it for an app, to
+    /// port 5353 of 224.0.0.251 or ff02::fb, on any interface. It carries the `.local` names and
+    /// the discovery of AirDrop, AirPlay and printers; dropped as `no_host` or `no_rule`, about
+    /// 170 such flows an hour on the owner's Mac, those stopped working. Its answers come back
+    /// inbound, which passes anyway. Any other app's flow to those groups, and the resolver's to
+    /// another address or port (unicast 5353 included), is decided as before.
+    private static func isMulticastDNS(_ flow: FlowFacts) -> Bool {
+        guard flow.internetSocket, !flow.tcp, flow.port == multicastDNSPort,
+              let address = flow.remoteAddress, multicastDNSGroups.contains(address.bytes) else { return false }
+        return flow.identity == .verified(systemResolver) || flow.process == .verified(systemResolver)
     }
 
     /// `decide` for a flow that nothing lets through or drops before its app is looked at.
