@@ -53,8 +53,7 @@ private func context(approved: Set<ApprovalKey> = [], answers: [String: [String]
         address: { host, address in
             guard let list = answers[host] else { return .unknown }
             return HostAddressCache.check(address, against: Set(list.compactMap(IPAddress.init)))
-        },
-        lookupFailed: { answers[$0]?.isEmpty == true })
+        })
 }
 
 private func key(_ identity: IdentityResolution, _ host: String) -> ApprovalKey {
@@ -212,7 +211,7 @@ struct FilterPolicyTests {
         }
         let remembered = FlowVerdict.drop(reason: "denied;remembered")
         // By name, before any lookup; by cdhash; by the one name DNS answers gave; by address.
-        for check in [AddressCheck.match, .mismatch, .unknown] {
+        for check in [AddressCheck.match, .mismatch, .lookupFailed, .unknown] {
             #expect(FilterPolicy.decide(flow(agent, "other.example.com"), snapshot: ask, context: context(check)) == remembered)
         }
         #expect(FilterPolicy.decide(flow(adHoc, "example.org", port: 22), snapshot: ask, context: context(.match)) == remembered)
@@ -507,10 +506,46 @@ struct FilterPolicyTests {
         #expect(FilterPolicy.decide(flow(agent, "other.example.com"), snapshot: ask,
                                     context: context(answers: ["other.example.com": []]))
             == .ask(reason: "no_rule", addressMatches: false))
-        // With no word from the extension on the lookup, a context says nothing failed.
+        // Only the check that decided says the lookup failed: a plain mismatch never does.
         let plain = PolicyContext(approved: { _, _ in false }, address: { _, _ in .mismatch })
         #expect(FilterPolicy.decide(flow(agent, "api.example.com", port: 8443), snapshot: blockAll, context: plain)
             == .drop(reason: "address_mismatch;no_dns_names"))
+        let failed = PolicyContext(approved: { _, _ in false }, address: { _, _ in .lookupFailed })
+        #expect(FilterPolicy.decide(flow(agent, "api.example.com", port: 8443), snapshot: blockAll, context: failed)
+            == .drop(reason: "address_mismatch;lookup_failed"))
+    }
+
+    // The reason comes from the answers that decided, read once. It read the cache a second time,
+    // so a failed lookup that took the place of real answers in between labeled a drop decided on
+    // those answers `;lookup_failed`, and answers that took the place of a failed lookup hid it.
+    @Test func aMismatchSaysWhyFromTheAnswersThatDecidedIt() throws {
+        let blockAll = try policySnapshot(.blockAll)
+        let ask = try policySnapshot(.ask)
+        let cache = HostAddressCache(resolver: SystemHostResolver(), clock: { 1000 })
+        let elsewhere = try #require(IPAddress("198.51.100.9"))
+        // Each check is followed at once by a lookup that stores `next`.
+        func racing(_ next: Set<IPAddress>, approved: Set<ApprovalKey> = []) -> PolicyContext {
+            PolicyContext(
+                approved: { approved.contains(ApprovalKey(identity: $0, host: $1)) },
+                address: { host, address in
+                    defer { cache.store(host, next) }
+                    return cache.checkOrRefresh(host: host, address: address)
+                })
+        }
+        let facts = flow(agent, "api.example.com", port: 8443)
+        cache.store("api.example.com", [elsewhere])
+        #expect(FilterPolicy.decide(facts, snapshot: blockAll, context: racing([]))
+            == .drop(reason: "address_mismatch;no_dns_names"))
+        #expect(FilterPolicy.decide(facts, snapshot: blockAll, context: racing([elsewhere]))
+            == .drop(reason: "address_mismatch;lookup_failed"))
+        // An approved pair in ask mode, the same way.
+        let other = flow(agent, "other.example.com", port: 8443)
+        let approved: Set<ApprovalKey> = [key(agent, "other.example.com")]
+        cache.store("other.example.com", [elsewhere])
+        #expect(FilterPolicy.decide(other, snapshot: ask, context: racing([], approved: approved))
+            == .drop(reason: "address_mismatch;no_dns_names"))
+        #expect(FilterPolicy.decide(other, snapshot: ask, context: racing([elsewhere], approved: approved))
+            == .drop(reason: "address_mismatch;lookup_failed"))
     }
 
     @Test func anEncryptedClientHelloIsJudgedOnItsOuterName() throws {

@@ -154,23 +154,20 @@ public enum FlowVerdict: Equatable, Sendable {
 public struct PolicyContext {
     /// Whether a current approval names this app and host (normalized). Only ask mode asks.
     public let approved: (AppIdentity, String) -> Bool
-    /// What is known about this host (normalized) and the flow's address.
+    /// What is known about this host (normalized) and the flow's address. `lookupFailed` decides
+    /// as `mismatch` does, and the drop's reason says so: it comes with the check that decided,
+    /// from one read of the host's answers.
     public let address: (String, IPAddress?) -> AddressCheck
     /// Whether this app and host were denied a moment ago (AskState.denials). Only ask mode asks,
     /// so only ask mode looks: such a flow is dropped instead of asked about.
     public let denied: (AppIdentity, String) -> Bool
-    /// Whether this host's (normalized) answers are those of a lookup that failed or found none
-    /// (HostAddressCache.failed). It decides nothing: an `address_mismatch` says so in its reason.
-    public let lookupFailed: (String) -> Bool
 
     public init(approved: @escaping (AppIdentity, String) -> Bool,
                 address: @escaping (String, IPAddress?) -> AddressCheck,
-                denied: @escaping (AppIdentity, String) -> Bool = { _, _ in false },
-                lookupFailed: @escaping (String) -> Bool = { _ in false }) {
+                denied: @escaping (AppIdentity, String) -> Bool = { _, _ in false }) {
         self.approved = approved
         self.address = address
         self.denied = denied
-        self.lookupFailed = lookupFailed
     }
 }
 
@@ -559,7 +556,8 @@ public enum FilterPolicy {
         // it, and so does one it gave for a name this host is an alias of, and the check this
         // flow passed for this host as it started.
         let answered = flow.dnsNames.contains(host) || flow.dnsAliases.contains(host) || flow.checkedHosts.contains(host)
-        switch answered ? AddressCheck.match : context.address(host, flow.remoteAddress) {
+        let check = answered ? AddressCheck.match : context.address(host, flow.remoteAddress)
+        switch check {
         case .unknown:
             // Ask mode looks the host up even with no rule, so a paused flow knows whether an
             // approval may release it.
@@ -569,13 +567,13 @@ public enum FilterPolicy {
             if service { return .allow(reason: "apple_service" + suffix) }
             if approved { return .allow(reason: "approval" + suffix) }
             return .ask(reason: "no_rule", addressMatches: true)
-        case .mismatch:
+        case .mismatch, .lookupFailed:
             // A pair that a rule, the Apple services table or an approval names is dropped in ask
             // mode too: no answer could let this flow through, since an approval never releases a
             // flow whose address mismatches. Asking held a hook slot for nothing: in 18 hours of
             // 1.0.3 on the owner's Mac, 100 such events, each approved and its flow dropped anyway.
             if !ask || line != nil || service || approved {
-                return .drop(reason: "address_mismatch" + mismatchCause(host, flow, context, recheck: recheck))
+                return .drop(reason: "address_mismatch" + mismatchCause(check, flow, recheck: recheck))
             }
             // With nothing naming the pair the answer still counts: an approval lets the app's
             // next connection through once its address checks out.
@@ -587,11 +585,12 @@ public enum FilterPolicy {
     /// `;recheck` for the flow's own host name checked again at its hello, which its first check
     /// should spare (`checkedHosts`); `;lookup_failed` when the host's lookup failed or found no
     /// address; `;no_dns_names` when no DNS answer the extension read gave the address a name; and
-    /// `;dns_other_names` when answers gave it, but for other hosts.
-    private static func mismatchCause(_ host: String, _ flow: FlowFacts, _ context: PolicyContext,
-                                      recheck: Bool) -> String {
+    /// `;dns_other_names` when answers gave it, but for other hosts. `check` is the one that
+    /// decided: asked again, the cache could hold a lookup that ended meanwhile, and a drop decided
+    /// on real answers said `;lookup_failed`, or one decided on a failed lookup did not.
+    private static func mismatchCause(_ check: AddressCheck, _ flow: FlowFacts, recheck: Bool) -> String {
         if recheck { return ";recheck" }
-        if context.lookupFailed(host) { return ";lookup_failed" }
+        if check == .lookupFailed { return ";lookup_failed" }
         return flow.dnsNames.isEmpty ? ";no_dns_names" : ";dns_other_names"
     }
 

@@ -17,7 +17,7 @@ private final class FakeResolver: HostResolving, @unchecked Sendable {
         return list.compactMap(IPAddress.init)
     }
 
-    func set(_ host: String, _ answers: [String]) {
+    func set(_ host: String, _ answers: [String]?) {
         lock.lock(); defer { lock.unlock() }
         table[host] = answers
     }
@@ -33,6 +33,22 @@ private final class Clock: @unchecked Sendable {
     private var value: TimeInterval = 1000
     var now: TimeInterval { lock.lock(); defer { lock.unlock() }; return value }
     func advance(_ seconds: TimeInterval) { lock.lock(); value += seconds; lock.unlock() }
+}
+
+/// Fails every lookup after holding it for `seconds` of `clock`, as a resolver that times out.
+private final class TimingOutResolver: HostResolving, @unchecked Sendable {
+    private let clock: Clock
+    private let seconds: TimeInterval
+
+    init(_ clock: Clock, seconds: TimeInterval) {
+        self.clock = clock
+        self.seconds = seconds
+    }
+
+    func resolve(_ host: String) -> [IPAddress]? {
+        clock.advance(seconds)
+        return nil
+    }
 }
 
 private func ip(_ text: String) -> IPAddress { IPAddress(text)! }
@@ -164,10 +180,14 @@ struct HostAddressCacheTests {
         #expect(HostAddressCache.check(ip("fe80::1"), against: [ip("fe80::1")]) == .mismatch)
     }
 
+    // A failed lookup matches no address, and the check says the lookup failed.
     @Test func failedLookupMismatchesEverything() {
         let cache = HostAddressCache(resolver: FakeResolver(["gone.example.com": nil]))
         #expect(cache.lookUp("gone.example.com").isEmpty)
-        #expect(cache.check(host: "gone.example.com", address: ip("203.0.113.7")) == .mismatch)
+        #expect(cache.check(host: "gone.example.com", address: ip("203.0.113.7")) == .lookupFailed)
+        #expect(cache.checkOrRefresh(host: "gone.example.com", address: ip("203.0.113.7")) == .lookupFailed)
+        #expect(cache.check(host: "gone.example.com", address: ip("fe80::1")) == .lookupFailed)
+        #expect(HostAddressCache.check(ip("203.0.113.7"), against: []) == .lookupFailed)
     }
 
     @Test func answersExpireAfterTheTTL() {
@@ -219,7 +239,6 @@ struct HostAddressCacheTests {
         clock.advance(10)
         #expect(cache.checkOrRefresh(host: "printer.local", address: ip("fe80::1")) == .mismatch)
         #expect(cache.checkOrRefresh(host: "printer.local", address: nil) == .mismatch)
-        #expect(!cache.failed("printer.local"))
         // Expired answers are unknown, as with check.
         clock.advance(20)
         #expect(cache.checkOrRefresh(host: "printer.local", address: ip("fe80::1")) == .unknown)
@@ -236,16 +255,15 @@ struct HostAddressCacheTests {
         // Meanwhile it is a mismatch, plain or refreshed, so a burst costs no more lookups, and
         // the cache says why.
         clock.advance(1.5)
-        #expect(cache.checkOrRefresh(host: "api.example.com", address: ip("203.0.113.7")) == .mismatch)
-        #expect(cache.check(host: "api.example.com", address: ip("203.0.113.7")) == .mismatch)
-        #expect(cache.failed("api.example.com") && !cache.failed("other.example.com"))
+        #expect(cache.checkOrRefresh(host: "api.example.com", address: ip("203.0.113.7")) == .lookupFailed)
+        #expect(cache.check(host: "api.example.com", address: ip("203.0.113.7")) == .lookupFailed)
+        #expect(cache.check(host: "other.example.com", address: ip("203.0.113.7")) == .unknown)
         // The resolver comes back; 2 s after the failure the host is looked up again.
         #expect(resolver.lookups("api.example.com") == 1)
         resolver.set("api.example.com", ["203.0.113.7"])
         clock.advance(0.5)
         #expect(cache.checkOrRefresh(host: "api.example.com", address: ip("203.0.113.7")) == .unknown)
         #expect(cache.check(host: "api.example.com", address: ip("203.0.113.7")) == .unknown)
-        #expect(!cache.failed("api.example.com"))
         cache.lookUp("api.example.com")
         #expect(cache.checkOrRefresh(host: "api.example.com", address: ip("203.0.113.7")) == .match)
         #expect(resolver.lookups("api.example.com") == 2)
@@ -257,6 +275,76 @@ struct HostAddressCacheTests {
         short.lookUp("gone.example.com")
         clock.advance(1)
         #expect(short.checkOrRefresh(host: "gone.example.com", address: ip("203.0.113.7")) == .unknown)
+    }
+
+    // While a host's lookups keep failing, each failure counts twice as long as the one before,
+    // up to the cache's own time: 2, 4, 8, 16, then 30 s. Offline, or with a resolver that times
+    // out, apps keep trying every host they use, and a lookup of each every 2 s held a thread for
+    // the resolver's whole timeout. Answers end the run, and the next failure counts 2 s again.
+    @Test func failedLookupsInARowCountLongerUpToTheTTL() {
+        let resolver = FakeResolver(["api.example.com": nil])
+        let clock = Clock()
+        let cache = HostAddressCache(resolver: resolver, ttl: 30, clock: { clock.now })
+        let address = ip("203.0.113.7")
+        func failure(counts seconds: TimeInterval) {
+            #expect(cache.lookUp("api.example.com").isEmpty)
+            clock.advance(seconds - 0.5)
+            #expect(cache.checkOrRefresh(host: "api.example.com", address: address) == .lookupFailed, "\(seconds) s")
+            clock.advance(0.5)
+            #expect(cache.checkOrRefresh(host: "api.example.com", address: address) == .unknown, "\(seconds) s")
+        }
+        for seconds: TimeInterval in [2, 4, 8, 16, 30, 30, 30] { failure(counts: seconds) }
+        #expect(resolver.lookups("api.example.com") == 7)
+        resolver.set("api.example.com", ["203.0.113.7"])
+        cache.lookUp("api.example.com")
+        clock.advance(29.5)
+        #expect(cache.checkOrRefresh(host: "api.example.com", address: address) == .match)
+        clock.advance(0.5)
+        resolver.set("api.example.com", nil)
+        for seconds: TimeInterval in [2, 4, 8] { failure(counts: seconds) }
+        // Another host's run is its own.
+        let other = HostAddressCache(resolver: FakeResolver(["a.example.com": nil, "b.example.com": nil]), ttl: 30,
+                                     clock: { clock.now })
+        other.lookUp("a.example.com")
+        clock.advance(2)
+        other.lookUp("a.example.com")
+        other.lookUp("b.example.com")
+        clock.advance(2)
+        #expect(other.check(host: "a.example.com", address: address) == .lookupFailed)
+        #expect(other.check(host: "b.example.com", address: address) == .unknown)
+        // Never longer than the cache's own time.
+        let short = HostAddressCache(resolver: FakeResolver(["gone.example.com": nil]), ttl: 3, clock: { clock.now })
+        short.lookUp("gone.example.com")
+        clock.advance(2)
+        short.lookUp("gone.example.com")
+        clock.advance(2.5)
+        #expect(short.check(host: "gone.example.com", address: address) == .lookupFailed)
+        clock.advance(0.5)
+        #expect(short.check(host: "gone.example.com", address: address) == .unknown)
+    }
+
+    // A failure is in a row with the last one only when its lookup started within 30 s of the
+    // last one's expiry: one long after an outage counts 2 s, as a first failure does. A lookup
+    // the resolver held for its whole timeout, longer than that, still goes on with the run.
+    @Test func aFailureLongAfterTheLastCountsTwoSecondsAgain() {
+        let clock = Clock()
+        let address = ip("203.0.113.7")
+        let cache = HostAddressCache(resolver: FakeResolver(["api.example.com": nil]), ttl: 30, clock: { clock.now })
+        func failure(of cache: HostAddressCache, counts seconds: TimeInterval) {
+            #expect(cache.lookUp("api.example.com").isEmpty)
+            clock.advance(seconds - 0.5)
+            #expect(cache.check(host: "api.example.com", address: address) == .lookupFailed, "\(seconds) s")
+            clock.advance(0.5)
+            #expect(cache.check(host: "api.example.com", address: address) == .unknown, "\(seconds) s")
+        }
+        for seconds: TimeInterval in [2, 4, 8] { failure(of: cache, counts: seconds) }
+        clock.advance(30)
+        failure(of: cache, counts: 16)
+        clock.advance(30.5)
+        failure(of: cache, counts: 2)
+        // 45 s for each lookup to fail: the run goes on from when each lookup started.
+        let slow = HostAddressCache(resolver: TimingOutResolver(clock, seconds: 45), ttl: 30, clock: { clock.now })
+        for seconds: TimeInterval in [2, 4, 8, 16, 30] { failure(of: slow, counts: seconds) }
     }
 
     @Test func staysBounded() {
@@ -330,5 +418,52 @@ struct LookupWaitersTests {
         #expect(waiters.removeAll().count == 4)
         #expect(waiters.finish("a.example.com").isEmpty && waiters.count == 0 && waiters.waitingFor(app) == 0)
         #expect(waiters.add(7, host: "a.example.com", app: app) == .startLookup)
+    }
+
+    // Each lookup holds a thread while the resolver takes its time: at most lookupLimit run at
+    // once, and another host's waits its turn, the oldest first, as lookups end.
+    @Test func atMostTheLimitOfLookupsRunAtOnce() {
+        var waiters = LookupWaiters<Int>(limit: 16, limitPerApp: 16, lookupLimit: 2)
+        #expect(LookupWaiters<Int>().lookupLimit == 16)
+        #expect(waiters.add(1, host: "a.example.com", app: app) == .startLookup)
+        #expect(waiters.add(2, host: "b.example.com", app: app) == .startLookup)
+        #expect(waiters.add(3, host: "c.example.com", app: other) == .queued)
+        #expect(waiters.add(4, host: "c.example.com", app: app) == .waiting)
+        #expect(waiters.add(5, host: "d.example.com", app: nil) == .queued)
+        #expect(waiters.add(6, host: "a.example.com", app: nil) == .waiting)
+        #expect(waiters.running == 2 && waiters.count == 6 && waiters.nextLookup() == nil)
+        // A lookup ends: the host that waited longest starts, and the next waits for another end.
+        #expect(waiters.finish("a.example.com") == [1, 6])
+        #expect(waiters.nextLookup() == "c.example.com" && waiters.nextLookup() == nil && waiters.running == 2)
+        #expect(waiters.add(7, host: "e.example.com", app: other) == .queued)
+        #expect(waiters.finish("b.example.com") == [2])
+        #expect(waiters.nextLookup() == "d.example.com" && waiters.nextLookup() == nil)
+        #expect(waiters.finish("c.example.com") == [3, 4])
+        #expect(waiters.nextLookup() == "e.example.com")
+        #expect(waiters.finish("d.example.com") == [5] && waiters.finish("e.example.com") == [7])
+        #expect(waiters.nextLookup() == nil && waiters.running == 0 && waiters.count == 0)
+        #expect(waiters.add(8, host: "f.example.com", app: app) == .startLookup)
+    }
+
+    // removeAll drops the flows that wait their turn with the rest, and the lookups still running
+    // count until they end: the bound holds across a configuration change.
+    @Test func lookupsThatRunCountUntilTheyEndAfterRemoveAll() {
+        var waiters = LookupWaiters<Int>(limit: 16, limitPerApp: 16, lookupLimit: 1)
+        #expect(waiters.add(1, host: "a.example.com", app: app) == .startLookup)
+        #expect(waiters.add(2, host: "b.example.com", app: app) == .queued)
+        #expect(Set(waiters.removeAll()) == [1, 2] && waiters.running == 1)
+        #expect(waiters.add(3, host: "c.example.com", app: app) == .queued)
+        #expect(waiters.finish("a.example.com").isEmpty && waiters.running == 0)
+        // b went with removeAll: c is next.
+        #expect(waiters.nextLookup() == "c.example.com" && waiters.nextLookup() == nil)
+        // c's lookup runs on across another removeAll. A flow for c then waits its turn; that
+        // lookup's answers serve it, and its own turn is passed over.
+        #expect(waiters.removeAll() == [3])
+        #expect(waiters.add(4, host: "c.example.com", app: app) == .queued)
+        #expect(waiters.finish("c.example.com") == [4] && waiters.nextLookup() == nil && waiters.running == 0)
+        #expect(waiters.add(5, host: "c.example.com", app: app) == .startLookup)
+        #expect(waiters.finish("c.example.com") == [5] && waiters.running == 0)
+        // An unmatched end never counts below none.
+        #expect(waiters.finish("z.example.com").isEmpty && waiters.running == 0)
     }
 }
