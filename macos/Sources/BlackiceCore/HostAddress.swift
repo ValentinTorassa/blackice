@@ -6,9 +6,10 @@ import Foundation
 // Rules and approvals name hosts, but an app picks both the name macOS attaches to a flow (or
 // the TLS server name it sends) and the address it connects to. So before a rule or an approval
 // counts, the host is resolved with the system resolver and the flow's remote address must be
-// among the answers. Answers are cached for a short, fixed time. A mismatch is not an error: the
-// rule or approval simply does not match, so the flow is dropped with "address_mismatch" as the
-// verdict's reason. Ask mode asks only about a pair nothing names, for the app's next connection.
+// among the answers. Answers are cached for a short, fixed time, a failed lookup for 2 s. A
+// mismatch is not an error: the rule or approval simply does not match, so the flow is dropped
+// with "address_mismatch" as the verdict's reason, and after it why (FilterPolicy). Ask mode asks
+// only about a pair nothing names, for the app's next connection.
 //
 // Known limits: the system resolver may give this lookup different answers than it gave the app
 // (round-robin and CDN answers that change between queries), which shows up as a mismatch; and
@@ -305,7 +306,7 @@ public final class HostAddressCache: @unchecked Sendable {
     private let limit: Int
     private let clock: @Sendable () -> TimeInterval
     private let lock = NSLock()
-    private var entries: [String: (addresses: Set<IPAddress>, expires: TimeInterval)] = [:]
+    private var entries: [String: (addresses: Set<IPAddress>, lookedUpAt: TimeInterval, expires: TimeInterval)] = [:]
 
     /// `clock` returns seconds on a monotonic scale; the default counts sleep (continuousSeconds).
     public init(resolver: any HostResolving, ttl: TimeInterval = defaultTTL, limit: Int = defaultLimit,
@@ -331,7 +332,8 @@ public final class HostAddressCache: @unchecked Sendable {
     /// what the resolver says now. CDNs answer with TTLs of seconds and rotate their addresses: on
     /// 8 November 2026 outlook.office365.com had A records of 2 to 4 s and 13 answer sets in
     /// 3 minutes, and the first address of half its answers was not in answers up to 30 s old.
-    /// A failed lookup (no answers) and an address that cannot be checked stay a mismatch.
+    /// An address that cannot be checked stays a mismatch. A failed lookup (no answers) is a
+    /// mismatch until it expires, `refreshAfter` after it (`store`).
     public func checkOrRefresh(host: String, address: IPAddress?) -> AddressCheck {
         lock.lock()
         let entry = entries[host]
@@ -339,12 +341,17 @@ public final class HostAddressCache: @unchecked Sendable {
         lock.unlock()
         guard let entry, entry.expires > now else { return .unknown }
         let result = Self.check(address, against: entry.addresses)
-        let lookedUpAt = entry.expires - ttl
         if result == .mismatch, !entry.addresses.isEmpty, address?.isCheckable == true,
-           now - lookedUpAt >= Self.refreshAfter {
+           now - entry.lookedUpAt >= Self.refreshAfter {
             return .unknown
         }
         return result
+    }
+
+    /// Whether the current answers for `host` are a failed lookup's: none, and not expired yet. A
+    /// flow dropped then as `address_mismatch` says `;lookup_failed` after it (FilterPolicy).
+    public func failed(_ host: String) -> Bool {
+        cached(host)?.isEmpty == true
     }
 
     /// A link-local address matches only an answer on the same interface, and never when its
@@ -370,6 +377,13 @@ public final class HostAddressCache: @unchecked Sendable {
         return answers
     }
 
+    /// Answers are kept for `ttl`; no answers, a failed lookup's, for `refreshAfter` at most, so
+    /// the next connection after that looks the host up again. One failure (a resolver that timed
+    /// out, SERVFAIL, a network that changed or a Mac just awake) dropped every connection to
+    /// the host as `address_mismatch` for the whole `ttl`, those a rule or an approval covers
+    /// included. One lookup per host at a time (LookupWaiters) keeps that from becoming a storm:
+    /// while the resolver keeps failing, the next starts `refreshAfter` after the last one ended at
+    /// the earliest.
     public func store(_ host: String, _ answers: Set<IPAddress>) {
         lock.lock(); defer { lock.unlock() }
         let now = clock()
@@ -377,7 +391,7 @@ public final class HostAddressCache: @unchecked Sendable {
             entries = entries.filter { $0.value.expires > now }
             if entries.count >= limit { entries.removeAll(keepingCapacity: true) }
         }
-        entries[host] = (answers, now + ttl)
+        entries[host] = (answers, now, now + (answers.isEmpty ? min(ttl, Self.refreshAfter) : ttl))
     }
 
     public func removeAll() {

@@ -212,19 +212,51 @@ struct HostAddressCacheTests {
         #expect(resolver.lookups("outlook.example.com") == 2)
     }
 
-    @Test func aFailedLookupOrAnUncheckableAddressIsNotLookedUpAgain() {
+    @Test func anUncheckableAddressIsNotLookedUpAgain() {
         let clock = Clock()
-        let cache = HostAddressCache(resolver: FakeResolver(["gone.example.com": nil, "printer.local": ["fe80::1%1"]]),
-                                     ttl: 30, clock: { clock.now })
-        cache.lookUp("gone.example.com")
+        let cache = HostAddressCache(resolver: FakeResolver(["printer.local": ["fe80::1%1"]]), ttl: 30, clock: { clock.now })
         cache.lookUp("printer.local")
         clock.advance(10)
-        #expect(cache.checkOrRefresh(host: "gone.example.com", address: ip("203.0.113.7")) == .mismatch)
         #expect(cache.checkOrRefresh(host: "printer.local", address: ip("fe80::1")) == .mismatch)
         #expect(cache.checkOrRefresh(host: "printer.local", address: nil) == .mismatch)
+        #expect(!cache.failed("printer.local"))
         // Expired answers are unknown, as with check.
         clock.advance(20)
-        #expect(cache.checkOrRefresh(host: "gone.example.com", address: ip("203.0.113.7")) == .unknown)
+        #expect(cache.checkOrRefresh(host: "printer.local", address: ip("fe80::1")) == .unknown)
+    }
+
+    // A failed lookup counts for 2 s, not 30: one timeout of the resolver (Tailscale's
+    // 100.100.100.100, a network that changed, a Mac just awake) dropped every connection to the
+    // host for the whole 30 s, those a rule or an approval covers included.
+    @Test func aFailedLookupIsLookedUpAgainAfterTwoSeconds() {
+        let resolver = FakeResolver(["api.example.com": nil])
+        let clock = Clock()
+        let cache = HostAddressCache(resolver: resolver, ttl: 30, clock: { clock.now })
+        #expect(cache.lookUp("api.example.com").isEmpty)
+        // Meanwhile it is a mismatch, plain or refreshed, so a burst costs no more lookups, and
+        // the cache says why.
+        clock.advance(1.5)
+        #expect(cache.checkOrRefresh(host: "api.example.com", address: ip("203.0.113.7")) == .mismatch)
+        #expect(cache.check(host: "api.example.com", address: ip("203.0.113.7")) == .mismatch)
+        #expect(cache.failed("api.example.com") && !cache.failed("other.example.com"))
+        // The resolver comes back; 2 s after the failure the host is looked up again.
+        #expect(resolver.lookups("api.example.com") == 1)
+        resolver.set("api.example.com", ["203.0.113.7"])
+        clock.advance(0.5)
+        #expect(cache.checkOrRefresh(host: "api.example.com", address: ip("203.0.113.7")) == .unknown)
+        #expect(cache.check(host: "api.example.com", address: ip("203.0.113.7")) == .unknown)
+        #expect(!cache.failed("api.example.com"))
+        cache.lookUp("api.example.com")
+        #expect(cache.checkOrRefresh(host: "api.example.com", address: ip("203.0.113.7")) == .match)
+        #expect(resolver.lookups("api.example.com") == 2)
+        // Answers that were found last the whole 30 s, as before.
+        clock.advance(29.9)
+        #expect(cache.check(host: "api.example.com", address: ip("203.0.113.7")) == .match)
+        // Never longer than the cache's own time either.
+        let short = HostAddressCache(resolver: FakeResolver(["gone.example.com": nil]), ttl: 1, clock: { clock.now })
+        short.lookUp("gone.example.com")
+        clock.advance(1)
+        #expect(short.checkOrRefresh(host: "gone.example.com", address: ip("203.0.113.7")) == .unknown)
     }
 
     @Test func staysBounded() {
