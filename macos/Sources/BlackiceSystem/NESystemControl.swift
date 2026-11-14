@@ -82,6 +82,13 @@ public final class NESystemControl: SystemControlling {
             if let owner = current.foreignOwner { return refuseForeign(owner, output) }
             guard current.configuration == saved.configuration else { return changedMeanwhile(output) }
             release = Interrupts.catchAll()
+            // A signal caught already, by `agent connect` around this start (a Control-C during
+            // Touch ID, say), ends start here with the filter on as it was: turned off now, it would
+            // wait up to turnedOffLimit for the kernel only to be turned back on.
+            if Interrupts.interrupted {
+                output.stderr(CLI.stoppedBeforeTurnOffLine)
+                return ExitCode.interrupted
+            }
             // Not saved: the filter is on as it was.
             guard turnOff(manager, output, stopping: { stopWaiting(.kernel) }) else {
                 return Interrupts.interrupted ? ExitCode.interrupted : ExitCode.software

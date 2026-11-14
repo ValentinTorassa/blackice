@@ -33,8 +33,10 @@ import Testing
             while !Interrupts.interrupted, Date() < deadline { usleep(10_000) }
         }
         #expect(Interrupts.caught == SIGTERM && Interrupts.count == 1 && Interrupts.terminated)
-        // A catch inside another keeps what the outer one caught.
+        // A catch inside another sees what the outer one caught at once, as an upgrade's start
+        // run by agent connect does before it turns the filter off, and keeps it.
         let inner = Interrupts.catchAll()
+        #expect(Interrupts.interrupted && Interrupts.count == 1)
         inner()
         #expect(Interrupts.interrupted && Interrupts.terminated)
         release()

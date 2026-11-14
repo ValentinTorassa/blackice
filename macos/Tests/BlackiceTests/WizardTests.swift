@@ -820,6 +820,9 @@ struct ReportTests {
             "blackice start did not finish, and could not turn blackice's filter back on: blackice is off, and no connection " +
                 "is checked. Run blackice start again.",
         ])
+        // Stopped before it turned the filter off, by a signal agent connect caught during Touch ID.
+        #expect(CLI.stoppedBeforeTurnOffLine == "blackice start was stopped before it changed anything: " +
+            "blackice's filter is on as it was. Run blackice start again to finish the upgrade.")
         func notAsked() -> UnfinishedUpgrade? {
             Issue.record("asked about the upgrade")
             return nil

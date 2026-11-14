@@ -437,6 +437,13 @@ extension CLI {
         return "Waiting for macOS to \(what) before turning blackice back on; press Control-C again to turn it on now."
     }
 
+    /// What an upgrade's `start` says when a signal was caught before it turned the filter off:
+    /// by `agent connect`, which catches signals around the start it runs, at a Control-C during
+    /// Touch ID say. It changed nothing, so the filter is on as it was, and the upgrade is not
+    /// finished.
+    public static let stoppedBeforeTurnOffLine = "blackice start was stopped before it changed anything: " +
+        "blackice's filter is on as it was. Run blackice start again to finish the upgrade."
+
     /// What `start` says when it is stopped once it has turned the filter on again with the new
     /// configuration: what is left is checking that the filter took it.
     public static let stoppedOnLine = "blackice start was stopped after it turned blackice's filter on with the new configuration. " +
