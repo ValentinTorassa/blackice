@@ -388,7 +388,9 @@ public enum CLI {
             _ = try BlackiceConfig(text: updated)
             var info = stat()
             let mode = stat(path, &info) == 0 ? info.st_mode & 0o777 : 0o600
-            try writeAtomically(Data(updated.utf8), to: path, mode: mode, replacing: Data(text.utf8))
+            if try writeAtomically(Data(updated.utf8), to: path, mode: mode, replacing: Data(text.utf8), followingLinks: true) {
+                stderr(linkReplacedLine(shown))
+            }
         } catch is ChangedMeanwhile {
             stderr("blackice approve: approved, but not saved: \(shown) changed meanwhile; run it again")
             return ExitCode.tempFail

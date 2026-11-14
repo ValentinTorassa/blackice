@@ -399,15 +399,12 @@ extension CLI {
             lines.append("In \(previous.mode.rawValue) mode now, \(switched); blackice.toml has \(file.mode.rawValue) mode, " +
                          "and this start loads it.")
         }
-        let answerer = previous.config.answering.answerer
         if (try? BlackiceConfig.switchedAnswers(in: previous.configText)) != nil,
-           candidate.config.answering.answerer != answerer {
-            let now: String
-            switch answerer {
-            case .agent(let instructions)?: now = "\(instructions.title) answers"
-            case .you?: now = "You answer"
-            case nil: now = "\(listed(previous.config.answering.agents.map(\.title))) answer"
-            }
+           candidate.config.answering.answerer != previous.config.answering.answerer {
+            // Who answers as status says it, with "you" at the start of a sentence: "You answer",
+            // "Your hooks answer"; an agent's name as it is written, "fx answers".
+            let phrase = answersPhrase(previous.config)
+            let now = previous.config.answering.answerer == .you ? "Y" + phrase.dropFirst() : phrase
             let has = file.answering.answerer == .you ? "you answering" : answererName(file)
             lines.append("\(now) now, \(switched); blackice.toml has \(has), and this start loads it.")
         }
@@ -425,6 +422,18 @@ extension CLI {
                      "Run blackice start again."]
     }
 
+    /// What an upgrade's `start` says at the first Control-C or other stop signal while it waits
+    /// with the filter off (UpgradeInterruption): it waits on, and turns the filter back on once
+    /// the wait is over, unless a second signal says to do it now.
+    public static func waitingAfterInterruptLine(_ wait: UpgradeInterruption.Wait) -> String {
+        let what: String
+        switch wait {
+        case .kernel: what = "let the old filter go"
+        case .request: what = "finish replacing blackice's network extension"
+        }
+        return "Waiting for macOS to \(what) before turning blackice back on; press Control-C again to turn it on now."
+    }
+
     /// What `start` says when it is stopped once it has turned the filter on again with the new
     /// configuration: what is left is checking that the filter took it.
     public static let stoppedOnLine = "blackice start was stopped after it turned blackice's filter on with the new configuration. " +
@@ -433,11 +442,16 @@ extension CLI {
     /// Why `blackice mode` cannot change anything now, said before Touch ID; nil when it can: the
     /// filter is turned off, so no filter takes what mode would save, or macOS still runs an older
     /// build of the extension, which this app cannot reach to check what it took. Until 1.0.8 mode
-    /// asked for Touch ID, saved, and waited 20 s to say that the filter did not answer. `upgrade`
-    /// is asked only for a filter that is on.
-    public static func modeRefusal(enabled: Bool, upgrade: @autoclosure () -> UnfinishedUpgrade?) -> String? {
+    /// asked for Touch ID, saved, and waited 20 s to say that the filter did not answer.
+    ///
+    /// A change to the mode and answerer blackice already has (`unchanged`) is not refused for an
+    /// upgrade, and `upgrade` is not asked: mode says it is already in that mode, as it did before
+    /// 1.0.8. It is asked only for a filter that is on. The refusal names what to run and not the
+    /// command to run after it, since agent connect and the menu change the mode this way too.
+    public static func modeRefusal(enabled: Bool, unchanged: Bool, upgrade: @autoclosure () -> UnfinishedUpgrade?) -> String? {
         guard enabled else { return turnedOffLine }
-        return upgrade().map { $0.hint + " Then run blackice mode again." }
+        guard !unchanged else { return nil }
+        return upgrade().map { $0.hint + " Run it, then try again." }
     }
 
     /// After a successful start: the mode, and who answers in ask mode.

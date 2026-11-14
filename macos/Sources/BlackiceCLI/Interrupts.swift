@@ -15,6 +15,11 @@ public enum Interrupts {
     /// The last signal caught, or 0. Back to 0 once the outermost `catchAll` is released: outside
     /// it, the signals do what they did before.
     nonisolated(unsafe) static var caught: Int32 = 0
+    /// How many signals were caught, back to 0 with `caught`. A broken pipe after another signal
+    /// does not count: once the terminal or the ssh session is gone each line written brings one,
+    /// and none of them is a person pressing Control-C again. An upgrade's `blackice start` goes on
+    /// waiting at the first signal and stops at the second (UpgradeInterruption).
+    nonisolated(unsafe) public private(set) static var count = 0
     nonisolated(unsafe) private static var depth = 0
 
     public static var interrupted: Bool { caught != 0 }
@@ -27,7 +32,10 @@ public enum Interrupts {
         var previous: [(Int32, sigaction)] = []
         for number in signals {
             var action = sigaction()
-            action.__sigaction_u = __sigaction_u(__sa_handler: { Interrupts.caught = $0 })
+            action.__sigaction_u = __sigaction_u(__sa_handler: { signal in
+                if signal != SIGPIPE || Interrupts.caught == 0 { Interrupts.count += 1 }
+                Interrupts.caught = signal
+            })
             sigemptyset(&action.sa_mask)
             action.sa_flags = SA_RESTART
             var old = sigaction()
@@ -39,7 +47,10 @@ public enum Interrupts {
                 sigaction(number, &old, nil)
             }
             depth -= 1
-            if depth == 0 { caught = 0 }
+            if depth == 0 {
+                caught = 0
+                count = 0
+            }
         }
     }
 
@@ -63,5 +74,69 @@ public enum Interrupts {
             bytes.append(byte)
         }
         return nil
+    }
+}
+
+/// How an upgrade's `blackice start` takes Control-C and the other stop signals (`Interrupts`)
+/// while it waits with blackice's filter turned off: for the kernel to let go of the filter it
+/// turned off, or for macOS to finish putting the new build of the extension in place. Turned
+/// back on at the first signal, the filter would start while the kernel is still disconnecting
+/// the one turned off, be held with it, and let no new connection through until the kernel is
+/// done (4 to 59 s in six upgrades on 10 and 11 November 2026, 116 s once; FilterDisconnect): the
+/// stall the wait is there to avoid. Turned on during the request, it would be replaced while on,
+/// which is how that stall comes about. So the first signal is told what start waits for, and the
+/// wait goes on to its end, as long as it would have lasted; a second ends it at once. Either way
+/// start then turns the filter back on and exits with 130.
+public struct UpgradeInterruption: Sendable {
+    /// What start waits for.
+    public enum Wait: Equatable, Sendable {
+        /// The kernel, to let go of the filter that was turned off (KernelFilters.gone).
+        case kernel
+        /// macOS, to finish the request that puts the new build of the extension in place.
+        case request
+    }
+
+    /// What start does about the signals caught so far.
+    public enum Action: Equatable, Sendable {
+        /// Goes on waiting: no signal yet, or the first, already told about.
+        case wait
+        /// Goes on waiting, having said this line: the first signal.
+        case tell(String)
+        /// Stops waiting, and turns the filter back on now: a second signal.
+        case stop
+    }
+
+    /// Whether the line was said: once per start, whichever wait the first signal came in.
+    private var told = false
+
+    public init() {}
+
+    /// What to do while waiting for `wait`, `interrupts` signals having been caught
+    /// (`Interrupts.count`).
+    public mutating func action(_ wait: Wait, interrupts: Int) -> Action {
+        switch interrupts {
+        case ...0:
+            return .wait
+        case 1:
+            guard !told else { return .wait }
+            told = true
+            return .tell(CLI.waitingAfterInterruptLine(wait))
+        default:
+            return .stop
+        }
+    }
+
+    /// `action`, with its line said through `say`: whether to stop waiting now. Asked before each
+    /// look at what start waits for.
+    public mutating func stopWaiting(_ wait: Wait, interrupts: Int, say: (String) -> Void) -> Bool {
+        switch action(wait, interrupts: interrupts) {
+        case .wait:
+            return false
+        case .tell(let line):
+            say(line)
+            return false
+        case .stop:
+            return true
+        }
     }
 }

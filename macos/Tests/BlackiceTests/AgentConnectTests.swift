@@ -1401,8 +1401,9 @@ struct AgentConnectTests {
     }
 
     /// A blackice.toml kept elsewhere and linked from ~/.config/blackice stays a link: the file it
-    /// points at is written, keeping its mode, with the temporary file and the lock beside that
-    /// file. Until 1.0.8 the rename put a file in the link's place.
+    /// points at is written, keeping its mode, through a temporary file beside that file. The lock
+    /// stays beside the link, as in 1.0.7, and leaves nothing in the folder the link leads to.
+    /// Until 1.0.8 the rename put a file in the link's place.
     @Test func aLinkedFileStaysALink() throws {
         let folder = try makePrivateDirectory()
         defer { removeTree(folder) }
@@ -1412,28 +1413,56 @@ struct AgentConnectTests {
         try original.write(to: URL(fileURLWithPath: target))
         #expect(chmod(target, 0o640) == 0)
         try FileManager.default.createSymbolicLink(atPath: link, withDestinationPath: "../dotfiles/blackice.toml")
-        func isLink(_ path: String) -> Bool {
-            var info = stat()
-            return lstat(path, &info) == 0 && (info.st_mode & S_IFMT) == S_IFLNK
-        }
 
-        try CLI.writeAtomically(mine, to: link, mode: 0o640, replacing: original)
-        #expect(isLink(link) && FileManager.default.contents(atPath: target) == mine)
+        #expect(try CLI.writeAtomically(mine, to: link, mode: 0o640, replacing: original, followingLinks: true) == false)
+        #expect(CLI.isLink(link) && FileManager.default.contents(atPath: target) == mine)
         #expect(try permissions(URL(fileURLWithPath: target)) == 0o640)
-        #expect(fileExists(URL(fileURLWithPath: folder.path + "/dotfiles/.blackice.toml.lock")))
-        #expect(!fileExists(URL(fileURLWithPath: folder.path + "/config/.blackice.toml.lock")))
-        #expect(!fileExists(URL(fileURLWithPath: CLI.temporaryPath(for: target))))
+        #expect(fileExists(URL(fileURLWithPath: folder.path + "/config/.blackice.toml.lock")))
+        #expect(try FileManager.default.contentsOfDirectory(atPath: folder.path + "/dotfiles") == ["blackice.toml"])
         // What the file holds is still checked through the link.
-        #expect(throws: CLI.ChangedMeanwhile.self) { try CLI.writeAtomically(original, to: link, mode: 0o640, replacing: original) }
+        #expect(throws: CLI.ChangedMeanwhile.self) {
+            try CLI.writeAtomically(original, to: link, mode: 0o640, replacing: original, followingLinks: true)
+        }
         #expect(FileManager.default.contents(atPath: target) == mine)
-        // A file in the agent's home is never written through a link: the link is replaced.
-        try CLI.writeAtomically(original, to: link, mode: 0o600, followingLinks: false)
-        #expect(!isLink(link) && FileManager.default.contents(atPath: link) == original)
+        // Unless told to follow it, as for a file in the agent's home, a link is replaced and never
+        // written through: one planted there could lead to ~/.zshrc.
+        try CLI.writeAtomically(original, to: link, mode: 0o600)
+        #expect(!CLI.isLink(link) && FileManager.default.contents(atPath: link) == original)
         #expect(FileManager.default.contents(atPath: target) == mine)
         // A link that leads nowhere is replaced, as before.
         try FileManager.default.createSymbolicLink(atPath: folder.path + "/config/gone.toml", withDestinationPath: "../nowhere.toml")
-        try CLI.writeAtomically(original, to: folder.path + "/config/gone.toml", mode: 0o600)
-        #expect(!isLink(folder.path + "/config/gone.toml"))
+        #expect(try CLI.writeAtomically(original, to: folder.path + "/config/gone.toml", mode: 0o600, followingLinks: true) == false)
+        #expect(!CLI.isLink(folder.path + "/config/gone.toml"))
+    }
+
+    /// A link to a file in a folder that cannot be written, as in the Nix store: the link is
+    /// replaced by a file, as 1.0.7 did, writable by its owner, and the writer is told so; the file
+    /// it pointed at keeps its text. Until then 1.0.8 failed where 1.0.7 had written the file.
+    @Test func aLinkIntoAFolderThatCannotBeWrittenIsReplaced() throws {
+        let folder = try makePrivateDirectory()
+        defer { removeTree(folder) }
+        for name in ["store", "config"] { try FileManager.default.createDirectory(atPath: folder.path + "/" + name, withIntermediateDirectories: true) }
+        let target = folder.path + "/store/blackice.toml", link = folder.path + "/config/blackice.toml"
+        let original = Data("mode = \"ask\"\n".utf8), mine = Data("mode = \"block-all\"\n".utf8)
+        try original.write(to: URL(fileURLWithPath: target))
+        #expect(chmod(target, 0o444) == 0)
+        try FileManager.default.createSymbolicLink(atPath: link, withDestinationPath: target)
+        #expect(chmod(folder.path + "/store", 0o555) == 0)
+        defer { chmod(folder.path + "/store", 0o755) }
+
+        #expect(try CLI.writeAtomically(mine, to: link, mode: 0o444, replacing: original, followingLinks: true))
+        #expect(!CLI.isLink(link) && FileManager.default.contents(atPath: link) == mine)
+        #expect(try permissions(URL(fileURLWithPath: link)) == 0o644)
+        #expect(FileManager.default.contents(atPath: target) == original)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: folder.path + "/config").sorted()
+            == [".blackice.toml.lock", "blackice.toml"])
+        // A file of its own from then on.
+        #expect(try CLI.writeAtomically(original, to: link, mode: 0o644, replacing: mine, followingLinks: true) == false)
+        // A folder that cannot be written fails as before when no link leads there.
+        #expect(throws: (any Error).self) { try CLI.writeAtomically(mine, to: target, mode: 0o644, followingLinks: true) }
+        #expect(CLI.linkReplacedLine("~/.config/blackice/blackice.toml")
+            == "~/.config/blackice/blackice.toml is now a file, no longer a symbolic link: the folder of the file it pointed at " +
+               "cannot be written, and that file keeps the old text.")
     }
 
     /// agent connect writes a linked blackice.toml through its link, with the mode of the file the
