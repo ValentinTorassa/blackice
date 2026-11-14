@@ -187,17 +187,31 @@ check_not_older() {
     "$VERSION. To go back to an older build, uninstall blackice first, as the guide says: $GUIDE"
 }
 
+# Whether bundle $1 and the network extension inside it are version $VERSION, build $build.
+is_checked_build() {
+  [ "$(plist "$1" CFBundleShortVersionString)" = "$VERSION" ] && [ "$(plist "$1" CFBundleVersion)" = "$build" ] \
+    && [ "$(plist "$1/$EXTENSION" CFBundleShortVersionString)" = "$VERSION" ] \
+    && [ "$(plist "$1/$EXTENSION" CFBundleVersion)" = "$build" ]
+}
+
 # Puts the checked app at $APP, replacing an installed copy if $replace is 1. The app is copied
-# into a new folder beside $APP, $stage, and the copy is checked there. Then the installed copy is
-# renamed into $stage and the new one renamed to $APP. Renaming within a folder is one step, and if
-# anything stops the script after the installed copy was renamed, cleanup renames it back. The
-# previous copy is removed only once the new one is in place.
+# into a new folder beside $APP, $stage, and the copy is checked there: its signature, and its
+# version and build, since another app signed by the team, such as an older release, verifies too.
+# Then the installed copy is renamed into $stage and the new one renamed to $APP. Renaming within a
+# folder is one step, and if anything stops the script after the installed copy was renamed,
+# cleanup renames it back. The previous copy is removed only once the new one is in place.
+#
+# The installed copy's version and build are read before the download, and read again once it is
+# renamed into $stage, where nothing else moves it: an app that another install (`brew upgrade`,
+# this script run twice) put at $APP meanwhile, maybe a newer build, is renamed back, not replaced.
 install_app() {
   stage=$(mktemp -d "$APPLICATIONS/.blackice-install.XXXXXX") \
     || fail "could not write to $APPLICATIONS (it needs an admin account)"
   /usr/bin/ditto "$app" "$stage/Blackice.app" || fail "could not copy Blackice.app to $APPLICATIONS"
   verify=$(/usr/bin/codesign --verify --strict --deep "-R$REQUIREMENT" "$stage/Blackice.app" 2>&1) \
     || fail "the copy of Blackice.app in $APPLICATIONS does not verify: $verify"
+  is_checked_build "$stage/Blackice.app" \
+    || fail "the copy of Blackice.app in $APPLICATIONS is not version $VERSION, build $build, as the checked app is"
 
   if [ "$replace" = 1 ]; then
     say "Replacing the installed $APP"
@@ -207,6 +221,13 @@ install_app() {
       previous=''
       fail "could not move $APP. Replacing an app needs App Management for your terminal:" \
         "System Settings > Privacy & Security > App Management."
+    fi
+    moved_version=$(plist "$previous" CFBundleShortVersionString)
+    moved_build=$(plist "$previous" CFBundleVersion)
+    if [ "$moved_version" != "$installed" ] || [ "$moved_build" != "$installed_build" ]; then
+      fail "$APP changed while this script ran, from ${installed:-no version} build ${installed_build:-none} to" \
+        "${moved_version:-no version} build ${moved_build:-none}: another install put it there, so it stays." \
+        "To replace it, run this script again."
     fi
   fi
   # mv onto a folder would move the app into it.
