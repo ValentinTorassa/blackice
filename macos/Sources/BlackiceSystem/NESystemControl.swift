@@ -451,10 +451,11 @@ public final class NESystemControl: SystemControlling {
         return status
     }
 
-    /// Runs until the connection to the extension ends, then exits with 75 so launchd starts the
-    /// daemon again (KeepAlive with SuccessfulExit false) and it registers anew. The hooks and
-    /// their timeout come from the extension; the home, the temporary directory and the hooks'
-    /// environment come from the user database and confstr, not from this process's environment.
+    /// Runs until the connection to the extension ends, then stops its hooks and exits with 75 so
+    /// launchd starts the daemon again (KeepAlive with SuccessfulExit false) and it registers anew.
+    /// The hooks and their timeout come from the extension; the home, the temporary directory and
+    /// the hooks' environment come from the user database and confstr, not from this process's
+    /// environment. Every line it prints goes through `daemonLine`, with the time and its PID.
     public func runDaemon(output: SystemOutput) -> Int32 {
         guard Self.isSignedHost(), let teamID = CodeIdentity.current()?.teamID else {
             return UnsignedSystem().runDaemon(output: output)
@@ -468,21 +469,45 @@ public final class NESystemControl: SystemControlling {
                 workDirectory: DaemonPaths.hookDirectory(temporary: account.temporaryURL),
                 environment: HookRunner.environment(for: account)))
         } catch {
-            output.stderr("blackice daemon: \(error)")
+            daemonLine("\(error)")
             return ExitCode.software
         }
         let daemon = Daemon(log: log, runner: runner)
         let intake = XPCEventIntake(teamID: teamID,
                                     onVerdict: { eventID, verdict in daemon.recordVerdict(eventID: eventID, verdict) },
-                                    report: { line in FileHandle.standardError.write(Data("blackice daemon: \(line)\n".utf8)) })
-        output.stdout("blackice daemon: event log \(log.url.path)")
+                                    report: { line in daemonLine(line) })
+        daemonLine("event log \(log.url.path)", to: .standardOutput)
+
+        // launchd sends SIGTERM at `blackice agent install`, at logout and on `launchctl kill
+        // TERM`. The hooks run in process groups of their own, which the signal does not reach,
+        // and up to 1.0.7 they went on alone. Now the hooks stop as at their deadline, the intake
+        // ends so the run returns once their records are written, and the daemon then ends by
+        // SIGTERM, as it did with no handler. Whatever still holds it up after the grace period
+        // and 3 s more does not keep it from ending.
+        let endBySIGTERM: @Sendable () -> Never = {
+            signal(SIGTERM, SIG_DFL)
+            raise(SIGTERM)
+            exit(ExitCode.tempFail)
+        }
+        signal(SIGTERM, SIG_IGN)
+        let termination = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .global())
+        termination.setEventHandler {
+            daemonLine("SIGTERM: stopping \(runner.runningCount) running hooks and \(runner.waitingCount) waiting, then exiting")
+            runner.stopAll()
+            intake.stop()
+            DispatchQueue.global().asyncAfter(deadline: .now() + runner.options.gracePeriod + 3) { endBySIGTERM() }
+        }
+        termination.resume()
+
         let finished = DispatchSemaphore(value: 0)
         Task {
-            await daemon.run(intake)
+            await daemon.run(intake, stopHooksWhenIntakeEnds: true)
             finished.signal()
         }
         finished.wait()
-        output.stderr("blackice daemon: the connection to the network extension ended; exiting so launchd restarts it")
+        if intake.isStopped { endBySIGTERM() }
+        termination.cancel()
+        daemonLine("the connection to the network extension ended; exiting so launchd restarts it")
         return ExitCode.tempFail
     }
 

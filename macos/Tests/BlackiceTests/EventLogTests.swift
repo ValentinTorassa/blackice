@@ -131,6 +131,9 @@ struct EventLogTests {
             (.dropped(.deadlineNear), "hook_dropped", "reason", "deadline_near"),
             (.dropped(.eventEnded), "hook_dropped", "reason", "event_ended"),
             (.dropped(.queueFull), "hook_dropped", "reason", "queue_full"),
+            (.dropped(.daemonStopping), "hook_dropped", "reason", "daemon_stopping"),
+            (.timedOut(signal: SIGTERM), "hook_killed", "reason", "deadline"),
+            (.timedOut(signal: SIGTERM, reason: .daemonStopping), "hook_killed", "reason", "daemon_stopping"),
             (.failedToStart("no shell"), "hook_failed", "error", "no shell"),
             (.refused(found: "invalid_signature"), "hook_refused", "found", "invalid_signature"),
             (.unsafeHome(path: "/h/.codex/AGENTS.md"), "hook_refused", "path", "/h/.codex/AGENTS.md"),
@@ -143,8 +146,25 @@ struct EventLogTests {
             #expect(record["duration_ms"] as? Int == 1235)
             #expect("\(record[key] ?? "missing")" == "\(value)")
             #expect(record["stderr"] == nil)
-            #expect(record["waited_ms"] == nil)
+            #expect(record["waited_ms"] == nil && record["slept_ms"] == nil)
         }
+    }
+
+    /// A hook the Mac slept through says for how long, beside its reason, which stays `deadline`.
+    @Test func aHookThatSleptSaysHowLong() throws {
+        func record(_ outcome: HookResult.Outcome, slept: TimeInterval) throws -> [String: Any] {
+            let result = HookResult(hookLine: 9, outcome: outcome, stderr: "", stderrTruncated: false, duration: 2.5, slept: slept)
+            return try #require(try JSONSerialization.jsonObject(with: EventLog.encode(.hookFinished(eventID: "ev-1", result), at: Date()))
+                as? [String: Any])
+        }
+        let killed = try record(.timedOut(signal: SIGTERM), slept: 3600.25)
+        #expect(killed["type"] as? String == "hook_killed" && killed["reason"] as? String == "deadline")
+        #expect(killed["slept_ms"] as? Int == 3_600_250 && killed["duration_ms"] as? Int == 2500)
+        let exited = try record(.exited(status: 0), slept: 61)
+        #expect(exited["type"] as? String == "hook_exited" && exited["slept_ms"] as? Int == 61_000)
+        // A second or less is the clocks' own drift, and a clock set back is no sleep.
+        #expect(try record(.exited(status: 0), slept: 1)["slept_ms"] == nil)
+        #expect(try record(.timedOut(signal: SIGKILL), slept: -30)["slept_ms"] == nil)
     }
 
     /// Why a hook was refused, and why an answer did not count: the signature, or the agent's home.
@@ -227,6 +247,12 @@ struct EventLogTests {
             #expect(Set(line.keys).subtracting(["ts", "type", "event", "hook_line", "reason"]).count == (key == nil ? 0 : 1))
         }
 
+        // The start of the line before an unrecognized one, when there is one.
+        let shaped = try record(.hookNoAnswer(eventID: "ev-2", hookLine: 4, .output(.unrecognized(prefix: "24 h")),
+                                              previousPrefix: "approve"))
+        #expect(shaped["line_prefix"] as? String == "24 h" && shaped["previous_prefix"] as? String == "approve")
+        #expect(try record(.hookNoAnswer(eventID: "ev-2", hookLine: 4, .exitStatus(1), previousPrefix: "x"))["previous_prefix"] == nil)
+
         let refused = try record(.answerRefused(eventID: "ev-3", hookLine: 2, reason: "token_spent"))
         #expect(refused["type"] as? String == "answer_refused" && refused["reason"] as? String == "token_spent")
         #expect(refused["event"] as? String == "ev-3" && refused["hook_line"] as? Int == 2)
@@ -238,12 +264,100 @@ struct EventLogTests {
         #expect(!finished.values.contains { "\($0)".contains("reasons") || "\($0)".contains("approve") })
     }
 
+    /// Its start and its end, where an agent says why it failed, with a mark where it was cut.
     @Test func longStderrIsCut() throws {
-        let data = try EventLog.encode(.hookFinished(eventID: "ev-1", result(.exited(status: 0), stderr: String(repeating: "y", count: 5000))),
-                                       at: Date())
+        let stderr = String(repeating: "h", count: 1000) + String(repeating: "m", count: 3000) + "FATAL: x"
+        let data = try EventLog.encode(.hookFinished(eventID: "ev-1", result(.exited(status: 1), stderr: stderr)), at: Date())
         let record = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
-        #expect((record["stderr"] as? String)?.count == EventLog.maximumStderrCharacters)
+        #expect(record["stderr"] as? String == String(repeating: "h", count: 512) + "\n…\n" + String(repeating: "m", count: 1528) + "FATAL: x")
         #expect(record["stderr_truncated"] as? Bool == true)
+        // At the limit it is whole.
+        let whole = String(repeating: "w", count: EventLog.maximumStderrCharacters)
+        let kept = try #require(try JSONSerialization.jsonObject(
+            with: EventLog.encode(.hookFinished(eventID: "ev-1", result(.exited(status: 1), stderr: whole)), at: Date())) as? [String: Any])
+        #expect(kept["stderr"] as? String == whole && kept["stderr_truncated"] == nil)
+    }
+
+    /// The records `blackice status` and the menu read when hooks keep failing: exactly these keys.
+    @Test func failingHooksHaveTheirRecords() throws {
+        let since = Date(timeIntervalSince1970: 1_794_690_184.5)
+        let failing = try #require(try JSONSerialization.jsonObject(with: EventLog.encode(
+            .hooksFailing(count: 10, reason: "exit_status", stderrLine: "Error: not logged in", since: since), at: Date())) as? [String: Any])
+        #expect(Set(failing.keys) == ["ts", "type", "count", "reason", "stderr_line", "since"])
+        #expect(failing["type"] as? String == "hooks_failing" && failing["count"] as? Int == 10)
+        #expect(failing["reason"] as? String == "exit_status" && failing["stderr_line"] as? String == "Error: not logged in")
+        #expect(failing["since"] as? String == "2026-11-14T21:03:04.500Z")
+        let recovered = try #require(try JSONSerialization.jsonObject(with: EventLog.encode(.hooksRecovered(after: 12), at: Date()))
+            as? [String: Any])
+        #expect(Set(recovered.keys) == ["ts", "type", "after"])
+        #expect(recovered["type"] as? String == "hooks_recovered" && recovered["after"] as? Int == 12)
+    }
+
+    /// A write that stops part of the way, as on a full disk, leaves a piece of a record: the next
+    /// record starts on a line of its own. One that wrote nothing leaves no empty line.
+    @Test func aRecordCutShortIsNotGluedToTheNext() throws {
+        let dir = try makePrivateDirectory()
+        defer { removeTree(dir) }
+        let url = dir.appendingPathComponent("events.jsonl")
+        let log = try EventLog(url: url)
+        try log.append(.noHooks(eventID: "ev-1"))
+        let calls = Recorder<Int>()
+        log.writeBytes = { fd, bytes in
+            calls.append(bytes.count)
+            guard calls.items.count == 1 else {
+                errno = ENOSPC
+                return -1
+            }
+            return Darwin.write(fd, bytes.baseAddress, bytes.count / 2)
+        }
+        #expect(throws: FileSafetyError.self) { try log.append(.noHooks(eventID: "ev-2")) }
+        log.writeBytes = { _, _ in
+            errno = ENOSPC
+            return -1
+        }
+        #expect(throws: FileSafetyError.self) { try log.append(.noHooks(eventID: "ev-3")) }
+        log.writeBytes = { fd, bytes in Darwin.write(fd, bytes.baseAddress, bytes.count) }
+        try log.append(.noHooks(eventID: "ev-4"))
+        try log.append(.noHooks(eventID: "ev-5"))
+
+        let text = try String(contentsOf: url, encoding: .utf8)
+        let lines = text.split(separator: "\n", omittingEmptySubsequences: false)
+        #expect(lines.count == 5 && lines.last == "", "\(text)")
+        #expect(lines[1].hasPrefix("{") && (try? JSONSerialization.jsonObject(with: Data(lines[1].utf8))) == nil)
+        let events = lines.compactMap { try? JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any] }
+            .compactMap { $0["event"] as? String }
+        #expect(events == ["ev-1", "ev-4", "ev-5"])
+    }
+
+    /// A log deleted or moved away while the daemon runs is created again at its path, with the
+    /// same checks: a symlink put there instead is refused.
+    @Test func theLogFollowsItsPath() throws {
+        let dir = try makePrivateDirectory()
+        defer { removeTree(dir) }
+        let url = dir.appendingPathComponent("events.jsonl")
+        let log = try EventLog(url: url)
+        try log.append(.noHooks(eventID: "ev-1"))
+
+        #expect(unlink(url.path) == 0)
+        try log.append(.noHooks(eventID: "ev-2"))
+        #expect(try lines(url).map { $0["event"] as? String } == ["ev-2"])
+        #expect(try permissions(url) == 0o600)
+
+        let moved = dir.appendingPathComponent("events.jsonl.0")
+        #expect(rename(url.path, moved.path) == 0)
+        try log.append(.noHooks(eventID: "ev-3"))
+        #expect(try lines(url).map { $0["event"] as? String } == ["ev-3"])
+        #expect(try lines(moved).map { $0["event"] as? String } == ["ev-2"])
+
+        let elsewhere = dir.appendingPathComponent("elsewhere")
+        #expect(FileManager.default.createFile(atPath: elsewhere.path, contents: Data()))
+        #expect(unlink(url.path) == 0 && symlink(elsewhere.path, url.path) == 0)
+        #expect(throws: FileSafetyError.self) { try log.append(.noHooks(eventID: "ev-4")) }
+        #expect(try Data(contentsOf: elsewhere).isEmpty)
+        // Once the path is a file of its own again, records go there.
+        #expect(unlink(url.path) == 0)
+        try log.append(.noHooks(eventID: "ev-5"))
+        #expect(try lines(url).map { $0["event"] as? String } == ["ev-5"])
     }
 
     @Test func aFailedWriteThrows() throws {

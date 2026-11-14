@@ -51,6 +51,35 @@ private final class FakeIntake: EventIntake, @unchecked Sendable {
     }
 }
 
+/// Stands in for an extension that goes away: hands the daemon `list`, then ends once `until`
+/// holds (or after 10 s), and notes when.
+private final class EndingIntake: EventIntake, @unchecked Sendable {
+    let list: [IntakeMessage]
+    let until: @Sendable () -> Bool
+    let ended = Recorder<Date>()
+
+    init(_ list: [IntakeMessage], until: @escaping @Sendable () -> Bool) {
+        self.list = list
+        self.until = until
+    }
+
+    func messages() -> AsyncStream<IntakeMessage> {
+        AsyncStream { continuation in
+            for message in list { continuation.yield(message) }
+            Task {
+                let giveUp = Date().addingTimeInterval(10)
+                while !self.until(), Date() < giveUp { try? await Task.sleep(nanoseconds: 10_000_000) }
+                self.ended.append(Date())
+                continuation.finish()
+            }
+        }
+    }
+
+    func configuration() async throws -> DaemonConfiguration { throw MessageError("registration", "was refused") }
+
+    func answer(_ request: AnswerRequest) async throws -> AnswerReply { throw MessageError("connection", "is gone") }
+}
+
 private func records(_ url: URL) throws -> [[String: Any]] {
     let text = try String(contentsOf: url, encoding: .utf8)
     return try text.split(separator: "\n").map {
@@ -337,6 +366,138 @@ struct DaemonTests {
         #expect(try records(logURL).suffix(2).compactMap { $0["type"] as? String } == ["hook_killed", "hook_no_answer"])
     }
 
+    /// When the extension's connection ends, `blackice daemon` stops its hooks and returns within
+    /// the grace period, rather than when the last hook ends on its own.
+    @Test func theHooksStopWhenTheIntakeEnds() async throws {
+        let dir = try makePrivateDirectory()
+        defer { removeTree(dir) }
+        let logURL = dir.appendingPathComponent("events.jsonl")
+        let runner = try testRunner(dir, grace: 0.3)
+        let daemon = Daemon(log: try EventLog(url: logURL), runner: runner)
+        let configuration = try DaemonConfiguration(generation: 1, configText: """
+        mode = "ask"
+        timeout_seconds = 30
+        [[hook]]
+        on = "connection"
+        run = 'sleep 30'
+        """)
+        let intake = EndingIntake([.registered(configuration), .event(testEvent(id: "ev-1", deadlineIn: 30), generation: 1)]) {
+            (try? String(contentsOf: logURL, encoding: .utf8))?.contains(#""type":"hook_started""#) == true
+        }
+        await daemon.run(intake, stopHooksWhenIntakeEnds: true)
+
+        let ended = try #require(intake.ended.items.first)
+        #expect(Date().timeIntervalSince(ended) < 3, "returned \(Date().timeIntervalSince(ended)) s after the intake ended")
+        let log = try records(logURL)
+        #expect(types(log, event: "ev-1") == ["event_received", "hook_started", "hook_killed"])
+        let killed = try #require(log.last)
+        #expect(killed["reason"] as? String == "daemon_stopping" && killed["signal"] as? Int == Int(SIGTERM))
+        #expect(runner.runningCount == 0 && runner.waitingCount == 0)
+    }
+
+    /// The last line alone is no answer, and the log shows the start of the line before it too, so
+    /// that the next answer that does not parse shows how it was laid out. A split approval counts.
+    @Test func anUnrecognizedLineIsLoggedWithTheLineBefore() async throws {
+        let dir = try makePrivateDirectory()
+        defer { removeTree(dir) }
+        let logURL = dir.appendingPathComponent("events.jsonl")
+        let daemon = Daemon(log: try EventLog(url: logURL), runner: try testRunner(dir))
+        let answers = Answers()
+        await daemon.handle(testEvent(id: "ev-1"), with: try hooks("echo It is the editor.; echo approve; echo 2d"), send: answers.send)
+        let missing = try #require(try records(logURL).last)
+        #expect(missing["type"] as? String == "hook_no_answer" && missing["reason"] as? String == "unrecognized_line")
+        #expect(missing["line_prefix"] as? String == "2d" && missing["previous_prefix"] as? String == "approve")
+        #expect(answers.sent.items.isEmpty)
+
+        await daemon.handle(testEvent(id: "ev-2"), with: try hooks("echo It is the editor.; echo approve; echo; echo 24h"),
+                            send: answers.send)
+        #expect(answers.sent.items.map(\.seconds) == [86_400])
+        #expect(try records(logURL).last?["type"] as? String == "hook_answer")
+    }
+
+    /// A long stderr keeps its end in the log, where an agent says why it failed.
+    @Test func theEndOfALongStderrIsLogged() async throws {
+        let dir = try makePrivateDirectory()
+        defer { removeTree(dir) }
+        let logURL = dir.appendingPathComponent("events.jsonl")
+        let daemon = Daemon(log: try EventLog(url: logURL), runner: try testRunner(dir))
+        await daemon.handle(testEvent(id: "ev-1"), with: try hooks(#"head -c 10240 /dev/zero | tr "\000" x >&2; echo "FATAL: x" >&2; exit 1"#),
+                            send: Answers().send)
+        let log = try records(logURL)
+        let exited = try #require(log.first { $0["type"] as? String == "hook_exited" })
+        let stderr = try #require(exited["stderr"] as? String)
+        #expect(stderr.hasPrefix(String(repeating: "x", count: 512) + "\n…\n") && stderr.hasSuffix("xxFATAL: x\n"), "\(stderr)")
+        #expect(stderr.count == EventLog.maximumStderrCharacters + 3)
+        #expect(exited["stderr_truncated"] as? Bool == true)
+        #expect(log.last?["reason"] as? String == "exit_status")
+        #expect(!(try String(contentsOf: logURL, encoding: .utf8)).contains(testToken))
+    }
+
+    /// Hooks that keep failing are counted, at 3, 10, 30 and so on, with what the latest one said
+    /// first; the first answer after says the run is over. The hooks keep running all along.
+    @Test func hooksFailingInARowAreCounted() async throws {
+        let dir = try makePrivateDirectory()
+        defer { removeTree(dir) }
+        let logURL = dir.appendingPathComponent("events.jsonl")
+        let daemon = Daemon(log: try EventLog(url: logURL), runner: try testRunner(dir))
+        let answers = Answers()
+        let failing = try hooks(#"printf "\n  \tAuth\a failed: run login\n\nmore\n" >&2; exit 2"#)
+        for index in 1...2 { await daemon.handle(testEvent(id: "ev-\(index)"), with: failing, send: answers.send) }
+        #expect(try records(logURL).allSatisfy { $0["type"] as? String != "hooks_failing" })
+        // The third prints nothing and exits with 0: no answer either.
+        await daemon.handle(testEvent(id: "ev-3"), with: try hooks("true"), send: answers.send)
+        var log = try records(logURL)
+        let third = try #require(log.last)
+        let first = try #require(log.first { $0["type"] as? String == "hook_no_answer" })
+        #expect(third["type"] as? String == "hooks_failing" && third["count"] as? Int == 3)
+        #expect(third["reason"] as? String == "no_line" && third["stderr_line"] as? String == "")
+        #expect(third["since"] as? String == first["ts"] as? String)
+        for index in 4...10 { await daemon.handle(testEvent(id: "ev-\(index)"), with: failing, send: answers.send) }
+        log = try records(logURL)
+        #expect(log.filter { $0["type"] as? String == "hooks_failing" }.compactMap { $0["count"] as? Int } == [3, 10])
+        let tenth = try #require(log.last)
+        #expect(tenth["reason"] as? String == "exit_status" && tenth["stderr_line"] as? String == "Auth failed: run login")
+        #expect(tenth["since"] as? String == first["ts"] as? String)
+        #expect(types(log, event: "ev-10") == ["event_received", "hook_started", "hook_exited", "hook_no_answer"])
+
+        await daemon.handle(testEvent(id: "ev-11"), with: try hooks("echo deny"), send: answers.send)
+        log = try records(logURL)
+        #expect(log.last?["type"] as? String == "hooks_recovered" && log.last?["after"] as? Int == 10)
+        // A new run counts from 1, and an answer after fewer than 3 writes nothing.
+        await daemon.handle(testEvent(id: "ev-12"), with: failing, send: answers.send)
+        await daemon.handle(testEvent(id: "ev-13"), with: try hooks("echo deny"), send: answers.send)
+        #expect(try records(logURL).filter { ($0["type"] as? String)?.hasPrefix("hooks_") == true }.count == 3)
+        #expect(answers.sent.items.count == 2)
+    }
+
+    /// Only a hook's own failures count: not its deadline, nor its home changing while it ran.
+    @Test func whatCountsAsAFailure() {
+        for missing: HookResult.NoAnswer in [.exitStatus(1), .signaled(SIGSEGV), .output(.noLine), .output(.outputTooLong),
+                                            .output(.unrecognized(prefix: "x"))] {
+            #expect(Daemon.failed(missing), "\(missing)")
+        }
+        #expect(!Daemon.failed(.deadline) && !Daemon.failed(.unsafeHome("/h/.codex/AGENTS.md")))
+        #expect((1...100_000).filter(Daemon.isMilestone) == [3, 10, 30, 100, 300, 1000, 3000, 10_000, 30_000, 100_000])
+        #expect(Daemon.firstLine("") == "" && Daemon.firstLine("\n \t\n") == "")
+        #expect(Daemon.firstLine("\u{1B}[31mError\u{1B}[0m: no model\nsecond") == "[31mError[0m: no model")
+        #expect(Daemon.firstLine(String(repeating: "é", count: 300)) == String(repeating: "é", count: 200))
+    }
+
+    /// An answer the extension did not reply to in time may still have been taken: it is logged
+    /// apart from a connection that is gone.
+    @Test func aSlowReplyIsNotAnUnreachableExtension() async throws {
+        let dir = try makePrivateDirectory()
+        defer { removeTree(dir) }
+        let logURL = dir.appendingPathComponent("events.jsonl")
+        let daemon = Daemon(log: try EventLog(url: logURL), runner: try testRunner(dir))
+        let answers = Answers()
+        answers.reply = { _ in throw AnswerReplyTimeout(seconds: 10) }
+        await daemon.handle(testEvent(id: "ev-1"), with: try hooks("echo deny"), send: answers.send)
+        let last = try #require(try records(logURL).last)
+        #expect(last["type"] as? String == "answer_refused" && last["reason"] as? String == "reply_timeout")
+        #expect("\(AnswerReplyTimeout(seconds: 10))" == "the network extension did not reply to the answer within 10 s")
+    }
+
     @Test func logFailuresAreReportedNotDropped() async throws {
         let dir = try makePrivateDirectory()
         defer { removeTree(dir) }
@@ -436,6 +597,37 @@ struct ConfigurationStoreTests {
         let store = ConfigurationStore(fetch: { throw MessageError("registration", "was refused") })
         await #expect(throws: MessageError.self) { try await store.configuration(for: 1) }
         #expect(await store.current == nil)
+    }
+}
+
+struct DaemonLineTests {
+    /// The time in UTC to the millisecond and the PID, before the daemon's own words.
+    @Test func aLineSaysWhenAndWhichDaemon() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try #require(TimeZone(identifier: "UTC"))
+        let date = try #require(calendar.date(from: DateComponents(year: 2026, month: 11, day: 14, hour: 21, minute: 3, second: 4)))
+        #expect(daemonLinePrefix(at: date.addingTimeInterval(0.125), pid: 82988) == "2026-11-14T21:03:04.125Z [82988] blackice daemon: ")
+
+        var ends: [Int32] = [-1, -1]
+        #expect(pipe(&ends) == 0)
+        let reader = FileHandle(fileDescriptor: ends[0], closeOnDealloc: true)
+        daemonLine("event log /tmp/x", to: FileHandle(fileDescriptor: ends[1], closeOnDealloc: false), at: date)
+        close(ends[1])
+        let line = String(decoding: try #require(try reader.readToEnd()), as: UTF8.self)
+        #expect(line == "2026-11-14T21:03:04.000Z [\(getpid())] blackice daemon: event log /tmp/x\n")
+    }
+
+    /// A write that fails, here to a pipe nobody reads, is dropped: `FileHandle.write(_:)` would
+    /// raise an exception and end the daemon.
+    @Test func aLineThatCannotBeWrittenIsDropped() throws {
+        var ends: [Int32] = [-1, -1]
+        #expect(pipe(&ends) == 0)
+        close(ends[0])
+        // EPIPE rather than SIGPIPE, which would end the test run.
+        #expect(fcntl(ends[1], F_SETNOSIGPIPE, 1) == 0)
+        let handle = FileHandle(fileDescriptor: ends[1], closeOnDealloc: true)
+        daemonLine("the connection to the network extension ended", to: handle)
+        daemonLine(String(repeating: "x", count: 100_000), to: handle)
     }
 }
 
