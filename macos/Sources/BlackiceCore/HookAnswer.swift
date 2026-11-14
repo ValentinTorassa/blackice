@@ -11,6 +11,12 @@ import Foundation
 // connection waits for its deadline and is denied. The line names no app and no host. The daemon
 // takes both from the event, so a hook can only answer the event it was given, and sends the
 // answer to the extension with the event's token, which the hook never sees.
+//
+// One split is read as the answer it was meant to be (since 1.0.8): a last line that is a
+// duration alone (`24h`, `30m`, as `approve` takes it) right after a line that is exactly
+// `approve`, both trimmed, empty lines between them skipped. An agent that breaks its answer
+// there would otherwise give none, and the connection would wait for its deadline. Nothing else
+// is put together: `deny` or `I approve` before the duration, or a duration alone, is no answer.
 
 /// What a hook answered.
 public enum HookAnswer: Equatable, Sendable {
@@ -44,19 +50,36 @@ public enum HookAnswer: Equatable, Sendable {
     /// daemon reads. Whether the hook exited with status 0 in time is the caller's to check.
     public static func parse(_ output: Data, truncated: Bool) -> Result<HookAnswer, Missing> {
         guard !truncated else { return .failure(.outputTooLong) }
-        let text = String(decoding: output, as: UTF8.self)
-        // Any line break ends a line. Swift reads "\r\n" as one Character, so splitting on "\n"
-        // alone would miss it.
-        guard let line = text.split(whereSeparator: \.isNewline)
-            .map({ $0.trimmingCharacters(in: .whitespacesAndNewlines) })
-            .last(where: { !$0.isEmpty }) else { return .failure(.noLine) }
+        let lines = nonEmptyLines(output)
+        guard let line = lines.last else { return .failure(.noLine) }
         if line == "deny" { return .success(.deny) }
         let words = line.split(separator: " ", omittingEmptySubsequences: false)
         if words.count == 2, words[0] == "approve",
            let seconds = ApprovalDuration.seconds(String(words[1]), units: ["m", "h"]) {
             return .success(.approve(seconds: seconds))
         }
+        if lines.count >= 2, lines[lines.count - 2] == "approve",
+           let seconds = ApprovalDuration.seconds(line, units: ["m", "h"]) {
+            return .success(.approve(seconds: seconds))
+        }
         return .failure(.unrecognized(prefix: shown(line)))
+    }
+
+    /// The start of the non-empty line before the last one, shown as an unrecognized line is, or
+    /// nil when there is none. The log keeps it beside an unrecognized line, so that the next
+    /// answer that does not parse shows how its last two lines were laid out.
+    public static func previousLinePrefix(_ output: Data) -> String? {
+        let lines = nonEmptyLines(output)
+        return lines.count >= 2 ? shown(lines[lines.count - 2]) : nil
+    }
+
+    /// Each line of the output, trimmed of the whitespace around it, without the empty ones. Any
+    /// line break ends a line. Swift reads "\r\n" as one Character, so splitting on "\n" alone
+    /// would miss it.
+    private static func nonEmptyLines(_ output: Data) -> [String] {
+        String(decoding: output, as: UTF8.self).split(whereSeparator: \.isNewline)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
     }
 
     /// The first characters of a line, printable ASCII only (anything else becomes "?"), with "…"
