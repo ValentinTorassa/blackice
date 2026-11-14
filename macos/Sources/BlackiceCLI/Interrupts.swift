@@ -15,10 +15,12 @@ public enum Interrupts {
     /// The last signal caught, or 0. Back to 0 once the outermost `catchAll` is released: outside
     /// it, the signals do what they did before.
     nonisolated(unsafe) static var caught: Int32 = 0
-    /// How many signals were caught, back to 0 with `caught`. A broken pipe after another signal
-    /// does not count: once the terminal or the ssh session is gone each line written brings one,
-    /// and none of them is a person pressing Control-C again. An upgrade's `blackice start` goes on
-    /// waiting at the first signal and stops at the second (UpgradeInterruption).
+    /// How many signals were caught, back to 0 with `caught`. After the first only Control-C and
+    /// Control-\ count: closing a terminal or dropping an ssh session usually brings SIGHUP twice,
+    /// from the shell and then from the kernel to the foreground process group, and once the
+    /// session is gone each line written brings a broken pipe. None of them is a person pressing
+    /// Control-C again. An upgrade's `blackice start` goes on waiting at the first signal and
+    /// stops at the second (UpgradeInterruption).
     nonisolated(unsafe) public private(set) static var count = 0
     nonisolated(unsafe) private static var depth = 0
 
@@ -33,7 +35,7 @@ public enum Interrupts {
         for number in signals {
             var action = sigaction()
             action.__sigaction_u = __sigaction_u(__sa_handler: { signal in
-                if signal != SIGPIPE || Interrupts.caught == 0 { Interrupts.count += 1 }
+                if Interrupts.caught == 0 || signal == SIGINT || signal == SIGQUIT { Interrupts.count += 1 }
                 Interrupts.caught = signal
             })
             sigemptyset(&action.sa_mask)
