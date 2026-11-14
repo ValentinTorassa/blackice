@@ -1400,6 +1400,62 @@ struct AgentConnectTests {
         #expect(CLI.temporaryPath(for: "/blackice.toml") == "/.blackice.toml.\(pid).tmp")
     }
 
+    /// A blackice.toml kept elsewhere and linked from ~/.config/blackice stays a link: the file it
+    /// points at is written, keeping its mode, with the temporary file and the lock beside that
+    /// file. Until 1.0.8 the rename put a file in the link's place.
+    @Test func aLinkedFileStaysALink() throws {
+        let folder = try makePrivateDirectory()
+        defer { removeTree(folder) }
+        for name in ["dotfiles", "config"] { try FileManager.default.createDirectory(atPath: folder.path + "/" + name, withIntermediateDirectories: true) }
+        let target = folder.path + "/dotfiles/blackice.toml", link = folder.path + "/config/blackice.toml"
+        let original = Data("mode = \"ask\"\n".utf8), mine = Data("mode = \"block-all\"\n".utf8)
+        try original.write(to: URL(fileURLWithPath: target))
+        #expect(chmod(target, 0o640) == 0)
+        try FileManager.default.createSymbolicLink(atPath: link, withDestinationPath: "../dotfiles/blackice.toml")
+        func isLink(_ path: String) -> Bool {
+            var info = stat()
+            return lstat(path, &info) == 0 && (info.st_mode & S_IFMT) == S_IFLNK
+        }
+
+        try CLI.writeAtomically(mine, to: link, mode: 0o640, replacing: original)
+        #expect(isLink(link) && FileManager.default.contents(atPath: target) == mine)
+        #expect(try permissions(URL(fileURLWithPath: target)) == 0o640)
+        #expect(fileExists(URL(fileURLWithPath: folder.path + "/dotfiles/.blackice.toml.lock")))
+        #expect(!fileExists(URL(fileURLWithPath: folder.path + "/config/.blackice.toml.lock")))
+        #expect(!fileExists(URL(fileURLWithPath: CLI.temporaryPath(for: target))))
+        // What the file holds is still checked through the link.
+        #expect(throws: CLI.ChangedMeanwhile.self) { try CLI.writeAtomically(original, to: link, mode: 0o640, replacing: original) }
+        #expect(FileManager.default.contents(atPath: target) == mine)
+        // A file in the agent's home is never written through a link: the link is replaced.
+        try CLI.writeAtomically(original, to: link, mode: 0o600, followingLinks: false)
+        #expect(!isLink(link) && FileManager.default.contents(atPath: link) == original)
+        #expect(FileManager.default.contents(atPath: target) == mine)
+        // A link that leads nowhere is replaced, as before.
+        try FileManager.default.createSymbolicLink(atPath: folder.path + "/config/gone.toml", withDestinationPath: "../nowhere.toml")
+        try CLI.writeAtomically(original, to: folder.path + "/config/gone.toml", mode: 0o600)
+        #expect(!isLink(folder.path + "/config/gone.toml"))
+    }
+
+    /// agent connect writes a linked blackice.toml through its link, with the mode of the file the
+    /// link points at.
+    @Test func connectWritesThroughALinkedFile() throws {
+        let (home, config) = try setUp("mode = \"accept-all\"\ntimeout_seconds = 10\n")
+        defer { removeTree(home) }
+        let target = home.path + "/dotfiles/blackice.toml"
+        try FileManager.default.createDirectory(atPath: home.path + "/dotfiles", withIntermediateDirectories: true)
+        try FileManager.default.moveItem(atPath: config, toPath: target)
+        #expect(chmod(target, 0o640) == 0)
+        try FileManager.default.createSymbolicLink(atPath: config, withDestinationPath: target)
+        let result = connect(home, config: config, mac: FakeAgentMac(signedIn: true, answer: Self.approve), system: Loading(),
+                             answers: ["y"])
+        #expect(result.status == 0, "\(result.stderr)")
+        var info = stat()
+        #expect(lstat(config, &info) == 0 && (info.st_mode & S_IFMT) == S_IFLNK)
+        let written = try String(contentsOfFile: target, encoding: .utf8)
+        #expect(try BlackiceConfig(text: written).hooks.map(\.program) == [Self.program(home)])
+        #expect(try permissions(URL(fileURLWithPath: target)) == 0o640)
+    }
+
     @Test func aSymlinkedHomeIsRefused() throws {
         let (home, config) = try setUp("mode = \"accept-all\"\n")
         defer { removeTree(home) }
