@@ -2,12 +2,15 @@ import Foundation
 
 /// Control-C, Control-\, SIGTERM and SIGHUP, caught for a while instead of ending blackice, so
 /// that a command stopped part way can put things back (`blackice agent connect` leaves
-/// accept-all) and the selector can restore the terminal. The handler only records the signal,
+/// accept-all, an upgrade's `blackice start` turns the filter back on) and the selector can
+/// restore the terminal. SIGPIPE too: a command run over ssh with no terminal gets it at its next
+/// line once the session drops, and it would end blackice as SIGHUP does; caught, the write fails
+/// and the command goes on to put things back. The handler only records the signal,
 /// and system calls it lands in start again (SA_RESTART), so code that waits elsewhere (Touch ID,
 /// a reply from the filter) goes on as before. The code that waits for a line, a key or a program
 /// looks at `caught` at least every 200 ms instead, whatever thread the signal lands on.
 public enum Interrupts {
-    static let signals = [SIGINT, SIGQUIT, SIGTERM, SIGHUP]
+    static let signals = [SIGINT, SIGQUIT, SIGTERM, SIGHUP, SIGPIPE]
 
     /// The last signal caught, or 0. Back to 0 once the outermost `catchAll` is released: outside
     /// it, the signals do what they did before.

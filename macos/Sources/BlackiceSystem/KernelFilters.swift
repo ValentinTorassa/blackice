@@ -35,13 +35,18 @@ enum KernelFilters {
     ///
     /// While a filter is going, an echo request is sent to this Mac's loopback address 0.3 s in and
     /// every 2 s after: it ends a disconnect that stays at an ICMP socket (FilterDisconnect).
+    ///
+    /// `stopping` is asked before each look at the list: once it says so, the wait ends with false,
+    /// as when the kernel is still at it. Start passes whether Control-C or another signal came,
+    /// so that it can turn the filter back on at once.
     static func gone(after before: Int, appear: TimeInterval = 2, lasting: TimeInterval = 1, limit: TimeInterval = 30,
-                     interval: TimeInterval = 0.05, held: (HeldDisconnect) -> Void) -> Bool {
+                     interval: TimeInterval = 0.05, held: (HeldDisconnect) -> Void, stopping: () -> Bool = { false }) -> Bool {
         let start = Date()
         var told = false
         var going: TimeInterval?
         var echoed: TimeInterval?
         while true {
+            if stopping() { return false }
             let waited = Date().timeIntervalSince(start)
             guard let filters = read("net.cfil.filter_list"),
                   let progress = FilterDisconnect.progress(filters: filters, before: before) else { return true }

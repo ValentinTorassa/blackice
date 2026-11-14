@@ -40,11 +40,16 @@ public struct EventLogSummary: Equatable, Sendable {
     public var hookRefused: Date?
     /// Whether the last of those was about the agent's home.
     public var hookRefusedForHome: Bool
+    /// Hooks that ran and gave no answer, `FailingHooks.threshold` or more in a row, as `blackice
+    /// status` reads them.
+    public var failingHooks: FailingHooks?
 
-    public init(decisions: [RecentDecision] = [], hookRefused: Date? = nil, hookRefusedForHome: Bool = false) {
+    public init(decisions: [RecentDecision] = [], hookRefused: Date? = nil, hookRefusedForHome: Bool = false,
+                failingHooks: FailingHooks? = nil) {
         self.decisions = decisions
         self.hookRefused = hookRefused
         self.hookRefusedForHome = hookRefusedForHome
+        self.failingHooks = failingHooks
     }
 }
 
@@ -60,8 +65,8 @@ public final class RecentDecisions {
 
     public init(url: URL) { self.url = url }
 
-    /// The last `limit` verdicts, newest first, and the last hook refused; empty when there is no
-    /// log.
+    /// The last `limit` verdicts, newest first, the last hook refused, and hooks that keep giving
+    /// no answer; empty when there is no log.
     public func latest(limit: Int) -> EventLogSummary {
         let descriptor = open(url.path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)
         guard descriptor >= 0 else { stamp = nil; cached = EventLogSummary(); return cached }
@@ -75,10 +80,11 @@ public final class RecentDecisions {
             let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: false)
             let data = (try? handle.read(upToCount: Self.tailBytes)) ?? Data()
             cached = Self.parse(data, partialFirstLine: start > 0, limit: 32)
+            cached.failingHooks = FailingHooks.parse(data, partialFirstLine: start > 0)
             stamp = (info.st_size, info.st_mtimespec)
         }
         return EventLogSummary(decisions: Array(cached.decisions.prefix(limit)), hookRefused: cached.hookRefused,
-                               hookRefusedForHome: cached.hookRefusedForHome)
+                               hookRefusedForHome: cached.hookRefusedForHome, failingHooks: cached.failingHooks)
     }
 
     /// How long after a hook's answer the events it closed get their verdicts. One answer closes

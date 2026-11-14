@@ -44,7 +44,13 @@ public final class NESystemControl: SystemControlling {
             output.stderr("blackice start: \(error)")
             return ExitCode.invalidConfig
         }
-        if let file = try? BlackiceConfig(text: configText) { CLI.keptLines(candidate, file: file).forEach(output.stdout) }
+        if let file = try? BlackiceConfig(text: configText) {
+            // agent connect and the first start load the file as written, and say so themselves.
+            if !output.asWritten {
+                CLI.droppedLines(previous: saved.configuration, candidate: candidate, file: file).forEach(output.stdout)
+            }
+            CLI.keptLines(candidate, file: file).forEach(output.stdout)
+        }
         if output.setup { output.stdout(""); output.stdout(Style.heading("2 · Confirm with Touch ID")) }
         guard confirm(.start(candidate), output) else { return ExitCode.noPermission }
 
@@ -55,26 +61,32 @@ public final class NESystemControl: SystemControlling {
         // is turned off first, and the new build's is started once the kernel has let the old one
         // go: connections are not checked meanwhile, for turnedOffLimit at most (decided on 11
         // November 2026). Only where the kernel's list of filters can be read.
+        //
+        // From the turn-off until the filter is saved on again, Control-C, a closed terminal, a
+        // dropped ssh session and SIGTERM are caught: the waits stop, the filter is turned back on
+        // (putBack) and start exits with 130. Every other way out before that save turns it back
+        // on too. Until 1.0.8 nothing was caught there, and such an upgrade left the filter saved
+        // off, which status put down to System Settings.
         var turnedOff = false
+        var release: (() -> Void)?
+        defer { release?() }
         if saved.enabled, saved.providerBundleID != nil, KernelFilters.count() != nil, Self.unfinishedUpgrade() != nil {
             guard let (manager, current) = loadSaved(output) else { return ExitCode.software }
             if let owner = current.foreignOwner { return refuseForeign(owner, output) }
             guard current.configuration == saved.configuration else { return changedMeanwhile(output) }
-            guard turnOff(manager, output) else { return ExitCode.software }
+            release = Interrupts.catchAll()
+            // Not saved: the filter is on as it was.
+            guard turnOff(manager, output) else { return Interrupts.interrupted ? ExitCode.interrupted : ExitCode.software }
             turnedOff = true
+            if Interrupts.interrupted { return putBack(ExitCode.interrupted, output) }
         }
 
         let (activation, replaced, neededApproval, _) = runExtensionRequest(
             OSSystemExtensionRequest.activationRequest(forExtensionWithIdentifier: BlackiceIdentifiers.filter, queue: .main),
-            output)
-        guard activation == ExitCode.success else {
-            // The new build is not in place: the build macOS runs goes on filtering.
-            if turnedOff, let (manager, _) = loadSaved(output) {
-                manager.isEnabled = true
-                _ = save(manager, output)
-            }
-            return activation
-        }
+            output, stopping: { turnedOff && Interrupts.interrupted })
+        // The new build is not in place: the build macOS runs goes on filtering.
+        guard activation == ExitCode.success else { return turnedOff ? putBack(activation, output) : activation }
+        if turnedOff, Interrupts.interrupted { return putBack(ExitCode.interrupted, output) }
         // After a replacement macOS starts the new build with the configuration saved before, and a
         // save made while it starts can miss it: on 5 November 2026 build 19 came up with generation
         // 17 and never saw the 18 saved a moment later. Wait until the new build answers first. A
@@ -88,9 +100,14 @@ public final class NESystemControl: SystemControlling {
             letGo(after: filters, appear: 0, output)
         }
 
-        guard let (manager, current) = loadSaved(output) else { return ExitCode.software }
+        guard let (manager, current) = loadSaved(output) else {
+            return turnedOff ? putBack(ExitCode.software, output) : ExitCode.software
+        }
+        // Another product took the content filter meanwhile: blackice leaves it alone, and is off.
         if let owner = current.foreignOwner { return refuseForeign(owner, output) }
-        guard current.configuration == saved.configuration else { return changedMeanwhile(output) }
+        guard current.configuration == saved.configuration else {
+            return turnedOff ? putBack(changedMeanwhile(output, turnedOff: true), output) : changedMeanwhile(output)
+        }
         let provider = NEFilterProviderConfiguration()
         provider.filterSockets = true
         provider.filterPackets = false
@@ -99,7 +116,7 @@ public final class NESystemControl: SystemControlling {
             provider.vendorConfiguration = try candidate.vendorConfiguration()
         } catch {
             output.stderr("blackice start: cannot encode the configuration: \(error)")
-            return ExitCode.software
+            return turnedOff ? putBack(ExitCode.software, output) : ExitCode.software
         }
         manager.providerConfiguration = provider
         manager.localizedDescription = "blackice"
@@ -107,7 +124,20 @@ public final class NESystemControl: SystemControlling {
         // A content filter saved for the first time (or again after stop removed it) makes macOS ask.
         let firstSave = current.providerBundleID == nil
         if firstSave { output.stdout((output.setup || neededApproval ? "  " : "") + ExtensionApproval.filterPrompt) }
-        guard save(manager, output, firstSave: firstSave) else { return ExitCode.software }
+        guard save(manager, output, firstSave: firstSave) else {
+            return turnedOff ? putBack(ExitCode.software, output) : ExitCode.software
+        }
+        // On again, with the new configuration: what follows only reads, and a signal ends it as
+        // anywhere else. One caught up to here ends start now.
+        if turnedOff {
+            let stopped = Interrupts.interrupted
+            release?()
+            release = nil
+            if stopped {
+                output.stderr(CLI.stoppedOnLine)
+                return ExitCode.interrupted
+            }
+        }
         // The filter's process can come up seconds after the save, and macOS cuts the connections
         // open at that moment (on 3 November 2026 it cut fx's sign-in, started right after the
         // first start). Wait until it answers, so that what runs next does not lose its connection,
@@ -118,9 +148,8 @@ public final class NESystemControl: SystemControlling {
         // off and on, so that it starts again with the one just saved.
         if replaced, case .other(let active) = inForce, (active?.generation ?? 0) < candidate.generation {
             output.stdout("Restarting the filter, which kept the configuration from before the upgrade…")
-            guard turnOff(manager, output) else { return ExitCode.software }
-            manager.isEnabled = true
-            guard save(manager, output) else { return ExitCode.software }
+            let restarted = restart(manager, output)
+            guard restarted == ExitCode.success else { return restarted }
             inForce = Self.activation(of: candidate)
         }
         if replaced, inForce == .noAnswer {
@@ -162,13 +191,49 @@ public final class NESystemControl: SystemControlling {
 
     /// Waits until the kernel has let go of a filter that was turned off, its list having had
     /// `filters` until then, for turnedOffLimit at most, and says so when that lasts. `appear` as in
-    /// KernelFilters.gone: 0 when the filter was turned off before this command.
+    /// KernelFilters.gone: 0 when the filter was turned off before this command. Stops at once
+    /// when a signal is caught (Interrupts), which only happens where start catches them.
     private func letGo(after filters: Int, appear: TimeInterval, _ output: SystemOutput) {
         let limit = Int(Self.turnedOffLimit)
         if !KernelFilters.gone(after: filters, appear: appear, limit: Self.turnedOffLimit,
-                               held: { CLI.turnedOffLines($0, limit: limit).forEach(output.stdout) }) {
+                               held: { CLI.turnedOffLines($0, limit: limit).forEach(output.stdout) },
+                               stopping: { Interrupts.interrupted }),
+           !Interrupts.interrupted {
             output.stdout(CLI.turnedOffTooLong(limit: limit))
         }
+    }
+
+    /// Turns the filter off and on again, catching signals in between as start does around an
+    /// upgrade, so that one there does not leave it off: the wait stops and the filter is turned
+    /// on at once. 130 when a signal was caught, once the filter is on.
+    private func restart(_ manager: NEFilterManager, _ output: SystemOutput) -> Int32 {
+        let release = Interrupts.catchAll()
+        defer { release() }
+        // Not saved: the filter is on as it was.
+        guard turnOff(manager, output) else { return Interrupts.interrupted ? ExitCode.interrupted : ExitCode.software }
+        manager.isEnabled = true
+        guard save(manager, output) else { return putBack(ExitCode.software, output) }
+        if Interrupts.interrupted {
+            output.stderr(CLI.stoppedOnLine)
+            return ExitCode.interrupted
+        }
+        return ExitCode.success
+    }
+
+    /// Turns the filter back on when start turned it off and does not get to save it on with the
+    /// new configuration: stopped by a signal, refused, or failed. It comes back with the
+    /// configuration saved now, which is the one it had unless something changed it meanwhile,
+    /// since a filter left off checks no connection. Says which state blackice is left in. The
+    /// exit status is `status`, or 130 once a signal was caught.
+    private func putBack(_ status: Int32, _ output: SystemOutput) -> Int32 {
+        let interrupted = Interrupts.interrupted
+        var on = false
+        if let (manager, current) = loadSaved(output), current.foreignOwner == nil, current.providerBundleID != nil {
+            manager.isEnabled = true
+            on = save(manager, output)
+        }
+        CLI.putBackLines(interrupted: interrupted, on: on).forEach(output.stderr)
+        return interrupted ? ExitCode.interrupted : status
     }
 
     /// Asks the extension which configuration it decides with until it names `candidate`, for up
@@ -254,12 +319,19 @@ public final class NESystemControl: SystemControlling {
         }
         var pending: PendingReply?
         var upgrade: UnfinishedUpgrade?
-        if case .on = filter, let teamID = CodeIdentity.current()?.teamID {
-            pending = try? FilterClient(teamID: teamID).pending()
-            if pending == nil { upgrade = Self.unfinishedUpgrade() }
+        var file: String?
+        var failing: FailingHooks?
+        if case .on = filter {
+            if let teamID = CodeIdentity.current()?.teamID {
+                pending = try? FilterClient(teamID: teamID).pending()
+                if pending == nil { upgrade = Self.unfinishedUpgrade() }
+            }
+            // The file plain `blackice start` loads, to say where what blackice holds differs from it.
+            file = (try? CLI.readConfigFile(CLI.defaultConfigPath)).map { String(decoding: $0, as: UTF8.self) }
+            failing = (try? UserAccount.current()).flatMap { FailingHooks.read(url: DaemonPaths.eventLog(home: $0.homeURL)) }
         }
         CLI.statusLines(StatusReport(filter: filter, daemonRunning: Self.daemonRunning(), pending: pending, upgrade: upgrade,
-                                     held: KernelFilters.held(lasting: 0.3)))
+                                     held: KernelFilters.held(lasting: 0.3), file: file, failingHooks: failing))
             .forEach(output.stdout)
         return ExitCode.success
     }
@@ -308,6 +380,12 @@ public final class NESystemControl: SystemControlling {
         if let owner = saved.foreignOwner { return refuseForeign(owner, output) }
         guard let existing = saved.configuration else {
             output.stderr("blackice is off. Start it first: blackice start")
+            return ExitCode.unavailable
+        }
+        // Turned off, or an upgrade not finished: no filter would take what mode saves. Said before
+        // Touch ID, as `deny --all` does.
+        if let refusal = CLI.modeRefusal(enabled: saved.enabled, upgrade: Self.unfinishedUpgrade()) {
+            output.stderr(refusal)
             return ExitCode.unavailable
         }
         if let answerer, let refusal = CLI.answererRefusal(answerer, config: existing.config) {
@@ -507,8 +585,11 @@ public final class NESystemControl: SystemControlling {
         return ExitCode.unavailable
     }
 
-    private func changedMeanwhile(_ output: SystemOutput) -> Int32 {
-        output.stderr("The saved configuration changed while you were confirming, so nothing was saved. Run the command again.")
+    /// `turnedOff`: start had turned the filter off for an upgrade, which is saved, and turns it
+    /// back on next (putBack).
+    private func changedMeanwhile(_ output: SystemOutput, turnedOff: Bool = false) -> Int32 {
+        output.stderr(turnedOff ? "The saved configuration changed while blackice start ran, so yours was not saved."
+                                : "The saved configuration changed while you were confirming, so nothing was saved. Run the command again.")
         return ExitCode.tempFail
     }
 
@@ -587,14 +668,19 @@ public final class NESystemControl: SystemControlling {
     }
 
     /// The request's exit status, whether macOS replaced a running extension of another version,
-    /// and whether it had to wait for the person to allow the extension.
-    private func runExtensionRequest(_ request: OSSystemExtensionRequest, _ output: SystemOutput, deactivating: Bool = false)
+    /// and whether it had to wait for the person to allow the extension. 130 when `stopping` said
+    /// to stop waiting first: macOS goes on with the request on its own.
+    private func runExtensionRequest(_ request: OSSystemExtensionRequest, _ output: SystemOutput, deactivating: Bool = false,
+                                     stopping: () -> Bool = { false })
         -> (status: Int32, replaced: Bool, neededApproval: Bool, afterRestart: Bool) {
         let result = Completion()
         let delegate = ExtensionRequestDelegate(result: result, output: output, deactivating: deactivating)
         request.delegate = delegate
         OSSystemExtensionManager.shared.submitRequest(request)
-        let status = withExtendedLifetime(delegate) { MainLoop.wait(for: result, timeout: Self.extensionRequestTimeout) }
+        let status = withExtendedLifetime(delegate) {
+            MainLoop.wait(for: result, timeout: Self.extensionRequestTimeout, stopping: stopping)
+        }
+        if status == nil, stopping() { return (ExitCode.interrupted, delegate.replaced, delegate.neededApproval, delegate.afterRestart) }
         guard let status else {
             output.stderr(deactivating
                 ? "macOS did not finish removing the network extension in time. Run blackice stop again."
@@ -623,10 +709,11 @@ final class Completion: @unchecked Sendable {
 
 enum MainLoop {
     /// Runs the main run loop (where NetworkExtension and SystemExtensions call back) until the
-    /// completion is set or the timeout passes. nil on timeout.
-    static func wait(for completion: Completion, timeout: TimeInterval) -> Int32? {
+    /// completion is set or the timeout passes, or `stopping` says to stop, which it is asked
+    /// every 0.1 s at most. nil on timeout or stop.
+    static func wait(for completion: Completion, timeout: TimeInterval, stopping: () -> Bool = { false }) -> Int32? {
         let deadline = Date().addingTimeInterval(timeout)
-        while completion.status == nil && Date() < deadline {
+        while completion.status == nil && Date() < deadline && !stopping() {
             if !RunLoop.main.run(mode: .default, before: Date().addingTimeInterval(0.1)) {
                 Thread.sleep(forTimeInterval: 0.05)
             }

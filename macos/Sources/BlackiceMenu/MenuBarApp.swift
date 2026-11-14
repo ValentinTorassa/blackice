@@ -323,7 +323,7 @@ final class MenuController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard menu === self.menu else { return }
         let log = recent?.latest(limit: MenuPresentation.recentLimit) ?? EventLogSummary()
         context = MenuContext(version: Self.version, recent: log.decisions, hookRefused: log.hookRefused,
-                              hookRefusedForHome: log.hookRefusedForHome)
+                              hookRefusedForHome: log.hookRefusedForHome, failingHooks: log.failingHooks)
         render(rebuild: true)
     }
 

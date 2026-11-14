@@ -653,6 +653,161 @@ struct ReportTests {
         #expect(CLI.keptLines(try ProviderConfiguration.starting(configText: text, after: nil), file: file).isEmpty)
     }
 
+    /// What start says it drops of a switch, before Touch ID: the file changed since the last start,
+    /// so it loads the file's own mode and answerer. Until 1.0.8 it said nothing of it.
+    @Test func startSaysWhatItDrops() throws {
+        let fx = "[[hook]]\non = 'connection'\nprogram = '/opt/fx'\napp = 'com.vercel.fx'\nteam = 'JW6Y669B67'\ninstructions = 'fx'\n"
+        let claude = "[[hook]]\non = 'connection'\nprogram = '/opt/claude'\napp = 'com.anthropic.claude-code'\n" +
+            "team = 'Q6L2SF6YDW'\ninstructions = 'claude-code'\n"
+        let text = "mode = 'ask'\n" + fx + claude + "[agent]\nanswers = 'claude-code'\n"
+        let rule = "\n[[allow]]\napp = 'com.apple.curl'\nhosts = ['pypi.org']\n"
+        func dropped(_ held: ProviderConfiguration, _ fileText: String) throws -> [String] {
+            let candidate = try ProviderConfiguration.starting(configText: fileText, after: held, keepingSwitches: true)
+            #expect(CLI.keptLines(candidate, file: try BlackiceConfig(text: fileText)).isEmpty)
+            return CLI.droppedLines(previous: held, candidate: candidate, file: try BlackiceConfig(text: fileText))
+        }
+        // The menu switched the answers to fx, then a rule was added to the file (approve --save).
+        let started = try ProviderConfiguration(generation: 4, mode: .ask, configText: text)
+        let toFx = try started.with(mode: .ask, answerer: .agent(.fx))
+        #expect(try dropped(toFx, text + rule) == [
+            "fx answers now, switched with blackice mode or the menu; blackice.toml has Claude Code, and this start loads it.",
+        ])
+        // The mode, and both at once.
+        #expect(try dropped(try started.with(mode: .acceptAll), text + rule) == [
+            "In accept-all mode now, switched with blackice mode or the menu; blackice.toml has ask mode, and this start loads it.",
+        ])
+        #expect(try dropped(try started.with(mode: .blockAll, answerer: .you), text + rule) == [
+            "In block-all mode now, switched with blackice mode or the menu; blackice.toml has ask mode, and this start loads it.",
+            "You answer now, switched with blackice mode or the menu; blackice.toml has Claude Code, and this start loads it.",
+        ])
+        // A file that has you answering, or names no one.
+        let you = "mode = 'ask'\n" + fx + claude + "[agent]\nanswers = 'you'\n"
+        #expect(try dropped(try ProviderConfiguration(generation: 2, mode: .ask, configText: you)
+                .with(mode: .ask, answerer: .agent(.fx)), you + rule)
+            == ["fx answers now, switched with blackice mode or the menu; blackice.toml has you answering, and this start loads it."])
+        let noOne = "mode = 'ask'\n" + fx + claude
+        #expect(try dropped(try ProviderConfiguration(generation: 2, mode: .ask, configText: noOne)
+                .with(mode: .ask, answerer: .agent(.fx)), noOne + rule)
+            == ["fx answers now, switched with blackice mode or the menu; blackice.toml has fx and Claude Code, each with a hook, " +
+                "and this start loads it."])
+
+        // Kept while the file is unchanged, and said as kept.
+        let kept = try ProviderConfiguration.starting(configText: text, after: toFx, keepingSwitches: true)
+        #expect(CLI.droppedLines(previous: toFx, candidate: kept, file: try BlackiceConfig(text: text)).isEmpty)
+        #expect(CLI.keptLines(kept, file: try BlackiceConfig(text: text)).count == 1)
+        // Nothing switched, nothing held, or the file changed to what was switched: nothing dropped.
+        #expect(try dropped(started, text + rule).isEmpty)
+        let first = try ProviderConfiguration.starting(configText: text, after: nil)
+        #expect(CLI.droppedLines(previous: nil, candidate: first, file: try BlackiceConfig(text: text)).isEmpty)
+        let nowFx = "mode = 'ask'\n" + fx + claude + "[agent]\nanswers = 'fx'\n"
+        #expect(try dropped(toFx, nowFx).isEmpty)
+    }
+
+    /// `status` says where what blackice holds differs from ~/.config/blackice/blackice.toml: a
+    /// switch the file does not have, and a file the next start loads.
+    @Test func statusSaysWhereBlackiceDiffersFromTheFile() throws {
+        let fx = "[[hook]]\non = 'connection'\nprogram = '/opt/fx'\napp = 'com.vercel.fx'\nteam = 'JW6Y669B67'\ninstructions = 'fx'\n"
+        let claude = "[[hook]]\non = 'connection'\nprogram = '/opt/claude'\napp = 'com.anthropic.claude-code'\n" +
+            "team = 'Q6L2SF6YDW'\ninstructions = 'claude-code'\n"
+        let text = "mode = 'ask'\n" + fx + claude + "[agent]\nanswers = 'claude-code'\n"
+        let changed = text + "\n[[allow]]\napp = 'com.apple.curl'\nhosts = ['pypi.org']\n"
+        func status(_ held: ProviderConfiguration, file: String?) -> [String] {
+            CLI.statusLines(StatusReport(filter: .on(held), daemonRunning: true,
+                                         pending: PendingReply(events: [], approvals: []).deciding(with: held), file: file))
+        }
+        let started = try ProviderConfiguration(generation: 4, mode: .ask, configText: text)
+        #expect(status(started, file: text) == [
+            "blackice is on in ask mode",
+            "  answers    Claude Code; also connected: fx",
+            "  waiting    nothing",
+            "  rules      none",
+            "  timeout    10 s",
+        ])
+        // The menu switched the answers to fx: the file still has Claude Code, and the next start keeps fx.
+        let toFx = try started.with(mode: .ask, answerer: .agent(.fx))
+        #expect(status(toFx, file: text)[1] == "  answers    fx (switched with blackice mode or the menu; blackice.toml has Claude Code)")
+        #expect(!status(toFx, file: text).contains { $0.hasPrefix("  file") })
+        // Then the file changed: the next start loads it.
+        #expect(status(toFx, file: changed) == [
+            "blackice is on in ask mode",
+            "  answers    fx (switched with blackice mode or the menu; blackice.toml has Claude Code)",
+            "  waiting    nothing",
+            "  rules      none",
+            "  timeout    10 s",
+            "  file       changed since the last start: blackice start loads it (Claude Code answers)",
+        ])
+        // The mode.
+        let acceptAll = try started.with(mode: .acceptAll)
+        #expect(status(acceptAll, file: text).first
+            == "blackice is on in accept-all mode (switched with blackice mode or the menu; blackice.toml has ask)")
+        #expect(status(acceptAll, file: changed).last
+            == "  file       changed since the last start: blackice start loads it (ask mode, Claude Code answers)")
+        // A file changed in its rules alone, one that does not load, and none.
+        #expect(status(started, file: changed).last == "  file       changed since the last start: blackice start loads it")
+        #expect(status(started, file: "mode = 'sometimes'\n").last
+            == "  file       changed since the last start, and blackice start cannot load it: " +
+               "blackice validate ~/.config/blackice/blackice.toml")
+        #expect(status(toFx, file: nil)[1] == "  answers    fx (switched with blackice mode or the menu)")
+        #expect(status(acceptAll, file: nil).first == "blackice is on in accept-all mode (switched with blackice mode or the menu)")
+        #expect(status(started, file: nil) == status(started, file: text))
+        // The file was changed to what was switched: nothing to say of the switch, and the start loads the file.
+        let nowFx = "mode = 'ask'\n" + fx + claude + "[agent]\nanswers = 'fx'\n"
+        #expect(status(toFx, file: nowFx)[1] == "  answers    fx; also connected: Claude Code")
+        #expect(status(toFx, file: nowFx).last == "  file       changed since the last start: blackice start loads it")
+    }
+
+    /// From three hooks in a row with no answer, `status` says since when, how many and why.
+    @Test func statusSaysThatHooksKeepFailing() throws {
+        let utc = try #require(TimeZone(identifier: "UTC"))
+        let now = Date(timeIntervalSince1970: 1_800_000_000) // 15 January 2027, 08:00 UTC
+        let since = now.addingTimeInterval(-3 * 3600 + 120)
+        let held = try snapshot(.ask, withHook)
+        func status(_ failing: FailingHooks?, _ configuration: ProviderConfiguration) -> [String] {
+            CLI.statusLines(StatusReport(filter: .on(configuration), daemonRunning: true,
+                                         pending: PendingReply(events: [], approvals: []).deciding(with: configuration),
+                                         failingHooks: failing), now: now, timeZone: utc)
+        }
+        let reason = "fx ask: API request failed · HTTP 502 · insufficient_funds"
+        #expect(status(FailingHooks(count: 297, since: since, reason: reason), held).contains(
+            "  hooks      failing since 05:02 (297 in a row): fx ask: API request failed · HTTP 502 · insufficient_funds"))
+        #expect(status(FailingHooks(count: 40, atLeast: true, since: since.addingTimeInterval(-86_400), reason: nil), held)
+            .contains("  hooks      failing since 14 Jan 05:02 or earlier (at least 40 in a row)"))
+        // What the hook wrote stays on one line, its controls escaped, cut at 100 characters.
+        let long = String(repeating: "x", count: 120)
+        let line = try #require(status(FailingHooks(count: 3, reason: "a\u{7}b\u{202E}c " + long), held).first { $0.hasPrefix("  hooks") })
+        #expect(line == "  hooks      failing (3 in a row): a\\u{7}b\\u{202e}c " + String(repeating: "x", count: 93) + "…")
+        // No hook runs outside ask mode, or with no hook: nothing to say.
+        #expect(!status(FailingHooks(count: 5), try snapshot(.blockAll, withHook)).contains { $0.hasPrefix("  hooks") })
+        #expect(!status(FailingHooks(count: 5), try snapshot(.ask)).contains { $0.hasPrefix("  hooks") })
+        #expect(!status(nil, held).contains { $0.hasPrefix("  hooks") })
+    }
+
+    /// An upgrade's start that turned the filter off and stopped part way turns it back on, and
+    /// says so; status no longer puts a filter left off down to System Settings alone; and mode
+    /// refuses, before Touch ID, what no filter would take.
+    @Test func whatIsSaidOfAFilterLeftOff() throws {
+        #expect(CLI.statusLines(StatusReport(filter: .disabled, daemonRunning: false, pending: nil))
+            == ["blackice is off: its filter is turned off (in System Settings, or by a blackice start that did not finish). " +
+                "blackice start turns it on."])
+        #expect(CLI.putBackLines(interrupted: true, on: true) == [
+            "blackice start was stopped before it finished, so it turned blackice's filter back on with the configuration it had. " +
+                "Run blackice start again.",
+        ])
+        #expect(CLI.putBackLines(interrupted: false, on: false) == [
+            "blackice start did not finish, and could not turn blackice's filter back on: blackice is off, and no connection " +
+                "is checked. Run blackice start again.",
+        ])
+        #expect(CLI.modeRefusal(enabled: false, upgrade: { () -> UnfinishedUpgrade? in
+            Issue.record("asked about the upgrade while off")
+            return nil
+        }())
+            == CLI.turnedOffLine)
+        #expect(CLI.modeRefusal(enabled: true, upgrade: UnfinishedUpgrade(app: "16", running: ["15"]))
+            == "blackice was upgraded to build 16, but macOS still runs build 15's network extension. " +
+               "blackice start finishes the upgrade. Then run blackice mode again.")
+        #expect(CLI.modeRefusal(enabled: true, upgrade: nil) == nil)
+    }
+
     @Test func modeAndFirstStartHints() throws {
         #expect(CLI.modeChangedLines(try snapshot(.blockAll), daemonRunning: false) == ["✓ Now in block-all mode"])
         #expect(CLI.modeChangedLines(try snapshot(.ask), daemonRunning: false) == ["✓ Now in ask mode, you answer: blackice pending"])
