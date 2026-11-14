@@ -820,6 +820,9 @@ struct ReportTests {
             "blackice start did not finish, and could not turn blackice's filter back on: blackice is off, and no connection " +
                 "is checked. Run blackice start again.",
         ])
+        // Stopped before it turned the filter off, by a signal agent connect caught during Touch ID.
+        #expect(CLI.stoppedBeforeTurnOffLine == "blackice start was stopped before it changed anything: " +
+            "blackice's filter is on as it was. Run blackice start again to finish the upgrade.")
         func notAsked() -> UnfinishedUpgrade? {
             Issue.record("asked about the upgrade")
             return nil
@@ -863,6 +866,25 @@ struct ReportTests {
         #expect([0, 1, 1, 2].map { asked.stopWaiting(.kernel, interrupts: $0, say: { said.append($0) }) }
             == [false, false, false, true])
         #expect(said == [kernel])
+    }
+
+    /// SIGTERM stops the wait at once, whether it is the first signal or comes after a closed
+    /// terminal's: launchd, a supervisor or kill(1) sends it, often with SIGKILL a few seconds
+    /// later, and a start killed while it waits would leave the filter saved off.
+    @Test func anUpgradeStoppedBySIGTERMStopsWaiting() {
+        var first = UpgradeInterruption()
+        #expect(first.action(.kernel, interrupts: 1, terminated: true) == .stop)
+        var duringRequest = UpgradeInterruption()
+        #expect(duringRequest.action(.request, interrupts: 1, terminated: true) == .stop)
+        // A hang-up first, told about, then SIGTERM, which counts no further.
+        var later = UpgradeInterruption()
+        #expect(later.action(.kernel, interrupts: 1) == .tell(CLI.waitingAfterInterruptLine(.kernel)))
+        #expect(later.action(.kernel, interrupts: 1) == .wait)
+        #expect(later.action(.request, interrupts: 1, terminated: true) == .stop)
+        var said: [String] = []
+        var asked = UpgradeInterruption()
+        let stopped = asked.stopWaiting(.kernel, interrupts: 1, terminated: true, say: { said.append($0) })
+        #expect(stopped && said.isEmpty)
     }
 
     @Test func modeAndFirstStartHints() throws {

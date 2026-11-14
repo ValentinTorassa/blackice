@@ -32,13 +32,15 @@ import Testing
             kill(getpid(), SIGTERM)
             while !Interrupts.interrupted, Date() < deadline { usleep(10_000) }
         }
-        #expect(Interrupts.caught == SIGTERM)
-        // A catch inside another keeps what the outer one caught.
+        #expect(Interrupts.caught == SIGTERM && Interrupts.count == 1 && Interrupts.terminated)
+        // A catch inside another sees what the outer one caught at once, as an upgrade's start
+        // run by agent connect does before it turns the filter off, and keeps it.
         let inner = Interrupts.catchAll()
+        #expect(Interrupts.interrupted && Interrupts.count == 1)
         inner()
-        #expect(Interrupts.interrupted)
+        #expect(Interrupts.interrupted && Interrupts.terminated)
         release()
-        #expect(!Interrupts.interrupted)
+        #expect(!Interrupts.interrupted && !Interrupts.terminated)
         #expect(Interrupts.signals.map(handling) == before)
     }
 
@@ -62,10 +64,11 @@ import Testing
         #expect(Interrupts.caught == SIGPIPE)
     }
 
-    /// Each signal counts, so that an upgrade's start can tell a second Control-C from the first,
-    /// but a broken pipe after another signal does not: once the session is gone each line written
-    /// brings one. Back to 0 with the outermost release.
-    @Test func signalsAreCountedButNotTheBrokenPipesAfterThem() {
+    /// The first signal counts, and after it Control-C and Control-\ do, so that an upgrade's start
+    /// can tell a second Control-C from the first. A closed terminal or a dropped ssh session
+    /// usually brings SIGHUP twice, from the shell and from the kernel, and then a broken pipe for
+    /// each line written: none of those counts again. Back to 0 with the outermost release.
+    @Test func afterTheFirstSignalOnlyControlCAndControlBackslashCount() {
         var ends: [Int32] = [0, 0]
         #expect(pipe(&ends) == 0)
         close(ends[0])
@@ -90,14 +93,23 @@ import Testing
             return written
         } == -1)
         #expect(Interrupts.caught == SIGPIPE && Interrupts.count == 1)
-        send(SIGINT, until: 2)
+        send(SIGHUP, until: 1)
+        #expect(Interrupts.caught == SIGHUP && Interrupts.count == 1 && !Interrupts.terminated)
+        // SIGTERM does not count again, but is kept apart: an upgrade's start stops at it.
+        send(SIGTERM, until: 1)
+        #expect(Interrupts.caught == SIGTERM && Interrupts.count == 1 && Interrupts.terminated)
+        send(SIGQUIT, until: 2)
         #expect(Interrupts.count == 2)
+        send(SIGHUP, until: 2)
+        #expect(Interrupts.caught == SIGHUP && Interrupts.count == 2)
+        send(SIGINT, until: 3)
+        #expect(Interrupts.count == 3)
         // A catch inside another keeps the count.
         let inner = Interrupts.catchAll()
         inner()
-        #expect(Interrupts.count == 2)
+        #expect(Interrupts.count == 3)
         release()
-        #expect(Interrupts.count == 0 && !Interrupts.interrupted)
+        #expect(Interrupts.count == 0 && !Interrupts.interrupted && !Interrupts.terminated)
     }
 
     @Test func aLineIsReadUpToItsEnd() {

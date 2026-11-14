@@ -202,6 +202,7 @@ struct FlowReportTests {
         ])
         #expect(FlowReport.words("ask_capacity_app") == "its app has too many waiting for an answer")
         #expect(FlowReport.words("ask_capacity") == "too many waiting for an answer")
+        #expect(FlowReport.words("lookup_timeout") == "the lookup of its host waited too long")
     }
 
     /// An address mismatch says why, and a wait the Mac slept through is not one nobody answered:

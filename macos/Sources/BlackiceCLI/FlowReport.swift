@@ -231,6 +231,7 @@ public struct FlowReport: Equatable, Sendable {
         "ask_capacity_app": "its app has too many waiting for an answer",
         "lookup_capacity": "too many waiting for a lookup",
         "lookup_capacity_app": "its app has too many waiting for a lookup",
+        "lookup_timeout": "the lookup of its host waited too long",
         "server_name_timeout": "no server name within 10 s",
         "server_name_mismatch": "server name another host's",
         "server_name_invalid": "server name not a host name",

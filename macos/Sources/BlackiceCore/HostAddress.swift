@@ -312,6 +312,8 @@ public final class HostAddressCache: @unchecked Sendable {
     private let clock: @Sendable () -> TimeInterval
     private let lock = NSLock()
     private var entries: [String: Entry] = [:]
+    /// When a lookup of any host last found answers; nil before the first (`checkOrRefresh`).
+    private var lastFound: TimeInterval?
 
     private struct Entry {
         let addresses: Set<IPAddress>
@@ -345,19 +347,44 @@ public final class HostAddressCache: @unchecked Sendable {
     /// what the resolver says now. CDNs answer with TTLs of seconds and rotate their addresses: on
     /// 8 November 2026 outlook.office365.com had A records of 2 to 4 s and 13 answer sets in
     /// 3 minutes, and the first address of half its answers was not in answers up to 30 s old.
-    /// An address that cannot be checked stays a mismatch. A failed lookup (no answers) is
-    /// `lookupFailed` until it expires (`store`).
+    /// An address that cannot be checked stays a mismatch.
+    ///
+    /// A failed lookup (no answers) is `lookupFailed` until it expires (`store`), or until it is
+    /// `refreshAfter` old and a lookup of another host has found answers since. After an outage
+    /// (a Wi-Fi switch, a VPN that reconnects) a host's fifth failure in a row counts 30 s, and
+    /// only its own next lookup ended the run: for up to 30 s after the resolver came back, every
+    /// connection to the host that no DNS answer named was dropped as
+    /// `address_mismatch;lookup_failed`, those a rule or an approval covers included. Answers for
+    /// another host say the resolver works again, so this one is asked again. Its run goes on
+    /// (`store`): while its own lookups keep failing, behind a split-DNS server that is gone say,
+    /// each waits its turn behind other recent failures' (`failedRecently`, LookupWaiters).
     public func checkOrRefresh(host: String, address: IPAddress?) -> AddressCheck {
         lock.lock()
         let entry = entries[host]
         let now = clock()
+        let lastFound = self.lastFound
         lock.unlock()
         guard let entry, entry.expires > now else { return .unknown }
+        let age = now - entry.lookedUpAt
         let result = Self.check(address, against: entry.addresses)
-        if result == .mismatch, address?.isCheckable == true, now - entry.lookedUpAt >= Self.refreshAfter {
+        if result == .mismatch, address?.isCheckable == true, age >= Self.refreshAfter {
+            return .unknown
+        }
+        if result == .lookupFailed, age >= Self.refreshAfter, let lastFound, lastFound > entry.lookedUpAt {
             return .unknown
         }
         return result
+    }
+
+    /// Whether `host`'s last lookup failed less than `ttl` ago. Until 1.0.8 a failure counted the
+    /// whole `ttl`, and every connection to the host that no DNS answer named was dropped
+    /// meanwhile; looked up again sooner, such a host waits its turn behind at most
+    /// `LookupWaiters.lookupLimit` lookups, and any other is looked up at once (LookupWaiters.add).
+    /// Never blocks.
+    public func failedRecently(_ host: String) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        guard let entry = entries[host], entry.failures > 0 else { return false }
+        return clock() - entry.lookedUpAt < ttl
     }
 
     /// A link-local address matches only an answer on the same interface, and never when its
@@ -391,13 +418,14 @@ public final class HostAddressCache: @unchecked Sendable {
     /// resolver that timed out, SERVFAIL, a network that changed or a Mac just awake) dropped every
     /// connection to the host as `address_mismatch` for the whole `ttl`, those a rule or an
     /// approval covers included. Each failure in a row after it counts twice as long as the one
-    /// before, up to `ttl` (2, 4, 8, 16, then 30 s), and answers end the run. While the resolver
-    /// stays down (no network, or a resolver that times out) apps keep trying the hosts they use,
-    /// and a lookup of each of them every 2 s held a thread for the resolver's whole timeout, more
-    /// threads the longer it lasted. One lookup per host at a time (LookupWaiters) still keeps a
-    /// burst of connections to one lookup. A failure is in a row only when its lookup started
-    /// within `ttl` of the last one's expiry (`streak`); `lookupStarted` is when it started, now
-    /// when nil.
+    /// before, up to `ttl` (2, 4, 8, 16, then 30 s), and answers end the run; answers for another
+    /// host found since a failure cut its time short (`checkOrRefresh`), not the run. While the
+    /// resolver stays down (no network, or a resolver that times out) apps keep trying the hosts
+    /// they use, and a lookup of each of them every 2 s held a thread for the resolver's whole
+    /// timeout, more threads the longer it lasted. One lookup per host at a time (LookupWaiters)
+    /// still keeps a burst of connections to one lookup. A failure is in a row only when its
+    /// lookup started within `ttl` of the last one's expiry (`streak`); `lookupStarted` is when it
+    /// started, now when nil.
     public func store(_ host: String, _ answers: Set<IPAddress>, lookupStarted: TimeInterval? = nil) {
         lock.lock(); defer { lock.unlock() }
         let now = clock()
@@ -411,6 +439,7 @@ public final class HostAddressCache: @unchecked Sendable {
         let failures = answers.isEmpty ? min(before, Self.failuresCounted - 1) + 1 : 0
         let time = answers.isEmpty ? Self.failureTime(failures, ttl: ttl) : ttl
         entries[host] = Entry(addresses: answers, lookedUpAt: now, expires: now + time, failures: failures)
+        if !answers.isEmpty { lastFound = now }
     }
 
     /// The count of failures in a row stops here, well past where their time reaches `ttl`.
@@ -438,6 +467,7 @@ public final class HostAddressCache: @unchecked Sendable {
     public func removeAll() {
         lock.lock(); defer { lock.unlock() }
         entries.removeAll()
+        lastFound = nil
     }
 }
 
@@ -446,10 +476,16 @@ public final class HostAddressCache: @unchecked Sendable {
 /// on 10 November 2026 a burst of one app's connections took all 1024 while lookups were slow, and
 /// another app's connection that a rule allowed was dropped.
 ///
-/// At most `lookupLimit` lookups run at once, and another host's waits its turn. Each lookup
+/// A lookup of a host whose last lookup failed recently (HostAddressCache.failedRecently) starts
+/// only while fewer than `lookupLimit` lookups run, and otherwise waits its turn. Each lookup
 /// holds a thread of the extension's resolver queue for as long as getaddrinfo blocks, the
 /// resolver's whole timeout when it does not answer, and nothing else bounded them but the 1024
-/// places: a resolver that timed out held a thread for every host apps tried meanwhile.
+/// places: a resolver that timed out held a thread for every host apps tried meanwhile. Any other
+/// host is looked up at once, as in 1.0.7: a resolver that hangs for some hosts only (a split-DNS
+/// domain whose server is gone, about 30 s a lookup) would otherwise keep the lookups of hosts it
+/// answers at once waiting behind those, their flows would fill the places, and connections a
+/// rule allows would be dropped as `lookup_capacity`. A flow that waits for a lookup still waiting
+/// its turn is dropped after `turnWait` (`expire`).
 public struct LookupWaiters<Flow> {
     public let limit: Int
     public let limitPerApp: Int
@@ -457,18 +493,31 @@ public struct LookupWaiters<Flow> {
     public let lookupLimit: Int
     private var waiting: [String: Waiting] = [:]
     /// Hosts whose lookup waits its turn, the oldest first. One whose flows have gone meanwhile
-    /// (removeAll, or another lookup of the host that ended) is passed over (`nextLookup`).
+    /// (removeAll, `expire`, or another lookup of the host that ended) is passed over (`nextLookup`).
     private var queued: [String] = []
     private var perApp: [AppIdentity?: Int] = [:]
     public private(set) var count = 0
-    /// Lookups started and not finished yet.
+    /// Lookups started and not finished yet, those that did not wait their turn included.
     public private(set) var running = 0
 
+    /// How long a flow waits for a lookup that waits its turn; then the maintenance timer drops it
+    /// as `lookup_timeout` (`expire`). Such a lookup waits only behind those of hosts that failed
+    /// recently, which a resolver that hangs holds for its whole timeout, and the flow holds its
+    /// place all that time.
+    public static var turnWait: TimeInterval { 10 }
+
     private struct Waiting {
-        /// The app is nil for a flow whose code has no identity an approval could name.
-        var flows: [(flow: Flow, app: AppIdentity?)]
+        var flows: [Waiter]
         /// Whether the host's lookup has started; false while it waits its turn.
         var started: Bool
+    }
+
+    private struct Waiter {
+        let flow: Flow
+        /// nil for a flow whose code has no identity an approval could name.
+        let app: AppIdentity?
+        /// When the flow began to wait, on the caller's clock.
+        let since: TimeInterval
     }
 
     public init(limit: Int = 1024, limitPerApp: Int? = nil, lookupLimit: Int = 16) {
@@ -482,8 +531,9 @@ public struct LookupWaiters<Flow> {
         case startLookup
         /// A lookup for this host is already running or waiting its turn.
         case waiting
-        /// The first flow for this host while `lookupLimit` lookups run: its lookup starts when
-        /// one of them ends (`nextLookup`).
+        /// The first flow for a host that failed recently while `lookupLimit` lookups run: its
+        /// lookup starts when one of them ends (`nextLookup`), and its flows wait at most
+        /// `turnWait` (`expire`).
         case queued
         /// Too many flows are waiting; the caller drops this one.
         case full
@@ -491,21 +541,26 @@ public struct LookupWaiters<Flow> {
         case appFull
     }
 
-    public mutating func add(_ flow: Flow, host: String, app: AppIdentity?) -> Added {
+    /// `failedRecently`: whether the host's last lookup failed recently
+    /// (HostAddressCache.failedRecently), so that its lookup may wait its turn. `now` is when the
+    /// flow begins to wait, on the clock `expire` is given.
+    public mutating func add(_ flow: Flow, host: String, app: AppIdentity?, failedRecently: Bool = false,
+                             now: TimeInterval = 0) -> Added {
         guard count < limit else { return .full }
         guard waitingFor(app) < limitPerApp else { return .appFull }
         count += 1
         perApp[app, default: 0] += 1
+        let waiter = Waiter(flow: flow, app: app, since: now)
         if waiting[host] != nil {
-            waiting[host]?.flows.append((flow, app))
+            waiting[host]?.flows.append(waiter)
             return .waiting
         }
-        guard running < lookupLimit else {
-            waiting[host] = Waiting(flows: [(flow, app)], started: false)
+        guard !failedRecently || running < lookupLimit else {
+            waiting[host] = Waiting(flows: [waiter], started: false)
             queued.append(host)
             return .queued
         }
-        waiting[host] = Waiting(flows: [(flow, app)], started: true)
+        waiting[host] = Waiting(flows: [waiter], started: true)
         running += 1
         return .startLookup
     }
@@ -518,13 +573,9 @@ public struct LookupWaiters<Flow> {
     /// the caller then starts what `nextLookup` gives.
     public mutating func finish(_ host: String) -> [Flow] {
         running = max(running - 1, 0)
-        let entries = waiting.removeValue(forKey: host)?.flows ?? []
-        count -= entries.count
-        for entry in entries {
-            let left = (perApp[entry.app] ?? 1) - 1
-            perApp[entry.app] = left > 0 ? left : nil
-        }
-        return entries.map(\.flow)
+        let waiters = waiting.removeValue(forKey: host)?.flows ?? []
+        release(waiters)
+        return waiters.map(\.flow)
     }
 
     /// The host whose lookup the caller starts now, counted as running: the one that has waited
@@ -540,6 +591,28 @@ public struct LookupWaiters<Flow> {
         return nil
     }
 
+    /// The flows that have waited `turnWait` or longer for a lookup still waiting its turn,
+    /// removed, for the maintenance timer to drop. A host with none left is passed over when its
+    /// turn comes. Flows whose lookup has started stay: getaddrinfo ends it by the resolver's
+    /// timeout, and `finish` gives them back.
+    public mutating func expire(now: TimeInterval) -> [Flow] {
+        // Every host whose lookup waits its turn is in `queued`.
+        guard !queued.isEmpty else { return [] }
+        var expired: [Waiter] = []
+        for (host, entry) in waiting where !entry.started {
+            let late = entry.flows.filter { now - $0.since >= Self.turnWait }
+            guard !late.isEmpty else { continue }
+            expired += late
+            let kept = entry.flows.filter { now - $0.since < Self.turnWait }
+            if kept.isEmpty { waiting.removeValue(forKey: host) } else { waiting[host]?.flows = kept }
+        }
+        guard !expired.isEmpty else { return [] }
+        release(expired)
+        // A host that is queued again later is then in the list once, so the list stays bounded.
+        queued.removeAll { waiting[$0]?.started != false }
+        return expired.map(\.flow)
+    }
+
     /// Every waiting flow, removed. Lookups that run go on counting until they end (`finish`).
     public mutating func removeAll() -> [Flow] {
         let flows = waiting.values.flatMap { $0.flows.map(\.flow) }
@@ -548,5 +621,14 @@ public struct LookupWaiters<Flow> {
         perApp.removeAll()
         count = 0
         return flows
+    }
+
+    /// Gives back the places of flows that no longer wait.
+    private mutating func release(_ waiters: [Waiter]) {
+        count -= waiters.count
+        for waiter in waiters {
+            let left = (perApp[waiter.app] ?? 1) - 1
+            perApp[waiter.app] = left > 0 ? left : nil
+        }
     }
 }

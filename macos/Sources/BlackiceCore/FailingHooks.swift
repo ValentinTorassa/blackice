@@ -98,14 +98,21 @@ public struct FailingHooks: Equatable, Sendable {
     /// extension restarted, an upgrade, a logout) knows only what the end of the log showed it
     /// then. The run is the longest either says, a record's count with the hooks with no answer
     /// after it, and began at the earliest time either knows. When the stretch starts inside the
-    /// file and shows neither an answer nor a record that counted more than the stretch does, the
-    /// run began earlier: `atLeast`.
+    /// file and shows neither an answer nor a record that counted at least the hooks with no
+    /// answer the stretch shows up to it, the run began earlier: `atLeast`. A record that counted
+    /// as many is the daemon's count from the start of the run, even when it counted no more than
+    /// the stretch shows: the stretch then holds the whole run, but not the answer before it.
     public struct Tally {
         /// Hooks with no answer in the run, as the stretch shows them.
         private var count = 0
         /// The most a `hooks_failing` record of the run counted beyond the hooks with no answer
         /// the stretch shows up to it: those before the stretch.
         private var beyond = 0
+        /// Whether a `hooks_failing` record of the run counted at least the hooks with no answer
+        /// the stretch shows up to it, so that the run's count is whole. One that counted fewer
+        /// is from a daemon that started again and lost count, and says nothing of where the run
+        /// began.
+        private var whole = false
         private var since: Date?
         private var last: Date?
         private var reason: String?
@@ -131,6 +138,7 @@ public struct FailingHooks: Equatable, Sendable {
             case "hooks_failing":
                 guard let counted = object["count"] as? Int, counted > 0 else { return }
                 beyond = max(beyond, counted - count)
+                if counted >= count { whole = true }
                 since = earliest(since, (object["since"] as? String).flatMap(FailingHooks.date))
                 last = Self.time(object) ?? last
                 // It follows the `hook_no_answer` it counted: its stderr line, else the reason
@@ -154,7 +162,7 @@ public struct FailingHooks: Equatable, Sendable {
         public func run(minimum: Int = FailingHooks.threshold) -> FailingHooks? {
             let total = count + beyond
             guard total > 0, total >= minimum else { return nil }
-            return FailingHooks(count: total, atLeast: !fromStart && beyond == 0, since: since, last: last, reason: reason)
+            return FailingHooks(count: total, atLeast: !fromStart && !whole, since: since, last: last, reason: reason)
         }
 
         private func earliest(_ known: Date?, _ other: Date?) -> Date? {

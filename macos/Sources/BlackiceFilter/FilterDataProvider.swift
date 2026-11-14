@@ -533,9 +533,11 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
             }
             return (.hold, .nothing)
         case .resolveHost(let host):
-            switch lookups.add(paused, host: host, app: facts.identity.appIdentity) {
+            // Only a host whose last lookup failed recently may wait its turn (LookupWaiters).
+            switch lookups.add(paused, host: host, app: facts.identity.appIdentity,
+                               failedRecently: addresses.failedRecently(host), now: now) {
             case .startLookup: return (.pause, .lookUp(host))
-            // Its lookup starts as another ends (finishLookup).
+            // Its lookup starts as another ends (finishLookup), or the maintenance timer drops it.
             case .waiting, .queued: return (.pause, .nothing)
             case .full:
                 return drop(paused, .drop(reason: "lookup_capacity"), snapshot, now: now)
@@ -768,10 +770,19 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
             let (released, timedOut) = self.ask.expire(now: now)
             let overdue = self.repeated.due(now: now)
             let unlogged = self.repeated.takeUnlogged()
+            let unresolved = self.lookups.expire(now: now)
             self.askLock.unlock()
             self.release(released)
             // Logged when they were delayed.
             for paused in overdue { self.resume(paused, allow: false) }
+            // Waited too long for a lookup still waiting its turn (LookupWaiters.turnWait).
+            if !unresolved.isEmpty {
+                let snapshot = self.snapshots.read()
+                for paused in unresolved {
+                    self.resume(paused, allow: false)
+                    self.log(paused.facts, .drop(reason: "lookup_timeout"), snapshot, serverName: paused.serverName)
+                }
+            }
             if unlogged > 0 { self.control("drops_not_logged", "\(unlogged)") }
             for eventID in timedOut { self.server?.send(.verdict(.timedOut, eventID: eventID)) }
             // Idle DNS flows stop being read; their data passes from now on.
