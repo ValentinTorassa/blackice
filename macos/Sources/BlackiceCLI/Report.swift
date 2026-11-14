@@ -207,8 +207,9 @@ extension CLI {
         row("rules", config.allow.isEmpty ? "none" : "\(config.allow.count)")
         if let approvals = report.pending?.approvals, !approvals.isEmpty { row("approvals", "\(approvals.count)") }
         if ask { row("timeout", "\(config.timeoutSeconds) s") }
-        // Only where hooks run: in ask mode, under a configuration that has some.
-        if ask, !config.activeHooks.isEmpty, let failing = report.failingHooks {
+        // Only where hooks run: in ask mode, under a configuration that has some; and only while
+        // the latest failed within the hour, as the menu says it.
+        if ask, !config.activeHooks.isEmpty, let failing = report.failingHooks, failing.isRecent(at: now) {
             row("hooks", failingLine(failing, now: now, timeZone: timeZone))
         }
         if !config.activeHooks.isEmpty, !report.daemonRunning { row("daemon", "not running, so no hook runs: blackice agent install") }
@@ -248,15 +249,17 @@ extension CLI {
         return "changed since the last start: blackice start loads it" + (loads.isEmpty ? "" : " (\(loads.joined(separator: ", ")))")
     }
 
-    /// `status`'s line for hooks that keep giving no answer: "failing since 14:02 (297 in a row):
-    /// fx ask: API request failed · HTTP 502". The time is the first one's, with the day when that
-    /// was not today. The reason is cut at 100 characters and made safe for the terminal.
+    /// `status`'s line for hooks that keep giving no answer: "failing since 14:02 (297 in a row,
+    /// the last at 16:40): fx ask: API request failed · HTTP 502". The times are the first one's
+    /// and the latest one's, with the day when that was not today. The reason is cut at 100
+    /// characters and made safe for the terminal.
     static func failingLine(_ failing: FailingHooks, now: Date, timeZone: TimeZone) -> String {
         var line = "failing"
         if let since = failing.since {
             line += " since " + clockTime(since, now: now, timeZone: timeZone) + (failing.atLeast ? " or earlier" : "")
         }
-        line += " (" + (failing.atLeast ? "at least " : "") + "\(failing.count) in a row)"
+        line += " (" + (failing.atLeast ? "at least " : "") + "\(failing.count) in a row"
+            + (failing.last.map { ", the last at " + clockTime($0, now: now, timeZone: timeZone) } ?? "") + ")"
         if let reason = failing.reason {
             line += ": " + Describe.terminalSafe(reason.count > 100 ? String(reason.prefix(99)) + "…" : reason)
         }

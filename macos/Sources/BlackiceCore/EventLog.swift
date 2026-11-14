@@ -53,9 +53,10 @@ public enum LogRecord: Sendable {
     /// Written when the extension reports how a paused connection ended.
     case verdict(eventID: String, Verdict)
     /// `count` hooks in a row ended with no answer of their own making (`Daemon.failed`), with no
-    /// answer between them; written at 3, 10, 30, 100, 300, 1000 and so on. `reason` and
-    /// `stderrLine` are the last one's, `since` is when the first of them ended. `blackice status`
-    /// and the menu read it.
+    /// answer between them; written at 3, 10, 30, 100, 300, 1000 and so on. `reason` is the last
+    /// one's, `stderrLine` the last line it wrote to stderr with something on it, escape sequences
+    /// out (`FailingHooks.lastLine`), and `since` is when the first of them ended, also before the
+    /// daemon last started. `blackice status` and the menu read it.
     case hooksFailing(count: Int, reason: String, stderrLine: String, since: Date)
     /// A hook answered after `after` hooks in a row had failed, 3 or more.
     case hooksRecovered(after: Int)

@@ -433,15 +433,17 @@ struct DaemonTests {
         #expect(!(try String(contentsOf: logURL, encoding: .utf8)).contains(testToken))
     }
 
-    /// Hooks that keep failing are counted, at 3, 10, 30 and so on, with what the latest one said
-    /// first; the first answer after says the run is over. The hooks keep running all along.
+    /// Hooks that keep failing are counted, at 3, 10, 30 and so on, with the last line the latest
+    /// one wrote to stderr, its colors out, as `status` reads the hook's own record; the first
+    /// answer after says the run is over. The hooks keep running all along.
     @Test func hooksFailingInARowAreCounted() async throws {
         let dir = try makePrivateDirectory()
         defer { removeTree(dir) }
         let logURL = dir.appendingPathComponent("events.jsonl")
         let daemon = Daemon(log: try EventLog(url: logURL), runner: try testRunner(dir))
         let answers = Answers()
-        let failing = try hooks(#"printf "\n  \tAuth\a failed: run login\n\nmore\n" >&2; exit 2"#)
+        // A banner first, then the error, in color.
+        let failing = try hooks(#"printf "\033[1mfx ask\033[0m 2.4.1\n\nconnecting\n  \033[31mError:\033[0m Auth failed: run login \n\n" >&2; exit 2"#)
         for index in 1...2 { await daemon.handle(testEvent(id: "ev-\(index)"), with: failing, send: answers.send) }
         #expect(try records(logURL).allSatisfy { $0["type"] as? String != "hooks_failing" })
         // The third prints nothing and exits with 0: no answer either.
@@ -456,9 +458,13 @@ struct DaemonTests {
         log = try records(logURL)
         #expect(log.filter { $0["type"] as? String == "hooks_failing" }.compactMap { $0["count"] as? Int } == [3, 10])
         let tenth = try #require(log.last)
-        #expect(tenth["reason"] as? String == "exit_status" && tenth["stderr_line"] as? String == "Auth failed: run login")
+        #expect(tenth["reason"] as? String == "exit_status" && tenth["stderr_line"] as? String == "Error: Auth failed: run login")
         #expect(tenth["since"] as? String == first["ts"] as? String)
         #expect(types(log, event: "ev-10") == ["event_received", "hook_started", "hook_exited", "hook_no_answer"])
+        // The record and the hook's own say the same.
+        let exited = try #require(log.last { $0["type"] as? String == "hook_exited" })
+        #expect(FailingHooks.lastLine(try #require(exited["stderr"] as? String)) == "Error: Auth failed: run login")
+        #expect(FailingHooks.read(url: logURL)?.reason == "Error: Auth failed: run login")
 
         await daemon.handle(testEvent(id: "ev-11"), with: try hooks("echo deny"), send: answers.send)
         log = try records(logURL)
@@ -470,6 +476,44 @@ struct DaemonTests {
         #expect(answers.sent.items.count == 2)
     }
 
+    /// A daemon that starts again (the extension restarted, an upgrade, a login) takes up the run
+    /// the end of the log shows, from when it began, rather than count from 1; after an answer
+    /// there is none to take up.
+    @Test func aRunGoesOnWhenTheDaemonStartsAgain() async throws {
+        let dir = try makePrivateDirectory()
+        defer { removeTree(dir) }
+        let logURL = dir.appendingPathComponent("events.jsonl")
+        let answers = Answers()
+        let failing = try hooks(#"echo "fx ask: API request failed · HTTP 502" >&2; exit 1"#)
+        func counts() throws -> [Int] {
+            try records(logURL).filter { $0["type"] as? String == "hooks_failing" }.compactMap { $0["count"] as? Int }
+        }
+        // To the millisecond, which a time read from the log and written again can lose.
+        func since(_ record: [String: Any]?, is date: Date) -> Bool {
+            guard let text = record?["since"] as? String, let since = FailingHooks.date(text) else { return false }
+            return abs(since.timeIntervalSince(date)) < 0.002
+        }
+        let runner = try testRunner(dir)
+        let first = Daemon(log: try EventLog(url: logURL), runner: runner)
+        for index in 1...4 { await first.handle(testEvent(id: "ev-\(index)"), with: failing, send: answers.send) }
+        let began = try #require((try records(logURL).first { $0["type"] as? String == "hook_no_answer" }?["ts"] as? String)
+            .flatMap(FailingHooks.date))
+
+        let second = Daemon(log: try EventLog(url: logURL), runner: runner)
+        for index in 5...10 { await second.handle(testEvent(id: "ev-\(index)"), with: failing, send: answers.send) }
+        #expect(try counts() == [3, 10])
+        #expect(since(try records(logURL).last, is: began))
+        await second.handle(testEvent(id: "ev-11"), with: try hooks("echo deny"), send: answers.send)
+        #expect(try records(logURL).last?["after"] as? Int == 10)
+
+        let third = Daemon(log: try EventLog(url: logURL), runner: runner)
+        for index in 12...14 { await third.handle(testEvent(id: "ev-\(index)"), with: failing, send: answers.send) }
+        #expect(try counts() == [3, 10, 3])
+        let log = try records(logURL)
+        let anew = try #require(log.first { $0["event"] as? String == "ev-12" && $0["type"] as? String == "hook_no_answer" })
+        #expect(since(log.last, is: try #require((anew["ts"] as? String).flatMap(FailingHooks.date))))
+    }
+
     /// Only a hook's own failures count: not its deadline, nor its home changing while it ran.
     @Test func whatCountsAsAFailure() {
         for missing: HookResult.NoAnswer in [.exitStatus(1), .signaled(SIGSEGV), .output(.noLine), .output(.outputTooLong),
@@ -478,9 +522,6 @@ struct DaemonTests {
         }
         #expect(!Daemon.failed(.deadline) && !Daemon.failed(.unsafeHome("/h/.codex/AGENTS.md")))
         #expect((1...100_000).filter(Daemon.isMilestone) == [3, 10, 30, 100, 300, 1000, 3000, 10_000, 30_000, 100_000])
-        #expect(Daemon.firstLine("") == "" && Daemon.firstLine("\n \t\n") == "")
-        #expect(Daemon.firstLine("\u{1B}[31mError\u{1B}[0m: no model\nsecond") == "[31mError[0m: no model")
-        #expect(Daemon.firstLine(String(repeating: "é", count: 300)) == String(repeating: "é", count: 200))
     }
 
     /// An answer the extension did not reply to in time may still have been taken: it is logged

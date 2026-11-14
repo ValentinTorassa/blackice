@@ -144,8 +144,9 @@ public enum MenuPresentation {
     /// Waiting connections listed in the menu; `blackice pending` shows the rest.
     public static let waitingLimit = 12
     public static let recentLimit = 5
-    /// How long a refused hook stays in the menu.
-    public static let refusedHookWindow: TimeInterval = 3600
+    /// How long a refused hook stays in the menu, and hooks that keep failing after the latest of
+    /// them, as `blackice status` says them (`FailingHooks.shownFor`).
+    public static let refusedHookWindow: TimeInterval = FailingHooks.shownFor
 
     /// Full in ask and block-all while the filter answers, and when it answers that it holds no
     /// configuration, since then nothing new passes; dimmed when blackice is off, lets everything
@@ -279,10 +280,12 @@ public enum MenuPresentation {
             entries.append(MenuEntry(.note, key: "hooks.refused", title: title,
                                      detail: short(refused, now: now)))
         }
-        // As `blackice status` says it: only where hooks run, in ask mode with some in the configuration.
-        if case .on(_, let hooks) = snapshot.filter, hooks > 0, snapshot.mode == .ask, let failing = context.failingHooks {
+        // As `blackice status` says it: only where hooks run, in ask mode with some in the
+        // configuration, while the latest failed within `refusedHookWindow`, and how long ago.
+        if case .on(_, let hooks) = snapshot.filter, hooks > 0, snapshot.mode == .ask, let failing = context.failingHooks,
+           failing.isRecent(at: now) {
             entries.append(MenuEntry(.note, key: "hooks.failing", title: failingLine(failing),
-                                     detail: short(failing.since, now: now)))
+                                     detail: short(failing.last, now: now)))
         }
         // `blackice stop`, with Touch ID: the quit item below leaves the filter running, and
         // accept-all still has it read every connection. Off, the header says how to start it.

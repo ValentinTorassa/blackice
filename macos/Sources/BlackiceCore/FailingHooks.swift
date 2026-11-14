@@ -15,6 +15,10 @@ public struct FailingHooks: Equatable, Sendable {
     public static let threshold = 3
     /// How much of the end of the log is read, as the menu reads it for its recent decisions.
     public static let tailBytes = 65_536
+    /// How long after the latest of them `status` and the menu still say so, as long as the menu
+    /// shows a hook it refused: an answerer switched or mended, and nothing asked since, is not
+    /// worth a warning hours later.
+    public static let shownFor: TimeInterval = 3600
     /// The longest reason kept, in characters. A program's error line is seldom longer, and a
     /// longer one is cut where it is shown anyway.
     static let reasonLimit = 512
@@ -32,21 +36,31 @@ public struct FailingHooks: Equatable, Sendable {
     public let atLeast: Bool
     /// When the first of them gave no answer; nil when the log does not say.
     public let since: Date?
+    /// When the latest of them gave no answer; nil when the log does not say.
+    public let last: Date?
     /// The last line the latest of them wrote to stderr, else why it gave no answer, with escape
     /// sequences taken out. Otherwise as the hook wrote it: it is shown only once made safe for
     /// the terminal or the menu. nil when the log does not say.
     public let reason: String?
 
-    public init(count: Int, atLeast: Bool = false, since: Date? = nil, reason: String? = nil) {
+    public init(count: Int, atLeast: Bool = false, since: Date? = nil, last: Date? = nil, reason: String? = nil) {
         self.count = count
         self.atLeast = atLeast
         self.since = since
+        self.last = last
         self.reason = reason
     }
 
+    /// Whether the latest of them failed less than `shownFor` before `now`, so that `status` and
+    /// the menu still say so; not when the log does not say when.
+    public func isRecent(at now: Date) -> Bool {
+        guard let last else { return false }
+        return now.timeIntervalSince(last) < Self.shownFor
+    }
+
     /// The run of hooks with no answer at the end of the log at `url`, read from its last
-    /// `tailBytes`; nil when there are fewer than `threshold` in a row, or there is no log.
-    public static func read(url: URL) -> FailingHooks? {
+    /// `tailBytes`; nil when there are fewer than `minimum` in a row, or there is no log.
+    public static func read(url: URL, minimum: Int = threshold) -> FailingHooks? {
         let descriptor = open(url.path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)
         guard descriptor >= 0 else { return nil }
         defer { close(descriptor) }
@@ -56,71 +70,102 @@ public struct FailingHooks: Equatable, Sendable {
         var data = Data(count: Int(info.st_size - start))
         let read = data.withUnsafeMutableBytes { pread(descriptor, $0.baseAddress, $0.count, start) }
         guard read >= 0 else { return nil }
-        return parse(data.prefix(read), partialFirstLine: start > 0)
+        return parse(data.prefix(read), partialFirstLine: start > 0, minimum: minimum)
     }
 
-    /// The run in `data`, a stretch of the log; nil when there are fewer than `threshold`.
-    ///
-    /// A run is the `hook_no_answer` records since the last `hook_answer`, leaving out those of a
-    /// neutral reason. The daemon of 1.0.8 also writes `hooks_failing`, with the run's count, the
-    /// time it began and the last line the hook wrote to stderr, and `hooks_recovered` once a hook
-    /// answers again: its count and time are taken as they are, and the hooks with no answer after
-    /// it are added. A log from before has none. When the stretch starts inside the file and shows
-    /// neither an answer nor such a record before the run, the run began earlier: `atLeast`.
+    /// The run in `data`, a stretch of the log (`Tally`); nil when there are fewer than `minimum`.
     /// Lines that are not records of the log's shape are skipped, and so is the first line when
     /// the stretch starts inside the file, since it is a piece of a record.
-    public static func parse(_ data: Data, partialFirstLine: Bool) -> FailingHooks? {
+    public static func parse(_ data: Data, partialFirstLine: Bool, minimum: Int = threshold) -> FailingHooks? {
         var lines = data.split(separator: 0x0A, omittingEmptySubsequences: true)
         if partialFirstLine, !lines.isEmpty, data.first != 0x0A { lines.removeFirst() }
-        var run = 0
-        var first: Date?
-        var reason: String?
-        var seenStart = !partialFirstLine
-        var reported: (count: Int, since: Date?, reason: String?)?
-        // The last line each hook that ran wrote to stderr, by event and hook line, until its
-        // `hook_no_answer` comes.
-        var errors: [String: String] = [:]
+        var tally = Tally(fromStart: !partialFirstLine)
         for line in lines {
-            guard let object = try? JSONSerialization.jsonObject(with: Data(line)) as? [String: Any],
-                  let type = object["type"] as? String else { continue }
+            guard let object = try? JSONSerialization.jsonObject(with: Data(line)) as? [String: Any] else { continue }
+            tally.take(object)
+        }
+        return tally.run(minimum: minimum)
+    }
+
+    /// The run at the end of a stretch of the log, from its records taken in order. The menu hands
+    /// it the records it decodes for its recent decisions, so that the stretch is decoded once.
+    ///
+    /// A run is the `hook_no_answer` records since the last `hook_answer` or `hooks_recovered`,
+    /// leaving out those of a neutral reason. The daemon of 1.0.8 also writes `hooks_failing`, with
+    /// its own count of the run, the time the run began and the last line the hook wrote to
+    /// stderr. Neither replaces the other, since either can fall short: the stretch is only the
+    /// end of the log, and the daemon keeps its count in memory, so one that started again (the
+    /// extension restarted, an upgrade, a logout) knows only what the end of the log showed it
+    /// then. The run is the longest either says, a record's count with the hooks with no answer
+    /// after it, and began at the earliest time either knows. When the stretch starts inside the
+    /// file and shows neither an answer nor a record that counted more than the stretch does, the
+    /// run began earlier: `atLeast`.
+    public struct Tally {
+        /// Hooks with no answer in the run, as the stretch shows them.
+        private var count = 0
+        /// The most a `hooks_failing` record of the run counted beyond the hooks with no answer
+        /// the stretch shows up to it: those before the stretch.
+        private var beyond = 0
+        private var since: Date?
+        private var last: Date?
+        private var reason: String?
+        private var fromStart: Bool
+        /// The last line each hook that ran wrote to stderr, by event and hook line, until its
+        /// `hook_no_answer` comes.
+        private var errors: [String: String] = [:]
+
+        /// `fromStart`: the stretch starts at the start of the log, so a run it shows began there.
+        public init(fromStart: Bool) { self.fromStart = fromStart }
+
+        /// Takes the next record of the stretch, as JSONSerialization decodes it; other records,
+        /// and anything not of the log's shape, change nothing.
+        public mutating func take(_ object: [String: Any]) {
+            guard let type = object["type"] as? String else { return }
             switch type {
             case "hook_exited", "hook_signaled":
-                if let key = hookKey(object), let text = object["stderr"] as? String, let last = lastLine(text) {
-                    errors[key] = last
+                if let key = hookKey(object), let text = object["stderr"] as? String, let line = lastLine(text) {
+                    errors[key] = line
                 }
             case "hook_answer", "hooks_recovered":
-                run = 0
-                first = nil
-                reason = nil
-                reported = nil
-                seenStart = true
-                errors.removeAll()
+                self = Tally(fromStart: true)
             case "hooks_failing":
-                guard let count = object["count"] as? Int, count > 0 else { continue }
-                let line = (object["stderr_line"] as? String).flatMap(lastLine)
-                reported = (count, (object["since"] as? String).flatMap(date),
-                            line ?? (object["reason"] as? String).flatMap(lastLine).map { describe($0) })
-                run = 0
-                first = nil
-                reason = nil
+                guard let counted = object["count"] as? Int, counted > 0 else { return }
+                beyond = max(beyond, counted - count)
+                since = earliest(since, (object["since"] as? String).flatMap(FailingHooks.date))
+                last = Self.time(object) ?? last
+                // It follows the `hook_no_answer` it counted: its stderr line, else the reason
+                // taken from that record, which has the status, else its own reason in words.
+                reason = (object["stderr_line"] as? String).flatMap(lastLine) ?? reason
+                    ?? (object["reason"] as? String).flatMap(lastLine).map { describe($0) }
             case "hook_no_answer":
-                guard let why = object["reason"] as? String, !neutralReasons.contains(why) else { continue }
-                run += 1
-                if first == nil { first = (object["ts"] as? String).flatMap(date) }
-                let key = hookKey(object)
-                reason = key.flatMap { errors.removeValue(forKey: $0) } ?? describe(why, status: object["status"] as? Int,
-                                                                                     signal: object["signal"] as? Int)
+                guard let why = object["reason"] as? String, !neutralReasons.contains(why) else { return }
+                let time = Self.time(object)
+                count += 1
+                since = earliest(since, time)
+                last = time ?? last
+                reason = hookKey(object).flatMap { errors.removeValue(forKey: $0) }
+                    ?? describe(why, status: object["status"] as? Int, signal: object["signal"] as? Int)
             default:
-                continue
+                return
             }
         }
-        let found: FailingHooks
-        if let reported {
-            found = FailingHooks(count: reported.count + run, since: reported.since ?? first, reason: reason ?? reported.reason)
-        } else {
-            found = FailingHooks(count: run, atLeast: !seenStart, since: first, reason: reason)
+
+        /// The run at the end of the records taken; nil when there are fewer than `minimum`.
+        public func run(minimum: Int = FailingHooks.threshold) -> FailingHooks? {
+            let total = count + beyond
+            guard total > 0, total >= minimum else { return nil }
+            return FailingHooks(count: total, atLeast: !fromStart && beyond == 0, since: since, last: last, reason: reason)
         }
-        return found.count >= threshold ? found : nil
+
+        private func earliest(_ known: Date?, _ other: Date?) -> Date? {
+            guard let known, let other else { return known ?? other }
+            return min(known, other)
+        }
+
+        /// When the record was written; read only for the records of a run.
+        private static func time(_ object: [String: Any]) -> Date? {
+            (object["ts"] as? String).flatMap(FailingHooks.date)
+        }
     }
 
     /// `text` without the escape sequences a program sends a terminal: colors, cursor moves,

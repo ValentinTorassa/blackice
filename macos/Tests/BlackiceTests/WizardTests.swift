@@ -761,11 +761,13 @@ struct ReportTests {
         #expect(status(toFx, file: nowFx).last == "  file       changed since the last start: blackice start loads it")
     }
 
-    /// From three hooks in a row with no answer, `status` says since when, how many and why.
+    /// From three hooks in a row with no answer, `status` says since when, how many, when the
+    /// latest failed and why, until an hour after the latest.
     @Test func statusSaysThatHooksKeepFailing() throws {
         let utc = try #require(TimeZone(identifier: "UTC"))
         let now = Date(timeIntervalSince1970: 1_800_000_000) // 15 January 2027, 08:00 UTC
         let since = now.addingTimeInterval(-3 * 3600 + 120)
+        let last = now.addingTimeInterval(-600)
         let held = try snapshot(.ask, withHook)
         func status(_ failing: FailingHooks?, _ configuration: ProviderConfiguration) -> [String] {
             CLI.statusLines(StatusReport(filter: .on(configuration), daemonRunning: true,
@@ -773,17 +775,33 @@ struct ReportTests {
                                          failingHooks: failing), now: now, timeZone: utc)
         }
         let reason = "fx ask: API request failed · HTTP 502 · insufficient_funds"
-        #expect(status(FailingHooks(count: 297, since: since, reason: reason), held).contains(
-            "  hooks      failing since 05:02 (297 in a row): fx ask: API request failed · HTTP 502 · insufficient_funds"))
-        #expect(status(FailingHooks(count: 40, atLeast: true, since: since.addingTimeInterval(-86_400), reason: nil), held)
-            .contains("  hooks      failing since 14 Jan 05:02 or earlier (at least 40 in a row)"))
+        #expect(status(FailingHooks(count: 297, since: since, last: last, reason: reason), held).contains(
+            "  hooks      failing since 05:02 (297 in a row, the last at 07:50): fx ask: API request failed · HTTP 502 · insufficient_funds"))
+        #expect(status(FailingHooks(count: 40, atLeast: true, since: since.addingTimeInterval(-86_400), last: last, reason: nil), held)
+            .contains("  hooks      failing since 14 Jan 05:02 or earlier (at least 40 in a row, the last at 07:50)"))
         // What the hook wrote stays on one line, its controls escaped, cut at 100 characters.
         let long = String(repeating: "x", count: 120)
-        let line = try #require(status(FailingHooks(count: 3, reason: "a\u{7}b\u{202E}c " + long), held).first { $0.hasPrefix("  hooks") })
-        #expect(line == "  hooks      failing (3 in a row): a\\u{7}b\\u{202e}c " + String(repeating: "x", count: 93) + "…")
+        let line = try #require(status(FailingHooks(count: 3, last: last, reason: "a\u{7}b\u{202E}c " + long), held)
+            .first { $0.hasPrefix("  hooks") })
+        #expect(line == "  hooks      failing (3 in a row, the last at 07:50): a\\u{7}b\\u{202e}c " + String(repeating: "x", count: 93) + "…")
+        // A daemon that started again in the run, and counted from 1, does not shorten it.
+        let records = [
+            #"{"type":"hooks_failing","count":297,"reason":"exit_status","stderr_line":"\#(reason)","since":"2027-01-15T05:02:00.000Z","ts":"2027-01-15T07:30:00.000Z"}"#,
+            #"{"type":"hook_no_answer","event":"ev-00000001","hook_line":12,"reason":"exit_status","status":1,"ts":"2027-01-15T07:49:00.000Z"}"#,
+            #"{"type":"hook_no_answer","event":"ev-00000002","hook_line":12,"reason":"exit_status","status":1,"ts":"2027-01-15T07:49:30.000Z"}"#,
+            #"{"type":"hook_no_answer","event":"ev-00000003","hook_line":12,"reason":"exit_status","status":1,"ts":"2027-01-15T07:50:00.000Z"}"#,
+            #"{"type":"hooks_failing","count":3,"reason":"exit_status","stderr_line":"\#(reason)","since":"2027-01-15T07:49:00.000Z","ts":"2027-01-15T07:50:00.000Z"}"#,
+        ]
+        let restarted = FailingHooks.parse(Data(("piece\"}\n" + records.joined(separator: "\n") + "\n").utf8), partialFirstLine: true)
+        #expect(status(restarted, held).contains(
+            "  hooks      failing since 05:02 (300 in a row, the last at 07:50): fx ask: API request failed · HTTP 502 · insufficient_funds"))
+        // An hour after the latest, or with no time for it, nothing: it may have been switched or mended since.
+        #expect(!status(FailingHooks(count: 297, since: since, last: now.addingTimeInterval(-3600), reason: reason), held)
+            .contains { $0.hasPrefix("  hooks") })
+        #expect(!status(FailingHooks(count: 297, since: since, reason: reason), held).contains { $0.hasPrefix("  hooks") })
         // No hook runs outside ask mode, or with no hook: nothing to say.
-        #expect(!status(FailingHooks(count: 5), try snapshot(.blockAll, withHook)).contains { $0.hasPrefix("  hooks") })
-        #expect(!status(FailingHooks(count: 5), try snapshot(.ask)).contains { $0.hasPrefix("  hooks") })
+        #expect(!status(FailingHooks(count: 5, last: last), try snapshot(.blockAll, withHook)).contains { $0.hasPrefix("  hooks") })
+        #expect(!status(FailingHooks(count: 5, last: last), try snapshot(.ask)).contains { $0.hasPrefix("  hooks") })
         #expect(!status(nil, held).contains { $0.hasPrefix("  hooks") })
     }
 
