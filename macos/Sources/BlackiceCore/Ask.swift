@@ -432,6 +432,17 @@ public struct PendingTable<Flow> {
         return .valid(eventID: id, key: entry.key)
     }
 
+    /// The events a daemon that has just registered has not seen, or saw in a process that is
+    /// gone: those still pending, not past their deadline, whose token no answer has presented,
+    /// the one that ends first first. The extension sends them again (since 1.0.9): up to 1.0.8 an
+    /// event raised with no daemon registered (`event_not_sent no_daemon`), in the 10 s launchd
+    /// takes to start one again, or whose hook ended with its daemon, waited for its deadline with
+    /// nothing to answer it. An event whose token was presented is left out: a second answer would
+    /// be refused as spent.
+    public func unanswered(now: TimeInterval) -> [HookEvent] {
+        entries.values.filter { !$0.tokenSpent && $0.deadline > now }.sorted { $0.deadline < $1.deadline }.map(\.event)
+    }
+
     /// What `blackice pending` shows: no tokens.
     public func summaries(now: TimeInterval) -> [PendingSummary] {
         entries.values.sorted { $0.deadline < $1.deadline }.map { entry in

@@ -286,6 +286,24 @@ struct PendingTableTests {
         #expect(table.entry(event.id)?.flows.map(\.flow) == ["flow-1", "flow-2"])
     }
 
+    @Test func aNewDaemonGetsTheEventsNoAnswerHasReached() throws {
+        var table = PendingTable<String>()
+        let maker = EventMaker()
+        let (first, second, third) = (pendingKey(), pendingKey(tool, "example.org", 443), pendingKey(tool, "example.net", 443))
+        guard case .raised(let late) = table.add("a", key: first, addressMatches: true, now: 5, timeout: 10, makeEvent: maker.make(first)),
+              case .raised(let early) = table.add("b", key: second, addressMatches: true, now: 0, timeout: 10, makeEvent: maker.make(second)),
+              case .raised(let spent) = table.add("c", key: third, addressMatches: true, now: 0, timeout: 20, makeEvent: maker.make(third))
+        else { Issue.record("not raised"); return }
+        // The one that ends first first, with its token, as it was sent the first time.
+        #expect(table.unanswered(now: 6).map(\.id) == [early.id, late.id, spent.id])
+        #expect(table.unanswered(now: 6).first?.token == early.token)
+        // An event whose token an answer presented is not sent again, nor one past its deadline.
+        _ = table.spendToken(spent.token, now: 6)
+        #expect(table.unanswered(now: 6).map(\.id) == [early.id, late.id])
+        #expect(table.unanswered(now: 10).map(\.id) == [late.id])
+        #expect(table.unanswered(now: 15).isEmpty)
+    }
+
     @Test func limitsDropInsteadOfGrowing() {
         var table = PendingTable<Int>(maximumEvents: 2, maximumFlows: 4, maximumFlowsPerEvent: 2)
         let maker = EventMaker()
