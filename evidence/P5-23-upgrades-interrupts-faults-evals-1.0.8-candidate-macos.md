@@ -144,9 +144,11 @@ disconnects a filter (P5-22), closed 10 s after the first Control-C, or 4 s afte
    Two connections of Discord's helper raised in the 10 s between the old daemon's end (21:50:41.7Z) and that
    registration were not sent to the new daemon and were dropped at their deadline (`nobody answered in time`).
 
-**Limits.** One Mac, macOS 27.0.1. opencode's eval was not run on build 62's instructions (opencode was not connected). The menu bar
-app reopened with build 62 but was not looked at. A first install of build 62 was not run, and
-neither was the Homebrew cask, which needs the published zip. A connection whose hook a SIGTERM stopped, or that came while no daemon was
-registered, waits for its deadline even once a daemon registers. Every Touch ID was the owner's.
+**Limits.** One Mac, macOS 27.0.1. opencode's eval was not run on build 62's instructions (opencode was not
+connected). The menu bar app reopened with build 62 but was not looked at. A first install of build 62 was not run.
+The Homebrew cask for 1.0.8 (the tap's 1.0.7 cask with `packaging/homebrew-cask-1.0.8.patch` and build 62's
+SHA-256) passed `brew style` and `brew audit --cask --strict`, but was not installed, which needs the published
+zip. A connection whose hook a SIGTERM stopped, or that came while no daemon was registered, waits for its deadline
+even once a daemon registers. Every Touch ID and the administrator's dialog were the owner's.
 
 **Date.** 15 November 2026.
