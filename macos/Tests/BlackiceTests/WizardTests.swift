@@ -808,6 +808,14 @@ struct ReportTests {
     /// An upgrade's start that turned the filter off and stopped part way turns it back on, and
     /// says so; status no longer puts a filter left off down to System Settings alone; and mode
     /// refuses, before Touch ID, what no filter would take.
+    @Test func aRequestMacOSCouldNotAuthorizeSaysWhereToRunIt() {
+        #expect(CLI.extensionRefusalHint(domain: "OSSystemExtensionErrorDomain", code: 13)
+            == "macOS needs an administrator to confirm this and could not ask: run the command in a terminal on the Mac itself, " +
+            "not over ssh.")
+        #expect(CLI.extensionRefusalHint(domain: "OSSystemExtensionErrorDomain", code: 4) == nil)
+        #expect(CLI.extensionRefusalHint(domain: "NSCocoaErrorDomain", code: 13) == nil)
+    }
+
     @Test func whatIsSaidOfAFilterLeftOff() throws {
         #expect(CLI.statusLines(StatusReport(filter: .disabled, daemonRunning: false, pending: nil))
             == ["blackice is off: its filter is turned off (in System Settings, or by a blackice start that did not finish). " +

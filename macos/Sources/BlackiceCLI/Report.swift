@@ -444,6 +444,17 @@ extension CLI {
     public static let stoppedBeforeTurnOffLine = "blackice start was stopped before it changed anything: " +
         "blackice's filter is on as it was. Run blackice start again to finish the upgrade."
 
+    /// What follows macOS's refusal of an extension request when it needed an administrator to
+    /// confirm and had no way to ask (OSSystemExtensionErrorDomain 13, authorization required):
+    /// its dialog shows only for a command run in a terminal on the Mac itself. On 15 November
+    /// 2026 a `blackice stop` over ssh ended that way with macOS's own words alone, "The operation
+    /// couldn't be completed", and the same command in Terminal went through. nil for any other error.
+    public static func extensionRefusalHint(domain: String, code: Int) -> String? {
+        guard domain == "OSSystemExtensionErrorDomain", code == 13 else { return nil }
+        return "macOS needs an administrator to confirm this and could not ask: run the command in a terminal on the Mac itself, " +
+            "not over ssh."
+    }
+
     /// What `start` says when it is stopped once it has turned the filter on again with the new
     /// configuration: what is left is checking that the filter took it.
     public static let stoppedOnLine = "blackice start was stopped after it turned blackice's filter on with the new configuration. " +

@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.0.9 (unreleased)
+
+Fixed:
+- A daemon that registers gets the events still waiting for an answer. An event raised while no daemon was
+  registered (`event_not_sent no_daemon`), in the 10 s launchd takes to start one again after an upgrade, a `start`
+  or a SIGTERM, was never sent, and one whose hook ended with its daemon had nothing left to answer it: either
+  waited for its deadline and was dropped. On 15 November, on 1.0.8, two connections of Discord's helper raised in
+  the 10 s after a `start` were dropped that way, and so was a `curl` whose hook a SIGTERM stopped. The extension
+  now sends the new daemon every pending event that is not past its deadline and whose token no answer has
+  presented (`control events_sent_again`), and the daemon runs their hooks with the time they have left.
+- `blackice stop` and `start` say where to run them when macOS needs an administrator to confirm and cannot ask.
+  Over ssh macOS's dialog does not show, and the command ended with macOS's words alone (`OSSystemExtensionErrorDomain
+  13`); it now adds that the command has to run in a terminal on the Mac itself.
+
 ## 1.0.8 (15 November 2026)
 
 Read from three days of the owner's own `events.jsonl` (551 events on 1.0.7 since 11 November, fx answering, a

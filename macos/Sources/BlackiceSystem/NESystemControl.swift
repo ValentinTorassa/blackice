@@ -851,6 +851,7 @@ final class ExtensionRequestDelegate: NSObject, OSSystemExtensionRequestDelegate
         }
         output.stderr("macOS refused the network extension request: \(error.localizedDescription) " +
                       "(\(error.domain) \(error.code)).")
+        if let hint = CLI.extensionRefusalHint(domain: error.domain, code: error.code) { output.stderr(hint) }
         result.finish(ExitCode.software)
     }
 }
