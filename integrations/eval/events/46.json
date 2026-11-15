@@ -1,0 +1,12 @@
+{
+  "event": "connection",
+  "id": "ev-0000002e",
+  "app": {
+    "cdhash": "a41c7e2b9d05f38e6c1a7b4d2e90f5c3b8a6d172",
+    "path": "/Users/me/.local/share/uv/python/cpython-3.13.14-macos-aarch64-none/bin/python3.13",
+    "script": "/tmp/sync.py"
+  },
+  "ip": "76.76.21.61",
+  "port": 443,
+  "host": "ai-gateway.vercel.sh"
+}

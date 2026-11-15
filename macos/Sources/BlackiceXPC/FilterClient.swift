@@ -106,9 +106,9 @@ private final class ReplyBox: @unchecked Sendable {
 /// extension held when it sent it; when the daemon holds another, it calls `configuration()`,
 /// which registers again on the same connection and returns what the extension holds now. The
 /// daemon never reads a configuration from anywhere else.
-/// When the connection ends (the extension stopped or restarted), the stream finishes and the
-/// daemon exits with an error, so launchd starts it again and it registers anew. After an upgrade
-/// that is the new binary, which connects to the new build's Mach service.
+/// When the connection ends (the extension stopped or restarted), the stream finishes, the daemon
+/// stops its hooks and exits with an error, so launchd starts it again and it registers anew.
+/// After an upgrade that is the new binary, which connects to the new build's Mach service.
 public final class XPCEventIntake: NSObject, EventIntake, EventReceiverXPC, @unchecked Sendable {
     private let teamID: String
     private let app: URL
@@ -117,6 +117,7 @@ public final class XPCEventIntake: NSObject, EventIntake, EventReceiverXPC, @unc
     private let lock = NSLock()
     private var continuation: AsyncStream<IntakeMessage>.Continuation?
     private var connection: NSXPCConnection?
+    private var stopped = false
 
     /// `app` is the Blackice.app whose extension it connects to.
     public init(teamID: String, app: URL = Bundle.main.bundleURL, onVerdict: @escaping @Sendable (String, Verdict) -> Void,
@@ -152,12 +153,25 @@ public final class XPCEventIntake: NSObject, EventIntake, EventReceiverXPC, @unc
                 report("the network extension went away")
                 continuation.finish()
             }
+            // Set before `stop` can see the stream: a stream finished first never calls a handler
+            // set after, and the connection then stayed open, so the extension went on sending
+            // events to a daemon on its way out, each to wait until its deadline.
+            let opened = ObjectIdentifier(connection)
+            continuation.onTermination = { [weak self] _ in self?.close(opened) }
             lock.lock()
+            guard !stopped else {
+                lock.unlock()
+                connection.invalidate()
+                continuation.finish()
+                return
+            }
             self.continuation = continuation
             self.connection = connection
-            lock.unlock()
-            continuation.onTermination = { [weak self] _ in self?.close() }
+            // Resumed under the lock, so that `stop` comes either before, and the connection is
+            // never resumed, or after, and finishing the stream closes it. NSXPCConnection calls
+            // its handlers on a queue of its own, never from within resume().
             connection.resume()
+            lock.unlock()
             Task { [report] in
                 do {
                     let configuration = try await self.configuration()
@@ -219,10 +233,28 @@ public final class XPCEventIntake: NSObject, EventIntake, EventReceiverXPC, @unc
                     once.resume(throwing: FilterClientError("the network extension sent an invalid reply: \(error)"))
                 }
             }
+            // Its own error: the connection may be up and the extension slow, and the answer taken.
             DispatchQueue.global().asyncAfter(deadline: .now() + FilterClient.replyTimeout) {
-                once.resume(throwing: FilterClientError("the network extension did not answer in time"))
+                once.resume(throwing: AnswerReplyTimeout(seconds: FilterClient.replyTimeout))
             }
         }
+    }
+
+    /// Ends the stream of messages, and the connection with it, as when the extension goes away:
+    /// the daemon got SIGTERM. A stream asked for later ends at once.
+    public func stop() {
+        lock.lock()
+        stopped = true
+        let continuation = self.continuation
+        lock.unlock()
+        continuation?.finish()
+    }
+
+    /// Whether `stop` was called.
+    public var isStopped: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return stopped
     }
 
     private func currentConnection() -> NSXPCConnection? {
@@ -231,13 +263,17 @@ public final class XPCEventIntake: NSObject, EventIntake, EventReceiverXPC, @unc
         return connection
     }
 
-    private func close() {
+    /// Ends the connection `opened` names, with its stream, when it is still the one held.
+    private func close(_ opened: ObjectIdentifier) {
         lock.lock()
-        let current = connection
+        guard let current = connection, ObjectIdentifier(current) == opened else {
+            lock.unlock()
+            return
+        }
         connection = nil
         continuation = nil
         lock.unlock()
-        current?.invalidate()
+        current.invalidate()
     }
 
     public func receive(_ message: Data, reply: @escaping (Bool) -> Void) {

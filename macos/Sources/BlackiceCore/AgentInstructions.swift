@@ -211,7 +211,7 @@ extension AgentInstructions {
     /// - opencode: the prompt of the blackice agent in OPENCODE_CONFIG_CONTENT, and XDG_CONFIG_HOME;
     /// - fx: `--system` right after `ask`, which replaces fx's own system prompt.
     /// `configurationFolder` is opencode's XDG_CONFIG_HOME. All of it together stays far below
-    /// ARG_MAX (1 MiB): about 10 KB of instructions and at most 4 KiB of notes.
+    /// ARG_MAX (1 MiB): about 13 KB of instructions and at most 4 KiB of notes.
     public func launch(arguments configured: [String], notes: String?, configurationFolder: String? = nil) -> AgentLaunch {
         var arguments = Self.removing(ownedFlags, from: upgraded(configured))
         switch self {

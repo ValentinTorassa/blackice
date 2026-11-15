@@ -45,7 +45,8 @@ private func flow(_ identity: IdentityResolution, _ host: String?, port: UInt16?
 /// Every host resolves to the flow's address, and nothing is approved.
 private var matching: PolicyContext { PolicyContext(approved: { _, _ in false }, address: { _, _ in .match }) }
 
-/// Approvals and resolver answers by host; a host without answers is not looked up yet.
+/// Approvals and resolver answers by host; a host without answers is not looked up yet, and one
+/// with none is a failed lookup.
 private func context(approved: Set<ApprovalKey> = [], answers: [String: [String]] = [:]) -> PolicyContext {
     PolicyContext(
         approved: { approved.contains(ApprovalKey(identity: $0, host: $1)) },
@@ -120,16 +121,17 @@ struct FilterPolicyTests {
             == .allow(reason: "rule_line_3"))
         // The app named the rule's host but connects somewhere else.
         let elsewhere = context(answers: ["api.example.com": ["198.51.100.1", "198.51.100.2"]])
-        #expect(FilterPolicy.decide(facts, snapshot: snapshot, context: elsewhere) == .drop(reason: "address_mismatch"))
+        #expect(FilterPolicy.decide(facts, snapshot: snapshot, context: elsewhere) == .drop(reason: "address_mismatch;no_dns_names"))
         // A failed lookup leaves no answers, which nothing matches.
         let failed = context(answers: ["api.example.com": []])
-        #expect(FilterPolicy.decide(facts, snapshot: snapshot, context: failed) == .drop(reason: "address_mismatch"))
+        #expect(FilterPolicy.decide(facts, snapshot: snapshot, context: failed) == .drop(reason: "address_mismatch;lookup_failed"))
         // A link-local answer counts only on its own interface.
         let link = context(answers: ["api.example.com": ["fe80::7%1"]])
         let linkFlow = { (address: String) in flow(agent, "api.example.com", port: 8443, address: address) }
         #expect(FilterPolicy.decide(linkFlow("fe80::7%1"), snapshot: snapshot, context: link) == .allow(reason: "rule_line_3"))
-        #expect(FilterPolicy.decide(linkFlow("fe80::7%2"), snapshot: snapshot, context: link) == .drop(reason: "address_mismatch"))
-        #expect(FilterPolicy.decide(linkFlow("fe80::7"), snapshot: snapshot, context: link) == .drop(reason: "address_mismatch"))
+        #expect(FilterPolicy.decide(linkFlow("fe80::7%2"), snapshot: snapshot, context: link)
+            == .drop(reason: "address_mismatch;no_dns_names"))
+        #expect(FilterPolicy.decide(linkFlow("fe80::7"), snapshot: snapshot, context: link) == .drop(reason: "address_mismatch;no_dns_names"))
         // No rule by name: dropped without a lookup.
         #expect(FilterPolicy.decide(flow(agent, "other.example.com"), snapshot: snapshot, context: context())
             == .drop(reason: "no_rule"))
@@ -160,9 +162,9 @@ struct FilterPolicyTests {
              .readServerName),
             (flow(agent, "other.example.com"),
              context(approved: [key(agent, "other.example.com")], answers: ["other.example.com": ["198.51.100.9"]]),
-             .drop(reason: "address_mismatch")),
+             .drop(reason: "address_mismatch;no_dns_names")),
             (flow(agent, "api.example.com"), context(answers: ["api.example.com": ["198.51.100.9"]]),
-             .drop(reason: "address_mismatch")),
+             .drop(reason: "address_mismatch;no_dns_names")),
             // An approval names the app and the host, any port.
             (flow(agent, "other.example.com", port: 8443),
              context(approved: [key(agent, "other.example.com")], answers: ["other.example.com": here]),
@@ -209,7 +211,7 @@ struct FilterPolicyTests {
         }
         let remembered = FlowVerdict.drop(reason: "denied;remembered")
         // By name, before any lookup; by cdhash; by the one name DNS answers gave; by address.
-        for check in [AddressCheck.match, .mismatch, .unknown] {
+        for check in [AddressCheck.match, .mismatch, .lookupFailed, .unknown] {
             #expect(FilterPolicy.decide(flow(agent, "other.example.com"), snapshot: ask, context: context(check)) == remembered)
         }
         #expect(FilterPolicy.decide(flow(adHoc, "example.org", port: 22), snapshot: ask, context: context(.match)) == remembered)
@@ -328,7 +330,7 @@ struct FilterPolicyTests {
         // The server name is checked against the address like a host name from the system.
         #expect(decide(.serverName("api.example.com"), blockAll, held, context()) == .resolveHost("api.example.com"))
         #expect(decide(.serverName("api.example.com"), blockAll, held, context(answers: ["api.example.com": ["198.51.100.9"]]))
-            == .drop(reason: "address_mismatch"))
+            == .drop(reason: "address_mismatch;no_dns_names"))
 
         let ask = try policySnapshot(.ask)
         #expect(decide(.serverName("api.example.com"), ask) == .allow(reason: "rule_line_3;server_name"))
@@ -402,7 +404,148 @@ struct FilterPolicyTests {
         #expect(FilterPolicy.decide(flow(agent, "evil.example.net"), snapshot: blockAll, context: matching)
             == .drop(reason: "no_rule"))
         #expect(FilterPolicy.decide(named, snapshot: blockAll, context: context(answers: ["api.example.com": ["198.51.100.9"]]))
-            == .drop(reason: "address_mismatch"))
+            == .drop(reason: "address_mismatch;no_dns_names"))
+    }
+
+    // The host whose address checked out as the flow started is not checked again at its hello:
+    // an agent that approves slowly, or a connection opened ahead of its request, met a CDN that
+    // had moved on, and the approved or rule-covered flow was dropped as `address_mismatch`.
+    @Test func theHelloDoesNotCheckAgainTheAddressCheckedAsTheFlowStarted() throws {
+        let twoHosts = try ProviderConfiguration(generation: 7, mode: .blockAll, configText: """
+            mode = "block-all"
+
+            [[allow]]
+            app = "com.example.agent"
+            team = "ABCDE12345"
+            hosts = ["api.example.com", "cdn.example.com"]
+
+            """)
+        let ask = try policySnapshot(.ask)
+        func hello(_ name: String, _ snapshot: ProviderConfiguration, _ facts: FlowFacts,
+                   _ context: PolicyContext) -> FlowVerdict {
+            FilterPolicy.decide(facts, serverName: .serverName(name), snapshot: snapshot, context: context)
+        }
+        let here = context(answers: ["api.example.com": [flowAddress], "other.example.com": [flowAddress]])
+        // Block-all: the rule's host matched, and the flow is held for its hello with that host checked.
+        let named = flow(agent, "api.example.com")
+        let verdict = FilterPolicy.decide(named, snapshot: twoHosts, context: here)
+        #expect(verdict == .readServerName)
+        let held = FilterPolicy.checkedAtConnect(named, verdict)
+        #expect(held.checkedHosts == ["api.example.com"] && named.checkedHosts.isEmpty)
+        // By the hello the answers moved on, or the lookup failed, or expired: it passes all the same.
+        let moved = context(answers: ["api.example.com": ["198.51.100.9"], "cdn.example.com": ["198.51.100.9"]])
+        for later in [moved, context(answers: ["api.example.com": []]), context()] {
+            #expect(hello("api.example.com", twoHosts, held, later) == .allow(reason: "rule_line_3;server_name"))
+            #expect(hello("API.Example.com.", twoHosts, held, later) == .allow(reason: "rule_line_3;server_name"))
+        }
+        // Without the check carried, the hello checks the host again, and the reason says so.
+        #expect(hello("api.example.com", twoHosts, named, moved) == .drop(reason: "address_mismatch;recheck"))
+        #expect(hello("api.example.com", twoHosts, named, context()) == .resolveHost("api.example.com"))
+        // Another server name goes through the whole check: covered itself, with its own address.
+        #expect(hello("cdn.example.com", twoHosts, held, context()) == .resolveHost("cdn.example.com"))
+        #expect(hello("cdn.example.com", twoHosts, held, moved) == .drop(reason: "server_name_mismatch"))
+        #expect(hello("cdn.example.com", twoHosts, held, context(answers: ["cdn.example.com": [flowAddress]]))
+            == .allow(reason: "rule_line_3;server_name"))
+        #expect(hello("evil.example.net", twoHosts, held, matching) == .drop(reason: "server_name_mismatch"))
+        // The rule still decides at the hello: gone from the configuration, the host is not allowed.
+        #expect(hello("api.example.com", try policySnapshot(.blockAll, generation: 8), held, moved)
+            == .allow(reason: "rule_line_3;server_name"))
+        let without = try ProviderConfiguration(generation: 8, mode: .blockAll, configText: "mode = \"block-all\"\n")
+        #expect(hello("api.example.com", without, held, matching) == .drop(reason: "no_rule"))
+
+        // Ask mode: asked about with its address matching, approved a minute later, when the CDN has
+        // moved on. The approval still has to be there.
+        let other = flow(agent, "other.example.com")
+        let asked = FilterPolicy.decide(other, snapshot: ask, context: here)
+        #expect(asked == .ask(reason: "no_rule", addressMatches: true))
+        let paused = FilterPolicy.checkedAtConnect(other, asked)
+        #expect(paused.checkedHosts == ["other.example.com"])
+        let approvedLate = context(approved: [key(agent, "other.example.com")], answers: ["other.example.com": ["198.51.100.9"]])
+        #expect(hello("other.example.com", ask, paused, approvedLate) == .allow(reason: "approval;server_name"))
+        #expect(hello("other.example.com", ask, other, approvedLate) == .drop(reason: "address_mismatch;recheck"))
+        #expect(hello("evil.example.net", ask, paused, approvedLate) == .drop(reason: "server_name_mismatch"))
+        #expect(hello("other.example.com", ask, paused, context()) == .ask(reason: "no_rule", addressMatches: true))
+
+        // Nothing is carried when the start checked nothing for a host name: no host name, a lookup
+        // still to come, a mismatch, a drop, or an allow that needs no hello.
+        let unchecked: [(FlowFacts, ProviderConfiguration, PolicyContext)] = [
+            (flow(agent, nil), twoHosts, matching),
+            (flow(agent, nil, dnsNames: ["api.example.com"]), twoHosts, matching),
+            (named, twoHosts, context()),
+            (named, twoHosts, moved),
+            (other, ask, context(answers: ["other.example.com": ["198.51.100.9"]])),
+            (flow(agent, "api.example.com", port: 8443), twoHosts, here),
+            (flow(probe, "api.example.com"), twoHosts, here),
+        ]
+        for (facts, snapshot, context) in unchecked {
+            let verdict = FilterPolicy.decide(facts, snapshot: snapshot, context: context)
+            #expect(FilterPolicy.checkedAtConnect(facts, verdict).checkedHosts.isEmpty, "\(facts) \(verdict)")
+        }
+    }
+
+    // An address mismatch says why: the host's lookup failed, no DNS answer named the address, or
+    // answers named it for other hosts.
+    @Test func anAddressMismatchSaysWhy() throws {
+        let blockAll = try policySnapshot(.blockAll)
+        let ask = try policySnapshot(.ask)
+        let moved = context(answers: ["api.example.com": ["198.51.100.9"]])
+        #expect(FilterPolicy.decide(flow(agent, "api.example.com", port: 8443), snapshot: blockAll, context: moved)
+            == .drop(reason: "address_mismatch;no_dns_names"))
+        #expect(FilterPolicy.decide(flow(agent, "api.example.com", port: 8443, dnsNames: ["cdn.example.net"]),
+                                    snapshot: blockAll, context: moved) == .drop(reason: "address_mismatch;dns_other_names"))
+        #expect(FilterPolicy.decide(flow(agent, "api.example.com", port: 8443, dnsNames: ["cdn.example.net"]),
+                                    snapshot: blockAll, context: context(answers: ["api.example.com": []]))
+            == .drop(reason: "address_mismatch;lookup_failed"))
+        // An approved pair in ask mode, and a server name with no name before it.
+        let approved = context(approved: [key(agent, "other.example.com")], answers: ["other.example.com": []])
+        #expect(FilterPolicy.decide(flow(agent, "other.example.com", port: 8443), snapshot: ask, context: approved)
+            == .drop(reason: "address_mismatch;lookup_failed"))
+        #expect(FilterPolicy.decide(flow(agent, nil), serverName: .serverName("api.example.com"), snapshot: ask, context: moved)
+            == .drop(reason: "address_mismatch;no_dns_names"))
+        // What nothing names is still asked about, the approval to count for the next connection.
+        #expect(FilterPolicy.decide(flow(agent, "other.example.com"), snapshot: ask,
+                                    context: context(answers: ["other.example.com": []]))
+            == .ask(reason: "no_rule", addressMatches: false))
+        // Only the check that decided says the lookup failed: a plain mismatch never does.
+        let plain = PolicyContext(approved: { _, _ in false }, address: { _, _ in .mismatch })
+        #expect(FilterPolicy.decide(flow(agent, "api.example.com", port: 8443), snapshot: blockAll, context: plain)
+            == .drop(reason: "address_mismatch;no_dns_names"))
+        let failed = PolicyContext(approved: { _, _ in false }, address: { _, _ in .lookupFailed })
+        #expect(FilterPolicy.decide(flow(agent, "api.example.com", port: 8443), snapshot: blockAll, context: failed)
+            == .drop(reason: "address_mismatch;lookup_failed"))
+    }
+
+    // The reason comes from the answers that decided, read once. It read the cache a second time,
+    // so a failed lookup that took the place of real answers in between labeled a drop decided on
+    // those answers `;lookup_failed`, and answers that took the place of a failed lookup hid it.
+    @Test func aMismatchSaysWhyFromTheAnswersThatDecidedIt() throws {
+        let blockAll = try policySnapshot(.blockAll)
+        let ask = try policySnapshot(.ask)
+        let cache = HostAddressCache(resolver: SystemHostResolver(), clock: { 1000 })
+        let elsewhere = try #require(IPAddress("198.51.100.9"))
+        // Each check is followed at once by a lookup that stores `next`.
+        func racing(_ next: Set<IPAddress>, approved: Set<ApprovalKey> = []) -> PolicyContext {
+            PolicyContext(
+                approved: { approved.contains(ApprovalKey(identity: $0, host: $1)) },
+                address: { host, address in
+                    defer { cache.store(host, next) }
+                    return cache.checkOrRefresh(host: host, address: address)
+                })
+        }
+        let facts = flow(agent, "api.example.com", port: 8443)
+        cache.store("api.example.com", [elsewhere])
+        #expect(FilterPolicy.decide(facts, snapshot: blockAll, context: racing([]))
+            == .drop(reason: "address_mismatch;no_dns_names"))
+        #expect(FilterPolicy.decide(facts, snapshot: blockAll, context: racing([elsewhere]))
+            == .drop(reason: "address_mismatch;lookup_failed"))
+        // An approved pair in ask mode, the same way.
+        let other = flow(agent, "other.example.com", port: 8443)
+        let approved: Set<ApprovalKey> = [key(agent, "other.example.com")]
+        cache.store("other.example.com", [elsewhere])
+        #expect(FilterPolicy.decide(other, snapshot: ask, context: racing([], approved: approved))
+            == .drop(reason: "address_mismatch;no_dns_names"))
+        #expect(FilterPolicy.decide(other, snapshot: ask, context: racing([elsewhere], approved: approved))
+            == .drop(reason: "address_mismatch;lookup_failed"))
     }
 
     @Test func anEncryptedClientHelloIsJudgedOnItsOuterName() throws {

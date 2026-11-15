@@ -202,6 +202,43 @@ struct FlowReportTests {
         ])
         #expect(FlowReport.words("ask_capacity_app") == "its app has too many waiting for an answer")
         #expect(FlowReport.words("ask_capacity") == "too many waiting for an answer")
+        #expect(FlowReport.words("lookup_timeout") == "the lookup of its host waited too long")
+    }
+
+    /// An address mismatch says why, and a wait the Mac slept through is not one nobody answered:
+    /// each is its own row, and a reason with more after it keeps the longest part it knows.
+    @Test func mismatchesAndLateTimeoutsSayWhy() {
+        let text = ([line("drop address_mismatch;lookup_failed app=\(tool) <private>"),
+                     line("drop address_mismatch;lookup_failed app=\(tool) <private>"),
+                     line("drop address_mismatch;no_dns_names app=\(node) <private>"),
+                     line("drop timeout;asleep app=\(node) <private>"),
+                     line("drop timeout app=\(node) <private>")])
+            .joined(separator: "\n")
+        #expect(FlowReport(logText: text).summary(last: "1h") == [
+            "Last 1h: 5 connections, 5 dropped",
+            "",
+            "Dropped",
+            "  2  address not the host's: its lookup failed",
+            "       2  com.example.tool (ABCDE12345)",
+            "  1  address not the host's, and no DNS answer named it",
+            "       1  cdhash 3f1c6a0b",
+            "  1  nobody answered in time",
+            "       1  cdhash 3f1c6a0b",
+            "  1  the Mac slept through the wait",
+            "       1  cdhash 3f1c6a0b",
+        ])
+        #expect(FlowReport.words("address_mismatch") == "address not the host's")
+        #expect(FlowReport.words("address_mismatch;dns_other_names") == "address not the host's, but DNS answers named other hosts")
+        #expect(FlowReport.words("address_mismatch;recheck") == "address not the host's at the hello")
+        #expect(FlowReport.words("address_mismatch;lookup_failed;interpreter")
+                == "address not the host's: its lookup failed (interpreter)")
+        #expect(FlowReport.words("address_mismatch;later_cause;ech") == "address not the host's (later_cause;ech)")
+        #expect(FlowReport.words("no_rule;interpreter") == "no rule (interpreter)")
+        #expect(FlowReport.words("unheard_of;x") == "unheard_of;x")
+        #expect(FlowReport.words(";") == ";")
+        // The resolver's multicast DNS, which ask mode lets through.
+        let dry = FlowReport(logText: line("allow accept_all app=apple/com.apple.mDNSResponder would=mdns <private>"))
+        #expect(dry.summary(last: "1h").contains("  1  would go through (multicast DNS 1)"))
     }
 
     @Test func sumsUpTheDryRunOfAskMode() {

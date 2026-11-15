@@ -14,6 +14,8 @@
 #   DRY=1 scripts/sign.sh: no notarization, no stapling, no Gatekeeper and no Developer ID checks.
 #   It checks this script, the archive, the checksum file and the unpacked app's signature.
 #   OUT=DIR writes to DIR (default macos/build/package-<time>).
+#   It prints the commit the app was built from, BlackiceSourceCommit in its Info.plist, which
+#   sign.sh writes; unless DRY, the app must name one.
 set -euo pipefail
 SCRIPTS="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 MACOS_DIR="$(cd -- "$SCRIPTS/.." && pwd)"
@@ -24,7 +26,7 @@ die() { echo "ERROR: $*" >&2; exit 1; }
 step() { printf '\n== %s\n' "$*"; }
 
 if [[ $# -lt 2 || $# -gt 3 ]]; then
-    sed -n 10,16p "$0" >&2
+    sed -n 10,18p "$0" >&2
     exit 64
 fi
 TEAM_ID=$1 SRC_APP=${2%/} NOTARY=${3:-}
@@ -66,8 +68,14 @@ BUILD=$(plist "$SRC_APP" CFBundleVersion)
 # Each build's own XPC service, as sign.sh names it and the CLI looks it up.
 SERVICE=$(plist "$SRC_APP/$EXT_PATH" NetworkExtension:NEMachServiceName)
 [[ "$SERVICE" == "$TEAM_ID.$FILTER_ID.$BUILD" ]] || die "NEMachServiceName is '$SERVICE', not $TEAM_ID.$FILTER_ID.$BUILD"
+# The commit sign.sh built it from, under the signature like the rest of Info.plist.
+COMMIT=$(plist "$SRC_APP" BlackiceSourceCommit)
+[[ "$(plist "$SRC_APP/$EXT_PATH" BlackiceSourceCommit)" == "$COMMIT" ]] || die "the extension's source commit differs from the app's"
+if [[ -z "$DRY" && ! "$COMMIT" =~ ^[0-9a-f]{40}([0-9a-f]{24})?$ ]]; then
+    die "BlackiceSourceCommit is '${COMMIT:-missing}', not a commit: sign the app with scripts/sign.sh from a tree with nothing uncommitted"
+fi
 NAME="Blackice-$VERSION"
-echo "Blackice.app $VERSION (build $BUILD) -> $OUT/$NAME.zip"
+echo "Blackice.app $VERSION (build $BUILD, commit ${COMMIT:-unknown}) -> $OUT/$NAME.zip"
 codesign --verify --strict --deep --verbose=2 "$SRC_APP"
 echo "$FILTER_ID:"
 check_signature "$SRC_APP/$EXT_PATH" "$FILTER_ID"
@@ -133,10 +141,13 @@ command rm -rf -- "$OUT/verify"
 
 step "Done: $OUT/$NAME.zip"
 ls -l "$OUT/$NAME.zip" "$OUT/$NAME.zip.sha256"
+echo "Built from commit ${COMMIT:-unknown}"
 if [[ -n "$DRY" ]]; then
     echo 'DRY run finished. Ad hoc signature: this package is for checking the script, not for release.'
 else
     echo "Publish both files together; docs/install.md says how to check and install them."
+    echo "Name commit $COMMIT in the release notes. The tag v$VERSION goes on it, or on a later commit"
+    echo "(the pins below) that changes nothing in macos/: git diff --stat $COMMIT v$VERSION -- macos/ prints nothing."
     # The pins come from this file, not from the release: they are what the release must match.
     SHA=$(cut -d' ' -f1 < "$OUT/$NAME.zip.sha256")
     echo "Then pin this zip: VERSION=$VERSION and SHA256=$SHA in site/lib/install.sh, the version in"

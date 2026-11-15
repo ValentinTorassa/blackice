@@ -7,7 +7,8 @@ public struct StatusReport {
         /// Another product's content filter is configured; blackice leaves it alone.
         case foreign(String)
         case notConfigured
-        /// Saved, but turned off (in System Settings › Network › Filters, or by another tool).
+        /// Saved, but turned off: in System Settings › Network › Filters, by another tool, or by a
+        /// `blackice start` that turned it off for an upgrade and did not get to turn it on again.
         case disabled
         /// Saved and on, but the configuration in it cannot be read.
         case unreadable
@@ -23,14 +24,21 @@ public struct StatusReport {
     public let upgrade: UnfinishedUpgrade?
     /// Set while macOS has not finished disconnecting a filter that another replaced.
     public let held: HeldDisconnect?
+    /// The text of ~/.config/blackice/blackice.toml, to say where what blackice holds differs from
+    /// it; nil when there is no such file or it cannot be read.
+    public let file: String?
+    /// Set from `FailingHooks.threshold` hooks in a row that gave no answer.
+    public let failingHooks: FailingHooks?
 
     public init(filter: Filter, daemonRunning: Bool, pending: PendingReply?, upgrade: UnfinishedUpgrade? = nil,
-                held: HeldDisconnect? = nil) {
+                held: HeldDisconnect? = nil, file: String? = nil, failingHooks: FailingHooks? = nil) {
         self.filter = filter
         self.daemonRunning = daemonRunning
         self.pending = pending
         self.upgrade = upgrade
         self.held = held
+        self.file = file
+        self.failingHooks = failingHooks
     }
 }
 
@@ -123,8 +131,16 @@ extension CLI {
         "macOS is not done after \(limit) s. Starting the filter anyway."
     }
 
-    public static func statusLines(_ report: StatusReport) -> [String] {
-        var lines = filterLines(report)
+    /// What `status`, and `mode` before Touch ID, say when the filter is saved but turned off. A
+    /// `blackice start` that turned it off for an upgrade turns it on again when it is stopped
+    /// part way, and says so when that fails too; until 1.0.8 it did not, and this line named
+    /// System Settings alone.
+    public static let turnedOffLine = "blackice is off: its filter is turned off (in System Settings, or by a blackice start " +
+        "that did not finish). blackice start turns it on."
+
+    /// What `status` prints. `now` and `timeZone` place the time a run of hooks with no answer began.
+    public static func statusLines(_ report: StatusReport, now: Date = Date(), timeZone: TimeZone = .current) -> [String] {
+        var lines = filterLines(report, now: now, timeZone: timeZone)
         if let held = report.held {
             lines.append("  " + "network".padding(toLength: 11, withPad: " ", startingAt: 0) +
                 "no new connection gets through: macOS is still disconnecting the filter that stopped" +
@@ -133,7 +149,7 @@ extension CLI {
         return lines
     }
 
-    private static func filterLines(_ report: StatusReport) -> [String] {
+    private static func filterLines(_ report: StatusReport, now: Date, timeZone: TimeZone) -> [String] {
         let configuration: ProviderConfiguration
         switch report.filter {
         case .foreign(let owner):
@@ -141,14 +157,23 @@ extension CLI {
         case .notConfigured:
             return ["blackice is off. Start it: blackice start"]
         case .disabled:
-            return ["blackice is off: its filter is turned off in System Settings › Network › Filters. blackice start turns it on."]
+            return [turnedOffLine]
         case .unreadable:
             return ["blackice is on, but its saved configuration cannot be read. Load yours again: blackice start"]
         case .on(let saved):
             configuration = saved
         }
         let config = configuration.config
-        var lines = ["blackice is on in \(configuration.mode.rawValue) mode"]
+        // The file as it is now, against what blackice holds: a switch made with `blackice mode` or
+        // the menu, which the file does not have, and a file changed since the last start, which
+        // the next start loads. Until 1.0.8 status said neither, and a start dropped such a switch
+        // unsaid.
+        let file = report.file.flatMap { try? BlackiceConfig(text: $0) }
+        var title = "blackice is on in \(configuration.mode.rawValue) mode"
+        if configuration.mode != config.mode, file?.mode != configuration.mode {
+            title += " (" + switched + (file.map { "; blackice.toml has \($0.mode.rawValue)" } ?? "") + ")"
+        }
+        var lines = [title]
         // The filter keeps the configuration it has when it refuses the saved one.
         if let pending = report.pending, pending.active.map({ !$0.matches(configuration) }) ?? true {
             lines = [pending.active.map {
@@ -158,7 +183,15 @@ extension CLI {
         }
         func row(_ label: String, _ value: String) { lines.append("  " + label.padding(toLength: 11, withPad: " ", startingAt: 0) + value) }
         let ask = configuration.mode == .ask
-        if ask { row("answers", answeringLine(config)) }
+        if ask {
+            if configuration.answersSwitched(from: report.file ?? configuration.configText) != nil,
+               file.map({ $0.answering.answerer != config.answering.answerer }) ?? true {
+                row("answers", answererName(config) + " (" + switched +
+                    (file.map { "; blackice.toml has \(answererName($0))" } ?? "") + ")")
+            } else {
+                row("answers", answeringLine(config))
+            }
+        }
         if let pending = report.pending {
             if !pending.events.isEmpty {
                 row("waiting", Describe.count(pending.events.count, "app and host", "apps and hosts") + ": blackice pending")
@@ -174,7 +207,13 @@ extension CLI {
         row("rules", config.allow.isEmpty ? "none" : "\(config.allow.count)")
         if let approvals = report.pending?.approvals, !approvals.isEmpty { row("approvals", "\(approvals.count)") }
         if ask { row("timeout", "\(config.timeoutSeconds) s") }
+        // Only where hooks run: in ask mode, under a configuration that has some; and only while
+        // the latest failed within the hour, as the menu says it.
+        if ask, !config.activeHooks.isEmpty, let failing = report.failingHooks, failing.isRecent(at: now) {
+            row("hooks", failingLine(failing, now: now, timeZone: timeZone))
+        }
         if !config.activeHooks.isEmpty, !report.daemonRunning { row("daemon", "not running, so no hook runs: blackice agent install") }
+        if let text = report.file, !configuration.isStarted(from: text) { row("file", fileLine(file, against: configuration)) }
         // What a first start whose agent setup did not finish leaves: on, filtering nothing.
         if configuration.mode == .acceptAll, config.hooks.isEmpty {
             row("next", "blackice agent connect fx, or blackice mode ask")
@@ -187,6 +226,76 @@ extension CLI {
             }
         }
         return lines
+    }
+
+    /// How `status` and `start` say that the mode or who answers was switched in the configuration
+    /// blackice holds, never in the file.
+    private static let switched = "switched with blackice mode or the menu"
+
+    /// `status`'s line for ~/.config/blackice/blackice.toml when it is not what the last start
+    /// loaded: changed since, or another file was started. The next `blackice start` loads it,
+    /// and with it its own mode and answerer, which it names where they differ from what blackice
+    /// holds; `file` is nil when it does not parse.
+    static func fileLine(_ file: BlackiceConfig?, against configuration: ProviderConfiguration) -> String {
+        guard let file else {
+            let shown = Describe.terminalSafe(Describe.path(defaultConfigPath, home: NSHomeDirectory()))
+            return "changed since the last start, and blackice start cannot load it: blackice validate \(shown)"
+        }
+        var loads: [String] = []
+        if file.mode != configuration.mode { loads.append("\(file.mode.rawValue) mode") }
+        if file.mode == .ask, configuration.mode != .ask || file.answering.answerer != configuration.config.answering.answerer {
+            loads.append(answersPhrase(file))
+        }
+        return "changed since the last start: blackice start loads it" + (loads.isEmpty ? "" : " (\(loads.joined(separator: ", ")))")
+    }
+
+    /// `status`'s line for hooks that keep giving no answer: "failing since 14:02 (297 in a row,
+    /// the last at 16:40): fx ask: API request failed · HTTP 502". The times are the first one's
+    /// and the latest one's, with the day when that was not today. The reason is cut at 100
+    /// characters and made safe for the terminal.
+    static func failingLine(_ failing: FailingHooks, now: Date, timeZone: TimeZone) -> String {
+        var line = "failing"
+        if let since = failing.since {
+            line += " since " + clockTime(since, now: now, timeZone: timeZone) + (failing.atLeast ? " or earlier" : "")
+        }
+        line += " (" + (failing.atLeast ? "at least " : "") + "\(failing.count) in a row"
+            + (failing.last.map { ", the last at " + clockTime($0, now: now, timeZone: timeZone) } ?? "") + ")"
+        if let reason = failing.reason {
+            line += ": " + Describe.terminalSafe(reason.count > 100 ? String(reason.prefix(99)) + "…" : reason)
+        }
+        return line
+    }
+
+    /// "14:02" on the day of `now`, "12 Nov 14:02" another day, in `timeZone`.
+    static func clockTime(_ date: Date, now: Date, timeZone: TimeZone) -> String {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = timeZone
+        let parts = calendar.dateComponents([.month, .day, .hour, .minute], from: date)
+        let time = String(format: "%02d:%02d", parts.hour ?? 0, parts.minute ?? 0)
+        if calendar.isDate(date, inSameDayAs: now) { return time }
+        let months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+        return "\(parts.day ?? 1) \(months[((parts.month ?? 1) + 11) % 12]) \(time)"
+    }
+
+    /// Who answers under `config`, in a few words: "Claude Code", "you", "fx and Codex, each with
+    /// a hook".
+    static func answererName(_ config: BlackiceConfig) -> String {
+        switch config.answering.answerer {
+        case .agent(let instructions)?: return instructions.title
+        case .you?: return "you"
+        case nil: return listed(config.answering.agents.map(\.title)) + ", each with a hook"
+        }
+    }
+
+    /// Who answers under `config`, as a clause: "Claude Code answers", "you answer", "your hooks
+    /// answer", "fx and Codex answer".
+    static func answersPhrase(_ config: BlackiceConfig) -> String {
+        switch config.answering.answerer {
+        case .agent(let instructions)?: return "\(instructions.title) answers"
+        case .you? where config.activeHooks.isEmpty: return "you answer"
+        case .you?: return "your hooks answer"
+        case nil: return "\(listed(config.answering.agents.map(\.title))) answer"
+        }
     }
 
     /// Who answers in ask mode, for `status`: "Claude Code", "Claude Code; also connected: fx".
@@ -277,6 +386,82 @@ extension CLI {
                          (file.answers.map { $0 == .you ? "you" : $0.title } ?? "no one") + ".")
         }
         return lines
+    }
+
+    /// Before start's Touch ID: what it drops of a switch made with `blackice mode` or the menu,
+    /// because the file is not the one started last, or has changed since
+    /// (`ProviderConfiguration.isStarted(from:)`), and the file wins. `previous` is the
+    /// configuration blackice holds. Until 1.0.8 start said only what it kept, so a switch it
+    /// dropped went unsaid, and the person found another agent answering, or another mode, with
+    /// nothing to say why. Empty when nothing was switched, or `candidate` keeps it.
+    public static func droppedLines(previous: ProviderConfiguration?, candidate: ProviderConfiguration,
+                                    file: BlackiceConfig) -> [String] {
+        guard let previous else { return [] }
+        var lines: [String] = []
+        if previous.mode != previous.config.mode, candidate.mode != previous.mode {
+            lines.append("In \(previous.mode.rawValue) mode now, \(switched); blackice.toml has \(file.mode.rawValue) mode, " +
+                         "and this start loads it.")
+        }
+        if (try? BlackiceConfig.switchedAnswers(in: previous.configText)) != nil,
+           candidate.config.answering.answerer != previous.config.answering.answerer {
+            // Who answers as status says it, with "you" at the start of a sentence: "You answer",
+            // "Your hooks answer"; an agent's name as it is written, "fx answers".
+            let phrase = answersPhrase(previous.config)
+            let now = previous.config.answering.answerer == .you ? "Y" + phrase.dropFirst() : phrase
+            let has = file.answering.answerer == .you ? "you answering" : answererName(file)
+            lines.append("\(now) now, \(switched); blackice.toml has \(has), and this start loads it.")
+        }
+        return lines
+    }
+
+    /// What `start` says when it turned the filter off for an upgrade and stopped before it turned
+    /// it on with the new configuration: stopped by Control-C, a closed terminal or another signal
+    /// (`interrupted`), or by a failure it has said already. It turns the filter back on with the
+    /// configuration saved, so that blackice is not left off; `on` says whether that worked.
+    public static func putBackLines(interrupted: Bool, on: Bool) -> [String] {
+        let what = interrupted ? "blackice start was stopped before it finished" : "blackice start did not finish"
+        return [on ? "\(what), so it turned blackice's filter back on with the configuration it had. Run blackice start again."
+                   : "\(what), and could not turn blackice's filter back on: blackice is off, and no connection is checked. " +
+                     "Run blackice start again."]
+    }
+
+    /// What an upgrade's `start` says at the first Control-C or other stop signal while it waits
+    /// with the filter off (UpgradeInterruption): it waits on, and turns the filter back on once
+    /// the wait is over, unless a second signal says to do it now.
+    public static func waitingAfterInterruptLine(_ wait: UpgradeInterruption.Wait) -> String {
+        let what: String
+        switch wait {
+        case .kernel: what = "let the old filter go"
+        case .request: what = "finish replacing blackice's network extension"
+        }
+        return "Waiting for macOS to \(what) before turning blackice back on; press Control-C again to turn it on now."
+    }
+
+    /// What an upgrade's `start` says when a signal was caught before it turned the filter off:
+    /// by `agent connect`, which catches signals around the start it runs, at a Control-C during
+    /// Touch ID say. It changed nothing, so the filter is on as it was, and the upgrade is not
+    /// finished.
+    public static let stoppedBeforeTurnOffLine = "blackice start was stopped before it changed anything: " +
+        "blackice's filter is on as it was. Run blackice start again to finish the upgrade."
+
+    /// What `start` says when it is stopped once it has turned the filter on again with the new
+    /// configuration: what is left is checking that the filter took it.
+    public static let stoppedOnLine = "blackice start was stopped after it turned blackice's filter on with the new configuration. " +
+        "blackice status says whether the filter took it."
+
+    /// Why `blackice mode` cannot change anything now, said before Touch ID; nil when it can: the
+    /// filter is turned off, so no filter takes what mode would save, or macOS still runs an older
+    /// build of the extension, which this app cannot reach to check what it took. Until 1.0.8 mode
+    /// asked for Touch ID, saved, and waited 20 s to say that the filter did not answer.
+    ///
+    /// A change to the mode and answerer blackice already has (`unchanged`) is not refused for an
+    /// upgrade, and `upgrade` is not asked: mode says it is already in that mode, as it did before
+    /// 1.0.8. It is asked only for a filter that is on. The refusal names what to run and not the
+    /// command to run after it, since agent connect and the menu change the mode this way too.
+    public static func modeRefusal(enabled: Bool, unchanged: Bool, upgrade: @autoclosure () -> UnfinishedUpgrade?) -> String? {
+        guard enabled else { return turnedOffLine }
+        guard !unchanged else { return nil }
+        return upgrade().map { $0.hint + " Run it, then try again." }
     }
 
     /// After a successful start: the mode, and who answers in ask mode.

@@ -146,7 +146,7 @@ struct ConfigurationChangeTests {
         let accepted = FlowVerdict.allow(reason: "accept_all;configuration_changed")
         // Accept-all lets every waiting flow go: paused before or after its hello, held for it, or
         // waiting for a lookup, whatever the cache knows of its host.
-        for check in [AddressCheck.match, .mismatch, .unknown] {
+        for check in [AddressCheck.match, .mismatch, .lookupFailed, .unknown] {
             #expect(FilterPolicy.afterChange(waiting("other.example.com"), serverName: nil, echPresent: false,
                                              snapshot: acceptAll, address: answers(check)) == accepted)
             #expect(FilterPolicy.afterChange(waiting(nil), serverName: "other.example.com", echPresent: true,
@@ -167,7 +167,7 @@ struct ConfigurationChangeTests {
             == .allow(reason: "rule_line_3;server_name;configuration_changed"))
         #expect(FilterPolicy.afterChange(waiting("api.example.com"), serverName: nil, echPresent: false,
                                          snapshot: blockAll, address: answers(.match)) == dropped)
-        for check in [AddressCheck.unknown, .mismatch] {
+        for check in [AddressCheck.unknown, .mismatch, .lookupFailed] {
             #expect(FilterPolicy.afterChange(waiting("api.example.com", port: 8443), serverName: nil, echPresent: false,
                                              snapshot: blockAll, address: answers(check)) == dropped)
         }

@@ -40,11 +40,16 @@ public struct EventLogSummary: Equatable, Sendable {
     public var hookRefused: Date?
     /// Whether the last of those was about the agent's home.
     public var hookRefusedForHome: Bool
+    /// Hooks that ran and gave no answer, `FailingHooks.threshold` or more in a row, as `blackice
+    /// status` reads them.
+    public var failingHooks: FailingHooks?
 
-    public init(decisions: [RecentDecision] = [], hookRefused: Date? = nil, hookRefusedForHome: Bool = false) {
+    public init(decisions: [RecentDecision] = [], hookRefused: Date? = nil, hookRefusedForHome: Bool = false,
+                failingHooks: FailingHooks? = nil) {
         self.decisions = decisions
         self.hookRefused = hookRefused
         self.hookRefusedForHome = hookRefusedForHome
+        self.failingHooks = failingHooks
     }
 }
 
@@ -60,8 +65,8 @@ public final class RecentDecisions {
 
     public init(url: URL) { self.url = url }
 
-    /// The last `limit` verdicts, newest first, and the last hook refused; empty when there is no
-    /// log.
+    /// The last `limit` verdicts, newest first, the last hook refused, and hooks that keep giving
+    /// no answer; empty when there is no log.
     public func latest(limit: Int) -> EventLogSummary {
         let descriptor = open(url.path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)
         guard descriptor >= 0 else { stamp = nil; cached = EventLogSummary(); return cached }
@@ -78,22 +83,24 @@ public final class RecentDecisions {
             stamp = (info.st_size, info.st_mtimespec)
         }
         return EventLogSummary(decisions: Array(cached.decisions.prefix(limit)), hookRefused: cached.hookRefused,
-                               hookRefusedForHome: cached.hookRefusedForHome)
+                               hookRefusedForHome: cached.hookRefusedForHome, failingHooks: cached.failingHooks)
     }
 
     /// How long after a hook's answer the events it closed get their verdicts. One answer closes
     /// every event that waits for the same app and host, each with a verdict of its own.
     static let answerWindow: TimeInterval = 5
 
-    /// The verdicts in `data`, newest first, at most `limit`. A verdict counts only when its event
+    /// The verdicts in `data`, newest first, at most `limit`, and the hooks that keep giving no
+    /// answer (`FailingHooks.Tally`), from the same records. A verdict counts only when its event
     /// (`event_received`) is in the same stretch, since that is where the app and host are. An
     /// approval or a denial was a hook's when a `hook_answer` of the same kind, not followed by
     /// `answer_refused`, was logged for its event, or shortly before for another event of the same
     /// app and host. Otherwise it was a person's when no hook of its event was still waiting or
     /// running; when one was (or a log from before hooks answered on their output says no more),
-    /// who answered is left unknown. Lines that are not records of the log's shape are skipped;
-    /// when the stretch starts inside the file, its first line is a piece of a record and is
-    /// skipped too.
+    /// who answered is left unknown. A hook ends with its answer or its `hook_no_answer`, or with
+    /// a record of its own when there is none: dropped, failed to start, refused, or killed as
+    /// the daemon stopped. Lines that are not records of the log's shape are skipped; when the
+    /// stretch starts inside the file, its first line is a piece of a record and is skipped too.
     public static func parse(_ data: Data, partialFirstLine: Bool, limit: Int) -> EventLogSummary {
         var lines = data.split(separator: 0x0A, omittingEmptySubsequences: true)
         if partialFirstLine, !lines.isEmpty, data.first != 0x0A { lines.removeFirst() }
@@ -103,10 +110,12 @@ public final class RecentDecisions {
         var running: [String: Set<Int>] = [:]
         var answers: [(event: String, hookLine: Int, kind: String, date: Date?)] = []
         var refused: Set<String> = []
+        var failing = FailingHooks.Tally(fromStart: !partialFirstLine)
         var summary = EventLogSummary()
         for line in lines {
-            guard let object = try? JSONSerialization.jsonObject(with: Data(line)) as? [String: Any],
-                  let type = object["type"] as? String, let id = object["event"] as? String, validEventID(id) else { continue }
+            guard let object = try? JSONSerialization.jsonObject(with: Data(line)) as? [String: Any] else { continue }
+            failing.take(object)
+            guard let type = object["type"] as? String, let id = object["event"] as? String, validEventID(id) else { continue }
             let hookLine = object["hook_line"] as? Int ?? 0
             let date = (object["ts"] as? String).flatMap(Self.date)
             switch type {
@@ -132,7 +141,10 @@ public final class RecentDecisions {
                 if let kind = object["answer"] as? String { answers.append((id, hookLine, kind, date)) }
             case "answer_refused":
                 refused.insert("\(id) \(hookLine)")
-            case "hook_refused", "hook_no_answer", "hook_dropped", "hook_failed":
+            // `hook_killed` is followed by `hook_no_answer` at the deadline, but not when the
+            // daemon stopped (`daemon_stopping`); such a hook would run on here, and an approval
+            // by hand after it would show no one who gave it.
+            case "hook_refused", "hook_no_answer", "hook_dropped", "hook_failed", "hook_killed":
                 running[id]?.remove(hookLine)
                 let home = object["reason"] as? String == "agent_home"
                 if type == "hook_refused" || (type == "hook_no_answer" && home) {
@@ -169,6 +181,7 @@ public final class RecentDecisions {
                                                     date: entry.date, by: by))
             if summary.decisions.count == limit { break }
         }
+        summary.failingHooks = failing.run()
         return summary
     }
 

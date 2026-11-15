@@ -487,6 +487,8 @@ struct RunTests {
         #expect(written.hasSuffix("[[allow]]\ncdhash = \"\(testCDHash)\"\nhosts = [\"uploads.github.com\"]\n"))
         #expect(try BlackiceConfig(text: written).allowRule(for: .cdhash(testCDHash), host: "uploads.github.com") != nil)
         #expect(saved.stdout.contains("never counts"))
+        // The file changed, so the next start loads it as it is, and not a switch made with the menu.
+        #expect(saved.stdout.contains("; it counts from the next blackice start, which also loads the file's own mode and answerer"))
         // A refused approval saves nothing, and neither does one whose hosts are all covered.
         let refused = run(arguments, files: [path: Data(written.utf8)], system: FakeSystem(status: ExitCode.noPermission))
         #expect(refused.status == 77)
@@ -496,6 +498,33 @@ struct RunTests {
         // --config only with --save.
         #expect(usageError(["approve", "--cdhash", testCDHash, "--host", "a.example.com", "--config", path])?
             .contains("--config goes with --save") == true)
+    }
+
+    /// `approve --save` writes a linked blackice.toml through its link, and says so when the link
+    /// had to be replaced because the folder of the file it points at cannot be written.
+    @Test func saveSaysWhenItReplacedALink() throws {
+        let folder = try makePrivateDirectory()
+        defer { removeTree(folder) }
+        let store = folder.path + "/store", target = store + "/blackice.toml", link = folder.path + "/blackice.toml"
+        try FileManager.default.createDirectory(atPath: store, withIntermediateDirectories: true)
+        let text = "mode = \"ask\"\n"
+        try Data(text.utf8).write(to: URL(fileURLWithPath: target))
+        try FileManager.default.createSymbolicLink(atPath: link, withDestinationPath: target)
+        let arguments = ["approve", "--cdhash", testCDHash, "--host", "api.github.com", "--for", "1h", "--save", "--config", link]
+        let through = run(arguments, files: [link: Data(text.utf8)], system: FakeSystem())
+        #expect(through.status == 0 && through.stderr.isEmpty)
+        let written = try String(contentsOfFile: target, encoding: .utf8)
+        #expect(CLI.isLink(link) && written.hasSuffix("hosts = [\"api.github.com\"]\n"))
+
+        #expect(chmod(store, 0o555) == 0)
+        defer { chmod(store, 0o755) }
+        let other = ["approve", "--cdhash", testCDHash, "--host", "uploads.github.com", "--for", "1h", "--save", "--config", link]
+        let replaced = run(other, files: [link: Data(written.utf8)], system: FakeSystem())
+        #expect(replaced.status == 0)
+        #expect(replaced.stderr == CLI.linkReplacedLine(Describe.terminalSafe(Describe.path(link, home: NSHomeDirectory()))))
+        let replacing = try String(contentsOfFile: link, encoding: .utf8)
+        #expect(!CLI.isLink(link) && replacing.hasSuffix("hosts = [\"uploads.github.com\"]\n"))
+        #expect(try String(contentsOfFile: target, encoding: .utf8) == written)
     }
 
     @Test func askCommandsNeedTheSignedApp() {

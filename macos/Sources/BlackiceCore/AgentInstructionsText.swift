@@ -94,21 +94,27 @@ reason to deny. With no such section after these instructions, there are no note
 ## 4. Weigh it
 
 Approve only when the connection is clearly what this app is for. Weigh it here whether or not the
-owner's notes mention the app or the host: that the notes leave something out is no reason to deny it.
+owner's notes mention the app or the host. For a signed app, that the notes leave something out is
+no reason to deny it. For a runtime or fetch tool (below), only the hosts this step lists or the
+notes name approve a connection: never the script's name, or how well the host fits it.
 Look at:
 
 - **Who.** `signing_id` and `team_id` together name the app; a signing identifier alone means
-  nothing, since anyone can choose one. Do you recognize the developer behind that Team ID?
-  With a `cdhash` there is no developer to recognize: only the path and the host tell you what
-  the program is. Approve one only when both make it plain, for example a Homebrew tool
-  reaching its own service.
+  nothing, since anyone can choose one. Do you recognize the developer behind that Team ID? A
+  Team ID you do not know is no reason to deny on its own: judge the app by its path and the host,
+  as for a `cdhash`. With a `cdhash` there is no developer to recognize: only the path and the
+  host tell you what the program is. Approve one only when both make it plain, for example a
+  Homebrew tool reaching its own service.
 - **Where it runs from.** An executable under `/Applications`, `/System`, `/usr/bin`, `/usr/sbin`
   or `/usr/libexec` is ordinary, and so is a Homebrew install under `/opt/homebrew` or
   `/usr/local`, and a language toolchain in the hidden folder its manager keeps: `~/.local/bin`,
   `~/.local/share/uv/python`, `~/.cargo/bin`, `~/.rustup/toolchains`, `~/.bun/bin`,
   `~/.deno/bin`, `~/.nvm/versions/node`, `~/.volta/tools`, `~/.pyenv/versions`,
   `~/.local/share/mise/installs` and `~/.asdf/installs`. One in `/tmp`, `~/Downloads`, any other
-  hidden directory or a cache directory is not.
+  hidden directory or a cache directory is not. A vendor's own hidden folder, such as
+  `~/.opencode/bin`, is not a toolchain folder, even with a `bin` in it. Deny a program with a
+  `cdhash` that runs from one, even when it reaches its own vendor's host: only its path says
+  what it is, and anyone can write there.
 - **Whether this app talks to this host.** A package manager reaching its registry, an editor
   reaching its update server and a CLI reaching its own API are expected. The same app reaching
   an unrelated service is not.
@@ -124,14 +130,26 @@ Look at:
   storage of GitHub Actions' logs and artifacts that GitHub sends `gh` to: `productionresultssa`
   and a number of one or two digits, then `.blob.core.windows.net`), or a public asset CDN a
   build fetches from (`fonts.googleapis.com`, `fonts.gstatic.com`, `cdn.jsdelivr.net`,
-  `unpkg.com`, `cdnjs.cloudflare.com`). The same tools reaching any other host, a public address,
-  a paste or file-sharing site or a lookalike of these names stay a deny unless the owner's notes
-  say otherwise, and so do these tools run from `/tmp`, `~/Downloads`, or a hidden or cache
-  directory other than the toolchain folders above. The notes may name a tool by its script: an
+  `unpkg.com`, `cdnjs.cloudflare.com`). The `go` command alone may also reach
+  `storage.googleapis.com`, where `proxy.golang.org` sends it for module downloads: an executable
+  named `go` in a Go toolchain, `/opt/homebrew/Cellar/go/*/libexec/bin/go`, `/usr/local/go/bin/go`,
+  `~/go/pkg/mod/golang.org/toolchain@*/bin/go` or `~/sdk/go*/bin/go`, where `*` is a version.
+  Anyone can rent storage there, so for `curl`, an interpreter or any other program that host
+  stays a deny. The same tools reaching any other host, a public address, a paste or file-sharing
+  site or a lookalike of these names stay a deny unless the owner's notes say otherwise, and so do
+  these tools run from `/tmp`, `~/Downloads`, or a hidden or cache directory other than the
+  toolchain folders above. The notes may name a tool by its script: an
   interpreter running the script they name, from the folder they name, to a host they list for it,
-  is approved like any app the notes describe.
+  is approved like any app the notes describe. The same interpreter running another script, or
+  reaching a host the notes do not list for that script, is not.
 - **The host.** Deny lookalike names (`githuh.com`, `apple-support-login.net`), random-looking
   subdomains, dynamic DNS names, and paste and file-sharing sites.
+- **A tailnet name** (Tailscale's MagicDNS, ending in `.ts.net`). It is one of the owner's own
+  machines only when the owner's notes name that tailnet (`nas.tail1a2b3c.ts.net` is on
+  `tail1a2b3c.ts.net`) and the event's `ip` is a tailnet address: `100.64.x.x` to `100.127.x.x`,
+  or an IPv6 address starting with `fd7a:115c:a1e0:`. Then weigh it as you would that address.
+  Anyone can get a `ts.net` name, and a Funnel host resolves to a public address: any other
+  `ts.net` name is not the owner's.
 - **A host that is an IP address** (`host` is the same as `ip`). Suspicious by default:
   ordinary apps connect by name, and a bare address is how much malware reaches its server.
   Approve only when the app is known to connect by address, and the address fits:
@@ -154,42 +172,33 @@ When you are unsure, deny.
 
 ## 5. Answer on the last line
 
-blackice answers for exactly the app and the host in the event. You only say whether, and
-for how long. Write one or two sentences with your reasons, then end your reply with one line
-that is exactly one of these:
+An approval covers exactly the event's app and host, for the time you give. A cdhash approval
+covers only this build; the next build asks again. For an interpreter, it covers only the script
+in `app.script`: the same interpreter running another script, or none, is asked about again. With
+no `app.script` it covers the interpreter whenever no script can be read, whatever `app.title`
+says. An approval of an address covers only that address; blackice cannot tell which network a
+link-local address is on, so that one is covered on any of them. Pick the time by how plain the
+connection is:
 
-```text
-deny
-```
+- `8h` to `24h` for clearly ordinary developer or vendor traffic: an app reaching its own
+  vendor's API, update or sign-in server, or a package manager reaching its registry. The same
+  app and host are then not asked about again within the day.
+- `10m` to `1h` for anything less clear that you still approve, such as a one-off.
+- Never more than `24h`.
 
-```text
-approve 10m
-```
+Reply with two lines of plain text and nothing else: no Markdown, no code block, no quotes.
 
-- `approve` takes a time in minutes (`1m` to `1440m`) or hours (`1h` to `24h`), by how plain
-  the connection is. `8h` to `24h` for clearly ordinary developer or vendor traffic: an app
-  reaching its own vendor's API, update or sign-in server, or a package manager reaching its
-  registry; the same app and host are then not asked about again within the day. `10m` to `1h`
-  for anything less clear that you still approve, such as a one-off. Never more than `24h`.
-- The line is lowercase plain text on its own: no backticks, no bold, no quotes, no period, and
-  nothing after it. `approve 1h.` or `**deny**` is not an answer, and the connection is dropped.
-- Only the last line counts, so put nothing after it.
-- When you stop in step 1 or 2, end with a line such as
-  `no answer: the host has characters blackice never sends`. That is not an answer, and the
-  deadline drops the connection.
+1. Why, in one line, for example
+   `com.example.tool -> paste.example: file-sharing site, not what this app is for`.
+2. The verdict, alone on the last line, exactly in one of these forms:
+   - `approve 30m`: minutes, from 1 to 1440;
+   - `approve 12h`: hours, from 1 to 24;
+   - `deny`.
 
-A cdhash approval covers only this build; the next build asks again. An interpreter's approval
-covers only the script in `app.script`: the same interpreter running another script, or none, is
-asked about again. With no `app.script` it covers the interpreter whenever no script can be read,
-whatever `app.title` says. An approval of an address covers only that address; blackice cannot
-tell which network a link-local address is on, so that one is covered on any of them.
-
-For example, a reply ends like this:
-
-```text
-Visual Studio Code, signed by Microsoft (UBF8T346G9), reaching its own update server.
-approve 12h
-```
+Nothing may follow the verdict line. `approve 1h.`, `**deny**` or a duration such as `24h` alone
+on a line is not an answer, and the connection is dropped. When you stop in step 1 or 2, the last
+line is a line such as `no answer: the host has characters blackice never sends` instead of a
+verdict: that is not an answer, and the deadline drops the connection.
 
 """##
 
@@ -275,21 +284,27 @@ reason to deny. With no such section after these instructions, there are no note
 ## 4. Weigh it
 
 Approve only when the connection is clearly what this app is for. Weigh it here whether or not the
-owner's notes mention the app or the host: that the notes leave something out is no reason to deny it.
+owner's notes mention the app or the host. For a signed app, that the notes leave something out is
+no reason to deny it. For a runtime or fetch tool (below), only the hosts this step lists or the
+notes name approve a connection: never the script's name, or how well the host fits it.
 Look at:
 
 - **Who.** `signing_id` and `team_id` together name the app; a signing identifier alone means
-  nothing, since anyone can choose one. Do you recognize the developer behind that Team ID?
-  With a `cdhash` there is no developer to recognize: only the path and the host tell you what
-  the program is. Approve one only when both make it plain, for example a Homebrew tool
-  reaching its own service.
+  nothing, since anyone can choose one. Do you recognize the developer behind that Team ID? A
+  Team ID you do not know is no reason to deny on its own: judge the app by its path and the host,
+  as for a `cdhash`. With a `cdhash` there is no developer to recognize: only the path and the
+  host tell you what the program is. Approve one only when both make it plain, for example a
+  Homebrew tool reaching its own service.
 - **Where it runs from.** An executable under `/Applications`, `/System`, `/usr/bin`, `/usr/sbin`
   or `/usr/libexec` is ordinary, and so is a Homebrew install under `/opt/homebrew` or
   `/usr/local`, and a language toolchain in the hidden folder its manager keeps: `~/.local/bin`,
   `~/.local/share/uv/python`, `~/.cargo/bin`, `~/.rustup/toolchains`, `~/.bun/bin`,
   `~/.deno/bin`, `~/.nvm/versions/node`, `~/.volta/tools`, `~/.pyenv/versions`,
   `~/.local/share/mise/installs` and `~/.asdf/installs`. One in `/tmp`, `~/Downloads`, any other
-  hidden directory or a cache directory is not.
+  hidden directory or a cache directory is not. A vendor's own hidden folder, such as
+  `~/.opencode/bin`, is not a toolchain folder, even with a `bin` in it. Deny a program with a
+  `cdhash` that runs from one, even when it reaches its own vendor's host: only its path says
+  what it is, and anyone can write there.
 - **Whether this app talks to this host.** A package manager reaching its registry, an editor
   reaching its update server and a CLI reaching its own API are expected. The same app reaching
   an unrelated service is not.
@@ -305,14 +320,26 @@ Look at:
   storage of GitHub Actions' logs and artifacts that GitHub sends `gh` to: `productionresultssa`
   and a number of one or two digits, then `.blob.core.windows.net`), or a public asset CDN a
   build fetches from (`fonts.googleapis.com`, `fonts.gstatic.com`, `cdn.jsdelivr.net`,
-  `unpkg.com`, `cdnjs.cloudflare.com`). The same tools reaching any other host, a public address,
-  a paste or file-sharing site or a lookalike of these names stay a deny unless the owner's notes
-  say otherwise, and so do these tools run from `/tmp`, `~/Downloads`, or a hidden or cache
-  directory other than the toolchain folders above. The notes may name a tool by its script: an
+  `unpkg.com`, `cdnjs.cloudflare.com`). The `go` command alone may also reach
+  `storage.googleapis.com`, where `proxy.golang.org` sends it for module downloads: an executable
+  named `go` in a Go toolchain, `/opt/homebrew/Cellar/go/*/libexec/bin/go`, `/usr/local/go/bin/go`,
+  `~/go/pkg/mod/golang.org/toolchain@*/bin/go` or `~/sdk/go*/bin/go`, where `*` is a version.
+  Anyone can rent storage there, so for `curl`, an interpreter or any other program that host
+  stays a deny. The same tools reaching any other host, a public address, a paste or file-sharing
+  site or a lookalike of these names stay a deny unless the owner's notes say otherwise, and so do
+  these tools run from `/tmp`, `~/Downloads`, or a hidden or cache directory other than the
+  toolchain folders above. The notes may name a tool by its script: an
   interpreter running the script they name, from the folder they name, to a host they list for it,
-  is approved like any app the notes describe.
+  is approved like any app the notes describe. The same interpreter running another script, or
+  reaching a host the notes do not list for that script, is not.
 - **The host.** Deny lookalike names (`githuh.com`, `apple-support-login.net`), random-looking
   subdomains, dynamic DNS names, and paste and file-sharing sites.
+- **A tailnet name** (Tailscale's MagicDNS, ending in `.ts.net`). It is one of the owner's own
+  machines only when the owner's notes name that tailnet (`nas.tail1a2b3c.ts.net` is on
+  `tail1a2b3c.ts.net`) and the event's `ip` is a tailnet address: `100.64.x.x` to `100.127.x.x`,
+  or an IPv6 address starting with `fd7a:115c:a1e0:`. Then weigh it as you would that address.
+  Anyone can get a `ts.net` name, and a Funnel host resolves to a public address: any other
+  `ts.net` name is not the owner's.
 - **A host that is an IP address** (`host` is the same as `ip`). Suspicious by default:
   ordinary apps connect by name, and a bare address is how much malware reaches its server.
   Approve only when the app is known to connect by address, and the address fits:
@@ -357,7 +384,8 @@ Reply with two lines of plain text and nothing else: no Markdown, no code block,
    - `approve 12h`: hours, from 1 to 24;
    - `deny`.
 
-Nothing may follow the verdict line.
+Nothing may follow the verdict line. `approve 1h.`, `**deny**` or a duration such as `24h` alone
+on a line is not an answer, and the connection is dropped.
 
 """##
 
@@ -443,21 +471,27 @@ reason to deny. With no such section after these instructions, there are no note
 ## 4. Weigh it
 
 Approve only when the connection is clearly what this app is for. Weigh it here whether or not the
-owner's notes mention the app or the host: that the notes leave something out is no reason to deny it.
+owner's notes mention the app or the host. For a signed app, that the notes leave something out is
+no reason to deny it. For a runtime or fetch tool (below), only the hosts this step lists or the
+notes name approve a connection: never the script's name, or how well the host fits it.
 Look at:
 
 - **Who.** `signing_id` and `team_id` together name the app; a signing identifier alone means
-  nothing, since anyone can choose one. Do you recognize the developer behind that Team ID?
-  With a `cdhash` there is no developer to recognize: only the path and the host tell you what
-  the program is. Approve one only when both make it plain, for example a Homebrew tool
-  reaching its own service.
+  nothing, since anyone can choose one. Do you recognize the developer behind that Team ID? A
+  Team ID you do not know is no reason to deny on its own: judge the app by its path and the host,
+  as for a `cdhash`. With a `cdhash` there is no developer to recognize: only the path and the
+  host tell you what the program is. Approve one only when both make it plain, for example a
+  Homebrew tool reaching its own service.
 - **Where it runs from.** An executable under `/Applications`, `/System`, `/usr/bin`, `/usr/sbin`
   or `/usr/libexec` is ordinary, and so is a Homebrew install under `/opt/homebrew` or
   `/usr/local`, and a language toolchain in the hidden folder its manager keeps: `~/.local/bin`,
   `~/.local/share/uv/python`, `~/.cargo/bin`, `~/.rustup/toolchains`, `~/.bun/bin`,
   `~/.deno/bin`, `~/.nvm/versions/node`, `~/.volta/tools`, `~/.pyenv/versions`,
   `~/.local/share/mise/installs` and `~/.asdf/installs`. One in `/tmp`, `~/Downloads`, any other
-  hidden directory or a cache directory is not.
+  hidden directory or a cache directory is not. A vendor's own hidden folder, such as
+  `~/.opencode/bin`, is not a toolchain folder, even with a `bin` in it. Deny a program with a
+  `cdhash` that runs from one, even when it reaches its own vendor's host: only its path says
+  what it is, and anyone can write there.
 - **Whether this app talks to this host.** A package manager reaching its registry, an editor
   reaching its update server and a CLI reaching its own API are expected. The same app reaching
   an unrelated service is not.
@@ -473,14 +507,26 @@ Look at:
   storage of GitHub Actions' logs and artifacts that GitHub sends `gh` to: `productionresultssa`
   and a number of one or two digits, then `.blob.core.windows.net`), or a public asset CDN a
   build fetches from (`fonts.googleapis.com`, `fonts.gstatic.com`, `cdn.jsdelivr.net`,
-  `unpkg.com`, `cdnjs.cloudflare.com`). The same tools reaching any other host, a public address,
-  a paste or file-sharing site or a lookalike of these names stay a deny unless the owner's notes
-  say otherwise, and so do these tools run from `/tmp`, `~/Downloads`, or a hidden or cache
-  directory other than the toolchain folders above. The notes may name a tool by its script: an
+  `unpkg.com`, `cdnjs.cloudflare.com`). The `go` command alone may also reach
+  `storage.googleapis.com`, where `proxy.golang.org` sends it for module downloads: an executable
+  named `go` in a Go toolchain, `/opt/homebrew/Cellar/go/*/libexec/bin/go`, `/usr/local/go/bin/go`,
+  `~/go/pkg/mod/golang.org/toolchain@*/bin/go` or `~/sdk/go*/bin/go`, where `*` is a version.
+  Anyone can rent storage there, so for `curl`, an interpreter or any other program that host
+  stays a deny. The same tools reaching any other host, a public address, a paste or file-sharing
+  site or a lookalike of these names stay a deny unless the owner's notes say otherwise, and so do
+  these tools run from `/tmp`, `~/Downloads`, or a hidden or cache directory other than the
+  toolchain folders above. The notes may name a tool by its script: an
   interpreter running the script they name, from the folder they name, to a host they list for it,
-  is approved like any app the notes describe.
+  is approved like any app the notes describe. The same interpreter running another script, or
+  reaching a host the notes do not list for that script, is not.
 - **The host.** Deny lookalike names (`githuh.com`, `apple-support-login.net`), random-looking
   subdomains, dynamic DNS names, and paste and file-sharing sites.
+- **A tailnet name** (Tailscale's MagicDNS, ending in `.ts.net`). It is one of the owner's own
+  machines only when the owner's notes name that tailnet (`nas.tail1a2b3c.ts.net` is on
+  `tail1a2b3c.ts.net`) and the event's `ip` is a tailnet address: `100.64.x.x` to `100.127.x.x`,
+  or an IPv6 address starting with `fd7a:115c:a1e0:`. Then weigh it as you would that address.
+  Anyone can get a `ts.net` name, and a Funnel host resolves to a public address: any other
+  `ts.net` name is not the owner's.
 - **A host that is an IP address** (`host` is the same as `ip`). Suspicious by default:
   ordinary apps connect by name, and a bare address is how much malware reaches its server.
   Approve only when the app is known to connect by address, and the address fits:
@@ -525,7 +571,8 @@ Reply with two lines of plain text and nothing else: no Markdown, no code block,
    - `approve 12h`: hours, from 1 to 24;
    - `deny`.
 
-Nothing may follow the verdict line.
+Nothing may follow the verdict line. `approve 1h.`, `**deny**` or a duration such as `24h` alone
+on a line is not an answer, and the connection is dropped.
 
 """##
 
@@ -611,21 +658,27 @@ reason to deny. With no such section after these instructions, there are no note
 ## 4. Weigh it
 
 Approve only when the connection is clearly what this app is for. Weigh it here whether or not the
-owner's notes mention the app or the host: that the notes leave something out is no reason to deny it.
+owner's notes mention the app or the host. For a signed app, that the notes leave something out is
+no reason to deny it. For a runtime or fetch tool (below), only the hosts this step lists or the
+notes name approve a connection: never the script's name, or how well the host fits it.
 Look at:
 
 - **Who.** `signing_id` and `team_id` together name the app; a signing identifier alone means
-  nothing, since anyone can choose one. Do you recognize the developer behind that Team ID?
-  With a `cdhash` there is no developer to recognize: only the path and the host tell you what
-  the program is. Approve one only when both make it plain, for example a Homebrew tool
-  reaching its own service.
+  nothing, since anyone can choose one. Do you recognize the developer behind that Team ID? A
+  Team ID you do not know is no reason to deny on its own: judge the app by its path and the host,
+  as for a `cdhash`. With a `cdhash` there is no developer to recognize: only the path and the
+  host tell you what the program is. Approve one only when both make it plain, for example a
+  Homebrew tool reaching its own service.
 - **Where it runs from.** An executable under `/Applications`, `/System`, `/usr/bin`, `/usr/sbin`
   or `/usr/libexec` is ordinary, and so is a Homebrew install under `/opt/homebrew` or
   `/usr/local`, and a language toolchain in the hidden folder its manager keeps: `~/.local/bin`,
   `~/.local/share/uv/python`, `~/.cargo/bin`, `~/.rustup/toolchains`, `~/.bun/bin`,
   `~/.deno/bin`, `~/.nvm/versions/node`, `~/.volta/tools`, `~/.pyenv/versions`,
   `~/.local/share/mise/installs` and `~/.asdf/installs`. One in `/tmp`, `~/Downloads`, any other
-  hidden directory or a cache directory is not.
+  hidden directory or a cache directory is not. A vendor's own hidden folder, such as
+  `~/.opencode/bin`, is not a toolchain folder, even with a `bin` in it. Deny a program with a
+  `cdhash` that runs from one, even when it reaches its own vendor's host: only its path says
+  what it is, and anyone can write there.
 - **Whether this app talks to this host.** A package manager reaching its registry, an editor
   reaching its update server and a CLI reaching its own API are expected. The same app reaching
   an unrelated service is not.
@@ -641,14 +694,26 @@ Look at:
   storage of GitHub Actions' logs and artifacts that GitHub sends `gh` to: `productionresultssa`
   and a number of one or two digits, then `.blob.core.windows.net`), or a public asset CDN a
   build fetches from (`fonts.googleapis.com`, `fonts.gstatic.com`, `cdn.jsdelivr.net`,
-  `unpkg.com`, `cdnjs.cloudflare.com`). The same tools reaching any other host, a public address,
-  a paste or file-sharing site or a lookalike of these names stay a deny unless the owner's notes
-  say otherwise, and so do these tools run from `/tmp`, `~/Downloads`, or a hidden or cache
-  directory other than the toolchain folders above. The notes may name a tool by its script: an
+  `unpkg.com`, `cdnjs.cloudflare.com`). The `go` command alone may also reach
+  `storage.googleapis.com`, where `proxy.golang.org` sends it for module downloads: an executable
+  named `go` in a Go toolchain, `/opt/homebrew/Cellar/go/*/libexec/bin/go`, `/usr/local/go/bin/go`,
+  `~/go/pkg/mod/golang.org/toolchain@*/bin/go` or `~/sdk/go*/bin/go`, where `*` is a version.
+  Anyone can rent storage there, so for `curl`, an interpreter or any other program that host
+  stays a deny. The same tools reaching any other host, a public address, a paste or file-sharing
+  site or a lookalike of these names stay a deny unless the owner's notes say otherwise, and so do
+  these tools run from `/tmp`, `~/Downloads`, or a hidden or cache directory other than the
+  toolchain folders above. The notes may name a tool by its script: an
   interpreter running the script they name, from the folder they name, to a host they list for it,
-  is approved like any app the notes describe.
+  is approved like any app the notes describe. The same interpreter running another script, or
+  reaching a host the notes do not list for that script, is not.
 - **The host.** Deny lookalike names (`githuh.com`, `apple-support-login.net`), random-looking
   subdomains, dynamic DNS names, and paste and file-sharing sites.
+- **A tailnet name** (Tailscale's MagicDNS, ending in `.ts.net`). It is one of the owner's own
+  machines only when the owner's notes name that tailnet (`nas.tail1a2b3c.ts.net` is on
+  `tail1a2b3c.ts.net`) and the event's `ip` is a tailnet address: `100.64.x.x` to `100.127.x.x`,
+  or an IPv6 address starting with `fd7a:115c:a1e0:`. Then weigh it as you would that address.
+  Anyone can get a `ts.net` name, and a Funnel host resolves to a public address: any other
+  `ts.net` name is not the owner's.
 - **A host that is an IP address** (`host` is the same as `ip`). Suspicious by default:
   ordinary apps connect by name, and a bare address is how much malware reaches its server.
   Approve only when the app is known to connect by address, and the address fits:
@@ -693,7 +758,8 @@ Reply with two lines of plain text and nothing else: no Markdown, no code block,
    - `approve 12h`: hours, from 1 to 24;
    - `deny`.
 
-Nothing may follow the verdict line.
+Nothing may follow the verdict line. `approve 1h.`, `**deny**` or a duration such as `24h` alone
+on a line is not an answer, and the connection is dropped.
 
 """##
 }

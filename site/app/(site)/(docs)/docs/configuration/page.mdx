@@ -108,9 +108,10 @@ For an app that reaches a few networks you know, such as `ssh` to your Tailscale
 ```toml
 [[allow]]
 app = "com.apple.ssh"
-hosts = ["100.64.0.0/10", "fd7a:115c:a1e0::/48", "10.0.0.5", "*.ts.net"]
+hosts = ["100.64.0.0/10", "fd7a:115c:a1e0::/48", "10.0.0.5", "*.tail0abc12.ts.net"]
 ```
 
+- A MagicDNS name belongs to your tailnet only under its own suffix: put yours in place of `tail0abc12`. `*.ts.net` would also match anyone's Funnel host, which resolves to a public address and passes the address check.
 - An address entry matches a connection to that address, named or not, with no lookup. On port 443 it does not check the server name, so an address many sites share, such as a CDN's, lets the app reach all of them.
 - IPv4 has no leading zeros (`010.0.0.1` is an error). A range has no bits set after its prefix: `10.0.0.0/8`, not `10.0.0.5/8`.
 - `0.0.0.0/0` and `::/0` are errors: write `*`. So are interfaces (`%en0`) and IPv4-mapped addresses (`::ffff:10.0.0.5`).

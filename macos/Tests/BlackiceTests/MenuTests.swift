@@ -310,6 +310,41 @@ struct MenuPresentationTests {
         #expect(!off.contains { $0.key == "hooks" })
     }
 
+    /// Hooks that keep giving no answer, as `blackice status` says it, on one line made safe for
+    /// the menu, with how long ago the latest failed; only where hooks run, and for as long as a
+    /// refused hook shows.
+    @Test func failingHooksShowOnOneLine() throws {
+        let now = Date(timeIntervalSince1970: 2_000_000)
+        var failing = context
+        failing.failingHooks = FailingHooks(count: 297, since: now.addingTimeInterval(-7200), last: now.addingTimeInterval(-240),
+                                            reason: "fx ask: API request failed · HTTP 502 · insufficient_funds\u{202E}\nand more")
+        let ask = try saved(.ask)
+        let entries = MenuPresentation.menu(MenuSnapshot(filter: .on(saved: ask, hooks: 1), pending: answering(ask)), failing, now: now)
+        let line = try #require(entries.first { $0.key == "hooks.failing" })
+        #expect(line.kind == .note && line.detail == "4m")
+        #expect(line.title.hasPrefix("Hooks failing (297 in a row): fx ask: API request failed · HTTP 502 · "))
+        #expect(line.title.count == MenuText.lineLimit && line.title.hasSuffix("…"))
+        #expect(!line.title.unicodeScalars.contains { $0 == "\n" || $0 == "\u{202E}" })
+        failing.failingHooks = FailingHooks(count: 3, atLeast: true, last: now, reason: "quota")
+        #expect(MenuPresentation.menu(MenuSnapshot(filter: .on(saved: ask, hooks: 1), pending: answering(ask)), failing, now: now)
+            .contains { $0.title == "Hooks failing (at least 3 in a row): quota" && $0.detail == "now" })
+        // An hour after the latest, or with no time for it, nothing.
+        for last in [now.addingTimeInterval(-MenuPresentation.refusedHookWindow), nil] {
+            failing.failingHooks = FailingHooks(count: 297, since: now.addingTimeInterval(-7200), last: last, reason: "quota")
+            #expect(!MenuPresentation.menu(MenuSnapshot(filter: .on(saved: ask, hooks: 1), pending: answering(ask)), failing, now: now)
+                .contains { $0.key == "hooks.failing" })
+        }
+        failing.failingHooks = FailingHooks(count: 3, atLeast: true, last: now, reason: "quota")
+        // No hook runs in block-all, or with none in the configuration.
+        let block = try saved(.blockAll)
+        #expect(!MenuPresentation.menu(MenuSnapshot(filter: .on(saved: block, hooks: 1), pending: answering(block)), failing, now: now)
+            .contains { $0.key == "hooks.failing" })
+        #expect(!MenuPresentation.menu(MenuSnapshot(filter: .on(saved: ask, hooks: 0), pending: answering(ask)), failing, now: now)
+            .contains { $0.key == "hooks.failing" })
+        #expect(!MenuPresentation.menu(MenuSnapshot(filter: .on(saved: ask, hooks: 1), pending: answering(ask)), context, now: now)
+            .contains { $0.key == "hooks.failing" })
+    }
+
     /// Mode: Accept All, Ask with each agent (only those with a hook can be chosen; Codex and
     /// opencode show only once connected) and with you, Block All; the check mark on the mode, and in
     /// ask mode on who answers.
@@ -525,6 +560,51 @@ struct RecentDecisionsTests {
             #"{"type":"hook_exited","event":"ev-00000008","hook_line":3,"status":0}"# + "\n" +
             #"{"type":"verdict","event":"ev-00000008","verdict":"approved"}"#
         #expect(RecentDecisions.parse(Data(old.utf8), partialFirstLine: false, limit: 5).decisions.map(\.by) == [nil])
+    }
+
+    /// The menu reads hooks that keep giving no answer from the same end of the log.
+    @Test func failingHooksComeWithTheDecisions() throws {
+        let directory = try makePrivateDirectory()
+        defer { removeTree(directory) }
+        let url = directory.appendingPathComponent("events.jsonl")
+        let log = try EventLog(url: url)
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        let recent = RecentDecisions(url: url)
+        for index in 1...3 {
+            let id = "ev-0000000\(index)"
+            try log.append(.eventReceived(testEvent(id: id)), at: start)
+            try log.append(.hookFinished(eventID: id, HookResult(hookLine: 7, outcome: .exited(status: 2), stderr: "Error: no credit\n",
+                                                                 stderrTruncated: false, duration: 1)), at: start)
+            try log.append(.hookNoAnswer(eventID: id, hookLine: 7, .exitStatus(2)), at: start.addingTimeInterval(Double(index)))
+            try log.append(.verdict(eventID: id, .timedOut), at: start.addingTimeInterval(10))
+            #expect((recent.latest(limit: 5).failingHooks != nil) == (index == 3))
+        }
+        #expect(recent.latest(limit: 5).failingHooks == FailingHooks(count: 3, since: start.addingTimeInterval(1),
+                                                                     last: start.addingTimeInterval(3), reason: "Error: no credit"))
+        #expect(recent.latest(limit: 5).decisions.count == 3)
+        // Read in the same pass as the decisions, as `blackice status` reads them alone.
+        let data = try Data(contentsOf: url)
+        #expect(RecentDecisions.parse(data, partialFirstLine: false, limit: 5).failingHooks
+            == FailingHooks.parse(data, partialFirstLine: false))
+        #expect(RecentDecisions.parse(data.dropFirst(10), partialFirstLine: true, limit: 5).failingHooks
+            == FailingHooks.parse(data.dropFirst(10), partialFirstLine: true))
+    }
+
+    /// A hook the daemon killed as it stopped has no `hook_no_answer` after it: it has ended all
+    /// the same, and an approval by hand after it was a person's.
+    @Test func aHookKilledAsTheDaemonStoppedHasEnded() throws {
+        let directory = try makePrivateDirectory()
+        defer { removeTree(directory) }
+        let url = directory.appendingPathComponent("events.jsonl")
+        let log = try EventLog(url: url)
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        try log.append(.eventReceived(testEvent(host: "a.example", id: "ev-00000001")), at: start)
+        try log.append(.hookStarted(eventID: "ev-00000001", hookLine: 7, pid: 42), at: start)
+        try log.append(.hookFinished(eventID: "ev-00000001", HookResult(hookLine: 7, outcome: .timedOut(signal: SIGTERM, reason: .daemonStopping),
+                                                                        stderr: "", stderrTruncated: false, duration: 1)),
+                       at: start.addingTimeInterval(1))
+        try log.append(.verdict(eventID: "ev-00000001", .approved), at: start.addingTimeInterval(5))
+        #expect(RecentDecisions(url: url).latest(limit: 5).decisions.map(\.by) == [.hand])
     }
 
     @Test func aStretchThatStartsMidRecordSkipsThatPiece() {

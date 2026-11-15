@@ -1294,9 +1294,13 @@ extension CLI {
             stderr("  blackice agent connect: the file it would write does not parse (\(error)); nothing was written")
             return (nil, ExitCode.cannotCreate)
         }
-        let mode = (try? FileManager.default.attributesOfItem(atPath: path)[.posixPermissions] as? NSNumber)?.uint16Value ?? 0o644
+        // The mode of the file a symbolic link points at, as writeAtomically writes that file.
+        var info = stat()
+        let mode = stat(path, &info) == 0 ? info.st_mode & 0o777 : 0o644
         do {
-            try writeAtomically(Data(text.utf8), to: path, mode: mode_t(mode), replacing: Data(previous.utf8))
+            if try writeAtomically(Data(text.utf8), to: path, mode: mode, replacing: Data(previous.utf8), followingLinks: true) {
+                stderr("  " + linkReplacedLine(shown))
+            }
         } catch is ChangedMeanwhile {
             return changed()
         } catch {
@@ -1315,11 +1319,35 @@ extension CLI {
     /// (`lockBeside`), so that of two blackice writers that read the same text only the first
     /// writes. Until 1.0.3 the check and the rename were apart, and both could pass the check.
     /// An editor that takes no lock can still write between them, for the moment the rename takes.
+    ///
+    /// Unless told otherwise, a `path` that is a symbolic link is replaced and never followed: in
+    /// the agent's home a link planted there to ~/.zshrc would otherwise be written through. With
+    /// `followingLinks`, which only the writers of blackice.toml pass, a `path` that is a symbolic
+    /// link stays one: the file it points at is written, through a temporary file beside that
+    /// file, since a rename onto the link would put a file in its place. Until 1.0.8 it did: a
+    /// blackice.toml linked from elsewhere became a file of its own, and the file the link pointed
+    /// at kept the old text. The lock stays beside `path`, in ~/.config/blackice as before, not in
+    /// the folder the link leads to (a dotfiles repository, say), since it is never removed. When
+    /// that folder cannot be written (the Nix store, say), the link is replaced by a file as
+    /// before, made writable by its owner, and the result is true so that the caller says so
+    /// (`linkReplacedLine`). A link that leads nowhere is replaced as before.
+    @discardableResult
     static func writeAtomically(_ data: Data, to path: String, mode: mode_t, replacing expected: Data? = nil,
-                                lockSeconds: TimeInterval = 5) throws {
-        let temporary = temporaryPath(for: path)
+                                lockSeconds: TimeInterval = 5, followingLinks: Bool = false) throws -> Bool {
+        var target = followingLinks ? resolvingLinks(path) : path
+        var temporary = temporaryPath(for: target)
+        var mode = mode
         unlink(temporary)
-        let descriptor = open(temporary, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, mode)
+        var descriptor = open(temporary, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, mode)
+        let failure = descriptor < 0 ? errno : 0
+        let replacedLink = [EACCES, EPERM, EROFS].contains(failure) && target != path && isLink(path)
+        if replacedLink {
+            target = path
+            temporary = temporaryPath(for: path)
+            mode |= S_IWUSR
+            unlink(temporary)
+            descriptor = open(temporary, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, mode)
+        }
         guard descriptor >= 0 else { throw CocoaError(.fileWriteUnknown, userInfo: [NSFilePathErrorKey: temporary]) }
         let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
         do {
@@ -1327,16 +1355,40 @@ extension CLI {
             try handle.synchronize()
             try handle.close()
             guard fchmodat(AT_FDCWD, temporary, mode, 0) == 0 else {
-                throw CocoaError(.fileWriteUnknown, userInfo: [NSFilePathErrorKey: path])
+                throw CocoaError(.fileWriteUnknown, userInfo: [NSFilePathErrorKey: target])
             }
             let unlock = try expected == nil ? {} : lockBeside(path, waitingUpTo: lockSeconds)
             defer { unlock() }
             if let expected, FileManager.default.contents(atPath: path) != expected { throw ChangedMeanwhile() }
-            guard rename(temporary, path) == 0 else { throw CocoaError(.fileWriteUnknown, userInfo: [NSFilePathErrorKey: path]) }
+            guard rename(temporary, target) == 0 else {
+                throw CocoaError(.fileWriteUnknown, userInfo: [NSFilePathErrorKey: target])
+            }
         } catch {
             unlink(temporary)
             throw error
         }
+        return replacedLink
+    }
+
+    /// What the writers of blackice.toml say when `writeAtomically` replaced the link at `shown`
+    /// with a file, because the folder of the file it points at cannot be written.
+    static func linkReplacedLine(_ shown: String) -> String {
+        "\(shown) is now a file, no longer a symbolic link: the folder of the file it pointed at cannot be written, " +
+            "and that file keeps the old text."
+    }
+
+    /// The file `path` names, every symbolic link on the way followed (realpath(3)); `path` itself
+    /// when that fails, as for a file not there yet or a link that leads nowhere.
+    static func resolvingLinks(_ path: String) -> String {
+        guard let resolved = realpath(path, nil) else { return path }
+        defer { free(resolved) }
+        return String(cString: resolved)
+    }
+
+    /// Whether `path` itself is a symbolic link.
+    static func isLink(_ path: String) -> Bool {
+        var info = stat()
+        return lstat(path, &info) == 0 && (info.st_mode & S_IFMT) == S_IFLNK
     }
 
     /// Takes an exclusive flock(2) on the lock file beside `path` (`lockPath(for:)`), and returns

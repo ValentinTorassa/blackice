@@ -36,6 +36,37 @@ struct AgentInstructionsTests {
         #expect(AgentInstructions.droppingFrontMatter("# x\n---\n") == "# x\n---\n")
     }
 
+    /// The sets differ where their agents do, in how the event comes and what stopping is. The
+    /// notes and the weighing (steps 3 and 4) are the same text in each, and so is the form of the
+    /// answer: up to 1.0.7 fx alone took sentences of Markdown before its verdict.
+    @Test func everySetWeighsAndAnswersAlike() throws {
+        func section(_ text: String, _ start: String, _ end: String) -> Substring? {
+            guard let from = text.range(of: start), let to = text.range(of: end, range: from.upperBound..<text.endIndex)
+            else { return nil }
+            return text[from.lowerBound..<to.lowerBound]
+        }
+        let steps = ("## 3. Follow the owner's notes", "## 5. ")
+        let form = ("Reply with two lines of plain text", "on a line is not an answer")
+        let weighing = try #require(section(AgentInstructions.codex.text, steps.0, steps.1))
+        let answer = try #require(section(AgentInstructions.codex.text, form.0, form.1))
+        for set in AgentInstructions.allCases {
+            #expect(section(set.text, steps.0, steps.1) == weighing, "\(set)")
+            #expect(section(set.text, form.0, form.1) == answer, "\(set)")
+        }
+        // Said outright since 1.0.8, where the same app and host were approved on one ask and
+        // denied on another.
+        for rule in ["For a signed app, that the notes leave something out is",
+                     "never the script's name, or how well the host fits it",
+                     "Team ID you do not know is no reason to deny on its own",
+                     "`~/.opencode/bin`, is not a toolchain folder",
+                     "`storage.googleapis.com`, where `proxy.golang.org` sends it for module downloads",
+                     "a Funnel host resolves to a public address"] {
+            #expect(weighing.contains(rule), "\(rule)")
+        }
+        #expect(answer.contains("a duration such as `24h` alone"))
+        #expect(!AgentInstructions.fx.text.contains("one or two sentences") && !AgentInstructions.fx.text.contains("```text"))
+    }
+
     @Test func aProgramHookNamesItsInstructions() throws {
         let text = """
             mode = "ask"

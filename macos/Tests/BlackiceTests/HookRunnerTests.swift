@@ -183,6 +183,8 @@ struct HookRunnerTests {
         #expect(result.outcome == .timedOut(signal: SIGTERM))
         #expect(result.duration < 5, "took \(result.duration) s")
         #expect(runner.runningCount == 0)
+        // The difference between the two clocks says how long it slept, for the log's slept_ms.
+        #expect(abs(result.slept - 3600) < 5, "slept \(result.slept) s")
     }
 
     @Test func nothingRunsAfterTheDeadline() async throws {
@@ -370,8 +372,54 @@ struct HookRunnerTests {
         let results = try await testRunner(dir).run([hook(command)], for: testEvent(), timeoutSeconds: 10)
         let result = try #require(results.first)
         #expect(result.outcome == .exited(status: 0))
-        #expect(result.stderr == String(repeating: "x", count: 4096))
+        #expect(result.stderr == String(repeating: "x", count: 1024) + HookResult.cutMarker + String(repeating: "x", count: 3072))
         #expect(result.stderrTruncated)
+    }
+
+    /// An agent says why it failed last: the end of a long stderr is kept, with its start.
+    @Test func theEndOfStderrIsKept() async throws {
+        let dir = try makePrivateDirectory()
+        defer { removeTree(dir) }
+        let command = "head -c 10240 /dev/zero | tr '\\000' x >&2; echo 'FATAL: x' >&2; exit 1"
+        let results = try await testRunner(dir).run([hook(command)], for: testEvent(), timeoutSeconds: 10)
+        let result = try #require(results.first)
+        #expect(result.outcome == .exited(status: 1) && result.stderrTruncated)
+        #expect(result.stderr == String(repeating: "x", count: 1024) + HookResult.cutMarker + String(repeating: "x", count: 3063)
+                + "FATAL: x\n")
+        // Within the limit nothing is cut or marked.
+        let short = try await testRunner(dir).run([hook("head -c 4000 /dev/zero | tr '\\000' y >&2; echo end >&2")],
+                                                   for: testEvent(), timeoutSeconds: 10)
+        #expect(short.first?.stderr == String(repeating: "y", count: 4000) + "end\n" && short.first?.stderrTruncated == false)
+    }
+
+    /// `stopAll`, when the daemon stops: a waiting hook is dropped, a running one ends as at its
+    /// deadline (SIGTERM to its group, SIGKILL after the grace period), and nothing starts after.
+    @Test func stopAllEndsEveryHook() async throws {
+        let dir = try makePrivateDirectory()
+        defer { removeTree(dir) }
+        let runner = try testRunner(dir, limit: 1, grace: 0.3)
+        let pidFile = dir.appendingPathComponent("child.pid")
+        let marker = dir.appendingPathComponent("ran")
+        // It ignores SIGTERM, and so does the sleep it leaves in its group.
+        let stubborn = "trap '' TERM; sleep 30 & echo $! > \(quotedPath(pidFile)); wait"
+        let running = Task { await runner.run([hook(stubborn)], for: testEvent(id: "ev-1"), timeoutSeconds: 30) }
+        #expect(await eventually { runner.runningCount == 1 && fileExists(pidFile) })
+        let waiting = Task { await runner.run([hook("touch \(quotedPath(marker))")], for: testEvent(id: "ev-2"), timeoutSeconds: 30) }
+        #expect(await eventually { runner.waitingCount == 1 })
+
+        let stopped = Date()
+        runner.stopAll()
+        #expect(await waiting.value.map(\.outcome) == [.dropped(.daemonStopping)])
+        let result = try #require(await running.value.first)
+        let took = Date().timeIntervalSince(stopped)
+        #expect(result.outcome == .timedOut(signal: SIGKILL, reason: .daemonStopping))
+        #expect(result.answer == nil && took < 3, "took \(took) s")
+        #expect(processGone(try #require(pid_t(try read(pidFile).trimmingCharacters(in: .whitespacesAndNewlines)))))
+        #expect(runner.runningCount == 0 && runner.waitingCount == 0)
+
+        let late = await runner.run([hook("touch \(quotedPath(marker))")], for: testEvent(id: "ev-3"), timeoutSeconds: 30)
+        #expect(late.map(\.outcome) == [.dropped(.daemonStopping)])
+        #expect(!fileExists(marker))
     }
 
     @Test func stdoutIsKeptForTheAnswerAndBounded() async throws {
@@ -757,6 +805,8 @@ struct HookRunnerTests {
         }
         #expect(results.first?.stderr == "oops\n")
         #expect(progress.items == ["started 7 true 0.0", "finished 7 exited(status: 2)"])
+        // Awake the whole time.
+        #expect(abs(results.first?.slept ?? 60) < 1)
     }
 
     @Test func anOpenWorkDirectoryIsRefused() throws {

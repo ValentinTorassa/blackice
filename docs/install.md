@@ -2,7 +2,7 @@
 
 Install blackice, start it, answer what waits, let an agent answer, upgrade and uninstall.
 
-blackice 1.0.7 has run on one Mac, with macOS 27.0.1; macOS 14 and 15 are not tested yet. A `blackice.toml` that
+blackice 1.0.8 has run on one Mac, with macOS 27.0.1; macOS 14 and 15 are not tested yet. A `blackice.toml` that
 works in 1.0 keeps working in every 1.x.
 
 You need a Mac with Apple silicon, macOS 14.4 or later, and an admin account.
@@ -33,7 +33,7 @@ The site serves the copy on the repository's `main` branch, so this prints nothi
 To skip the site, run the copy at the release's tag on GitHub instead:
 
 ```console
-$ curl -fsSL https://raw.githubusercontent.com/ValentinTorassa/blackice/v1.0.7/site/lib/install.sh | sh
+$ curl -fsSL https://raw.githubusercontent.com/ValentinTorassa/blackice/v1.0.8/site/lib/install.sh | sh
 ```
 
 That one trusts GitHub and whoever can push the tag. The steps [by hand](#by-hand) trust neither the site nor the
@@ -51,13 +51,13 @@ that, run the `codesign` and `spctl` lines below on `/Applications/Blackice.app`
 
 ## By hand
 
-Download `Blackice-1.0.7.zip` and `Blackice-1.0.7.zip.sha256` from the
-[GitHub release](https://github.com/ValentinTorassa/blackice/releases/tag/v1.0.7). In that folder:
+Download `Blackice-1.0.8.zip` and `Blackice-1.0.8.zip.sha256` from the
+[GitHub release](https://github.com/ValentinTorassa/blackice/releases/tag/v1.0.8). In that folder:
 
 ```console
-$ shasum -a 256 -c Blackice-1.0.7.zip.sha256
-Blackice-1.0.7.zip: OK
-$ ditto -x -k Blackice-1.0.7.zip .
+$ shasum -a 256 -c Blackice-1.0.8.zip.sha256
+Blackice-1.0.8.zip: OK
+$ ditto -x -k Blackice-1.0.8.zip .
 $ codesign --verify --strict --deep --verbose=2 Blackice.app
 $ codesign -dvv Blackice.app 2>&1 | grep -E '^(Identifier|TeamIdentifier)='
 Identifier=com.valentorassa.blackice
@@ -66,6 +66,9 @@ $ xcrun stapler validate Blackice.app
 $ spctl --assess --type execute -vv Blackice.app
 $ ditto Blackice.app /Applications/Blackice.app
 ```
+
+Since 1.0.8 the app names the commit it was built from, under its signature:
+`/usr/libexec/PlistBuddy -c 'Print :BlackiceSourceCommit' Blackice.app/Contents/Info.plist`.
 
 `codesign --verify` should say `valid on disk` and `satisfies its Designated Requirement`, `stapler` that the validate
 action worked, and `spctl` `accepted` with `source=Notarized Developer ID`. If one fails, or the Team ID is not
@@ -80,7 +83,7 @@ export PATH="/Applications/Blackice.app/Contents/MacOS:$PATH"
 
 The `.sha256` file comes from the same release as the zip, so on its own it only catches a broken download. The
 signature, the Team ID and the notarization show that the app is blackice's. The SHA-256 should also be the one on the
-`SHA256=` line of the [install script](https://github.com/ValentinTorassa/blackice/blob/v1.0.7/site/lib/install.sh)
+`SHA256=` line of the [install script](https://github.com/ValentinTorassa/blackice/blob/v1.0.8/site/lib/install.sh)
 at the release's tag (releases before 1.0.0 have no such line).
 
 ## Start
@@ -180,8 +183,11 @@ after an install with the script), or the install script again with `--force`. T
 $ blackice start
 ```
 
-`start` waits for the new extension and loads your configuration into it (Touch ID). If it exits with status 75, restart
-the Mac and run it again. An open menu bar app reopens by itself.
+`start` waits for the new extension and loads your configuration into it (Touch ID). Until then no hook runs: the new
+build's daemon reaches only the new build's extension, so it restarts every 10 s, and `daemon.err.log` says to run
+`blackice start`. If `start` exits with status 75, restart the Mac and run it again. An open menu bar app reopens by
+itself. Before Touch ID it says what it keeps, and which switch made with `blackice mode` or the menu it drops because
+`blackice.toml` changed since the last start.
 
 On macOS 27.0.1 the kernel can stay at one socket while it disconnects the old build's filter (4 to 116 s in seven
 upgrades), and a filter started meanwhile lets no new connection through. So `start` turns the old filter off, waits for
@@ -190,6 +196,13 @@ at once when the socket is an ICMP one bound to no address; at a UDP socket it w
 checked in those seconds, and `start` says so when the wait lasts over a second, with the app whose socket macOS waits
 on. If macOS is still at it after 90 s, `start` goes on, and it and `blackice status` (a `network` line) say that no new
 connection gets through until it is done. A `start` after a `stop` waits the same way.
+
+Stopping an upgrade's `start` part way, with Control-C, by closing the terminal or when an ssh session drops, turns the
+filter back on with the configuration it had and exits with status 130: run `blackice start` again. At the first
+Control-C while it waits for the kernel, or for macOS to replace the extension, it says so and waits on (90 s at most),
+since a filter turned on sooner is held with the one going; a second Control-C turns the filter on at once. Only a `start`
+killed outright leaves the filter off, and `blackice status` then says it was turned off in System Settings or by a
+`start` that did not finish.
 
 ## Uninstall
 
@@ -205,7 +218,10 @@ you to confirm removing the extension in a dialog of its own. It needs no networ
 `brew uninstall --cask blackice` in place of `rm`, after `blackice stop`: Homebrew cannot remove the extension. Removing
 the app needs App Management for Terminal (System Settings → Privacy & Security → App Management).
 `systemextensionsctl list` may show the extension waiting to uninstall until the next restart. Your settings and logs
-stay; to remove them too: `rm -rf ~/.config/blackice ~/Library/Logs/blackice`.
+stay; to remove them too: `rm -rf ~/.config/blackice ~/Library/Logs/blackice`. `~/.config/blackice/agent` holds the
+agents' homes, with the sign-ins of fx, Codex and opencode as files; Claude Code keeps its sign-in in the keychain.
+`brew uninstall --zap --cask blackice` removes `~/.config/blackice/agent` and `~/Library/Logs/blackice` and keeps
+`blackice.toml`.
 
 ## Rollback
 

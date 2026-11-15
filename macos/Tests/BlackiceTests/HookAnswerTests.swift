@@ -39,6 +39,41 @@ struct HookAnswerTests {
         }
     }
 
+    /// An approval broken in two before its duration is read as one; the empty lines between the
+    /// two and the whitespace around them do not count.
+    @Test(arguments: [
+        ("approve\n24h", 86_400),
+        ("approve\n30m\n", 1800),
+        ("It is the editor's update server.\napprove\n8h\n", 28_800),
+        ("  approve \n\n \t\n 1440m  \n\n", 86_400),
+        ("approve\r\n1h\r\n", 3600),
+    ])
+    func anApprovalSplitBeforeItsDurationCounts(_ text: String, _ seconds: Int) {
+        #expect(parse(text) == .success(.approve(seconds: seconds)), "\(text.debugDescription)")
+    }
+
+    /// Only exactly `approve` before a duration the approve syntax takes.
+    @Test(arguments: [
+        "deny\n24h", "I approve\n24h", "24h", "\n24h\n", "Approve\n24h", "approve:\n24h", "approve 1h\n24h",
+        "approve\n24 h", "approve\n10s", "approve\n25h", "approve\n2d", "approve\n24h\nok", "approve\ndeny 24h",
+    ])
+    func noOtherSplitIsPutTogether(_ text: String) {
+        guard case .failure(.unrecognized) = parse(text) else {
+            Issue.record("\(text.debugDescription) was taken as \(parse(text))")
+            return
+        }
+    }
+
+    /// The log keeps the start of the line before an unrecognized one, shown the same way.
+    @Test func theLineBeforeTheLastIsShownToo() {
+        #expect(HookAnswer.previousLinePrefix(Data("I read the event.\n\n  approve 2d \n".utf8)) == "I read the event.")
+        #expect(HookAnswer.previousLinePrefix(Data("Looks fine to me, so I would say\napprove\u{1B}[0m".utf8))
+                == "Looks fine to me, so I w…")
+        #expect(HookAnswer.previousLinePrefix(Data("✅ approve\n24 h".utf8)) == "? approve")
+        #expect(HookAnswer.previousLinePrefix(Data("approve 2d\n".utf8)) == nil)
+        #expect(HookAnswer.previousLinePrefix(Data()) == nil)
+    }
+
     @Test func emptyOutputAndTooMuchOutput() {
         #expect(parse("") == .failure(.noLine))
         #expect(parse("\n  \n\t\r\n") == .failure(.noLine))

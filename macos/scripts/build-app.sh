@@ -1,7 +1,8 @@
 #!/bin/bash
 # Builds Blackice.app from the Swift package, unsigned: the blackice CLI is the app's
 # executable and the filter is its system extension. Command Line Tools only, no Xcode.
-# Nothing is signed, installed or activated; scripts/sign.sh does the signing.
+# Nothing is signed, installed or activated; scripts/sign.sh does the signing, and records the
+# source commit (BlackiceSourceCommit, "none" here) from a tree with nothing uncommitted.
 # Layout adapted from blackice-poc macos/build.sh at commit 45a7870.
 #
 # usage: macos/scripts/build-app.sh OUTPUT_DIR
@@ -15,7 +16,7 @@ if [[ "$(uname -s)" != Darwin ]]; then
     exit 1
 fi
 if [[ $# -ne 1 ]]; then
-    sed -n 7,10p "$0" >&2
+    sed -n 8,11p "$0" >&2
     exit 64
 fi
 BUILD_NUMBER="${BUILD_NUMBER:-1}"

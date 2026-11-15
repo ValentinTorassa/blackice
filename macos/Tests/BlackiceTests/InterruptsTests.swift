@@ -32,14 +32,84 @@ import Testing
             kill(getpid(), SIGTERM)
             while !Interrupts.interrupted, Date() < deadline { usleep(10_000) }
         }
-        #expect(Interrupts.caught == SIGTERM)
-        // A catch inside another keeps what the outer one caught.
+        #expect(Interrupts.caught == SIGTERM && Interrupts.count == 1 && Interrupts.terminated)
+        // A catch inside another sees what the outer one caught at once, as an upgrade's start
+        // run by agent connect does before it turns the filter off, and keeps it.
+        let inner = Interrupts.catchAll()
+        #expect(Interrupts.interrupted && Interrupts.count == 1)
+        inner()
+        #expect(Interrupts.interrupted && Interrupts.terminated)
+        release()
+        #expect(!Interrupts.interrupted && !Interrupts.terminated)
+        #expect(Interrupts.signals.map(handling) == before)
+    }
+
+    /// A write to a pipe nobody reads any more, as a command run over ssh with no terminal makes
+    /// once the session drops: caught as the other signals are, and the write fails.
+    @Test func aBrokenPipeIsCaught() {
+        var ends: [Int32] = [0, 0]
+        #expect(pipe(&ends) == 0)
+        close(ends[0])
+        defer { close(ends[1]) }
+        let release = Interrupts.catchAll()
+        defer { release() }
+        let byte: [UInt8] = [0x0A]
+        // macOS sends it to the process, so any thread that does not block it may take it.
+        let deadline = Date().addingTimeInterval(5)
+        #expect(unblocked { () -> Int in
+            let written = write(ends[1], byte, 1)
+            while !Interrupts.interrupted, Date() < deadline { usleep(10_000) }
+            return written
+        } == -1)
+        #expect(Interrupts.caught == SIGPIPE)
+    }
+
+    /// The first signal counts, and after it Control-C and Control-\ do, so that an upgrade's start
+    /// can tell a second Control-C from the first. A closed terminal or a dropped ssh session
+    /// usually brings SIGHUP twice, from the shell and from the kernel, and then a broken pipe for
+    /// each line written: none of those counts again. Back to 0 with the outermost release.
+    @Test func afterTheFirstSignalOnlyControlCAndControlBackslashCount() {
+        var ends: [Int32] = [0, 0]
+        #expect(pipe(&ends) == 0)
+        close(ends[0])
+        defer { close(ends[1]) }
+        let release = Interrupts.catchAll()
+        #expect(Interrupts.count == 0)
+        let process = getpid()
+        func send(_ signal: Int32, until count: Int) {
+            let deadline = Date().addingTimeInterval(5)
+            unblocked {
+                kill(process, signal)
+                while Interrupts.caught != signal || Interrupts.count < count, Date() < deadline { usleep(10_000) }
+            }
+        }
+        send(SIGHUP, until: 1)
+        #expect(Interrupts.count == 1)
+        let byte: [UInt8] = [0x0A]
+        let deadline = Date().addingTimeInterval(5)
+        #expect(unblocked { () -> Int in
+            let written = write(ends[1], byte, 1)
+            while Interrupts.caught != SIGPIPE, Date() < deadline { usleep(10_000) }
+            return written
+        } == -1)
+        #expect(Interrupts.caught == SIGPIPE && Interrupts.count == 1)
+        send(SIGHUP, until: 1)
+        #expect(Interrupts.caught == SIGHUP && Interrupts.count == 1 && !Interrupts.terminated)
+        // SIGTERM does not count again, but is kept apart: an upgrade's start stops at it.
+        send(SIGTERM, until: 1)
+        #expect(Interrupts.caught == SIGTERM && Interrupts.count == 1 && Interrupts.terminated)
+        send(SIGQUIT, until: 2)
+        #expect(Interrupts.count == 2)
+        send(SIGHUP, until: 2)
+        #expect(Interrupts.caught == SIGHUP && Interrupts.count == 2)
+        send(SIGINT, until: 3)
+        #expect(Interrupts.count == 3)
+        // A catch inside another keeps the count.
         let inner = Interrupts.catchAll()
         inner()
-        #expect(Interrupts.interrupted)
+        #expect(Interrupts.count == 3)
         release()
-        #expect(!Interrupts.interrupted)
-        #expect(Interrupts.signals.map(handling) == before)
+        #expect(Interrupts.count == 0 && !Interrupts.interrupted && !Interrupts.terminated)
     }
 
     @Test func aLineIsReadUpToItsEnd() {

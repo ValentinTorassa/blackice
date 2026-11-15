@@ -1,0 +1,11 @@
+{
+  "event": "connection",
+  "id": "ev-0000002a",
+  "app": {
+    "cdhash": "9b2e4d71c6a03f58e1d7b9c2a4f06e13d8c5b72a",
+    "path": "/Users/me/.opencode/bin/opencode"
+  },
+  "ip": "104.21.48.12",
+  "port": 443,
+  "host": "models.opencode.ai"
+}

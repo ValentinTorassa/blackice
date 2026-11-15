@@ -355,7 +355,8 @@ public enum CLI {
     /// `approve --save`: adds a rule for the approved app and the hosts no rule covers yet to the
     /// end of blackice.toml, through the same compare-and-replace `agent connect` uses. The running
     /// filter keeps its configuration, so the rule counts from the next `blackice start`; the
-    /// approval covers the hosts until then.
+    /// approval covers the hosts until then. That start finds the file changed and loads its own
+    /// mode and answerer too, and says so before Touch ID (`droppedLines`); this says it first.
     static func saveRule(_ approval: Approval, readFile: (String) throws -> Data,
                          stdout: (String) -> Void, stderr: (String) -> Void) -> Int32 {
         let path = approval.configPath ?? defaultConfigPath
@@ -387,7 +388,9 @@ public enum CLI {
             _ = try BlackiceConfig(text: updated)
             var info = stat()
             let mode = stat(path, &info) == 0 ? info.st_mode & 0o777 : 0o600
-            try writeAtomically(Data(updated.utf8), to: path, mode: mode, replacing: Data(text.utf8))
+            if try writeAtomically(Data(updated.utf8), to: path, mode: mode, replacing: Data(text.utf8), followingLinks: true) {
+                stderr(linkReplacedLine(shown))
+            }
         } catch is ChangedMeanwhile {
             stderr("blackice approve: approved, but not saved: \(shown) changed meanwhile; run it again")
             return ExitCode.tempFail
@@ -396,7 +399,7 @@ public enum CLI {
             return ExitCode.cannotCreate
         }
         stdout(Style.done("Saved a rule for \(approval.identity.name) → \(missing.joined(separator: ", ")) in \(shown);"
-                          + " it counts from the next blackice start"))
+                          + " it counts from the next blackice start, which also loads the file's own mode and answerer"))
         if case .cdhash = approval.identity {
             stdout("  If that cdhash is an interpreter (python, node, a shell…), the rule never counts: blackice decides")
             stdout("  an interpreter's connections one by one. Name the tool in the agent's notes instead.")

@@ -31,6 +31,30 @@ public protocol EventIntake: Sendable {
 /// Where the daemon sends a hook's answer: to the extension, through `EventIntake.answer`.
 public typealias AnswerSender = @Sendable (AnswerRequest) async throws -> AnswerReply
 
+/// The extension did not reply to an answer within `seconds`. Unlike a connection that is gone
+/// (`unreachable`), the answer may still have been taken, late: it is logged as `reply_timeout`.
+public struct AnswerReplyTimeout: Error, CustomStringConvertible {
+    public let seconds: TimeInterval
+
+    public init(seconds: TimeInterval) { self.seconds = seconds }
+
+    public var description: String { "the network extension did not reply to the answer within \(Int(seconds)) s" }
+}
+
+/// Writes one line of the daemon's own to stderr (or `handle`), which the LaunchAgent sends to
+/// daemon.err.log, after the time in UTC to the millisecond and the daemon's PID, so that it can
+/// be put beside the event log and the system log, and told from the lines of the daemon before:
+/// `2026-11-14T21:03:04.123Z [82988] blackice daemon: …`. A write that fails is dropped:
+/// `FileHandle.write(_:)` raises an Objective-C exception for one (a full disk, a closed pipe),
+/// which ends the process, and a daemon that cannot say a line should go on answering.
+public func daemonLine(_ text: String, to handle: FileHandle = .standardError, at date: Date = Date()) {
+    try? handle.write(contentsOf: Data((daemonLinePrefix(at: date, pid: getpid()) + text + "\n").utf8))
+}
+
+func daemonLinePrefix(at date: Date, pid: pid_t) -> String {
+    "\(EventLog.timestamp(date)) [\(pid)] blackice daemon: "
+}
+
 /// The hooks and the timeout the daemon runs with. They come only from the configuration the
 /// extension holds, the one `blackice start` and `blackice mode` saved after Touch ID, and never
 /// from a file: any program of the user can start `blackice daemon`, but it cannot choose the
@@ -193,20 +217,36 @@ public final class Daemon: Sendable {
     public let log: EventLog
     public let runner: HookRunner
     private let reportLogFailure: @Sendable (Error) -> Void
+    private let failures = FailureRun()
 
     /// `reportLogFailure` is called for every record the log could not take. The default prints
     /// to stderr, which the LaunchAgent sends to its own file.
+    ///
+    /// A run of hooks that failed, which the end of the log shows with no answer after it, goes on
+    /// from where the daemon before this one left it: launchd starts the daemon again whenever
+    /// the extension restarts (an upgrade, a `start`) and at login, and a count that started over
+    /// made the next `hooks_failing` say 3 in a row since a minute ago after 299 over 13 hours.
     public init(log: EventLog, runner: HookRunner,
                 reportLogFailure: @escaping @Sendable (Error) -> Void = Daemon.printLogFailure) {
         self.log = log
         self.runner = runner
         self.reportLogFailure = reportLogFailure
+        if let run = FailingHooks.read(url: log.url, minimum: 1) {
+            failures.count = run.count
+            failures.since = run.since
+        }
     }
 
     /// Handles events until the intake finishes, several at a time. The group discards each
     /// event's task as it ends: a plain task group keeps finished ones until they are collected,
-    /// and this one lasts as long as the daemon.
-    public func run(_ intake: some EventIntake) async {
+    /// and this one lasts as long as the daemon. It returns once every event's task has ended.
+    ///
+    /// With `stopHooksWhenIntakeEnds`, as `blackice daemon` runs it, the end of the intake stops
+    /// the hooks (`HookRunner.stopAll`), so that it returns within the grace period: the extension
+    /// that sent their events is gone, and with it their tokens. Up to 1.0.7 it waited for each
+    /// hook to end on its own or at its timeout, and launchd could not start the next daemon
+    /// meanwhile, so the restarted extension's events found none (`event_not_sent no_daemon`).
+    public func run(_ intake: some EventIntake, stopHooksWhenIntakeEnds: Bool = false) async {
         let store = ConfigurationStore(fetch: { try await intake.configuration() },
                                        loaded: { configuration in self.record(.configurationLoaded(configuration)) })
         await withDiscardingTaskGroup { group in
@@ -220,6 +260,7 @@ public final class Daemon: Sendable {
                     }
                 }
             }
+            if stopHooksWhenIntakeEnds { runner.stopAll() }
         }
     }
 
@@ -285,22 +326,77 @@ public final class Daemon: Sendable {
         case nil:
             return
         case .failure(let missing)?:
-            record(.hookNoAnswer(eventID: event.id, hookLine: result.hookLine, missing))
+            var previous: String?
+            if case .output(.unrecognized) = missing { previous = HookAnswer.previousLinePrefix(result.stdout) }
+            let now = Date()
+            record(.hookNoAnswer(eventID: event.id, hookLine: result.hookLine, missing, previousPrefix: previous), at: now)
+            if Self.failed(missing) { countFailure(missing.reason, stderr: result.stderr, at: now) }
         case .success(let answer)?:
             record(.hookAnswered(eventID: event.id, hookLine: result.hookLine, answer))
+            countAnswer()
             guard let request = Self.request(answer, for: event) else {
                 record(.answerRefused(eventID: event.id, hookLine: result.hookLine, reason: "invalid_event"))
                 return
             }
+            let reason: String
             do {
                 let reply = try await send(request)
-                if reply.status != .done {
-                    record(.answerRefused(eventID: event.id, hookLine: result.hookLine, reason: reply.reason))
-                }
+                guard reply.status != .done else { return }
+                reason = reply.reason
             } catch {
-                record(.answerRefused(eventID: event.id, hookLine: result.hookLine, reason: "unreachable"))
+                reason = error is AnswerReplyTimeout ? "reply_timeout" : "unreachable"
+                daemonLine("the answer of hook line \(result.hookLine) for event \(event.id) was not taken: \(error)")
             }
+            record(.answerRefused(eventID: event.id, hookLine: result.hookLine, reason: reason))
         }
+    }
+
+    // MARK: - Hooks failing in a row
+
+    /// Whether a hook that ran and gave no answer failed by itself: it exited with another status,
+    /// died of a signal of its own, or printed no answer. Not when it ran out of time, which a busy
+    /// queue or a sleep causes, nor when its home changed while it ran.
+    static func failed(_ missing: HookResult.NoAnswer) -> Bool {
+        switch missing {
+        case .exitStatus, .signaled, .output: return true
+        case .deadline, .unsafeHome: return false
+        }
+    }
+
+    /// The counts at which `hooks_failing` is written: 3, 10, 30, 100, 300, 1000 and so on, often
+    /// at first and ever less after, so that an agent that stays broken does not fill the log.
+    static func isMilestone(_ count: Int) -> Bool {
+        guard count >= 3 else { return false }
+        var rest = count
+        while rest % 10 == 0 { rest /= 10 }
+        return rest == 3 || (rest == 1 && count >= 10)
+    }
+
+    /// One more hook failed. Every hook may be failing the same way, such as an agent whose login
+    /// expired, and the log then holds only a `hook_no_answer` per event: the run's count, its
+    /// latest reason and the last line its hook wrote to stderr go in a record of their own, which
+    /// `blackice status` and the menu show. That line is taken as `FailingHooks` takes it from the
+    /// hook's own record (`FailingHooks.lastLine`), so that both say the same: an agent says why
+    /// it failed last, after a banner or its progress, often in color. Nothing stops the hooks;
+    /// the next event runs them as always.
+    private func countFailure(_ reason: String, stderr: String, at date: Date) {
+        failures.lock.lock()
+        defer { failures.lock.unlock() }
+        if failures.count == 0 { failures.since = date }
+        failures.count += 1
+        guard Self.isMilestone(failures.count) else { return }
+        record(.hooksFailing(count: failures.count, reason: reason, stderrLine: FailingHooks.lastLine(stderr) ?? "",
+                             since: failures.since ?? date))
+    }
+
+    /// A hook answered: the run of failures is over, and when it was long enough to be written,
+    /// that it ended is written too.
+    private func countAnswer() {
+        failures.lock.lock()
+        defer { failures.lock.unlock() }
+        if failures.count >= 3 { record(.hooksRecovered(after: failures.count)) }
+        failures.count = 0
+        failures.since = nil
     }
 
     /// The answer as the extension takes it: for the event's app and host, never anything from the
@@ -322,15 +418,24 @@ public final class Daemon: Sendable {
         runner.eventEnded(eventID)
     }
 
-    private func record(_ record: LogRecord) {
+    private func record(_ record: LogRecord, at date: Date = Date()) {
         do {
-            try log.append(record)
+            try log.append(record, at: date)
         } catch {
             reportLogFailure(error)
         }
     }
 
     public static let printLogFailure: @Sendable (Error) -> Void = { error in
-        FileHandle.standardError.write(Data("blackice daemon: event log write failed: \(error)\n".utf8))
+        daemonLine("event log write failed: \(error)")
     }
+}
+
+/// The hooks in a row that failed (`Daemon.failed`), with no answer between them. Kept in memory,
+/// and taken up from the end of the event log when the daemon starts.
+private final class FailureRun: @unchecked Sendable {
+    let lock = NSLock()
+    var count = 0
+    /// When the first of them ended.
+    var since: Date?
 }

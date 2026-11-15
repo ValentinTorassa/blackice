@@ -116,12 +116,13 @@ struct ApprovalTableTests {
         table.add(ApprovalKey(identity: tool, host: "example.com"), seconds: 3600, now: 0)
         var restored = ApprovalTable()
         let added = restored.restore(try #require(table.saved(now: 0, timeOfDay: 1_000_000)), now: 0, timeOfDay: 1_000_000)
-        #expect(added == 4 && restored.covers(ApprovalKey(identity: tool, host: "fe80::1"), now: 1))
+        #expect(added?.added == 4 && added?.skipped == 0 && restored.covers(ApprovalKey(identity: tool, host: "fe80::1"), now: 1))
         var old = ApprovalTable()
         old.add(ApprovalKey(identity: tool, host: "fe80::1%7"), seconds: 3600, now: 0)
         old.add(ApprovalKey(identity: tool, host: "example.com"), seconds: 3600, now: 0)
         var upgraded = ApprovalTable()
-        #expect(upgraded.restore(try #require(old.saved(now: 0, timeOfDay: 1_000_000)), now: 0, timeOfDay: 1_000_000) == 1)
+        let upgrade = upgraded.restore(try #require(old.saved(now: 0, timeOfDay: 1_000_000)), now: 0, timeOfDay: 1_000_000)
+        #expect(upgrade?.added == 1 && upgrade?.skipped == 1)
         #expect(upgraded.summaries(now: 0).map(\.host) == ["example.com"])
     }
 
@@ -137,7 +138,7 @@ struct ApprovalTableTests {
         // 700 s of the time of day later, on a clock that started again (a restart).
         var restored = ApprovalTable()
         let added = restored.restore(data, now: 5, timeOfDay: 1_000_700)
-        #expect(added == 3)
+        #expect(added?.added == 3 && added?.skipped == 0)
         #expect(restored.summaries(now: 5).map(\.secondsLeft).sorted() == [500, 500, 2600])
         #expect(restored.covers(ApprovalKey(identity: tool, host: "example.com"), now: 2604))
         #expect(!restored.covers(ApprovalKey(identity: tool, host: "example.com"), now: 2605))
@@ -154,7 +155,7 @@ struct ApprovalTableTests {
         let data = try #require(table.saved(now: 0, timeOfDay: 1_000_000))
         var restored = ApprovalTable()
         let added = restored.restore(data, now: 0, timeOfDay: 900_000)
-        #expect(added == 1)
+        #expect(added?.added == 1)
         #expect(restored.summaries(now: 0).map(\.secondsLeft) == [600])
     }
 
@@ -166,7 +167,7 @@ struct ApprovalTableTests {
         let data = try #require(table.saved(now: 0, timeOfDay: 1_000_000))
         var restored = ApprovalTable()
         let added = restored.restore(data, now: 50, timeOfDay: 1_000_000)
-        #expect(added == 2 && restored.revision == 2)
+        #expect(added?.added == 2 && restored.revision == 2)
         #expect(restored.covers(ApprovalKey(identity: build, host: "203.0.113.7"), now: 649))
         #expect(restored.covers(ApprovalKey(identity: tool, host: "example.com"), now: 50 + 86_399))
         #expect(!restored.covers(ApprovalKey(identity: tool, host: "example.com"), now: 50 + 86_400))
@@ -182,7 +183,7 @@ struct ApprovalTableTests {
         var table = ApprovalTable()
         let added = table.restore(file([entry("example.com", 60), entry("example.com", 600), entry("example.com", 30)]),
                                   now: 0, timeOfDay: 1_000_000)
-        #expect(added == 3 && table.count == 1)
+        #expect(added?.added == 3 && table.count == 1)
         #expect(table.summaries(now: 0).map(\.secondsLeft) == [600])
 
         var full = ApprovalTable()
@@ -198,20 +199,23 @@ struct ApprovalTableTests {
         let data = try #require(table.saved(now: 0, timeOfDay: 1_000_000))
         var almostGone = ApprovalTable()
         let none = almostGone.restore(data, now: 0, timeOfDay: 1_000_059.5)
-        #expect(none == 0 && almostGone.count == 0)
+        #expect(none?.added == 0 && none?.skipped == 0 && almostGone.count == 0)
         var oneLeft = ApprovalTable()
         let one = oneLeft.restore(data, now: 0, timeOfDay: 1_000_058.5)
-        #expect(one == 1 && oneLeft.summaries(now: 0).map(\.secondsLeft) == [1])
+        #expect(one?.added == 1 && oneLeft.summaries(now: 0).map(\.secondsLeft) == [1])
     }
 
-    @Test func aFileWithAnInvalidEntryOrAnotherVersionAddsNothing() throws {
+    // An entry that is not valid is left out and counted, and the file's others come back: a
+    // check made stricter in a later build must not take every approval away at the upgrade.
+    @Test func anInvalidEntryIsLeftOutAndTheRestComeBack() throws {
         func file(version: Int = 1, _ approvals: String) -> Data {
             Data(#"{"version":\#(version),"saved_at":1000000,"approvals":[\#(approvals)]}"#.utf8)
         }
         let good = #"{"app":{"signing_id":"com.example.tool","team_id":"ABCDE12345"},"host":"example.com","seconds_left":60}"#
+        let other = good.replacingOccurrences(of: "example.com", with: "pypi.org")
         var table = ApprovalTable()
         let added = table.restore(file(good), now: 0, timeOfDay: 1_000_000)
-        #expect(added == 1)
+        #expect(added?.added == 1 && added?.skipped == 0)
         let bad = [
             #"{"app":{"signing_id":"com.example.tool","cdhash":"\#(testCDHash)"},"host":"example.com","seconds_left":60}"#,
             #"{"app":{"signing_id":"com.example.tool"},"host":"Example.COM","seconds_left":60}"#,
@@ -220,16 +224,43 @@ struct ApprovalTableTests {
             #"{"app":{"signing_id":"com.example.tool"},"host":"example.com","seconds_left":60,"script":"/opt/a\u0001.py"}"#,
             #"{"app":{"signing_id":"com.example.tool"},"host":"example.com","seconds_left":60,"no_script":false}"#,
             #"{"app":{"signing_id":"com.example.tool"},"host":"example.com","seconds_left":60,"script":"/opt/a.py","no_script":true}"#,
+            // Entries this build cannot decode at all: a field of another type, one missing, not an object.
+            #"{"app":{"signing_id":"com.example.tool"},"host":"example.com","seconds_left":"60"}"#,
+            #"{"app":{"signing_id":"com.example.tool"},"seconds_left":60}"#,
+            #"{"app":"com.example.tool","host":"example.com","seconds_left":60}"#,
+            #"{"app":{"signing_id":"com.example.tool"},"host":"example.com","seconds_left":60.5}"#,
+            "null", "7", #""example.com""#, "[]",
         ]
         for entry in bad {
             var fresh = ApprovalTable()
-            let added = fresh.restore(file(good + "," + entry), now: 0, timeOfDay: 1_000_000)
-            #expect(added == nil && fresh.count == 0)
+            let added = fresh.restore(file(good + "," + entry + "," + other), now: 0, timeOfDay: 1_000_000)
+            #expect(added?.added == 2 && added?.skipped == 1, "\(entry)")
+            #expect(fresh.summaries(now: 0).map(\.host) == ["example.com", "pypi.org"], "\(entry)")
         }
+        // All of them at once: only the valid ones count.
+        var mixed = ApprovalTable()
+        let all = mixed.restore(file(([good] + bad + [other]).joined(separator: ",")), now: 0, timeOfDay: 1_000_000)
+        #expect(all?.added == 2 && all?.skipped == bad.count && mixed.count == 2)
+        // A file of another version, or not this format at all, still adds nothing.
         var fresh = ApprovalTable()
         let otherVersion = fresh.restore(file(version: 2, good), now: 0, timeOfDay: 1_000_000)
         let notJSON = fresh.restore(Data("not json".utf8), now: 0, timeOfDay: 1_000_000)
-        #expect(otherVersion == nil && notJSON == nil && fresh.count == 0)
+        let noList = fresh.restore(Data(#"{"version":1,"saved_at":1000000,"approvals":{}}"#.utf8), now: 0, timeOfDay: 1_000_000)
+        #expect(otherVersion == nil && notJSON == nil && noList == nil && fresh.count == 0)
+    }
+
+    // What is written is what 1.0.7 reads, which refuses the whole file for one entry it does not
+    // take: the same fields, version 1, and only valid entries, so a downgrade keeps them too.
+    @Test func theFileStaysAsTheLastReleaseWroteIt() throws {
+        var table = ApprovalTable()
+        table.add(ApprovalKey(identity: tool, host: "example.com"), seconds: 600, now: 0)
+        table.add(ApprovalKey(identity: tool, host: "pypi.org", scope: .script("/opt/tool/cli.py")), seconds: 60, now: 0)
+        let data = try #require(table.saved(now: 0, timeOfDay: 1_000_000))
+        let object = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+        #expect(Set(object.keys) == ["version", "saved_at", "approvals"])
+        let file = try JSONDecoder().decode(SavedApprovals.self, from: data)
+        #expect(file.version == 1 && file.approvals.count == 2)
+        #expect(file.approvals.allSatisfy { $0.isValid && $0.secondsLeft <= ApprovalTable.maximumSeconds && !$0.host.contains("%") })
     }
 }
 
@@ -522,7 +553,7 @@ struct AskStateTests {
         // The file written next holds none, so a restart brings none back.
         var restored = ApprovalTable()
         let data = try #require(ask.approvals.saved(now: 10, timeOfDay: 1_000_000))
-        #expect(restored.restore(data, now: 0, timeOfDay: 1_000_000) == 0 && restored.count == 0)
+        #expect(restored.restore(data, now: 0, timeOfDay: 1_000_000)?.added == 0 && restored.count == 0)
         // Again, with nothing left.
         let again = ask.approvals.revision
         #expect(ask.forgetApprovals(now: 11) == 0 && ask.approvals.revision == again)
@@ -551,6 +582,29 @@ struct AskStateTests {
         #expect(released.count == 4 && released.allSatisfy { !$0.allow && $0.reason == "timeout" })
         #expect(Set(timedOut) == Set(events.values.map(\.id)))
         #expect(ask.pending.eventCount == 0 && ask.approvals.count == 0)
+    }
+
+    // The extension looks once a second, and its timer does not run while the Mac sleeps: an
+    // event found more than 5 s past its deadline was not looked at in time, and says so.
+    @Test func aWaitTheMacSleptThroughSaysSo() {
+        let maker = EventMaker()
+        let key = pendingKey()
+        for (now, reason) in [(10.0, "timeout"), (15.0, "timeout"), (15.5, "timeout;asleep"), (3610.0, "timeout;asleep")] {
+            var ask = AskState<String>()
+            _ = ask.pending.add("curl", key: key, addressMatches: true, now: 0, timeout: 10, makeEvent: maker.make(key))
+            _ = ask.pending.add("nscurl", key: key, addressMatches: true, now: 2, timeout: 10, makeEvent: maker.make(key))
+            let (released, timedOut) = ask.expire(now: now)
+            #expect(released.map(\.reason) == [reason, reason] && released.allSatisfy { !$0.allow } && timedOut.count == 1,
+                    "\(now)")
+        }
+        // Each event by its own deadline: one found on time, one late.
+        var ask = AskState<String>()
+        let elsewhere = pendingKey(tool, "example.org")
+        _ = ask.pending.add("early", key: key, addressMatches: true, now: 0, timeout: 10, makeEvent: maker.make(key))
+        _ = ask.pending.add("late", key: elsewhere, addressMatches: true, now: 9, timeout: 10, makeEvent: maker.make(elsewhere))
+        let reasons = Dictionary(uniqueKeysWithValues: ask.expire(now: 19).released.map { ($0.flow, $0.reason) })
+        #expect(reasons == ["early": "timeout;asleep", "late": "timeout"])
+        #expect(AskState<String>.lateSeconds == 5)
     }
 
     @Test func holdExpiredDropsTheFlowAndKeepsTheEvent() throws {

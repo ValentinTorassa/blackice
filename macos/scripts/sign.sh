@@ -14,6 +14,8 @@
 #   script, the bundle layout and the entitlements; the result cannot activate the extension.
 #   OUT=DIR builds in DIR (default macos/build/sign-<time>). BUILD_NUMBER as in build-app.sh; it
 #   also ends the extension's NEMachServiceName, so each build has its own XPC service.
+#   The commit the build comes from (git rev-parse HEAD) goes into both Info.plists as
+#   BlackiceSourceCommit before they are signed. Unless DRY, the tree must have nothing uncommitted.
 set -euo pipefail
 SCRIPTS="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 MACOS_DIR="$(cd -- "$SCRIPTS/.." && pwd)"
@@ -24,12 +26,32 @@ die() { echo "ERROR: $*" >&2; exit 1; }
 step() { printf '\n== %s\n' "$*"; }
 
 if [[ $# -lt 3 || $# -gt 4 ]]; then
-    sed -n 8,16p "$0" >&2
+    sed -n 8,18p "$0" >&2
     exit 64
 fi
 TEAM_ID=$1 APP_PROFILE=$2 FILTER_PROFILE=$3 NOTARY=${4:-}
 DRY=${DRY:-}
 [[ "$TEAM_ID" =~ ^[A-Z0-9]{10}$ ]] || die 'TEAM_ID must be 10 upper-case letters or digits'
+
+# What is uncommitted in the tree (git status --porcelain), one line each; empty when nothing is.
+uncommitted() { git -C "$MACOS_DIR" status --porcelain; }
+# The source commit. A release is built from a tree with nothing uncommitted, so that the commit
+# is its whole source; a tag can then name that commit. DRY=1 takes any tree and records it as is:
+# the commit with -dirty after it when something is uncommitted, "none" outside a git checkout.
+if COMMIT=$(git -C "$MACOS_DIR" rev-parse --verify HEAD 2>/dev/null); then
+    CHANGES=$(uncommitted)
+else
+    COMMIT='' CHANGES=''
+fi
+if [[ -z "$DRY" ]]; then
+    [[ -n "$COMMIT" ]] || die "$MACOS_DIR is not in a git checkout, so the build would name no source commit"
+    [[ -z "$CHANGES" ]] || die "the tree has uncommitted changes; commit them first (or DRY=1 to check this script):"$'\n'"$CHANGES"
+elif [[ -z "$COMMIT" ]]; then
+    COMMIT=none
+elif [[ -n "$CHANGES" ]]; then
+    COMMIT=$COMMIT-dirty
+fi
+echo "Source commit: $COMMIT"
 OUT="${OUT:-$MACOS_DIR/build/sign-$(date +%Y%m%d-%H%M%S)}"
 [[ -e "$OUT" ]] && die "$OUT already exists; choose a fresh directory"
 mkdir -p "$OUT/signing"
@@ -125,6 +147,21 @@ if [[ -z "$DRY" ]]; then
     echo "Embedded both provisioning profiles"
 fi
 
+step "Record the source commit"
+# The build takes minutes: HEAD must still be the commit, with no tracked file changed. Untracked
+# files are not checked again, since OUT may be one of them.
+if [[ -z "$DRY" ]]; then
+    [[ "$(git -C "$MACOS_DIR" rev-parse --verify HEAD)" == "$COMMIT" \
+        && -z "$(git -C "$MACOS_DIR" status --porcelain --untracked-files=no)" ]] \
+        || die "the tree changed during the build: it is no longer commit $COMMIT with nothing uncommitted"
+fi
+for plist in "$APP/Contents/Info.plist" "$EXT/Contents/Info.plist"; do
+    "$BUDDY" -c "Set :BlackiceSourceCommit $COMMIT" "$plist"
+    [[ "$("$BUDDY" -c 'Print :BlackiceSourceCommit' "$plist")" == "$COMMIT" ]] || die "could not record the commit in $plist"
+done
+plutil -lint "$APP/Contents/Info.plist" "$EXT/Contents/Info.plist"
+echo "BlackiceSourceCommit $COMMIT (app and extension)"
+
 step "Sign the extension, then the app (hardened runtime)"
 codesign --force --sign "$IDENTITY" --options runtime "$TIMESTAMP" \
     --entitlements "$OUT/signing/Filter.entitlements" "$EXT"
@@ -142,8 +179,12 @@ for pair in "$EXT:$FILTER_ID" "$APP:$HOST_ID"; do
         grep -qx "TeamIdentifier=$TEAM_ID" <<<"$details" || die "$bundle is not signed by team $TEAM_ID"
         grep -q '^Timestamp=' <<<"$details" || die "$bundle has no secure timestamp"
     fi
+    # The signature covers Info.plist, so this is the commit the signed build names.
+    [[ "$("$BUDDY" -c 'Print :BlackiceSourceCommit' "$bundle/Contents/Info.plist")" == "$COMMIT" ]] \
+        || die "$bundle does not name source commit $COMMIT"
     echo "$id:"
     grep -E '^(Identifier|TeamIdentifier|Authority|Timestamp|CodeDirectory)' <<<"$details" | sed 's/^/  /'
+    echo "  BlackiceSourceCommit=$COMMIT"
     codesign -d --entitlements - --xml "$bundle" 2>/dev/null | plutil -p - | sed 's/^/  /'
 done
 
@@ -158,6 +199,7 @@ if [[ -n "$NOTARY" && -z "$DRY" ]]; then
 fi
 
 step "Done: $APP"
+echo "Built from commit $COMMIT"
 if [[ -n "$DRY" ]]; then
     echo 'DRY run finished. Ad hoc signature: macOS will not activate this extension.'
 else

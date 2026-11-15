@@ -118,12 +118,16 @@ public struct MenuContext: Equatable, Sendable {
     /// home had a file blackice did not put there (`hookRefusedForHome`).
     public var hookRefused: Date?
     public var hookRefusedForHome: Bool
+    /// Hooks that ran and gave no answer, `FailingHooks.threshold` or more in a row.
+    public var failingHooks: FailingHooks?
 
-    public init(version: String?, recent: [RecentDecision] = [], hookRefused: Date? = nil, hookRefusedForHome: Bool = false) {
+    public init(version: String?, recent: [RecentDecision] = [], hookRefused: Date? = nil, hookRefusedForHome: Bool = false,
+                failingHooks: FailingHooks? = nil) {
         self.version = version
         self.recent = recent
         self.hookRefused = hookRefused
         self.hookRefusedForHome = hookRefusedForHome
+        self.failingHooks = failingHooks
     }
 }
 
@@ -140,8 +144,9 @@ public enum MenuPresentation {
     /// Waiting connections listed in the menu; `blackice pending` shows the rest.
     public static let waitingLimit = 12
     public static let recentLimit = 5
-    /// How long a refused hook stays in the menu.
-    public static let refusedHookWindow: TimeInterval = 3600
+    /// How long a refused hook stays in the menu, and hooks that keep failing after the latest of
+    /// them, as `blackice status` says them (`FailingHooks.shownFor`).
+    public static let refusedHookWindow: TimeInterval = FailingHooks.shownFor
 
     /// Full in ask and block-all while the filter answers, and when it answers that it holds no
     /// configuration, since then nothing new passes; dimmed when blackice is off, lets everything
@@ -275,6 +280,13 @@ public enum MenuPresentation {
             entries.append(MenuEntry(.note, key: "hooks.refused", title: title,
                                      detail: short(refused, now: now)))
         }
+        // As `blackice status` says it: only where hooks run, in ask mode with some in the
+        // configuration, while the latest failed within `refusedHookWindow`, and how long ago.
+        if case .on(_, let hooks) = snapshot.filter, hooks > 0, snapshot.mode == .ask, let failing = context.failingHooks,
+           failing.isRecent(at: now) {
+            entries.append(MenuEntry(.note, key: "hooks.failing", title: failingLine(failing),
+                                     detail: short(failing.last, now: now)))
+        }
         // `blackice stop`, with Touch ID: the quit item below leaves the filter running, and
         // accept-all still has it read every connection. Off, the header says how to start it.
         if snapshot.isOn {
@@ -319,6 +331,14 @@ public enum MenuPresentation {
         case .timedOut, .cancelled: what = "Dropped"
         }
         return ("\(what) \(decision.app) → \(decision.host)", short(decision.date, now: now))
+    }
+
+    /// Hooks that keep giving no answer, on one line: "Hooks failing (297 in a row): fx ask: API
+    /// request failed · HTTP 502 · insufficient_f…". The reason is the hook's own stderr, which
+    /// any program can write, so it is cleaned as an app name is and cut to the line.
+    static func failingLine(_ failing: FailingHooks) -> String {
+        let count = (failing.atLeast ? "at least " : "") + "\(failing.count) in a row"
+        return MenuText.clean("Hooks failing (\(count))" + (failing.reason.map { ": " + $0 } ?? ""), limit: MenuText.lineLimit)
     }
 
     /// Hooks with no daemon to run them; nil when nothing needs doing.
