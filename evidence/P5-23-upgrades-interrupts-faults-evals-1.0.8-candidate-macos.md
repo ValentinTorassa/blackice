@@ -53,6 +53,8 @@ disconnects a filter (P5-22), closed 10 s after the first Control-C, or 4 s afte
 10. On 62: SIGTERM to the daemon while a hook ran, `blackice approve` and `blackice deny` for curl and example.com,
     `blackice mode ask --agent codex` and back to fx, and the evals with fx and Codex; from 18:46 the owner ran the
     eval with Claude Code in his own terminal, then its cases with notes.
+11. `blackice stop` on 62 at 18:49 from the ssh session's pseudo-terminal; at 18:50 `blackice stop` and `blackice
+    start` in the owner's own terminal.
 
 **Result.**
 
@@ -133,9 +135,18 @@ disconnects a filter (P5-22), closed 10 s after the first Control-C, or 4 s afte
    it, so the filter did not hold it up; the cause was not found, and that run is not counted. The run from 18:35 had
    no timeout.
 
+9. A `stop` started from an ssh session cannot ask for an administrator: after Touch ID it printed `macOS now asks
+   you to confirm removing the network extension: follow its dialog.`, then `macOS refused the network extension
+   request: … (OSSystemExtensionErrorDomain 13).` and `The filter is off, so connections are no longer checked; its
+   extension is still installed.`, and exited with 70. From the owner's terminal `stop` removed build 62's extension
+   (`terminated waiting to uninstall on reboot`) and `start` activated it again with no restart: `[activated
+   enabled]`, ask mode, the owner's file, and the daemon registered at 21:50:51.8Z with configuration generation 1.
+   Two connections of Discord's helper raised in the 10 s between the old daemon's end (21:50:41.7Z) and that
+   registration were not sent to the new daemon and were dropped at their deadline (`nobody answered in time`).
+
 **Limits.** One Mac, macOS 27.0.1. opencode's eval was not run on build 62's instructions (opencode was not connected). The menu bar
-app reopened with build 62 but was not looked at. `blackice stop` and a first install of build 62 were not run, and
-neither was the Homebrew cask, which needs the published zip. A connection whose hook a SIGTERM stopped waits for its
-deadline. Every Touch ID was the owner's.
+app reopened with build 62 but was not looked at. A first install of build 62 was not run, and
+neither was the Homebrew cask, which needs the published zip. A connection whose hook a SIGTERM stopped, or that came while no daemon was
+registered, waits for its deadline even once a daemon registers. Every Touch ID was the owner's.
 
 **Date.** 15 November 2026.
