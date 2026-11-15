@@ -623,6 +623,12 @@ public final class NESystemControl: SystemControlling {
         if intake.isStopped { endBySIGTERM() }
         termination.cancel()
         daemonLine("the connection to the network extension ended; exiting so launchd restarts it")
+        // An app replaced (`brew upgrade`) and no `start` yet: this build's daemon looks up its own
+        // build's service, which the running extension does not offer, so it ends here every 10 s
+        // and no hook runs. Up to 1.0.7 it said nothing more.
+        if let upgrade = Self.unfinishedUpgrade() {
+            daemonLine(upgrade.hint + " Until then no hook runs.")
+        }
         return ExitCode.tempFail
     }
 

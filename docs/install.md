@@ -183,9 +183,11 @@ after an install with the script), or the install script again with `--force`. T
 $ blackice start
 ```
 
-`start` waits for the new extension and loads your configuration into it (Touch ID). If it exits with status 75, restart
-the Mac and run it again. An open menu bar app reopens by itself. Before Touch ID it says what it keeps, and which switch
-made with `blackice mode` or the menu it drops because `blackice.toml` changed since the last start.
+`start` waits for the new extension and loads your configuration into it (Touch ID). Until then no hook runs: the new
+build's daemon reaches only the new build's extension, so it restarts every 10 s, and `daemon.err.log` says to run
+`blackice start`. If `start` exits with status 75, restart the Mac and run it again. An open menu bar app reopens by
+itself. Before Touch ID it says what it keeps, and which switch made with `blackice mode` or the menu it drops because
+`blackice.toml` changed since the last start.
 
 On macOS 27.0.1 the kernel can stay at one socket while it disconnects the old build's filter (4 to 116 s in seven
 upgrades), and a filter started meanwhile lets no new connection through. So `start` turns the old filter off, waits for
