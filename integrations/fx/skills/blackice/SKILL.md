@@ -106,7 +106,9 @@ Look at:
   `~/.deno/bin`, `~/.nvm/versions/node`, `~/.volta/tools`, `~/.pyenv/versions`,
   `~/.local/share/mise/installs` and `~/.asdf/installs`. One in `/tmp`, `~/Downloads`, any other
   hidden directory or a cache directory is not. A vendor's own hidden folder, such as
-  `~/.opencode/bin`, is not a toolchain folder, even with a `bin` in it.
+  `~/.opencode/bin`, is not a toolchain folder, even with a `bin` in it. Deny a program with a
+  `cdhash` that runs from one, even when it reaches its own vendor's host: only its path says
+  what it is, and anyone can write there.
 - **Whether this app talks to this host.** A package manager reaching its registry, an editor
   reaching its update server and a CLI reaching its own API are expected. The same app reaching
   an unrelated service is not.

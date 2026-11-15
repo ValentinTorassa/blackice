@@ -61,7 +61,10 @@ Fixed:
   folders. Live answers for one app and host went both ways: mailctl to outlook.office365.com 21 approved and 3
   denied, opencode 4 and 16, codex 21 and 2. `go` may reach `storage.googleapis.com`, where proxy.golang.org sends
   module downloads; that host stays a deny for curl and interpreters. A `*.ts.net` name is the owner's only on a
-  tailnet the notes name and at a tailnet address. fx answers in the same two plain lines as the other agents.
+  tailnet the notes name and at a tailnet address. fx answers in the same two plain lines as the other agents. A
+  program with a `cdhash` in a vendor's own hidden folder, such as `~/.opencode/bin/opencode`, is denied even when it
+  reaches its vendor's host: fx approved it in 6 of 10 runs of eval case 42, and denied it in 10 of 10 with the
+  sentence that says so.
 - The install script checks the copy it puts in place for the checked version and build, not only its signature,
   and reads the installed app again once it is moved aside: an app another install put there meanwhile is put
   back, not replaced.
@@ -91,6 +94,10 @@ New:
 - The eval has 51 events: cases 38 to 44 from the owner's own denials, and 12 cases with notes
   (`CASES=cases-notes.json`). `REPEAT=n` runs each case n times and says how often the answers agreed.
 - `brew uninstall --zap` also trashes `~/.config/blackice/agent`, the agents' homes and their sign-ins.
+- The daemon says when the app was upgraded and `blackice start` has not run yet. Its build reaches only its own
+  build's extension, so until then it restarts every 10 s and no hook runs; `daemon.err.log` said only that the
+  connection ended. Now each restart adds "blackice was upgraded to build 62, but macOS still runs build 61's
+  network extension. blackice start finishes the upgrade. Until then no hook runs."
 
 ## 1.0.7 (11 November 2026)
 
