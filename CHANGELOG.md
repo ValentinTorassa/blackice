@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.0.8 (unreleased)
+## 1.0.8 (15 November 2026)
 
 Read from three days of the owner's own `events.jsonl` (551 events on 1.0.7 since 11 November, fx answering, a
 60 s timeout) and `blackice report --last 24h` (66,936 connections, 3,271 dropped), and from a review of the code.
