@@ -51,7 +51,8 @@ disconnects a filter (P5-22), closed 10 s after the first Control-C, or 4 s afte
    socket held.
 9. `macos/scripts/fault-test.sh` on 62 at 18:31, then the owner's file.
 10. On 62: SIGTERM to the daemon while a hook ran, `blackice approve` and `blackice deny` for curl and example.com,
-    `blackice mode ask --agent codex` and back to fx, and the evals with fx and Codex.
+    `blackice mode ask --agent codex` and back to fx, and the evals with fx and Codex; at 18:46 the owner ran the
+    eval with Claude Code in his own terminal.
 
 **Result.**
 
@@ -120,6 +121,7 @@ disconnects a filter (P5-22), closed 10 s after the first Control-C, or 4 s afte
    | fx | build 62's | all 44 | 44 of 44, median 2.9 s |
    | fx | build 62's | 12 with notes | 12 of 12 |
    | fx | build 62's | 38 to 44, 5 runs | 35 of 35, each case the same every time |
+   | Claude Code (`haiku`) | build 62's | all 44 | 44 of 44, median 2.1 s |
    | Codex (`gpt-6-luna`) | build 62's | all 44 | 43 of 44: it denied case 43 |
    | Codex | build 62's | 12 with notes | 11 of 12: it denied case 44 |
    | Codex | build 61's / 62's | 43, 5 runs | 5 of 5 / 5 of 5 |
@@ -130,8 +132,8 @@ disconnects a filter (P5-22), closed 10 s after the first Control-C, or 4 s afte
    it, so the filter did not hold it up; the cause was not found, and that run is not counted. The run from 18:35 had
    no timeout.
 
-**Limits.** One Mac, macOS 27.0.1. Claude Code's and opencode's evals were not run on build 62's instructions (Claude
-Code's sign-in is in the login keychain, which an ssh session cannot read; opencode was not connected). The menu bar
+**Limits.** One Mac, macOS 27.0.1. opencode's eval was not run on build 62's instructions (opencode was not connected),
+and Claude Code's ran without the cases with notes. The menu bar
 app reopened with build 62 but was not looked at. `blackice stop` and a first install of build 62 were not run, and
 neither was the Homebrew cask, which needs the published zip. A connection whose hook a SIGTERM stopped waits for its
 deadline. Every Touch ID was the owner's.
