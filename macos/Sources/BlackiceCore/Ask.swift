@@ -434,7 +434,7 @@ public struct PendingTable<Flow> {
 
     /// The events a daemon that has just registered has not seen, or saw in a process that is
     /// gone: those still pending, not past their deadline, whose token no answer has presented,
-    /// the one that ends first first. The extension sends them again (since 1.0.9): up to 1.0.8 an
+    /// the one that ends first first. The extension sends them again (since 1.1.0): up to 1.0.8 an
     /// event raised with no daemon registered (`event_not_sent no_daemon`), in the 10 s launchd
     /// takes to start one again, or whose hook ended with its daemon, waited for its deadline with
     /// nothing to answer it. An event whose token was presented is left out: a second answer would
