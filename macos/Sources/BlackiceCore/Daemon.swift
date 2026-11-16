@@ -246,15 +246,28 @@ public final class Daemon: Sendable {
     /// that sent their events is gone, and with it their tokens. Up to 1.0.7 it waited for each
     /// hook to end on its own or at its timeout, and launchd could not start the next daemon
     /// meanwhile, so the restarted extension's events found none (`event_not_sent no_daemon`).
+    ///
+    /// An event it has already taken runs no hook again (`hooks_skipped`, `already_received`). The
+    /// extension sends a daemon that registers the events still waiting (since 1.1.0), and one
+    /// raised while the daemon registers can reach it both on its own and in that resend: its
+    /// agent would run twice for one connection, and the second answer be refused as spent.
     public func run(_ intake: some EventIntake, stopHooksWhenIntakeEnds: Bool = false) async {
         let store = ConfigurationStore(fetch: { try await intake.configuration() },
                                        loaded: { configuration in self.record(.configurationLoaded(configuration)) })
+        // The events taken, each until its deadline, after which the extension sends it no more.
+        var taken: [String: Date] = [:]
         await withDiscardingTaskGroup { group in
             for await message in intake.messages() {
                 switch message {
                 case .registered(let configuration):
                     await store.offer(configuration)
                 case .event(let event, let generation):
+                    let now = Date()
+                    taken = taken.filter { $0.value > now }
+                    guard taken.updateValue(event.deadline, forKey: event.id) == nil else {
+                        record(.hooksSkipped(eventID: event.id, reason: "already_received"))
+                        continue
+                    }
                     group.addTask {
                         await self.handle(event, generation: generation, store: store) { try await intake.answer($0) }
                     }

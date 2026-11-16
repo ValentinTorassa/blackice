@@ -9,7 +9,9 @@ Fixed:
   waited for its deadline and was dropped. On 15 November, on 1.0.8, two connections of Discord's helper raised in
   the 10 s after a `start` were dropped that way, and so was a `curl` whose hook a SIGTERM stopped. The extension
   now sends the new daemon every pending event that is not past its deadline and whose token no answer has
-  presented (`control events_sent_again`), and the daemon runs their hooks with the time they have left.
+  presented (`control events_sent_again`), and the daemon runs their hooks with the time they have left. An event
+  that reaches the daemon twice, raised while it registers and so sent both on its own and again, runs its hooks
+  once (`hooks_skipped`, `already_received`).
 - `blackice stop` and `start` say where to run them when macOS needs an administrator to confirm and cannot ask.
   Over ssh macOS's dialog does not show, and the command ended with macOS's words alone (`OSSystemExtensionErrorDomain
   13`); it now adds that the command has to run in a terminal on the Mac itself.
