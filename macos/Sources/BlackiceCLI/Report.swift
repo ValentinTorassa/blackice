@@ -335,9 +335,38 @@ extension CLI {
     public static func modeChangedLines(_ configuration: ProviderConfiguration, daemonRunning: Bool) -> [String] {
         var lines = [Style.done("Now in \(modeSummary(configuration))")]
         if configuration.mode == .ask, !configuration.config.activeHooks.isEmpty, !daemonRunning {
-            lines.append("  The hooks need the daemon, which is not running: blackice agent install")
+            lines.append(daemonNotRunningLine)
         }
         return lines
+    }
+
+    /// What `mode` and `start` say when the configuration has hooks and launchd has no daemon to
+    /// run them.
+    public static let daemonNotRunningLine = "  The hooks need the daemon, which is not running: blackice agent install"
+
+    /// What `start` does about the daemon once the filter is on.
+    public enum DaemonAfterStart: Equatable {
+        /// The daemon runs, or the configuration has no hook for it.
+        case nothing
+        /// Load its LaunchAgent, as `blackice agent install` does.
+        case load
+        /// Say that it is not running (`daemonNotRunningLine`).
+        case warn
+    }
+
+    /// A `start` that finished an upgrade (`upgraded`: macOS replaced the extension of another
+    /// build) loads the daemon when the configuration has hooks and launchd no longer has it:
+    /// `brew upgrade` boots it out and deletes its LaunchAgent, since Homebrew runs the cask's
+    /// `uninstall launchctl:` on an upgrade too. On 16 November 2026 `brew upgrade` from 1.0.7 to
+    /// 1.0.8 and `blackice start` ended with "blackice is on in ask mode, fx answers" and no
+    /// daemon: no hook ran, three events were not sent (`event_not_sent no_daemon`), and only
+    /// `blackice status` said so. Any other start leaves a daemon that is not loaded as it is,
+    /// since `blackice agent uninstall` is how a person stops the hooks, and says so in ask mode,
+    /// as `mode` does.
+    public static func daemonAfterStart(_ configuration: ProviderConfiguration, upgraded: Bool, daemonRunning: Bool) -> DaemonAfterStart {
+        guard !configuration.config.activeHooks.isEmpty, !daemonRunning else { return .nothing }
+        if upgraded { return .load }
+        return configuration.mode == .ask ? .warn : .nothing
     }
 
     /// `blackice mode` with nothing to change.

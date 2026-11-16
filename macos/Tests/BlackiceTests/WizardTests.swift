@@ -903,6 +903,15 @@ struct ReportTests {
         #expect(CLI.modeChangedLines(try snapshot(.ask, withHook), daemonRunning: true).count == 1)
         #expect(CLI.alreadyLine(try snapshot(.blockAll)) == "Already in block-all mode.")
 
+        // A start that finished an upgrade loads the daemon Homebrew removed, in any mode; another
+        // start leaves it as it is and says so in ask mode. Nothing with the daemon loaded or no hook.
+        #expect(CLI.daemonAfterStart(try snapshot(.ask, withHook), upgraded: true, daemonRunning: false) == .load)
+        #expect(CLI.daemonAfterStart(try snapshot(.acceptAll, withHook), upgraded: true, daemonRunning: false) == .load)
+        #expect(CLI.daemonAfterStart(try snapshot(.ask, withHook), upgraded: false, daemonRunning: false) == .warn)
+        #expect(CLI.daemonAfterStart(try snapshot(.acceptAll, withHook), upgraded: false, daemonRunning: false) == .nothing)
+        #expect(CLI.daemonAfterStart(try snapshot(.ask, withHook), upgraded: true, daemonRunning: true) == .nothing)
+        #expect(CLI.daemonAfterStart(try snapshot(.ask), upgraded: true, daemonRunning: false) == .nothing)
+
         // Who answers, when there is a choice.
         let fx = "[[hook]]\non = 'connection'\nprogram = '/opt/fx'\napp = 'com.vercel.fx'\nteam = 'JW6Y669B67'\ninstructions = 'fx'\n"
         let codex = "[[hook]]\non = 'connection'\nprogram = '/opt/codex'\napp = 'codex'\nteam = '2DC432GLL2'\ninstructions = 'codex'\n"
