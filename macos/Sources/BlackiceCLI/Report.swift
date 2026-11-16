@@ -335,9 +335,38 @@ extension CLI {
     public static func modeChangedLines(_ configuration: ProviderConfiguration, daemonRunning: Bool) -> [String] {
         var lines = [Style.done("Now in \(modeSummary(configuration))")]
         if configuration.mode == .ask, !configuration.config.activeHooks.isEmpty, !daemonRunning {
-            lines.append("  The hooks need the daemon, which is not running: blackice agent install")
+            lines.append(daemonNotRunningLine)
         }
         return lines
+    }
+
+    /// What `mode` and `start` say when the configuration has hooks and launchd has no daemon to
+    /// run them.
+    public static let daemonNotRunningLine = "  The hooks need the daemon, which is not running: blackice agent install"
+
+    /// What `start` does about the daemon once the filter is on.
+    public enum DaemonAfterStart: Equatable {
+        /// The daemon runs, or the configuration has no hook for it.
+        case nothing
+        /// Load its LaunchAgent, as `blackice agent install` does.
+        case load
+        /// Say that it is not running (`daemonNotRunningLine`).
+        case warn
+    }
+
+    /// A `start` that finished an upgrade (`upgraded`: macOS replaced the extension of another
+    /// build) loads the daemon when the configuration has hooks and launchd no longer has it:
+    /// `brew upgrade` boots it out and deletes its LaunchAgent, since Homebrew runs the cask's
+    /// `uninstall launchctl:` on an upgrade too. On 16 November 2026 `brew upgrade` from 1.0.7 to
+    /// 1.0.8 and `blackice start` ended with "blackice is on in ask mode, fx answers" and no
+    /// daemon: no hook ran, three events were not sent (`event_not_sent no_daemon`), and only
+    /// `blackice status` said so. Any other start leaves a daemon that is not loaded as it is,
+    /// since `blackice agent uninstall` is how a person stops the hooks, and says so in ask mode,
+    /// as `mode` does.
+    public static func daemonAfterStart(_ configuration: ProviderConfiguration, upgraded: Bool, daemonRunning: Bool) -> DaemonAfterStart {
+        guard !configuration.config.activeHooks.isEmpty, !daemonRunning else { return .nothing }
+        if upgraded { return .load }
+        return configuration.mode == .ask ? .warn : .nothing
     }
 
     /// `blackice mode` with nothing to change.
@@ -443,6 +472,17 @@ extension CLI {
     /// finished.
     public static let stoppedBeforeTurnOffLine = "blackice start was stopped before it changed anything: " +
         "blackice's filter is on as it was. Run blackice start again to finish the upgrade."
+
+    /// What follows macOS's refusal of an extension request when it needed an administrator to
+    /// confirm and had no way to ask (OSSystemExtensionErrorDomain 13, authorization required):
+    /// its dialog shows only for a command run in a terminal on the Mac itself. On 15 November
+    /// 2026 a `blackice stop` over ssh ended that way with macOS's own words alone, "The operation
+    /// couldn't be completed", and the same command in Terminal went through. nil for any other error.
+    public static func extensionRefusalHint(domain: String, code: Int) -> String? {
+        guard domain == "OSSystemExtensionErrorDomain", code == 13 else { return nil }
+        return "macOS needs an administrator to confirm this and could not ask: run the command in a terminal on the Mac itself, " +
+            "not over ssh."
+    }
 
     /// What `start` says when it is stopped once it has turned the filter on again with the new
     /// configuration: what is left is checking that the filter took it.

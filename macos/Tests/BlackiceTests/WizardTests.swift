@@ -808,6 +808,14 @@ struct ReportTests {
     /// An upgrade's start that turned the filter off and stopped part way turns it back on, and
     /// says so; status no longer puts a filter left off down to System Settings alone; and mode
     /// refuses, before Touch ID, what no filter would take.
+    @Test func aRequestMacOSCouldNotAuthorizeSaysWhereToRunIt() {
+        #expect(CLI.extensionRefusalHint(domain: "OSSystemExtensionErrorDomain", code: 13)
+            == "macOS needs an administrator to confirm this and could not ask: run the command in a terminal on the Mac itself, " +
+            "not over ssh.")
+        #expect(CLI.extensionRefusalHint(domain: "OSSystemExtensionErrorDomain", code: 4) == nil)
+        #expect(CLI.extensionRefusalHint(domain: "NSCocoaErrorDomain", code: 13) == nil)
+    }
+
     @Test func whatIsSaidOfAFilterLeftOff() throws {
         #expect(CLI.statusLines(StatusReport(filter: .disabled, daemonRunning: false, pending: nil))
             == ["blackice is off: its filter is turned off (in System Settings, or by a blackice start that did not finish). " +
@@ -894,6 +902,15 @@ struct ReportTests {
             == "  The hooks need the daemon, which is not running: blackice agent install")
         #expect(CLI.modeChangedLines(try snapshot(.ask, withHook), daemonRunning: true).count == 1)
         #expect(CLI.alreadyLine(try snapshot(.blockAll)) == "Already in block-all mode.")
+
+        // A start that finished an upgrade loads the daemon Homebrew removed, in any mode; another
+        // start leaves it as it is and says so in ask mode. Nothing with the daemon loaded or no hook.
+        #expect(CLI.daemonAfterStart(try snapshot(.ask, withHook), upgraded: true, daemonRunning: false) == .load)
+        #expect(CLI.daemonAfterStart(try snapshot(.acceptAll, withHook), upgraded: true, daemonRunning: false) == .load)
+        #expect(CLI.daemonAfterStart(try snapshot(.ask, withHook), upgraded: false, daemonRunning: false) == .warn)
+        #expect(CLI.daemonAfterStart(try snapshot(.acceptAll, withHook), upgraded: false, daemonRunning: false) == .nothing)
+        #expect(CLI.daemonAfterStart(try snapshot(.ask, withHook), upgraded: true, daemonRunning: true) == .nothing)
+        #expect(CLI.daemonAfterStart(try snapshot(.ask), upgraded: true, daemonRunning: false) == .nothing)
 
         // Who answers, when there is a choice.
         let fx = "[[hook]]\non = 'connection'\nprogram = '/opt/fx'\napp = 'com.vercel.fx'\nteam = 'JW6Y669B67'\ninstructions = 'fx'\n"

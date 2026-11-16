@@ -11,6 +11,9 @@ public protocol FilterServiceHandler: AnyObject {
     /// The configuration the extension decides with now, which `blackice start` and `mode` saved.
     /// The daemon gets it with each registration and runs its hooks; nil refuses the registration.
     func currentConfiguration() -> ProviderConfiguration?
+    /// A daemon registered on a connection of its own, and has its reply: the extension sends it
+    /// the events still waiting for an answer (FilterServer.send).
+    func daemonRegistered()
 }
 
 /// Listens on the extension's Mach service, accepts only the blackice binary of the same team,
@@ -95,11 +98,12 @@ public final class FilterServer: NSObject, NSXPCListenerDelegate {
     /// Makes `connection` the daemon's and returns the configuration to run hooks with. A daemon
     /// that registers again on its own connection only gets the configuration once more; another
     /// connection replaces it. Whichever copy of the daemon registers, it runs the hooks of the
-    /// configuration saved with Touch ID, not hooks of its own.
-    fileprivate func register(_ connection: NSXPCConnection) -> RegisterReply {
+    /// configuration saved with Touch ID, not hooks of its own. `new` when the connection was not
+    /// the daemon's already.
+    fileprivate func register(_ connection: NSXPCConnection) -> (reply: RegisterReply, new: Bool) {
         guard let configuration = handler?.currentConfiguration() else {
             report("daemon_refused no_configuration")
-            return .refused
+            return (.refused, false)
         }
         lock.lock()
         let previous = daemon
@@ -111,8 +115,12 @@ public final class FilterServer: NSObject, NSXPCListenerDelegate {
             previous?.invalidate()
             report("daemon_registered \(configuration.generation)")
         }
-        return RegisterReply(generation: configuration.generation, configText: configuration.configText)
+        return (RegisterReply(generation: configuration.generation, configText: configuration.configText),
+                previous !== connection)
     }
+
+    /// After a new daemon has its reply.
+    fileprivate func registered() { handler?.daemonRegistered() }
 
     /// The handler's lists and the configuration it decides with, which `start` and `mode` check
     /// against the one they saved.
@@ -148,7 +156,11 @@ private final class ClientEndpoint: NSObject, FilterServiceXPC {
         do {
             _ = try Messages.decode(RegisterRequest.self, from: request)
             guard let server, let connection else { throw MessageError("connection", "is gone") }
-            reply(Self.encoded(server.register(connection)))
+            let registration = server.register(connection)
+            reply(Self.encoded(registration.reply))
+            // After the reply, so the daemon has its configuration's generation first; an event
+            // that overtakes it makes the daemon ask for the configuration again.
+            if registration.new { server.registered() }
         } catch {
             server?.refused("register", error)
             reply(Self.encoded(RegisterReply.refused))

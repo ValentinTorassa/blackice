@@ -126,6 +126,27 @@ private final class Answers: @unchecked Sendable {
 }
 
 struct DaemonTests {
+    /// An event the extension sends twice, on its own and again when the daemon registers, runs
+    /// its hooks once; another event still runs them.
+    @Test func anEventSentTwiceRunsItsHooksOnce() async throws {
+        let dir = try makePrivateDirectory()
+        defer { removeTree(dir) }
+        let logURL = dir.appendingPathComponent("events.jsonl")
+        let daemon = Daemon(log: try EventLog(url: logURL), runner: try testRunner(dir))
+        let first = testEvent(id: "ev-8"), other = testEvent(host: "two.example", id: "ev-9")
+        let intake = FakeIntake([.registered(try hooks("echo approve 10m")), .event(first, generation: 1),
+                                 .event(first, generation: 1), .event(other, generation: 1)])
+        await daemon.run(intake)
+
+        #expect(intake.answers.items.map(\.host).sorted() == ["example.com", "two.example"])
+        let log = try records(logURL)
+        let repeated = types(log, event: "ev-8")
+        #expect(repeated.filter { $0 == "hook_started" }.count == 1)
+        #expect(repeated.filter { $0 == "hooks_skipped" }.count == 1)
+        #expect(log.contains { $0["event"] as? String == "ev-8" && $0["reason"] as? String == "already_received" })
+        #expect(types(log, event: "ev-9") == ["event_received", "hook_started", "hook_exited", "hook_answer"])
+    }
+
     @Test func runsTheHooksOfTheConfigurationFromTheRegistration() async throws {
         let dir = try makePrivateDirectory()
         defer { removeTree(dir) }

@@ -188,6 +188,14 @@ public final class NESystemControl: SystemControlling {
         }
         if neededApproval || output.setup { output.stdout("") }
         CLI.onLines(candidate).forEach(output.stdout)
+        // An upgrade with Homebrew removed the daemon's LaunchAgent: load it again, or no hook
+        // runs while this says who answers (CLI.daemonAfterStart). The first start's own lines
+        // name the command below.
+        switch CLI.daemonAfterStart(candidate, upgraded: replaced, daemonRunning: Self.daemonRunning()) {
+        case .nothing: break
+        case .load: if installAgent(output: output) != ExitCode.success { output.stderr(CLI.daemonNotRunningLine) }
+        case .warn: if !(neededApproval || output.setup) { output.stdout(CLI.daemonNotRunningLine) }
+        }
         if neededApproval || output.setup {
             CLI.firstStartLines(candidate, daemonRunning: Self.daemonRunning()).forEach(output.stdout)
         }
@@ -851,6 +859,7 @@ final class ExtensionRequestDelegate: NSObject, OSSystemExtensionRequestDelegate
         }
         output.stderr("macOS refused the network extension request: \(error.localizedDescription) " +
                       "(\(error.domain) \(error.code)).")
+        if let hint = CLI.extensionRefusalHint(domain: error.domain, code: error.code) { output.stderr(hint) }
         result.finish(ExitCode.software)
     }
 }

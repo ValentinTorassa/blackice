@@ -728,6 +728,19 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
         snapshots.read()
     }
 
+    /// The events still waiting go to the daemon that has just registered: those raised with none
+    /// registered, and those whose hook ended with the daemon before it. They are all of the
+    /// configuration installed now, since installing one drops the flows of the events before it.
+    func daemonRegistered() {
+        guard let generation = snapshots.read()?.generation else { return }
+        askLock.lock()
+        let events = ask.pending.unanswered(now: Self.now)
+        askLock.unlock()
+        guard !events.isEmpty else { return }
+        let sent = events.filter { server?.send(.event($0, generation: generation)) == true }.count
+        control("events_sent_again", "\(sent) of \(events.count)")
+    }
+
     func pendingReply() -> PendingReply {
         let now = Self.now
         askLock.lock(); defer { askLock.unlock() }

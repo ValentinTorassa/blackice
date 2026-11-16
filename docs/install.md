@@ -2,7 +2,7 @@
 
 Install blackice, start it, answer what waits, let an agent answer, upgrade and uninstall.
 
-blackice 1.0.8 has run on one Mac, with macOS 27.0.1; macOS 14 and 15 are not tested yet. A `blackice.toml` that
+blackice 1.1.0 has run on one Mac, with macOS 27.0.1; macOS 14 and 15 are not tested yet. A `blackice.toml` that
 works in 1.0 keeps working in every 1.x.
 
 You need a Mac with Apple silicon, macOS 14.4 or later, and an admin account.
@@ -33,7 +33,7 @@ The site serves the copy on the repository's `main` branch, so this prints nothi
 To skip the site, run the copy at the release's tag on GitHub instead:
 
 ```console
-$ curl -fsSL https://raw.githubusercontent.com/ValentinTorassa/blackice/v1.0.8/site/lib/install.sh | sh
+$ curl -fsSL https://raw.githubusercontent.com/ValentinTorassa/blackice/v1.1.0/site/lib/install.sh | sh
 ```
 
 That one trusts GitHub and whoever can push the tag. The steps [by hand](#by-hand) trust neither the site nor the
@@ -51,13 +51,13 @@ that, run the `codesign` and `spctl` lines below on `/Applications/Blackice.app`
 
 ## By hand
 
-Download `Blackice-1.0.8.zip` and `Blackice-1.0.8.zip.sha256` from the
-[GitHub release](https://github.com/ValentinTorassa/blackice/releases/tag/v1.0.8). In that folder:
+Download `Blackice-1.1.0.zip` and `Blackice-1.1.0.zip.sha256` from the
+[GitHub release](https://github.com/ValentinTorassa/blackice/releases/tag/v1.1.0). In that folder:
 
 ```console
-$ shasum -a 256 -c Blackice-1.0.8.zip.sha256
-Blackice-1.0.8.zip: OK
-$ ditto -x -k Blackice-1.0.8.zip .
+$ shasum -a 256 -c Blackice-1.1.0.zip.sha256
+Blackice-1.1.0.zip: OK
+$ ditto -x -k Blackice-1.1.0.zip .
 $ codesign --verify --strict --deep --verbose=2 Blackice.app
 $ codesign -dvv Blackice.app 2>&1 | grep -E '^(Identifier|TeamIdentifier)='
 Identifier=com.valentorassa.blackice
@@ -83,7 +83,7 @@ export PATH="/Applications/Blackice.app/Contents/MacOS:$PATH"
 
 The `.sha256` file comes from the same release as the zip, so on its own it only catches a broken download. The
 signature, the Team ID and the notarization show that the app is blackice's. The SHA-256 should also be the one on the
-`SHA256=` line of the [install script](https://github.com/ValentinTorassa/blackice/blob/v1.0.8/site/lib/install.sh)
+`SHA256=` line of the [install script](https://github.com/ValentinTorassa/blackice/blob/v1.1.0/site/lib/install.sh)
 at the release's tag (releases before 1.0.0 have no such line).
 
 ## Start
@@ -186,7 +186,8 @@ $ blackice start
 `start` waits for the new extension and loads your configuration into it (Touch ID). Until then no hook runs: the new
 build's daemon reaches only the new build's extension, so it restarts every 10 s, and `daemon.err.log` says to run
 `blackice start`. If `start` exits with status 75, restart the Mac and run it again. An open menu bar app reopens by
-itself. Before Touch ID it says what it keeps, and which switch made with `blackice mode` or the menu it drops because
+itself. `brew upgrade` also removes the daemon's LaunchAgent; since 1.1.0 `start` loads it again when your
+configuration has hooks (up to 1.0.8, run `blackice agent install` after it). Before Touch ID it says what it keeps, and which switch made with `blackice mode` or the menu it drops because
 `blackice.toml` changed since the last start.
 
 On macOS 27.0.1 the kernel can stay at one socket while it disconnects the old build's filter (4 to 116 s in seven
