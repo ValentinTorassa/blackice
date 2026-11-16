@@ -34,8 +34,8 @@ that tree passed the steps of `.github/workflows/ci.yml` on this Mac: `swift bui
 
 **Run.** 16 November 2026 (UTC−3). The owner ran steps 1 to 3 in his own terminal, the first two from scripts
 that run each command and keep its output, and answered every Touch ID and Homebrew's password prompt. A Claude
-Code session on the Mac built and signed build 66, sent the signals of steps 4 to 6 and read the logs. A replacement with a build that is not published is the
-install script with `BLACKICE_ZIP` and `--force`.
+Code session on the Mac built and signed build 66, sent the signals of steps 4 to 6 and read the logs. A
+replacement with a build that is not published is the install script with `BLACKICE_ZIP` and `--force`.
 
 1. 18:52:26, on the published 1.1.0 installed with Homebrew: `brew uninstall --cask`, which runs the cask's
    `uninstall launchctl:` as `brew upgrade` does; build 66 from the install script; `blackice start`;
