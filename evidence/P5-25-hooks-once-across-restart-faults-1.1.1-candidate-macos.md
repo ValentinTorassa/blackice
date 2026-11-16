@@ -2,8 +2,10 @@
 
 **Claim.** On build 66, the 1.1.1 candidate, a daemon that launchd started again after a kill was sent nine events
 whose hook the daemon before it had already run to its end with no answer (`events_sent_again 9 of 9`), and it
-skipped all nine (`hooks_skipped`, `already_ran`) 8 ms after it registered. No event's hook started twice in the
-run. On the 1.1.0 candidate the same restart ran the hook a second time for each such event (P5-24, result 9). The
+skipped all nine (`hooks_skipped`, `already_ran`) 8 ms after it registered. No event's hook started twice in that
+test. On the 1.1.0 candidate the same restart ran the hook a second time for each such event (P5-24, result 9). A
+new daemon still ran the hook of an event its predecessor had not ended: one a frozen daemon never logged, one
+raised with no daemon registered, and one whose hook a SIGTERM stopped, which fx then approved in 3.2 s. The
 fault test's 29 checks pass on build 66, and this time its printed list was kept. Build 66 replaced the published
 1.1.0 after Homebrew had removed the app and the daemon's LaunchAgent, and its `start` loaded the daemon again.
 The other change of 1.1.1, a menu bar app that quits instead of opening another build that is in quarantine, ran
@@ -30,9 +32,9 @@ that tree passed the steps of `.github/workflows/ci.yml` on this Mac: `swift bui
 **Configuration.** The owner's file: ask mode, fx answering (Claude Code and Codex also connected), 60 s to answer,
 25 rules, 1 hook. For the fault test the script's own (ask mode, 1 rule, the `/bin/sh` test hook, 30 s to answer).
 
-**Run.** 16 November 2026 (UTC−3). The owner ran both steps in his own terminal, from scripts that run each
-command and keep its output, and answered every Touch ID and Homebrew's password prompt. A Claude Code session on
-the Mac built and signed build 66 and read the logs. A replacement with a build that is not published is the
+**Run.** 16 November 2026 (UTC−3). The owner ran steps 1 to 3 in his own terminal, the first two from scripts
+that run each command and keep its output, and answered every Touch ID and Homebrew's password prompt. A Claude
+Code session on the Mac built and signed build 66, sent the signals of steps 4 to 6 and read the logs. A replacement with a build that is not published is the
 install script with `BLACKICE_ZIP` and `--force`.
 
 1. 18:52:26, on the published 1.1.0 installed with Homebrew: `brew uninstall --cask`, which runs the cask's
@@ -40,6 +42,14 @@ install script with `BLACKICE_ZIP` and `--force`.
    `blackice status`; `curl https://www.ietf.org/`.
 2. 18:53:19, on 66: `macos/scripts/fault-test.sh` from 65af60a, with 1.1.1.1 as the Wi-Fi service's DNS server
    for the run, under `script`, which kept everything it printed.
+3. 19:00:51: `blackice start`, which loaded the owner's file again; the fault test leaves its own, in accept-all.
+4. 19:01:41, on 66: the daemon frozen with SIGSTOP, `curl https://www.sqlite.org/` opened, the daemon killed with
+   SIGKILL 5 s later.
+5. 19:02:00: `curl https://www.lua.org/` opened and a SIGTERM to the daemon 2 s later.
+6. 19:02:46: `curl https://www.erlang.org/` opened and a SIGTERM to the daemon 0.5 s after the event's hook had
+   started. curl had no rule and no approval for the hosts of steps 4 to 6. A first try of step 4, at 19:01:22
+   with www.rfc-editor.org, showed nothing: curl had an approval for that host from the night before and got
+   HTTP 200 in 0.34 s.
 
 **Results.**
 
@@ -99,12 +109,38 @@ install script with `BLACKICE_ZIP` and `--force`.
    two `hook_started`. Two of the nine were dropped at their deadline, at 18:55:11, and the other seven were
    cancelled at 18:55:16 by the test's switch to accept-all.
 
-**Limits.** One Mac, macOS 27.0.1. The cases in which a new daemon does run an event's hooks again happened in no
-step: a hook the daemon's own end stopped (`daemon_stopping`), a hook with no end in the log, and an answer that
-did not reach the extension. Unit tests have them, and P5-24 has the first on build 65, before this change. The
+5. An event the daemon before never logged runs its hook in the new one (step 4). The frozen daemon wrote nothing
+   for curl's event. It was killed at 19:01:46, the next one registered at 19:01:46.734 and the filter logged
+   `control events_sent_again 1 of 1`. The event was received at 19:01:46.747, fx approved it after 3.6 s, and
+   curl got HTTP 200 in 9.4 s.
+
+6. So does an event raised with no daemon (step 5). The SIGTERM came before curl's connection reached the filter:
+   `control event_not_sent no_daemon` at 19:02:02.369. The next daemon registered 39 ms later, the filter logged
+   `control events_sent_again 1 of 1`, fx approved the event after 3.3 s and curl got HTTP 200 in 5.5 s.
+
+7. A hook the daemon's own end stopped runs again in the next daemon (step 6). The event log, with the filter's
+   two lines in their place:
+
+   ```text
+   19:02:47.525  event_received
+   19:02:47.537  hook_started   pid 50116
+   19:02:48.395  hook_killed    reason daemon_stopping, signal 15, after 869 ms
+   19:02:48.453  control xpc daemon_registered, control events_sent_again 1 of 1
+   19:02:48.466  event_received the same event
+   19:02:48.470  hook_started   pid 50130
+   19:02:51.675  hook_exited    status 0; hook_answer approve, 86400 s
+   19:02:51.678  verdict        approved
+   ```
+
+   curl got HTTP 200 in 5.4 s. Steps 4 to 6 wrote no `hooks_skipped`.
+
+**Limits.** One Mac, macOS 27.0.1. Two of the cases in which a new daemon runs an event's hooks again happened in
+no step: a hook that started and has no end in the log, and an answer that did not reach the extension. Unit tests
+have them. The
 menu bar app's check ran in no step: it acts in the build that an upgrade replaces, and only when the new app is
 in quarantine, so the first upgrade that can show it is Homebrew's from 1.1.1 to the version after; Homebrew's
-upgrade from 1.1.0 to 1.1.1 still has 1.1.0's menu bar app (P5-24, result 11). The owner's configuration ran on
-build 66 for 37 s before the fault test, with one event; there is no stretch of use. The first start's question
+upgrade from 1.1.0 to 1.1.1 still has 1.1.0's menu bar app (P5-24, result 11). With the owner's configuration
+fx answered four events on build 66, one before the fault test and those of steps 4 to 6; there is no stretch of
+use. The first start's question
 was not looked at on the screen. The evals were not repeated: `integrations/` is the same as in build 62
 (P5-23). opencode was not connected.
