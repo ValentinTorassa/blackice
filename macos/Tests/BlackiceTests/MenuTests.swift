@@ -737,13 +737,64 @@ private final class FailingStart: SystemControlling {
 struct MenuUpgradeTests {
     /// The menu bar app's own check: another build on disk opens it; no app for a while quits.
     @Test func theAppOnDiskDecides() {
-        #expect(MenuUpgrade.decide(running: "18", installed: "18", missing: 0) == .stay)
-        #expect(MenuUpgrade.decide(running: "18", installed: "19", missing: 0) == .reopen)
-        #expect(MenuUpgrade.decide(running: "18", installed: "17", missing: 0) == .reopen)
-        #expect(MenuUpgrade.decide(running: "18", installed: nil, missing: MenuUpgrade.quitAfter - 1) == .stay)
-        #expect(MenuUpgrade.decide(running: "18", installed: nil, missing: MenuUpgrade.quitAfter) == .quit)
+        #expect(MenuUpgrade.decide(running: "18", installed: "18", missing: 0, quarantined: false) == .stay)
+        #expect(MenuUpgrade.decide(running: "18", installed: "19", missing: 0, quarantined: false) == .reopen)
+        #expect(MenuUpgrade.decide(running: "18", installed: "17", missing: 0, quarantined: false) == .reopen)
+        #expect(MenuUpgrade.decide(running: "18", installed: nil, missing: MenuUpgrade.quitAfter - 1, quarantined: false) == .stay)
+        #expect(MenuUpgrade.decide(running: "18", installed: nil, missing: MenuUpgrade.quitAfter, quarantined: false) == .quit)
         // A build outside Blackice.app has no build to compare.
-        #expect(MenuUpgrade.decide(running: nil, installed: "19", missing: 0) == .stay)
+        #expect(MenuUpgrade.decide(running: nil, installed: "19", missing: 0, quarantined: false) == .stay)
+    }
+
+    /// Another build in quarantine, as Homebrew leaves the one it installs, is not opened: the
+    /// menu bar app quits, and `blackice start` opens it. Its own build in quarantine changes
+    /// nothing, and the quarantine is asked about only when another build is there.
+    @Test func anotherBuildInQuarantineIsNotOpened() {
+        #expect(MenuUpgrade.decide(running: "65", installed: "66", missing: 0, quarantined: true) == .quit)
+        #expect(MenuUpgrade.decide(running: "65", installed: "64", missing: 0, quarantined: true) == .quit)
+        let asked = Recorder<Bool>()
+        let ask = { () -> Bool in asked.append(true); return true }
+        #expect(MenuUpgrade.decide(running: "65", installed: "65", missing: 0, quarantined: ask()) == .stay)
+        #expect(MenuUpgrade.decide(running: "65", installed: nil, missing: 1, quarantined: ask()) == .stay)
+        #expect(MenuUpgrade.decide(running: "65", installed: nil, missing: MenuUpgrade.quitAfter, quarantined: ask()) == .quit)
+        #expect(MenuUpgrade.decide(running: nil, installed: "66", missing: 0, quarantined: ask()) == .stay)
+        #expect(asked.items.isEmpty)
+        #expect(MenuUpgrade.decide(running: "65", installed: "66", missing: 0, quarantined: ask()) == .quit)
+        #expect(asked.items == [true])
+    }
+
+    /// An app is in quarantine when its bundle or its executable has the attribute. Tried with an
+    /// attribute of the test's own, so that nothing here is ever in macOS's quarantine.
+    @Test func quarantineIsReadFromTheBundleAndItsExecutable() throws {
+        let attribute = "com.valentorassa.blackice.test-quarantine"
+        func mark(_ url: URL) throws {
+            let value = Array("0181;00000000;test;".utf8)
+            try #require(setxattr(url.path, attribute, value, value.count, 0, XATTR_NOFOLLOW) == 0)
+        }
+        for marked in ["bundle", "executable", "neither", "another file"] {
+            let app = try makePrivateDirectory()
+            defer { removeTree(app) }
+            let programs = app.appendingPathComponent("Contents/MacOS")
+            try FileManager.default.createDirectory(at: programs, withIntermediateDirectories: true)
+            let plist = try PropertyListSerialization.data(fromPropertyList: ["CFBundleExecutable": "blackice"], format: .xml, options: 0)
+            try plist.write(to: app.appendingPathComponent("Contents/Info.plist"))
+            for name in ["blackice", "other"] { try Data().write(to: programs.appendingPathComponent(name)) }
+            #expect(!MenuUpgrade.quarantined(app, attribute: attribute))
+            switch marked {
+            case "bundle": try mark(app)
+            case "executable": try mark(programs.appendingPathComponent("blackice"))
+            case "another file": try mark(programs.appendingPathComponent("other"))
+            default: break
+            }
+            #expect(MenuUpgrade.quarantined(app, attribute: attribute) == (marked == "bundle" || marked == "executable"), "\(marked)")
+        }
+        // No bundle at all, and one with no Info.plist.
+        let empty = try makePrivateDirectory()
+        defer { removeTree(empty) }
+        #expect(!MenuUpgrade.quarantined(empty, attribute: attribute))
+        #expect(!MenuUpgrade.quarantined(empty.appendingPathComponent("none.app"), attribute: attribute))
+        try mark(empty)
+        #expect(MenuUpgrade.quarantined(empty, attribute: attribute))
     }
 
     /// start's check: a menu from before 0.4.1 records no build, so it is from before.

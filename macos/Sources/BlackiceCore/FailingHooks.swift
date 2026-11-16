@@ -61,6 +61,13 @@ public struct FailingHooks: Equatable, Sendable {
     /// The run of hooks with no answer at the end of the log at `url`, read from its last
     /// `tailBytes`; nil when there are fewer than `minimum` in a row, or there is no log.
     public static func read(url: URL, minimum: Int = threshold) -> FailingHooks? {
+        guard let tail = tail(of: url) else { return nil }
+        return parse(tail.data, partialFirstLine: tail.partial, minimum: minimum)
+    }
+
+    /// The last `tailBytes` of the log at `url`, and whether they start inside the file; nil when
+    /// there is no log to read.
+    static func tail(of url: URL) -> (data: Data, partial: Bool)? {
         let descriptor = open(url.path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)
         guard descriptor >= 0 else { return nil }
         defer { close(descriptor) }
@@ -70,7 +77,7 @@ public struct FailingHooks: Equatable, Sendable {
         var data = Data(count: Int(info.st_size - start))
         let read = data.withUnsafeMutableBytes { pread(descriptor, $0.baseAddress, $0.count, start) }
         guard read >= 0 else { return nil }
-        return parse(data.prefix(read), partialFirstLine: start > 0, minimum: minimum)
+        return (data.prefix(read), start > 0)
     }
 
     /// The run in `data`, a stretch of the log (`Tally`); nil when there are fewer than `minimum`.

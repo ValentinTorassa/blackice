@@ -196,8 +196,28 @@ A replacement with a build that is not published is the install script with `BLA
     command after the day's other four installs and upgrades with Homebrew (steps 2, 3, 6 and the 1.0.8 of step
     10) ran.
 
-**Limits.** One Mac, macOS 27.0.1. Why Gatekeeper stopped that one command and not the others was not found, nor
-what a `start` killed that way would leave; it was `status` that was killed. The fault test's
+    Added the same day, after 1.1.0 was published, from the system log: 47202 was the new app, opened by the menu
+    bar app of 1.0.8. It was still running (pid 46707), and it opens the app on disk when its check, every 5 s,
+    finds another build there:
+
+    ```text
+    15:05:09.619 blackice[46707] (LaunchServices) LaunchServices.launchViaCSUA
+    15:05:09.709 launchd … application.com.valentorassa.blackice… xpcproxy spawned with pid 47202
+    ```
+
+    Nothing of the new app had run before that, and macOS could not show the question it asks before the first
+    opening of an app in quarantine. In step 3's upgrade the command came first: `GK evaluateScanResult: 1` for
+    the app at 10:02:38.159, with no question and no rejection, and the step's only opening through
+    LaunchServices 2.6 s later, at 10:02:40.795. Steps 2 and 6 and the 1.0.8 of step 10 were installs, after a
+    `stop` and with the app moved away. At 16:11:01 a copy of the 1.1.0 app with `com.apple.quarantine`, of which
+    nothing had run, was opened in the background with `open -g -n`: macOS showed the question on the screen
+    (`Prompt shown (5, 0), waiting for response`) and ended that process 31 s later (`Gatekeeper rejection:
+    85570`).
+
+**Limits.** One Mac, macOS 27.0.1. Why Gatekeeper stopped that one command and not the others was found only
+after the release (result 11): it is read from two upgrades and one copy opened by hand, and no run has a menu bar
+app that leaves the new app alone. What a `start` killed that way would leave was not found; it was `status` that
+was killed. The fault test's
 printed list of checks was not kept, and its run had 1.1.1.1 as the DNS server, not the network's router. An event
 that reaches the same daemon twice (`hooks_skipped`, `already_received`) happened in no run; only a unit test has
 it. Result 9 means an agent is called twice for a connection it did not answer the first time, when the daemon

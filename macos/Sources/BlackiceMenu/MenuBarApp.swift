@@ -234,13 +234,15 @@ final class MenuController: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     /// Blackice.app replaced under this process, by an upgrade, or removed. Each build of the
     /// extension listens on an XPC service of its own, so this one would stay "Not reachable": it
-    /// opens the app on disk and quits, or quits when there is none. Never while the menu is open
-    /// or Touch ID is up. false once it is going.
+    /// opens the app on disk and quits, or quits when there is none or the one there is in
+    /// quarantine, which `blackice start` opens (`MenuUpgrade.decide`). Never while the menu is
+    /// open or Touch ID is up. false once it is going.
     private func checkInstalledApp() -> Bool {
         guard !menuOpen, !busy else { return true }
         let installed = MenuUpgrade.installedBuild(Bundle.main.bundleURL)
         missingChecks = installed == nil ? missingChecks + 1 : 0
-        switch MenuUpgrade.decide(running: ownBuild, installed: installed, missing: missingChecks) {
+        switch MenuUpgrade.decide(running: ownBuild, installed: installed, missing: missingChecks,
+                                  quarantined: MenuUpgrade.quarantined(Bundle.main.bundleURL)) {
         case .stay:
             return true
         case .quit:

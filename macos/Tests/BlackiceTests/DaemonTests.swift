@@ -147,6 +147,41 @@ struct DaemonTests {
         #expect(types(log, event: "ev-9") == ["event_received", "hook_started", "hook_exited", "hook_answer"])
     }
 
+    /// The extension sends the daemon that starts next the events still waiting. One whose hook
+    /// the daemon before it ran to its end runs none again; one whose hook that daemon's own end
+    /// stopped runs it again, and so does an event that is new.
+    @Test func aDaemonThatStartsAgainRunsNoHookThatHadEnded() async throws {
+        let dir = try makePrivateDirectory()
+        defer { removeTree(dir) }
+        let logURL = dir.appendingPathComponent("events.jsonl")
+        let ended = testEvent(id: "ev-1"), stopped = testEvent(host: "two.example", id: "ev-2")
+        // The first daemon: ev-1's hook exits with no answer, and ev-2's sleeps until the intake ends.
+        let first = Daemon(log: try EventLog(url: logURL), runner: try testRunner(dir, grace: 0.3))
+        let going = EndingIntake([.registered(try hooks(#"case "$BLACKICE_EVENT_ID" in ev-1) exit 0;; *) sleep 30;; esac"#)),
+                                  .event(ended, generation: 1), .event(stopped, generation: 1)]) {
+            let lines = ((try? String(contentsOf: logURL, encoding: .utf8)) ?? "").split(separator: "\n")
+            return lines.contains { $0.contains(#""event":"ev-1""#) && $0.contains(#""type":"hook_no_answer""#) }
+                && lines.contains { $0.contains(#""event":"ev-2""#) && $0.contains(#""type":"hook_started""#) }
+        }
+        await first.run(going, stopHooksWhenIntakeEnds: true)
+        var log = try records(logURL)
+        #expect(types(log, event: "ev-1") == ["event_received", "hook_started", "hook_exited", "hook_no_answer"])
+        #expect(types(log, event: "ev-2") == ["event_received", "hook_started", "hook_killed"])
+        #expect(log.last { $0["event"] as? String == "ev-2" }?["reason"] as? String == "daemon_stopping")
+
+        // The next daemon, which reads that log as it starts, gets both again, and one more.
+        let second = Daemon(log: try EventLog(url: logURL), runner: try testRunner(dir))
+        let again = FakeIntake([.registered(try hooks("echo approve 10m")), .event(ended, generation: 1),
+                                .event(stopped, generation: 1), .event(testEvent(host: "three.example", id: "ev-3"), generation: 1)])
+        await second.run(again)
+        #expect(again.answers.items.map(\.host).sorted() == ["three.example", "two.example"])
+        log = try records(logURL)
+        #expect(types(log, event: "ev-1") == ["event_received", "hook_started", "hook_exited", "hook_no_answer", "hooks_skipped"])
+        #expect(log.last { $0["event"] as? String == "ev-1" }?["reason"] as? String == "already_ran")
+        #expect(types(log, event: "ev-2").suffix(4) == ["event_received", "hook_started", "hook_exited", "hook_answer"])
+        #expect(types(log, event: "ev-3") == ["event_received", "hook_started", "hook_exited", "hook_answer"])
+    }
+
     @Test func runsTheHooksOfTheConfigurationFromTheRegistration() async throws {
         let dir = try makePrivateDirectory()
         defer { removeTree(dir) }
@@ -383,7 +418,7 @@ struct DaemonTests {
         """)
         let started = Date()
         await daemon.handle(testEvent(id: "ev-8", deadlineIn: 30), with: configuration, send: Answers().send)
-        #expect(Date().timeIntervalSince(started) < 5)
+        #expect(Date().timeIntervalSince(started) < slowRunnerBound)
         #expect(try records(logURL).suffix(2).compactMap { $0["type"] as? String } == ["hook_killed", "hook_no_answer"])
     }
 

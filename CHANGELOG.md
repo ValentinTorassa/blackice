@@ -1,5 +1,29 @@
 # Changelog
 
+## 1.1.1 (unreleased)
+
+Fixed:
+- A daemon that starts again runs no hook a second time for an event whose hooks the daemon before it had run to
+  their end. Since 1.1.0 the extension sends a daemon that registers every event still waiting, and that includes
+  events whose hook had exited with no answer: on 16 November, on the 1.1.0 candidate, a daemon that started again
+  got four of them and ran the hook once more for each, so an agent was called twice for one connection. A daemon
+  now reads the end of the event log as it starts and leaves those events alone (`hooks_skipped`, `already_ran`),
+  telling each by its ID and deadline. It still runs the hooks of an event when the daemon's own end stopped one
+  (`daemon_stopping`), when one has no end in the log, when a hook answered and the answer did not reach the
+  extension (`answer_refused` with `unreachable` or `reply_timeout`), and when no hook ran for it.
+- The menu bar app does not open a new build that Homebrew installed. After any upgrade it opened the app on disk
+  by itself, at its next check, every 5 s. Homebrew leaves the app in quarantine, and macOS asks before the first
+  opening of such an app, which it cannot do for one opened in the background: on 16 November, after `brew upgrade`
+  from 1.0.8 to 1.1.0, macOS killed the app that 1.0.8's menu bar app had opened and, with it, the `blackice status`
+  started in the same moment (`Killed: 9`). The menu bar app now quits when the app on disk is another build and is
+  in quarantine, and `blackice start`, which every upgrade needs, opens it. The check is the running build's, so the
+  upgrade from 1.1.0 or earlier to this version is as before: if its first command ends with `Killed: 9`, run it
+  again. An upgrade with the install script is unchanged: it downloads with curl, which puts nothing in quarantine.
+
+Changed:
+- The first start asks "Who answers when blackice holds a connection?", in the words of the mode it comes after
+  ("Hold what no rule allows until an agent or you answer"). It asked "Who answers the connections that wait?".
+
 ## 1.1.0 (16 November 2026)
 
 Fixed:

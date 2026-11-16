@@ -92,12 +92,42 @@ public enum MenuUpgrade: Equatable, Sendable {
 
     /// The menu bar app's own check. `running`: the build it started from; `installed`: the
     /// build of the Blackice.app on disk now, nil when there is none to read; `missing`: the
-    /// checks in a row that found none. Another build there means an upgrade (or a rollback):
-    /// open that one. No app for a while means it was removed: quit.
-    public static func decide(running: String?, installed: String?, missing: Int) -> MenuUpgrade {
+    /// checks in a row that found none; `quarantined`: whether the app on disk is in quarantine
+    /// (`quarantined(_:)`), asked only when it is another build. Another build there means an
+    /// upgrade (or a rollback): open that one. No app for a while means it was removed: quit.
+    ///
+    /// Another build in quarantine is not opened: quit, and `blackice start`, which every upgrade
+    /// needs, opens the menu bar app. Homebrew puts every app it installs in quarantine, macOS
+    /// asks before the first opening of such an app, and an app opened in the background cannot
+    /// be asked about. On 16 November 2026, right after a `brew upgrade` to 1.1.0, the menu bar
+    /// app of 1.0.8 opened the new one: macOS could not show its question ("Prompt could not be
+    /// shown"), killed the app it had opened 0.3 s before, and with it the `blackice status`
+    /// that was starting then, which ended with "Killed: 9" (evidence P5-24, result 11). After a
+    /// command of the new app has run, macOS opened the app with no question, which is how
+    /// `start` opens it.
+    public static func decide(running: String?, installed: String?, missing: Int,
+                              quarantined: @autoclosure () -> Bool) -> MenuUpgrade {
         guard let running else { return .stay }
         guard let installed else { return missing >= quitAfter ? .quit : .stay }
-        return installed == running ? .stay : .reopen
+        guard installed != running else { return .stay }
+        return quarantined() ? .quit : .reopen
+    }
+
+    /// The extended attribute macOS keeps on what was downloaded, until the user removes it.
+    public static let quarantineAttribute = "com.apple.quarantine"
+
+    /// Whether the app bundle at `url` is in quarantine: the bundle or its executable has the
+    /// attribute. It stays on an app Homebrew installed after macOS has let it run (1.1.0 had
+    /// "0181;…;Homebrew Cask;…" an hour and a half after its first start), so this says where the
+    /// app came from, not whether macOS would ask. The install script downloads with curl, which
+    /// sets none.
+    public static func quarantined(_ url: URL, attribute: String = quarantineAttribute) -> Bool {
+        var paths = [url.path]
+        let info = NSDictionary(contentsOf: url.appendingPathComponent("Contents/Info.plist"))
+        if let executable = info?["CFBundleExecutable"] as? String {
+            paths.append(url.appendingPathComponent("Contents/MacOS").appendingPathComponent(executable).path)
+        }
+        return paths.contains { getxattr($0, attribute, nil, 0, 0, XATTR_NOFOLLOW) >= 0 }
     }
 
     /// `blackice start`'s check: whether the menu bar app that holds the lock runs another build
