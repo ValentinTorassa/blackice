@@ -29,6 +29,7 @@ private func signed(_ id: String, _ team: String?) -> IdentityResolution {
 private let agent = signed("com.example.agent", "ABCDE12345")
 private let curl = signed("com.apple.curl", nil)
 private let probe = signed("com.valentorassa.blackice.probe", "ABCDE12345")
+private let filter = SigningIdentity(signingID: BlackiceIdentifiers.filter, teamID: "ABCDE12345")
 private let resolver = IdentityResolution.verified(FilterPolicy.systemResolver)
 let testCDHash = "3f1c6a0b9e2d4c5a7b8f9e0d1c2b3a4f5e6d7c8b"
 private let adHoc = IdentityResolution.adHoc(cdhash: testCDHash)
@@ -106,6 +107,38 @@ struct FilterPolicyTests {
         for (facts, expected) in blockAllCases {
             #expect(FilterPolicy.decide(facts, snapshot: snapshot, context: matching) == expected, "\(facts)")
         }
+    }
+
+    @Test func blockAllDropsLookupsFromAnAppWithNoRule() throws {
+        let snapshot = try policySnapshot(.blockAll)
+        func delegated(_ identity: IdentityResolution) -> FlowFacts {
+            flow(identity, nil, port: 53, tcp: false, process: resolver)
+        }
+        // An app nothing names cannot connect anywhere in block-all, so its lookups are only a
+        // way out: they are dropped before it can use an answer.
+        #expect(FilterPolicy.decide(delegated(probe), snapshot: snapshot, context: matching)
+            == .drop(reason: "dns_no_rule"))
+        #expect(FilterPolicy.decide(delegated(adHoc), snapshot: snapshot, context: matching)
+            == .drop(reason: "dns_no_rule"))
+        // An app a rule names resolves as before; narrowing that to the rule's names is the
+        // NEDNSProxyProvider work, so this fix leaves it alone.
+        #expect(FilterPolicy.decide(delegated(agent), snapshot: snapshot, context: matching) == .learnNames)
+        #expect(FilterPolicy.decide(delegated(curl), snapshot: snapshot, context: matching) == .learnNames)
+        // The resolver's own lookups pass.
+        #expect(FilterPolicy.decide(flow(resolver, nil, port: 53, tcp: false), snapshot: snapshot,
+                                    context: matching) == .learnNames)
+        // The extension's own lookups pass too, under its identity and with no rule.
+        let mine = PolicyContext(approved: { _, _ in false }, address: { _, _ in .match }, filterIdentity: filter)
+        #expect(FilterPolicy.decide(delegated(.verified(filter)), snapshot: snapshot, context: mine) == .learnNames)
+        // Without that identity it is just another app with no rule.
+        #expect(FilterPolicy.decide(delegated(.verified(filter)), snapshot: snapshot, context: matching)
+            == .drop(reason: "dns_no_rule"))
+        // Ask mode still reads every lookup: an unknown app must resolve before it can be asked about.
+        #expect(FilterPolicy.decide(delegated(probe), snapshot: try policySnapshot(.ask), context: matching)
+            == .learnNames)
+        // Accept-all reads nothing and allows everything.
+        #expect(FilterPolicy.decide(delegated(probe), snapshot: try policySnapshot(.acceptAll), context: matching)
+            == .allow(reason: "system_resolver"))
     }
 
     @Test func blockAllChecksTheAddressAgainstTheRuleHost() throws {

@@ -151,13 +151,18 @@ public struct PolicyContext {
     /// Whether this app and host were denied a moment ago (AskState.denials). Only ask mode asks,
     /// so only ask mode looks: such a flow is dropped instead of asked about.
     public let denied: (AppIdentity, String) -> Bool
+    /// The extension's own signing identity. Its address checks resolve hosts through the same
+    /// resolver, under this identity and with no rule of their own; those lookups must pass.
+    public let filterIdentity: SigningIdentity?
 
     public init(approved: @escaping (AppIdentity, String) -> Bool,
                 address: @escaping (String, IPAddress?) -> AddressCheck,
-                denied: @escaping (AppIdentity, String) -> Bool = { _, _ in false }) {
+                denied: @escaping (AppIdentity, String) -> Bool = { _, _ in false },
+                filterIdentity: SigningIdentity? = nil) {
         self.approved = approved
         self.address = address
         self.denied = denied
+        self.filterIdentity = filterIdentity
     }
 }
 
@@ -185,7 +190,23 @@ public enum FilterPolicy {
         if flow.direction == .inbound { return .allow(reason: "inbound_not_filtered") }
         if flow.port == dnsPort,
            flow.identity == .verified(systemResolver) || flow.process == .verified(systemResolver) {
-            return snapshot.mode == .acceptAll ? .allow(reason: "system_resolver") : .learnNames
+            if snapshot.mode == .acceptAll { return .allow(reason: "system_resolver") }
+            // In block-all an app's lookups pass only when a rule or the Apple services table
+            // could let it connect at all. An app nothing names has no connection an answer could
+            // serve, so its queries, whose names it writes, would be a way out on their own.
+            // The resolver's own lookups and the extension's always pass: its address checks
+            // resolve hosts through the same resolver.
+            if snapshot.mode == .blockAll, flow.identity != .verified(systemResolver) {
+                let isFilter = context.filterIdentity.map { flow.identity == .verified($0) } ?? false
+                if !isFilter {
+                    let aside = setAside(flow, snapshot.config)
+                    guard let identity = nameable(flow, snapshot, aside: aside),
+                          hasRuleOrService(identity, aside.isEmpty ? identity : nil, snapshot.config) else {
+                        return .drop(reason: "dns_no_rule")
+                    }
+                }
+            }
+            return .learnNames
         }
         // Loopback, before the app is identified or any host is looked at: what listens there is
         // on this Mac, and its own connections out are filtered under its own identity.
