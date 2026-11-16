@@ -63,6 +63,10 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
     static let dnsPeekBytes = 65_536
 
     private let snapshots = ProviderSnapshotStore()
+    /// This extension's own signing identity. Its address checks resolve hosts through the same
+    /// resolver, under this identity and with no rule of their own; in block-all those lookups
+    /// pass like the resolver's own.
+    private let ownIdentity = CodeIdentity.current()
     private let lifecycle = DispatchQueue(label: "com.valentorassa.blackice.filter.lifecycle")
     private var runID: UUID?
     private var observation: NSKeyValueObservation?
@@ -497,7 +501,8 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
             },
             denied: { [denials = ask.denials] identity, host in
                 denials.covers(identity, host: host, scope: scope, now: now)
-            })
+            },
+            filterIdentity: ownIdentity)
     }
 
     /// Under askLock: turns a verdict into what NetworkExtension hears now and what follows.
