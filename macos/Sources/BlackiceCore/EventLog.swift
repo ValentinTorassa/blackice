@@ -34,7 +34,9 @@ public enum LogRecord: Sendable {
     case eventReceived(HookEvent)
     case noHooks(eventID: String)
     /// No hook ran for the event: "configuration_unavailable" when the extension could not be asked
-    /// for its configuration, "configuration_changed" when it holds a newer one than the event's.
+    /// for its configuration, "configuration_changed" when it holds a newer one than the event's,
+    /// "already_received" when this daemon has the event already, and "already_ran" when the
+    /// daemon before it ran the event's hooks to their end.
     case hooksSkipped(eventID: String, reason: String)
     /// No hook slot was free, so the hook waits; `waiting` hooks wait now, this one included.
     case hookQueued(eventID: String, hookLine: Int, waiting: Int)

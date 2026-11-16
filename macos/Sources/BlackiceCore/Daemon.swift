@@ -218,6 +218,8 @@ public final class Daemon: Sendable {
     public let runner: HookRunner
     private let reportLogFailure: @Sendable (Error) -> Void
     private let failures = FailureRun()
+    /// The events whose hooks the daemon before this one ran to their end (`EndedEvents`).
+    private let endedBefore: EndedEvents
 
     /// `reportLogFailure` is called for every record the log could not take. The default prints
     /// to stderr, which the LaunchAgent sends to its own file.
@@ -231,6 +233,7 @@ public final class Daemon: Sendable {
         self.log = log
         self.runner = runner
         self.reportLogFailure = reportLogFailure
+        endedBefore = EndedEvents(url: log.url)
         if let run = FailingHooks.read(url: log.url, minimum: 1) {
             failures.count = run.count
             failures.since = run.since
@@ -250,7 +253,9 @@ public final class Daemon: Sendable {
     /// An event it has already taken runs no hook again (`hooks_skipped`, `already_received`). The
     /// extension sends a daemon that registers the events still waiting (since 1.1.0), and one
     /// raised while the daemon registers can reach it both on its own and in that resend: its
-    /// agent would run twice for one connection, and the second answer be refused as spent.
+    /// agent would run twice for one connection, and the second answer be refused as spent. Nor
+    /// does an event whose hooks the daemon before this one ran to their end (`hooks_skipped`,
+    /// `already_ran`): that resend brings those too, and their hooks had their say.
     public func run(_ intake: some EventIntake, stopHooksWhenIntakeEnds: Bool = false) async {
         let store = ConfigurationStore(fetch: { try await intake.configuration() },
                                        loaded: { configuration in self.record(.configurationLoaded(configuration)) })
@@ -266,6 +271,10 @@ public final class Daemon: Sendable {
                     taken = taken.filter { $0.value > now }
                     guard taken.updateValue(event.deadline, forKey: event.id) == nil else {
                         record(.hooksSkipped(eventID: event.id, reason: "already_received"))
+                        continue
+                    }
+                    guard !endedBefore.contains(event) else {
+                        record(.hooksSkipped(eventID: event.id, reason: "already_ran"))
                         continue
                     }
                     group.addTask {
