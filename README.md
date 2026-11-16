@@ -48,6 +48,32 @@ sample connection, a rule that lets it reach its model, and its hook. Its tools 
 
 [`integrations/eval/run.sh`](integrations/eval/run.sh) runs any of them over the same 44 cases, and 12 more with an owner's notes (`CASES=cases-notes.json`).
 
+## Safety approach
+
+An agent running on your Mac can send data to a new destination before you see what it is doing. In ask mode,
+blackice holds that outbound connection outside the agent, in a macOS network extension. The deciding hook can
+approve or deny only the app and destination of the event it received, for at most 24 hours. Changing the saved
+rules or answering by hand takes Touch ID; the hook does not receive the event's authorization token.
+
+App names and host names are untrusted input to the deciding agent. Its instructions say to treat them as data,
+and the daemon accepts only a verdict with a bounded duration. That limits what a bad answer can authorize; it
+does not make the agent's judgment reliable. If nobody answers, the connection is dropped at its deadline.
+
+## Evidence and limitations
+
+[`evidence/`](evidence/) records live runs, their configuration and failures, made by the people building
+blackice. These are not independent tests. For the 1.0.8 candidate,
+[P5-23](evidence/P5-23-upgrades-interrupts-faults-evals-1.0.8-candidate-macos.md) records 29 of 29 fault checks,
+44 of 44 base cases and 12 of 12 cases with notes for fx and Claude Code, and 43 of 44 and 11 of 12 for Codex.
+The cases are a small evaluation set, not a measure of safety against arbitrary attacks.
+
+blackice controls new outbound connections, not file writes, local commands or the contents of a request to an
+allowed service. It cannot undo an action. A harmful request to an already allowed destination can still pass.
+It is not a sandbox against another program running as the same user: agent homes and prompt injection remain
+attack surfaces. Decisions can be wrong, and bursts or a slow model can drop legitimate connections.
+[Open problems](docs/plan.md#open-problems) describes these limits and the remaining work. Live evidence so far
+comes from one Mac; the supported older macOS versions still need testing.
+
 ## When nobody answers
 
 In ask mode a connection waits until `timeout_seconds` in `blackice.toml` (10 s by default, at most 120). If no one
