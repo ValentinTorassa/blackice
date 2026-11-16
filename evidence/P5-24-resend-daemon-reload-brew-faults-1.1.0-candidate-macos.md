@@ -8,7 +8,9 @@ LaunchAgent, build 65's `start` loaded it again and said so; 1.0.8's `start` aft
 and said `fx answers`. A first install of 1.0.8 from the site set up ask mode with fx in one `start`. In 16 hours
 of the owner's use on builds 63 and 64, fx answered 233 of 246 events, and the Mac slept through the hooks of the
 other 13. Of the fault test's 29 checks on build 65, the 28 that the run's work files and logs can show again
-pass; they do not keep what the 29th needs. Phases 4 and 5.
+pass; they do not keep what the 29th needs. Once 1.1.0 was published, Homebrew's own upgrade from 1.0.8 ended the
+same way, with the daemon loaded again by `start`; the first command after that upgrade was killed by Gatekeeper,
+once. Phases 4 and 5.
 
 **Platform.** MacBook Air (Mac16,12), macOS 27.0.1 (26A434), kernel xnu-13432.1.9~1, arm64, System Integrity
 Protection on, FileVault on. Wi-Fi. For steps 8 and 9 Tailscale's DNS was off. The network's router
@@ -56,6 +58,10 @@ A replacement with a build that is not published is the install script with `BLA
    with SIGKILL 5 s later. Then `curl https://www.unicode.org/` opened and a SIGTERM to the daemon 1.5 s later.
    curl had no rule or approval for either host.
 9. 14:32, on 65: `macos/scripts/fault-test.sh`, with 1.1.1.1 as the Wi-Fi service's DNS server for the run.
+10. 15:04, with 1.1.0 published (release v1.1.0, the same zip as build 65, and its cask in the tap): `blackice stop`
+    on 65 and the app moved to the Trash; `brew install --cask` of the 1.0.8 cask, with the tap at 448d79a;
+    `blackice start`; the tap back at its main; `brew upgrade --cask`, `blackice status`, `blackice start` and
+    `curl https://www.debian.org/`.
 
 **Result.**
 
@@ -168,8 +174,30 @@ A replacement with a build that is not published is the install script with `BLA
    17:33:58Z by the daemon that was killed, whose test hook had exited with no answer, were received again at
    17:34:00.580Z and the hook ran a second time for each.
 
-**Limits.** One Mac, macOS 27.0.1. `brew upgrade` to 1.1.0 itself was not run, which needs the published zip and
-cask: step 7 has Homebrew's own removal of the daemon, then the candidate from the install script. The fault test's
+10. Homebrew's upgrade from the published 1.0.8 to the published 1.1.0. `brew upgrade` printed `1.0.8 -> 1.1.0`
+    and `Removing launchctl service`, and asked for the password; the daemon got its SIGTERM at 18:04:59.949Z, and
+    after the upgrade launchd no longer had it and its LaunchAgent file was gone. 1.0.8's filter, still on, logged
+    one `event_not_sent no_daemon` at 15:05:10.593. `blackice start` printed the same three lines as in result 4,
+    with `✓ The daemon runs your hooks, now and at each login`; the filter of build 65 started at 15:05:12.826 and
+    the daemon registered 0.26 s later, at 15:05:13.083. curl's connection to www.debian.org waited, fx approved it
+    after 6.9 s and curl got HTTP 200 in 7.1 s. The next five events, to 15:13, were answered too.
+11. Gatekeeper killed the first command after that upgrade. `blackice status`, run as soon as Homebrew had
+    finished, printed nothing and ended with `Killed: 9` (status 137):
+
+    ```text
+    15:05:09.960 syspolicyd Prompt could not be shown: … (team: M294LK997M), (id: com.valentorassa.blackice)
+    15:05:09.983 syspolicyd Terminating process due to Gatekeeper rejection: 47202
+    15:05:09.983 syspolicyd Terminating process due to Gatekeeper rejection: 47195
+    15:05:10.004 syspolicyd Clearing Gatekeeper denial breadcrumb: … (id: com.valentorassa.blackice)
+    ```
+
+    47195 was the command, and 47202 a process of the app that launchd had started 0.27 s before. The `start` run
+    2 s later was not stopped. The app Homebrew installs has `com.apple.quarantine` (`Homebrew Cask`). The first
+    command after the day's other four installs and upgrades with Homebrew (steps 2, 3, 6 and the 1.0.8 of step
+    10) ran.
+
+**Limits.** One Mac, macOS 27.0.1. Why Gatekeeper stopped that one command and not the others was not found, nor
+what a `start` killed that way would leave; it was `status` that was killed. The fault test's
 printed list of checks was not kept, and its run had 1.1.1.1 as the DNS server, not the network's router. An event
 that reaches the same daemon twice (`hooks_skipped`, `already_received`) happened in no run; only a unit test has
 it. Result 9 means an agent is called twice for a connection it did not answer the first time, when the daemon
