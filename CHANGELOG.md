@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.1.0 (unreleased)
+## 1.1.0 (16 November 2026)
 
 Fixed:
 - A daemon that registers gets the events still waiting for an answer. An event raised while no daemon was
