@@ -186,7 +186,10 @@ $ blackice start
 `start` waits for the new extension and loads your configuration into it (Touch ID). Until then no hook runs: the new
 build's daemon reaches only the new build's extension, so it restarts every 10 s, and `daemon.err.log` says to run
 `blackice start`. If `start` exits with status 75, restart the Mac and run it again. An open menu bar app reopens by
-itself. `brew upgrade` also removes the daemon's LaunchAgent; since 1.1.0 `start` loads it again when your
+itself after the install script. After `brew upgrade` it quits and `start` opens it again: up to 1.1.0 it opened the
+new app itself, before macOS had checked it, and macOS then killed it together with any `blackice` command started in
+that moment. If the first command after a `brew upgrade` from 1.1.0 or earlier ends with `Killed: 9`, run it again.
+`brew upgrade` also removes the daemon's LaunchAgent; since 1.1.0 `start` loads it again when your
 configuration has hooks (up to 1.0.8, run `blackice agent install` after it). Before Touch ID it says what it keeps, and which switch made with `blackice mode` or the menu it drops because
 `blackice.toml` changed since the last start.
 
