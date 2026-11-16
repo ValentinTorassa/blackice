@@ -125,7 +125,7 @@ struct HookRunnerTests {
         let results = try await testRunner(dir).run([hook(command)], for: testEvent(), timeoutSeconds: 1)
         let result = try #require(results.first)
         #expect(result.outcome == .timedOut(signal: SIGTERM))
-        #expect(result.duration >= 0.9 && result.duration < 5, "took \(result.duration) s")
+        #expect(result.duration >= 0.9 && result.duration < slowRunnerBound, "took \(result.duration) s")
         let child = try #require(pid_t(try read(pidFile).trimmingCharacters(in: .whitespacesAndNewlines)))
         #expect(processGone(child), "the background sleep survived")
     }
@@ -137,7 +137,7 @@ struct HookRunnerTests {
                                                                  timeoutSeconds: 1)
         let result = try #require(results.first)
         #expect(result.outcome == .timedOut(signal: SIGKILL))
-        #expect(result.duration >= 1.2 && result.duration < 5, "took \(result.duration) s")
+        #expect(result.duration >= 1.2 && result.duration < slowRunnerBound, "took \(result.duration) s")
     }
 
     @Test func whatTheHookLeavesBehindIsKilledWhenItExits() async throws {
@@ -149,7 +149,8 @@ struct HookRunnerTests {
         let results = try await testRunner(dir).run([hook(command)], for: testEvent(), timeoutSeconds: 10)
         let result = try #require(results.first)
         #expect(result.outcome == .exited(status: 3))
-        #expect(result.duration < 3, "took \(result.duration) s")
+        // Well under its 10 s timeout, which waiting for the background sleep would reach.
+        #expect(result.duration < 8, "took \(result.duration) s")
         let child = try #require(pid_t(try read(pidFile).trimmingCharacters(in: .whitespacesAndNewlines)))
         #expect(processGone(child))
     }
@@ -157,11 +158,16 @@ struct HookRunnerTests {
     @Test func theEventDeadlineWinsOverALongerTimeout() async throws {
         let dir = try makePrivateDirectory()
         defer { removeTree(dir) }
-        // Room for a slow CI runner to start the hook before the deadline.
-        let results = try await testRunner(dir).run([hook("sleep 30")], for: testEvent(deadlineIn: 2), timeoutSeconds: 60)
-        let result = try #require(results.first)
+        // Room for a slow CI runner to start the hook before the deadline. When 2 s is not enough the
+        // hook is dropped and never starts, which shows nothing of a kill: it is done once more with 8 s.
+        var first: HookResult?
+        for room in [2.0, 8.0] {
+            first = try await testRunner(dir).run([hook("sleep 30")], for: testEvent(deadlineIn: room), timeoutSeconds: 60).first
+            if first?.outcome != .dropped(.deadlinePassed) { break }
+        }
+        let result = try #require(first)
         #expect(result.outcome == .timedOut(signal: SIGTERM))
-        #expect(result.duration < 5, "took \(result.duration) s")
+        #expect(result.duration < slowRunnerBound, "took \(result.duration) s")
     }
 
     @Test func aHookTheMacSleptThroughDiesWhenItWakesPastTheDeadline() async throws {
@@ -181,7 +187,7 @@ struct HookRunnerTests {
         }
         let result = try #require(results.first)
         #expect(result.outcome == .timedOut(signal: SIGTERM))
-        #expect(result.duration < 5, "took \(result.duration) s")
+        #expect(result.duration < slowRunnerBound, "took \(result.duration) s")
         #expect(runner.runningCount == 0)
         // The difference between the two clocks says how long it slept, for the log's slept_ms.
         #expect(abs(result.slept - 3600) < 5, "slept \(result.slept) s")
@@ -281,7 +287,7 @@ struct HookRunnerTests {
         let dir = try makePrivateDirectory()
         defer { removeTree(dir) }
         let runner = try testRunner(dir, limit: 1, minimumStart: 0.4)
-        async let busy = runner.run([hook("sleep 2")], for: testEvent(id: "ev-1"), timeoutSeconds: 10)
+        async let busy = runner.run([hook("sleep 4")], for: testEvent(id: "ev-1"), timeoutSeconds: 10)
         #expect(await eventually { runner.runningCount == 1 })
         let started = Date()
         let queued = Recorder<Int>()
@@ -290,11 +296,11 @@ struct HookRunnerTests {
         }
         let elapsed = Date().timeIntervalSince(started)
         #expect(late.map(\.outcome) == [.dropped(.deadlineNear)])
-        // Given up 0.4 s before its deadline, 0.8 s in, not when the slot came free, 2 s in. The time
+        // Given up 0.4 s before its deadline, 0.8 s in, not when the slot came free, 4 s in. The time
         // it waited counts from when the runner took the hook, which a busy machine does late: 0.46 s
         // late on CI's runner on 11 November 2026 (waited 0.38 s, given up 0.85 s in). So the moment
         // is checked against the deadline, and `waited` for being there when the hook queued.
-        #expect((0.7...1.8).contains(elapsed), "waited \(late[0].waited), took \(elapsed)")
+        #expect((0.7...3.0).contains(elapsed), "waited \(late[0].waited), took \(elapsed)")
         #expect(late[0].waited <= elapsed && (late[0].waited > 0) == (queued.items == [1]),
                 "waited \(late[0].waited), took \(elapsed), queued \(queued.items)")
         #expect(runner.waitingCount == 0)
@@ -654,7 +660,10 @@ struct HookRunnerTests {
             #expect(result.answer == nil && result.stdout.isEmpty)
             #expect(progress.items.isEmpty)
         }
-        #expect(!fileExists(marker))
+        // Where the kernel does not check (SIP is off), the program runs until the check by PID kills
+        // it, and may have made the file by then. On 16 November 2026 the file was there after one of
+        // twenty starts on CI's runner, with every start refused.
+        if HookRunner.kernelChecksLaunch { #expect(!fileExists(marker)) }
         #expect(try FileManager.default.contentsOfDirectory(atPath: dir.appendingPathComponent("work").path).isEmpty)
     }
 
@@ -770,12 +779,12 @@ struct HookRunnerTests {
         let results = try await testRunner(dir).run([Hook(program: slow, line: 1)], for: testEvent(), timeoutSeconds: 1)
         let result = try #require(results.first)
         #expect(result.outcome == .timedOut(signal: SIGTERM))
-        #expect(result.duration >= 0.9 && result.duration < 5, "took \(result.duration) s")
+        #expect(result.duration >= 0.9 && result.duration < slowRunnerBound, "took \(result.duration) s")
         #expect(processGone(try #require(pid_t(try read(pidFile).trimmingCharacters(in: .whitespacesAndNewlines)))))
         // And what it leaves behind when it exits on its own.
         let quick = HookProgram(path: "/bin/bash", arguments: ["-c", "sleep 30 & echo $! > \(quotedPath(left)); exit 3"], identity: bash)
         let exited = try await testRunner(dir).run([Hook(program: quick, line: 1)], for: testEvent(), timeoutSeconds: 10)
-        #expect(exited.map(\.outcome) == [.exited(status: 3)] && exited[0].duration < 3)
+        #expect(exited.map(\.outcome) == [.exited(status: 3)] && exited[0].duration < 8)
         #expect(processGone(try #require(pid_t(try read(left).trimmingCharacters(in: .whitespacesAndNewlines)))))
     }
 

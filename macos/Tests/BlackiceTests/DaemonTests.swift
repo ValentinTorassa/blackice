@@ -383,7 +383,7 @@ struct DaemonTests {
         """)
         let started = Date()
         await daemon.handle(testEvent(id: "ev-8", deadlineIn: 30), with: configuration, send: Answers().send)
-        #expect(Date().timeIntervalSince(started) < 5)
+        #expect(Date().timeIntervalSince(started) < slowRunnerBound)
         #expect(try records(logURL).suffix(2).compactMap { $0["type"] as? String } == ["hook_killed", "hook_no_answer"])
     }
 

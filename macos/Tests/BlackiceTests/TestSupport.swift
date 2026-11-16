@@ -57,6 +57,12 @@ func offThePool<T: Sendable>(_ work: @escaping @Sendable () -> T) async -> T {
     }
 }
 
+/// The longest a test lets a step take that ends in a second or two on a Mac. A busy CI runner is
+/// several times slower: on 16 November 2026 one took 7.4 s over a hook with a 1 s timeout. Each
+/// use stands against 30 s or more of what the test rules out (a `sleep 30`, a longer timeout), so
+/// the bound still tells the two apart.
+let slowRunnerBound: TimeInterval = 15
+
 /// Polls `condition` every 10 ms for up to `seconds`; true once it holds.
 func eventually(within seconds: TimeInterval = 5, _ condition: () -> Bool) async -> Bool {
     let end = Date().addingTimeInterval(seconds)
