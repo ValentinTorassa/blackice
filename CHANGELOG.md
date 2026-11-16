@@ -18,7 +18,7 @@ Fixed:
   started in the same moment (`Killed: 9`). The menu bar app now quits when the app on disk is another build and is
   in quarantine, and `blackice start`, which every upgrade needs, opens it. The check is the running build's, so the
   upgrade from 1.1.0 or earlier to this version is as before: if its first command ends with `Killed: 9`, run it
-  again. An upgrade with the install script is unchanged, since its download is not in quarantine.
+  again. An upgrade with the install script is unchanged: it downloads with curl, which puts nothing in quarantine.
 
 Changed:
 - The first start asks "Who answers when blackice holds a connection?", in the words of the mode it comes after

@@ -101,9 +101,10 @@ public enum MenuUpgrade: Equatable, Sendable {
     /// asks before the first opening of such an app, and an app opened in the background cannot
     /// be asked about. On 16 November 2026, right after a `brew upgrade` to 1.1.0, the menu bar
     /// app of 1.0.8 opened the new one: macOS could not show its question ("Prompt could not be
-    /// shown"), killed the app it had opened, and with it the `blackice status` started 0.3 s
-    /// before, which ended with "Killed: 9" (evidence P5-24, result 11). After a command of the
-    /// new app has run, macOS opened the app with no question, which is how `start` opens it.
+    /// shown"), killed the app it had opened 0.3 s before, and with it the `blackice status`
+    /// that was starting then, which ended with "Killed: 9" (evidence P5-24, result 11). After a
+    /// command of the new app has run, macOS opened the app with no question, which is how
+    /// `start` opens it.
     public static func decide(running: String?, installed: String?, missing: Int,
                               quarantined: @autoclosure () -> Bool) -> MenuUpgrade {
         guard let running else { return .stay }
@@ -118,7 +119,8 @@ public enum MenuUpgrade: Equatable, Sendable {
     /// Whether the app bundle at `url` is in quarantine: the bundle or its executable has the
     /// attribute. It stays on an app Homebrew installed after macOS has let it run (1.1.0 had
     /// "0181;…;Homebrew Cask;…" an hour and a half after its first start), so this says where the
-    /// app came from, not whether macOS would ask. The install script's download has none.
+    /// app came from, not whether macOS would ask. The install script downloads with curl, which
+    /// sets none.
     public static func quarantined(_ url: URL, attribute: String = quarantineAttribute) -> Bool {
         var paths = [url.path]
         let info = NSDictionary(contentsOf: url.appendingPathComponent("Contents/Info.plist"))
