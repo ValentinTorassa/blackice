@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.1.1 (unreleased)
+## 1.1.1 (16 November 2026)
 
 Fixed:
 - A daemon that starts again runs no hook a second time for an event whose hooks the daemon before it had run to
