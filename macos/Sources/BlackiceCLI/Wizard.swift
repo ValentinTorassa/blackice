@@ -339,7 +339,7 @@ struct ConfigWizard {
                           ("opencode", "opencode", "opencode, with a provider you pick")]
                 .filter { AgentInstructions(rawValue: $0.0)?.listedBeforeConnecting ?? true }
             let options = agents.map(\.2) + ["Me, with blackice pending, approve and deny"]
-            guard let who = choose(Choice(options: options, multiple: false, prompt: "  Who answers the connections that wait?",
+            guard let who = choose(Choice(options: options, multiple: false, prompt: "  Who answers when blackice holds a connection?",
                                           labels: agents.map(\.1) + ["you"]))?.first else { return nil }
             answers.agent = who < agents.count ? agents[who].0 : nil
         }

@@ -114,7 +114,7 @@ struct WizardTests {
         #expect(asked.items.map(\.multiple) == [false, false, true])
         #expect(asked.items[2].options == ["Slack", "Another app: type its path or name"])
         // Each list carries its question, and once picked the question stays with the answer.
-        #expect(asked.items.map(\.prompt) == ["  How should blackice treat new connections?", "  Who answers the connections that wait?",
+        #expect(asked.items.map(\.prompt) == ["  How should blackice treat new connections?", "  Who answers when blackice holds a connection?",
                                               "  Which apps may connect anywhere, in every mode?"])
         #expect(asked.items[0].answer([1]) == "ask" && asked.items[1].answer([0]) == "fx" && asked.items[2].answer([0]) == "Slack")
         #expect(asked.items[2].answer([]) == "none")
