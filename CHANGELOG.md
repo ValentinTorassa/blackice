@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- In block-all, DNS lookups from an app that no rule and no Apple service name are dropped as
+  `dns_no_rule` before an answer can serve a connection the app is not allowed to make. The
+  resolver's own lookups and the extension's address checks still pass. When the extension cannot
+  read its own signing identity, that is logged at start and the drop is named
+  `filter_identity_unavailable` instead of being silent. What stays open: any process can start a
+  tool a rule names, such as curl, and the resolver's own lookups always pass; tying DNS answers to
+  rules needs the DNS proxy work in the plan.
+
 ## 1.0.7 (11 November 2026)
 
 New:

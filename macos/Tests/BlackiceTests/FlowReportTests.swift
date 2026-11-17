@@ -202,6 +202,8 @@ struct FlowReportTests {
         ])
         #expect(FlowReport.words("ask_capacity_app") == "its app has too many waiting for an answer")
         #expect(FlowReport.words("ask_capacity") == "too many waiting for an answer")
+        #expect(FlowReport.words("dns_no_rule") == "no rule names this app")
+        #expect(FlowReport.words("filter_identity_unavailable") == "filter identity unavailable")
     }
 
     @Test func sumsUpTheDryRunOfAskMode() {

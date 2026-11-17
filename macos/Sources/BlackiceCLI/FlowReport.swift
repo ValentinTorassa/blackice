@@ -220,6 +220,8 @@ public struct FlowReport: Equatable, Sendable {
         "denied;remembered": "denied a moment ago",
         "approved;address_mismatch": "approved, but to an address not the host's",
         "no_rule": "no rule",
+        "dns_no_rule": "no rule names this app",
+        "filter_identity_unavailable": "filter identity unavailable",
         "tls_unparsed": "hello not readable as TLS",
         "no_host": "no host name",
         "idle_before_hello": "sent nothing for 2 minutes",

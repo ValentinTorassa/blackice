@@ -197,12 +197,13 @@ public enum FilterPolicy {
             // The resolver's own lookups and the extension's always pass: its address checks
             // resolve hosts through the same resolver.
             if snapshot.mode == .blockAll, flow.identity != .verified(systemResolver) {
+                let filterIdentityMissing = context.filterIdentity == nil
                 let isFilter = context.filterIdentity.map { flow.identity == .verified($0) } ?? false
                 if !isFilter {
                     let aside = setAside(flow, snapshot.config)
                     guard let identity = nameable(flow, snapshot, aside: aside),
                           hasRuleOrService(identity, aside.isEmpty ? identity : nil, snapshot.config) else {
-                        return .drop(reason: "dns_no_rule")
+                        return .drop(reason: filterIdentityMissing ? "filter_identity_unavailable" : "dns_no_rule")
                     }
                 }
             }

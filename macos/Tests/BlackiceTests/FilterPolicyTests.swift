@@ -130,9 +130,11 @@ struct FilterPolicyTests {
         // The extension's own lookups pass too, under its identity and with no rule.
         let mine = PolicyContext(approved: { _, _ in false }, address: { _, _ in .match }, filterIdentity: filter)
         #expect(FilterPolicy.decide(delegated(.verified(filter)), snapshot: snapshot, context: mine) == .learnNames)
-        // Without that identity it is just another app with no rule.
+        // Without that identity the gate cannot recognize the extension, and says so in the flow log.
         #expect(FilterPolicy.decide(delegated(.verified(filter)), snapshot: snapshot, context: matching)
-            == .drop(reason: "dns_no_rule"))
+            == .drop(reason: "filter_identity_unavailable"))
+        // An app a rule names still resolves when the extension identity is unavailable.
+        #expect(FilterPolicy.decide(delegated(agent), snapshot: snapshot, context: matching) == .learnNames)
         // Ask mode still reads every lookup: an unknown app must resolve before it can be asked about.
         #expect(FilterPolicy.decide(delegated(probe), snapshot: try policySnapshot(.ask), context: matching)
             == .learnNames)

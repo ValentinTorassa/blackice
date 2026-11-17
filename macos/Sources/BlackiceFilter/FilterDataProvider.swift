@@ -150,6 +150,9 @@ final class FilterDataProvider: NEFilterDataProvider, FilterServiceHandler {
             completionHandler(error)
             return
         }
+        if ownIdentity == nil {
+            control("filter_identity_unavailable", "extension identity unavailable; block-all cannot recognize its own lookups")
+        }
         lifecycle.sync {
             observation = nil
             timer?.cancel(); timer = nil
