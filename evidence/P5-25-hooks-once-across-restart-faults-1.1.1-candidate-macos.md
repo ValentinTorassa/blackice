@@ -8,6 +8,8 @@ new daemon still ran the hook of an event its predecessor had not ended: one a f
 raised with no daemon registered, and one whose hook a SIGTERM stopped, which fx then approved in 3.2 s. The
 fault test's 29 checks pass on build 66, and this time its printed list was kept. Build 66 replaced the published
 1.1.0 after Homebrew had removed the app and the daemon's LaunchAgent, and its `start` loaded the daemon again.
+The day after, with 1.1.1 published, Homebrew's own upgrade from 1.1.0 to 1.1.1 ran: the first command after it
+was not killed, and `start` finished the upgrade.
 The other change of 1.1.1, a menu bar app that quits instead of opening another build that is in quarantine, ran
 in no step here: only unit tests have it. Phases 4 and 5.
 
@@ -21,7 +23,8 @@ service's DNS server was 1.1.1.1.
 - build 66, Blackice.app 1.1.1 from ce80765, the candidate: 1.1.0 with a daemon that skips the events the one
   before it ended, a menu bar app that does not open another build in quarantine, and the first start's question
   in other words. `spctl` accepted it as `source=Notarized Developer ID`. `Blackice-1.1.1.zip` SHA-256
-  `d1d6f8f294015ce56fd1a0e0a785faead7e7e904cdf31c8d72fae3f1d8ba1e65`.
+  `d1d6f8f294015ce56fd1a0e0a785faead7e7e904cdf31c8d72fae3f1d8ba1e65`. In step 7 it is 1.1.1 as published: the
+  Homebrew cask, which pins that SHA-256.
 
 Build 66's tree differs from the one CI passed on before the signing (50f9b08, run 43942297656) only in the
 version of the two Info.plist files. CI passed on the release branch afterwards (65af60a, run 43962807614), and
@@ -32,8 +35,9 @@ that tree passed the steps of `.github/workflows/ci.yml` on this Mac: `swift bui
 **Configuration.** The owner's file: ask mode, fx answering (Claude Code and Codex also connected), 60 s to answer,
 25 rules, 1 hook. For the fault test the script's own (ask mode, 1 rule, the `/bin/sh` test hook, 30 s to answer).
 
-**Run.** 16 November 2026 (UTC−3). The owner ran steps 1 to 3 in his own terminal, the first two from scripts
-that run each command and keep its output, and answered every Touch ID and Homebrew's password prompt. A Claude
+**Run.** 16 November 2026 (UTC−3), and 17 November for step 7. The owner ran steps 1 to 3 and step 7 in his
+own terminal, steps 1, 2 and 7 from scripts that run each command and keep its output, and answered every Touch
+ID, Homebrew's password prompts and, in step 7, the macOS dialogs that remove and allow the extension. A Claude
 Code session on the Mac built and signed build 66, sent the signals of steps 4 to 6 and read the logs. A
 replacement with a build that is not published is the install script with `BLACKICE_ZIP` and `--force`.
 
@@ -50,6 +54,10 @@ replacement with a build that is not published is the install script with `BLACK
    started. curl had no rule and no approval for the hosts of steps 4 to 6. A first try of step 4, at 19:01:22
    with www.rfc-editor.org, showed nothing: curl had an approval for that host from the night before and got
    HTTP 200 in 0.34 s.
+7. 17 November, 11:36:52, on build 66 from the install script, with 1.1.1 published: `blackice stop` and the app
+   to the Trash; `brew install --cask` of 1.1.0, with Homebrew's copy of the tap at the commit of the 1.1.0 cask
+   (bfc4ca2); `blackice start`; the tap back at its main; `brew upgrade --cask valentintorassa/tap/blackice`;
+   `blackice status`; `blackice start`; `blackice status`; `curl https://www.debian.org/`.
 
 **Results.**
 
@@ -134,13 +142,61 @@ replacement with a build that is not published is the install script with `BLACK
 
    curl got HTTP 200 in 5.4 s. Steps 4 to 6 wrote no `hooks_skipped`.
 
+8. Homebrew's upgrade from 1.1.0 to 1.1.1, both as published (step 7). `brew install` put 1.1.0 (build 65) in
+   place. Its `start`, once the owner had allowed the extension again in System Settings, left the filter
+   1.1.0/65 `[activated enabled]`, the daemon loaded and 1.1.0's menu bar app running (pid 90107, from
+   11:37:25). Then:
+
+   ```text
+   $ brew upgrade --cask valentintorassa/tap/blackice
+   ==> Upgrading blackice
+     1.1.0 -> 1.1.1
+   ==> Removing launchctl service com.valentorassa.blackice.daemon
+   Password:
+   …
+   🍺  blackice was successfully upgraded!
+   ```
+
+   After it the app was 1.1.1 (build 66), with Homebrew's `com.apple.quarantine`; launchd had no daemon and its
+   LaunchAgent file was gone. The first command, `blackice status`, ended with status 0 and said what was left:
+
+   ```text
+   daemon     not running, so no hook runs: blackice agent install
+   filter     still build 65, and this app is build 66: blackice start finishes the upgrade
+   ```
+
+   syspolicyd evaluated the app for that command (`GK evaluateScanResult: 1` at 11:37:42.092) and logged no
+   `Prompt could not be shown` and no rejection from the start of the step to its end. `blackice start` printed:
+
+   ```text
+   Touch ID to start filtering in ask mode, 25 rules, 1 hook, 60 s to answer…
+   ✓ blackice is on in ask mode, fx answers
+   ✓ The daemon runs your hooks, now and at each login (logs in ~/Library/Logs/blackice)
+   ✓ The menu bar app runs this build now
+   ```
+
+   The filter 1.1.1/66 started at 11:37:47.237 and the daemon registered at 11:37:47.487. 1.1.0's menu bar app
+   quit at 11:37:47.510 and build 66's, which `start` opened (`LaunchServices.launchViaCSUA` from its pid at
+   11:37:47.717), was running 0.3 s after that. `systemextensionsctl list` had the filter 1.1.1/66 `[activated
+   enabled]` and `status` said ask mode, fx, 25 rules and 47 approvals. curl's connection raised an event at
+   11:37:51.118, fx approved it after 3.1 s and curl got HTTP 200 in 3.7 s.
+
+9. Between Homebrew's upgrade and `start` no hook runs. Homebrew stopped the daemon at 11:37:32.975 with the
+   hook of an event of another app's connection 1.2 s into its run (`hook_killed`, `daemon_stopping`). No
+   daemon ran for the next 14.5 s, the event has no verdict in the log, and the 1.1.0 filter dropped the 12
+   flows it held when `start` replaced it (`flow drop provider_stopped`, from 11:37:46.536).
+
 **Limits.** One Mac, macOS 27.0.1. Two of the cases in which a new daemon runs an event's hooks again happened in
 no step: a hook that started and has no end in the log, and an answer that did not reach the extension. Unit tests
 have them. The
 menu bar app's check ran in no step: it acts in the build that an upgrade replaces, and only when the new app is
-in quarantine, so the first upgrade that can show it is Homebrew's from 1.1.1 to the version after; Homebrew's
-upgrade from 1.1.0 to 1.1.1 still has 1.1.0's menu bar app (P5-24, result 11). With the owner's configuration
-fx answered four events on build 66, one before the fault test and those of steps 4 to 6; there is no stretch of
-use. The first start's question
+in quarantine, so the first upgrade that can show it is Homebrew's from 1.1.1 to the version after. Step 7's
+upgrade had 1.1.0's menu bar app, and it shows neither the kill of P5-24's result 11 nor that the kill cannot
+happen: the command came first, as in P5-24's step 3, 5.6 s before the step's only opening of the new app. The
+log has no `LaunchServices.launchViaCSUA` from the pid of 1.1.0's menu bar app, whose check runs every 5 s, in the
+6.1 s between that command and its own end; why it opened nothing was not established. With the owner's
+configuration this file reads five events that fx answered on build 66: one before the fault test, those of
+steps 4 to 6 and step 7's. The Mac's use between step 6 and step 7, 16 h on build 66, was not read. The first
+start's question
 was not looked at on the screen. The evals were not repeated: `integrations/` is the same as in build 62
 (P5-23). opencode was not connected.
